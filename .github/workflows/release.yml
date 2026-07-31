@@ -94,7 +94,11 @@ jobs:
               echo "::endgroup::"
 
               echo "::group::cli ${os}/${arch}"
-              GOOS="$os" GOARCH="${GOARCH_MAP[$arch]}" go build -o "$platform_dir/agentx" ./cli
+              # go.mod lives in cli/, not the repo root (see cli/go.mod) — `go build ./cli` run
+              # from here fails with "cannot find main module" since the repo root itself isn't
+              # a Go module. Build from inside cli/ instead, in a subshell so the loop's own cwd
+              # is untouched.
+              (cd cli && GOOS="$os" GOARCH="${GOARCH_MAP[$arch]}" go build -o "../$platform_dir/agentx" .)
               cp "$platform_dir/agentx" "$platform_dir/agentx-server"
               echo "::endgroup::"
 
