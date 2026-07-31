@@ -35,6 +35,19 @@ async function main() {
   // couldn't already reach some other way. Lets the dashboard skip a login step entirely.
   app.get("/api/v1/dev/bootstrap", (_req, res) => res.status(200).json({ apiKey }));
 
+  // The dashboard bundle is AgentX's real, full frontend (see README's "Open source scope"), so
+  // it still calls a handful of hosted-SaaS-only endpoints this engine doesn't implement
+  // (subscription plans, misc app config, a news feed, ...) as background/best-effort calls.
+  // Registered after every real /api/v1/* route above, so it only ever catches genuinely
+  // unimplemented ones. Matters because AgentX-web-front's axios interceptor only treats a 404 as
+  // safe-to-ignore (no toast) when the response body has `statusCode: 404` (see its
+  // initAxios.ts) — Express's default 404 page is HTML with no such field, so without this every
+  // one of those calls surfaced a scary "An error occurred" toast on every page load. Confirmed
+  // via a real headless-browser run against this exact bundle, not just curl.
+  app.use("/api", (_req, res) => {
+    res.status(404).json({ statusCode: 404, message: "Not found" });
+  });
+
   const webIndexHtml = findWebIndexHtml();
   if (webIndexHtml) {
     const webDir = path.dirname(webIndexHtml);

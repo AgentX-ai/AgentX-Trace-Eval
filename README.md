@@ -1,4 +1,4 @@
-# AgentX-SelfHosted
+# AgentX-trace-eval
 
 A portable, self-hostable build of AgentX's Governance layer: Evaluate, Monitor, and Trace for
 AI agents, as a single local install. No account, no multi-tenant billing, bring your own LLM
@@ -23,7 +23,7 @@ prebuilt dashboard release instead of a sibling checkout — see "Dashboard rele
 is required just to build and run the engine/CLI on their own.
 
 ```bash
-git clone <this repo> && cd AgentX-SelfHosted
+git clone <this repo> && cd AgentX-trace-eval
 yarn install   # workspace install: engine/ + packages/judge-core together
 ```
 
@@ -39,7 +39,7 @@ sibling directory (AgentX's own team only, that repo is private, see "Dashboard 
 Otherwise, grab the prebuilt bundle instead (works for anyone, no private-repo access needed):
 
 ```bash
-mkdir -p web && curl -fsSL https://github.com/AgentX-ai/AgentX-SelfHosted/releases/latest/download/agentx-web.tar.gz | tar -xz -C web
+mkdir -p web && curl -fsSL https://github.com/AgentX-ai/AgentX-trace-eval/releases/latest/download/agentx-web.tar.gz | tar -xz -C web
 ```
 
 Then either way:
@@ -132,10 +132,10 @@ sibling `../AgentX-web-front` checkout (see "Running from source") is a from-sou
 for people who do have access, not a requirement.
 
 To cut a new dashboard build: in `AgentX-web-front`'s GitHub Actions tab, run "Publish self-host
-web bundle" (`workflow_dispatch`), optionally pointing it at a specific `AgentX-SelfHosted`
+web bundle" (`workflow_dispatch`), optionally pointing it at a specific `AgentX-trace-eval`
 release tag (defaults to whatever's currently latest here). One-time setup that workflow needs,
 done once in `AgentX-web-front`'s repo settings: a fine-grained PAT scoped to
-`AgentX-ai/AgentX-SelfHosted` with release/contents write access, saved as a secret named
+`AgentX-ai/AgentX-trace-eval` with release/contents write access, saved as a secret named
 `SELFHOST_RELEASE_TOKEN`. That workflow also needs `.env.selfhost` committed in
 `AgentX-web-front` (it holds no secrets, just public build-time config like
 `VITE_BASE_API_URL`), the same way `.env.placeholders` already is for the Docker build.
@@ -151,13 +151,32 @@ layout (`build.sh` builds both and lays them out the same way a release would), 
 compiled `agentx-engine` binary actually serving the built SPA plus real ingested trace data
 through its API.
 
-Dashboard scope for now is Governance's shell plus the Observe tab (Trace ingest + Monitor
-signals/patterns) only, verified via curl against the running engine rather than a real browser
-(none available in this environment). Not yet wired up: EvaluateTab (dataset/run management UI)
-and PatternsTab/AgentsTab (pattern CRUD, per-agent settings) still call routes that don't exist on
-this engine yet; the self-host build still ships web-front's full ~30-route bundle rather than a
-build trimmed to just Governance; there's no hot-reload loop between an `AgentX-web-front` dev
-server and this engine yet (see "Running from source"). Also not yet done: the install script,
+Dashboard scope covers Governance's shell, the Observe tab (Trace ingest + Monitor
+signals/patterns), pattern CRUD (create/update/delete under `/agent-monitoring/patterns`, plus
+LLM-assisted regex generation from a plain-language description), AgentsTab (agent list derived
+from ingested trace names since self-host has no separate agent registry, per-agent monitoring
+profile CRUD, approval policy, and a real health-rate computation backed by a "healthy-response"
+tally `runMonitorCheck` now records for traces that match nothing, same as the hosted product),
+and per-signal triage (status updates, human feedback with LLM-drafted suggestions) — all
+verified via curl against a running engine (including the schema migration path, tested against a
+pre-existing SQLite database predating these columns), except the two LLM-assist endpoints'
+success path specifically, which needs a real `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` not available
+in this environment; their failure path (missing key, signal not found) is verified. All of this
+via curl rather than a real browser (also none available here). `/agent-monitoring/estimate` is a
+flat stub (self-host has no billing/credits concept) confirmed sufficient for the one dialog that
+calls it unconditionally. Not yet wired up within Monitor: create-evaluator-from-signal and
+suggest-expected-results (both depend on Evaluate, which doesn't exist on this engine at all), the
+autotune/"Improve" proposal system, and OverviewTab's KPIs/trend/top-failing aggregates (would
+need a proper per-occurrence event log to compute honestly over time windows — the current
+`monitor_signals` table only stores deduped aggregates, not timestamped history). Pattern
+`sampleRate`/`scopeMode`/`agentIds` are persisted and round-trip through the dashboard's editor
+but aren't enforced yet in `core/monitor/detect.ts` (every enabled pattern still runs against
+every trace, unscoped/unsampled). EvaluateTab (dataset/run management UI) is untouched — there's
+no `/api/v1/evaluate` router at all, a much larger gap (run orchestration, async LLM analysis,
+instruction-diff workflow, dataset/config versioning) than everything else listed here. The
+self-host build still ships web-front's full ~30-route bundle rather than a build trimmed to just
+Governance; there's no hot-reload loop between an `AgentX-web-front` dev server and this engine
+yet (see "Running from source"). Also not yet done: the install script,
 Homebrew formula, and `build.sh`'s download fallback are structurally correct and match each
 other's expected asset names/layout (verified: `build.sh`'s fallback path was exercised directly
 against the real, currently-release-less repo and degrades to an API-only build as designed,

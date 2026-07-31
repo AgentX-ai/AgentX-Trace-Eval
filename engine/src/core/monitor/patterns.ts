@@ -16,6 +16,10 @@ export type CreatePatternInput = {
   severity?: string;
   polarity?: string;
   enabled?: boolean;
+  // Routing/throttling, not detection — see PatternRow.sampleRate's comment below.
+  sampleRate?: number;
+  scopeMode?: string;
+  agentIds?: string[];
 };
 
 // AgentX-Python's MonitorPatternBuilder (agentx/monitor/patterns.py) doesn't send a `conditions`
@@ -67,6 +71,13 @@ export type PatternRow = {
   severity: string;
   polarity: string;
   enabled: boolean;
+  // Not read by core/monitor/detect.ts's detectCustomPatterns (which still runs every enabled
+  // pattern, unscoped/unsampled, against every trace) — persisted only so the dashboard's pattern
+  // editor round-trips these fields on edit instead of silently losing them. Enforcing them is a
+  // disclosed follow-up.
+  sampleRate: number;
+  scopeMode: string;
+  agentIds: unknown;
   createdAt: Date;
 };
 
@@ -102,7 +113,9 @@ function toWire(row: PatternRow) {
     severity: row.severity,
     polarity: row.polarity,
     enabled: row.enabled,
-    sampleRate: 1,
+    sampleRate: row.sampleRate,
+    scopeMode: row.scopeMode,
+    agentIds: (row.agentIds as string[] | null) ?? [],
     readOnly: false,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.createdAt.toISOString(),
@@ -121,6 +134,9 @@ export async function createPattern(db: Db, input: CreatePatternInput) {
     severity: input.severity ?? "medium",
     polarity: input.polarity ?? "failure",
     enabled: input.enabled ?? true,
+    sampleRate: input.sampleRate ?? 1,
+    scopeMode: input.scopeMode ?? "all",
+    agentIds: input.agentIds ?? null,
     createdAt: new Date(),
   };
   if (db.kind === "sqlite") {
@@ -129,6 +145,71 @@ export async function createPattern(db: Db, input: CreatePatternInput) {
     await db.db.insert(db.schema.monitorPatterns).values(row);
   }
   return toWire(row);
+}
+
+export type UpdatePatternInput = Partial<CreatePatternInput>;
+
+// Full replace of the mutable fields (not a deep-merge like updateProfile): the dashboard's
+// pattern editor always submits the complete form, not a sparse patch, so there's no ambiguity
+// to resolve between "field omitted" and "field explicitly cleared" the way there is for
+// updateProfile's thresholdOverrides/approvalPolicy merges.
+export async function updatePattern(db: Db, id: string, input: UpdatePatternInput): Promise<ReturnType<typeof toWire> | null> {
+  const existing = await getPatternRow(db, id);
+  if (!existing) {
+    return null;
+  }
+  const updated: PatternRow = {
+    ...existing,
+    name: input.name ?? existing.name,
+    description: input.description !== undefined ? (input.description ?? null) : existing.description,
+    category: input.category !== undefined ? (input.category ?? null) : existing.category,
+    detectorKind: input.detectorKind ?? existing.detectorKind,
+    conditions: input.conditions ?? existing.conditions,
+    severity: input.severity ?? existing.severity,
+    polarity: input.polarity ?? existing.polarity,
+    enabled: input.enabled ?? existing.enabled,
+    sampleRate: input.sampleRate ?? existing.sampleRate,
+    scopeMode: input.scopeMode ?? existing.scopeMode,
+    agentIds: input.agentIds !== undefined ? input.agentIds : existing.agentIds,
+  };
+  const setValues = {
+    name: updated.name,
+    description: updated.description,
+    category: updated.category,
+    detectorKind: updated.detectorKind,
+    conditions: updated.conditions,
+    severity: updated.severity,
+    polarity: updated.polarity,
+    enabled: updated.enabled,
+    sampleRate: updated.sampleRate,
+    scopeMode: updated.scopeMode,
+    agentIds: updated.agentIds,
+  };
+  if (db.kind === "sqlite") {
+    await db.db.update(db.schema.monitorPatterns).set(setValues).where(eq(db.schema.monitorPatterns.id, id));
+  } else {
+    await db.db.update(db.schema.monitorPatterns).set(setValues).where(eq(db.schema.monitorPatterns.id, id));
+  }
+  return toWire(updated);
+}
+
+// Hard delete: AgentMonitoringPattern (src/types/agentMonitoring.ts) has no archived/status field
+// for the dashboard to filter on, and there's no "archived patterns" view anywhere in the
+// frontend to power — see the investigation this was scoped from. The frontend mutation is named
+// "archive" and its success toast says "Pattern archived", but nothing in its actual request/
+// response contract distinguishes a soft archive from a hard delete, so this does the simpler,
+// unambiguous thing. Revisit if an archived-patterns view is ever built.
+export async function deletePattern(db: Db, id: string): Promise<boolean> {
+  const existing = await getPatternRow(db, id);
+  if (!existing) {
+    return false;
+  }
+  if (db.kind === "sqlite") {
+    await db.db.delete(db.schema.monitorPatterns).where(eq(db.schema.monitorPatterns.id, id));
+  } else {
+    await db.db.delete(db.schema.monitorPatterns).where(eq(db.schema.monitorPatterns.id, id));
+  }
+  return true;
 }
 
 export async function getPattern(db: Db, id: string) {

@@ -8,8 +8,8 @@
 # GitHub release this formula points at, not built by Homebrew itself.
 class Agentx < Formula
   desc "Self-hostable AgentX governance layer: Evaluate, Monitor, and Trace for AI agents"
-  homepage "https://github.com/AgentX-ai/AgentX-SelfHosted"
-  url "https://github.com/AgentX-ai/AgentX-SelfHosted/archive/refs/tags/v0.1.0.tar.gz"
+  homepage "https://github.com/AgentX-ai/AgentX-trace-eval"
+  url "https://github.com/AgentX-ai/AgentX-trace-eval/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "" # filled in per release
   license "Apache-2.0"
 
@@ -26,7 +26,7 @@ class Agentx < Formula
     # Prebuilt engine binary for this platform, downloaded from the matching GitHub release
     # rather than built here (Bun isn't a Homebrew build dependency for this formula).
     system "curl", "-fsSL",
-           "https://github.com/AgentX-ai/AgentX-SelfHosted/releases/download/v0.1.0/agentx-engine_#{OS.mac? ? "darwin" : "linux"}_#{Hardware::CPU.arm? ? "arm64" : "amd64"}",
+           "https://github.com/AgentX-ai/AgentX-trace-eval/releases/download/v0.1.0/agentx-engine_#{OS.mac? ? "darwin" : "linux"}_#{Hardware::CPU.arm? ? "arm64" : "amd64"}",
            "-o", bin/"agentx-engine"
     chmod 0755, bin/"agentx-engine"
 
@@ -38,7 +38,7 @@ class Agentx < Formula
     # findWebIndexHtml looks in agentx-engine's own directory first), not embedded in the binary.
     (bin/"web").mkpath
     system "curl", "-fsSL",
-           "https://github.com/AgentX-ai/AgentX-SelfHosted/releases/download/v0.1.0/agentx-web.tar.gz",
+           "https://github.com/AgentX-ai/AgentX-trace-eval/releases/download/v0.1.0/agentx-web.tar.gz",
            "-o", "agentx-web.tar.gz"
     system "tar", "-xzf", "agentx-web.tar.gz", "-C", bin/"web"
   end

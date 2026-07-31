@@ -22,7 +22,7 @@ mkdir -p "$OUT"
 # API-only build rather than failing outright, same as findWebIndexHtml() already tolerates a
 # missing web/index.html at runtime.
 WEB_FRONT_DIR="../AgentX-web-front"
-WEB_RELEASE_REPO="AgentX-ai/AgentX-SelfHosted"
+WEB_RELEASE_REPO="AgentX-ai/AgentX-trace-eval"
 rm -rf web
 mkdir -p web
 

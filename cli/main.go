@@ -15,7 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/AgentX-ai/AgentX-SelfHosted/cli/cmd"
+	"github.com/AgentX-ai/AgentX-trace-eval/cli/cmd"
 )
 
 func main() {

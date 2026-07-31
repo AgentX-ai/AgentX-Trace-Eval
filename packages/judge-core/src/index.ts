@@ -7,7 +7,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 // one shared implementation instead of separate copies in the hosted SaaS and self-host.
 //
 // The one real change from a literal copy-paste: OpenAI/Anthropic clients are injected params,
-// not module-level singleton imports, since AgentX-web-api and AgentX-SelfHosted each construct
+// not module-level singleton imports, since AgentX-web-api and AgentX-trace-eval each construct
 // their own (app-managed API keys vs. BYO env vars), that's what actually makes this portable
 // across both. Behavior otherwise matches AgentX-web-api's implementation exactly (including
 // using OpenAI's Responses API, not Chat Completions), since that's the production behavior this

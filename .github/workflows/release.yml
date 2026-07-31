@@ -1,0 +1,107 @@
+name: Release
+# Cross-compiles the CLI (Go) and engine (Bun, `bun build --compile`) for darwin/linux ×
+# arm64/amd64 from a single ubuntu-latest runner (no macOS runners needed, see the "Verified"
+# note below) and publishes them as a GitHub Release, matching exactly what install.sh and the
+# Homebrew formula already expect: an `agentx_<os>_<arch>.tar.gz` per platform containing
+# `agentx`, `agentx-server`, `agentx-engine`. Does NOT build the dashboard (agentx-web.tar.gz) —
+# that's a separate, platform-independent asset published by AgentX-web-front's own
+# publish-selfhost-web.yml workflow onto whatever release this creates, see README's "Dashboard
+# release".
+#
+# Verified (2026-07-31): `bun build --compile --target=bun-linux-x64` run on macOS produces a
+# real linux/amd64 ELF binary that starts, opens its SQLite DB via bun:sqlite, and serves real
+# HTTP traffic inside an actual `debian:bookworm-slim` container — cross-compiling isn't just
+# "produces a binary that looks right", it was run for real.
+#
+# Trigger: push a tag matching v* (e.g. `git tag v0.1.0 && git push origin v0.1.0`).
+# workflow_dispatch also accepts a tag input, for re-running a build against an existing tag
+# without pushing a new one (e.g. after fixing a build issue).
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and attach assets to (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.14"
+
+      - name: Set up Node.js (for yarn install, not for running the engine)
+        uses: actions/setup-node@3235b876344d2a9aa001b8d1453c930bba69e610
+        with:
+          node-version: 24.x
+          cache: yarn
+          cache-dependency-path: yarn.lock
+
+      - name: Install workspace dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Cross-compile CLI + engine for every platform
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          declare -A BUN_TARGET=(
+            [darwin_arm64]=bun-darwin-arm64
+            [darwin_amd64]=bun-darwin-x64
+            [linux_amd64]=bun-linux-x64
+            [linux_arm64]=bun-linux-arm64
+          )
+          declare -A GOARCH_MAP=(
+            [arm64]=arm64
+            [amd64]=amd64
+          )
+          for os in darwin linux; do
+            for arch in arm64 amd64; do
+              platform_dir="dist/${os}_${arch}"
+              mkdir -p "$platform_dir"
+
+              echo "::group::engine ${os}/${arch}"
+              bun build engine/src/index.ts --compile \
+                --target="${BUN_TARGET[${os}_${arch}]}" \
+                --outfile "$platform_dir/agentx-engine"
+              echo "::endgroup::"
+
+              echo "::group::cli ${os}/${arch}"
+              GOOS="$os" GOARCH="${GOARCH_MAP[$arch]}" go build -o "$platform_dir/agentx" ./cli
+              cp "$platform_dir/agentx" "$platform_dir/agentx-server"
+              echo "::endgroup::"
+
+              tar -czf "dist/agentx_${os}_${arch}.tar.gz" -C "$platform_dir" agentx agentx-server agentx-engine
+            done
+          done
+          ls -la dist/*.tar.gz
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$TAG" dist/*.tar.gz \
+            --repo "${{ github.repository }}" \
+            --title "$TAG" \
+            --generate-notes \
+            --latest

@@ -106,6 +106,13 @@ export const monitorPatterns = sqliteTable("monitor_patterns", {
   severity: text("severity").notNull().default("medium"),
   polarity: text("polarity").notNull().default("failure"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  // Routing/throttling metadata, not part of detection itself (see core/monitor/conditions.ts for
+  // that) — not yet enforced in core/monitor/detect.ts's detectCustomPatterns (which still runs
+  // every enabled pattern against every trace, unscoped/unsampled); persisted here so the
+  // dashboard's pattern editor round-trips these fields instead of silently dropping them.
+  sampleRate: real("sample_rate").notNull().default(1),
+  scopeMode: text("scope_mode").notNull().default("all"),
+  agentIds: text("agent_ids", { mode: "json" }),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
 
@@ -126,6 +133,9 @@ export const monitorProfiles = sqliteTable(
     // e.g. { latencyMs: 15000 } to override the built-in "Latency regression" pattern's default.
     thresholdOverrides: text("threshold_overrides", { mode: "json" }),
     approvalPolicy: text("approval_policy", { mode: "json" }),
+    // Notification channel ids, e.g. ["slack:#alerts"] — self-host has no notification delivery
+    // yet, stored so the dashboard's settings dialog round-trips the field.
+    channels: text("channels", { mode: "json" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
   },
@@ -143,6 +153,8 @@ export const monitorSignals = sqliteTable(
     severity: text("severity").notNull(),
     polarity: text("polarity").notNull().default("failure"),
     status: text("status").notNull().default("open"),
+    reviewStatus: text("review_status"),
+    recommendedActions: text("recommended_actions", { mode: "json" }),
     summary: text("summary").notNull(),
     rootCause: text("root_cause"),
     agentId: text("agent_id"),
@@ -160,6 +172,21 @@ export const monitorSignals = sqliteTable(
   })
 );
 
+// One reviewer note per POST /agent-monitoring/signals/:id/feedback call (not deduped/upserted
+// like signals themselves — each submission is its own record, matching
+// AgentSignalFeedback/SignalFeedbackDialog's "Previous feedback" list in AgentX-web-front).
+export const monitorSignalFeedback = sqliteTable("monitor_signal_feedback", {
+  id: text("id").primaryKey(),
+  signalId: text("signal_id").notNull(),
+  metric: text("metric").notNull(),
+  originalScore: real("original_score"),
+  correctedScore: real("corrected_score"),
+  rationale: text("rationale").notNull(),
+  queuedForAutotune: integer("queued_for_autotune", { mode: "boolean" }).notNull().default(false),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
 export type SqliteSchema = {
   traces: typeof traces;
   datasets: typeof datasets;
@@ -167,6 +194,7 @@ export type SqliteSchema = {
   evaluationRuns: typeof evaluationRuns;
   evaluationRunResults: typeof evaluationRunResults;
   monitorPatterns: typeof monitorPatterns;
+  monitorSignalFeedback: typeof monitorSignalFeedback;
   monitorProfiles: typeof monitorProfiles;
   monitorSignals: typeof monitorSignals;
 };

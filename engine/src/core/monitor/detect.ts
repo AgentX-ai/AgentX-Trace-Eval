@@ -178,6 +178,17 @@ export async function runMonitorCheck(
   }
 
   if (!detected) {
+    // Mirrors the hosted SaaS: a checked trace that matches nothing becomes a healthy "info"
+    // tally instead of nothing at all, which is what core/monitor/performance.ts's health-rate
+    // computation (GET /agent-monitoring/performance) sums against per agent. Deduped by
+    // upsertSignal the same as every other signal, so this is one row per agent (occurrenceCount
+    // incrementing), not one row per healthy trace. listSignals defaults to polarity "failure",
+    // so this doesn't show up in triage views unless polarity=all/proper is explicitly requested.
+    await upsertSignal(
+      db,
+      { type: "healthy_response", severity: "low", polarity: "proper", summary: "No issues detected.", patternKey: "healthy-response" },
+      { agentId: ctx.agentId, traceId: ctx.traceId }
+    );
     return;
   }
 

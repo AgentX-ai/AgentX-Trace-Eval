@@ -7,7 +7,7 @@
 # packaging, plan task #113).
 set -euo pipefail
 
-REPO="AgentX-ai/AgentX-SelfHosted"
+REPO="AgentX-ai/AgentX-trace-eval"
 INSTALL_DIR="${AGENTX_INSTALL_DIR:-$HOME/.agentx/bin}"
 
 os() {

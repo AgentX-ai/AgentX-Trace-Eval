@@ -20,22 +20,32 @@ export type ProfileRow = {
   redactionMode: string;
   thresholdOverrides: Record<string, unknown> | null;
   approvalPolicy: Record<string, string> | null;
+  channels: string[] | null;
   createdAt: Date;
   updatedAt: Date;
 };
 
+// Matches AgentX-web-front's AgentMonitoringProfile type (src/types/agentMonitoring.ts).
+// billingMode/pausedForCredits are hosted-SaaS-only concepts (Monitor coverage there is metered
+// against workspace credits) with no self-host equivalent; always reporting "credits"/false
+// keeps the dashboard's settings dialog rendering sensibly instead of needing a self-host-only
+// branch there.
 function toWire(row: ProfileRow) {
   return {
     _id: row.id,
+    workspaceId: "local",
     agentId: row.agentId,
     enabled: row.enabled,
     failureDetectionEnabled: row.failureDetectionEnabled,
     infoDetectionEnabled: row.infoDetectionEnabled,
     coverageMode: row.coverageMode,
     sampleRate: row.sampleRate,
+    channels: row.channels ?? [],
     retentionDays: row.retentionDays,
     redactionMode: row.redactionMode,
     thresholdOverrides: row.thresholdOverrides ?? undefined,
+    billingMode: "credits" as const,
+    pausedForCredits: false,
     approvalPolicy: row.approvalPolicy ?? undefined,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -71,6 +81,7 @@ export type UpdateProfileInput = Partial<{
   redactionMode: string;
   thresholdOverrides: Record<string, unknown>;
   approvalPolicy: Record<string, string>;
+  channels: string[];
 }>;
 
 // Upsert: an agent that's never been configured gets a profile on its first PUT, matching the
@@ -92,6 +103,7 @@ export async function updateProfile(db: Db, agentId: string, patch: UpdateProfil
       redactionMode: patch.redactionMode ?? "standard",
       thresholdOverrides: patch.thresholdOverrides ?? null,
       approvalPolicy: patch.approvalPolicy ?? null,
+      channels: patch.channels ?? null,
       createdAt: now,
       updatedAt: now,
     };
@@ -116,6 +128,7 @@ export async function updateProfile(db: Db, agentId: string, patch: UpdateProfil
       ? { ...(existing.thresholdOverrides ?? {}), ...patch.thresholdOverrides }
       : existing.thresholdOverrides,
     approvalPolicy: patch.approvalPolicy ? { ...(existing.approvalPolicy ?? {}), ...patch.approvalPolicy } : existing.approvalPolicy,
+    channels: patch.channels ?? existing.channels,
     updatedAt: now,
   };
   const setValues = {
@@ -128,6 +141,7 @@ export async function updateProfile(db: Db, agentId: string, patch: UpdateProfil
     redactionMode: updated.redactionMode,
     thresholdOverrides: updated.thresholdOverrides,
     approvalPolicy: updated.approvalPolicy,
+    channels: updated.channels,
     updatedAt: updated.updatedAt,
   };
   if (db.kind === "sqlite") {
@@ -136,6 +150,16 @@ export async function updateProfile(db: Db, agentId: string, patch: UpdateProfil
     await db.db.update(db.schema.monitorProfiles).set(setValues).where(eq(db.schema.monitorProfiles.agentId, agentId));
   }
   return toWire(updated);
+}
+
+export async function listProfileRows(db: Db): Promise<ProfileRow[]> {
+  const rows =
+    db.kind === "sqlite" ? db.db.select().from(db.schema.monitorProfiles).all() : await db.db.select().from(db.schema.monitorProfiles);
+  return rows as ProfileRow[];
+}
+
+export async function listProfilesWire(db: Db) {
+  return (await listProfileRows(db)).map(toWire);
 }
 
 // Resolves the latency threshold this agent's built-in "Latency regression" check uses: the

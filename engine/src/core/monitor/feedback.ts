@@ -1,0 +1,72 @@
+import { nanoid } from "nanoid";
+import { eq } from "drizzle-orm";
+import type { Db } from "../../storage/db.js";
+
+// Matches AgentX-web-front's AgentSignalFeedback (src/types/agentMonitoring.ts). One row per
+// POST /agent-monitoring/signals/:id/feedback call, not deduped/upserted like signals themselves
+// — SignalFeedbackDialog renders every submission in a "Previous feedback" list.
+export type FeedbackRow = {
+  id: string;
+  signalId: string;
+  metric: string;
+  originalScore: number | null;
+  correctedScore: number | null;
+  rationale: string;
+  queuedForAutotune: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+function toWire(row: FeedbackRow) {
+  return {
+    _id: row.id,
+    workspaceId: "local",
+    signalId: row.signalId,
+    metric: row.metric,
+    originalScore: row.originalScore ?? undefined,
+    correctedScore: row.correctedScore ?? undefined,
+    rationale: row.rationale,
+    // reviewerId is populated to a {_id, name, avatar} User on the hosted SaaS; self-host has no
+    // user/auth model at all to attribute feedback to, so it's just omitted rather than faked.
+    queuedForAutotune: row.queuedForAutotune,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+export type CreateFeedbackInput = {
+  metric: string;
+  rationale: string;
+  originalScore?: number;
+  correctedScore?: number;
+  queuedForAutotune?: boolean;
+};
+
+export async function createFeedback(db: Db, signalId: string, input: CreateFeedbackInput) {
+  const now = new Date();
+  const row: FeedbackRow = {
+    id: nanoid(),
+    signalId,
+    metric: input.metric,
+    originalScore: input.originalScore ?? null,
+    correctedScore: input.correctedScore ?? null,
+    rationale: input.rationale,
+    queuedForAutotune: input.queuedForAutotune ?? false,
+    createdAt: now,
+    updatedAt: now,
+  };
+  if (db.kind === "sqlite") {
+    await db.db.insert(db.schema.monitorSignalFeedback).values(row);
+  } else {
+    await db.db.insert(db.schema.monitorSignalFeedback).values(row);
+  }
+  return toWire(row);
+}
+
+export async function listFeedbackForSignal(db: Db, signalId: string) {
+  const rows =
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.monitorSignalFeedback).where(eq(db.schema.monitorSignalFeedback.signalId, signalId)).all()
+      : await db.db.select().from(db.schema.monitorSignalFeedback).where(eq(db.schema.monitorSignalFeedback.signalId, signalId));
+  return (rows as FeedbackRow[]).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).map(toWire);
+}

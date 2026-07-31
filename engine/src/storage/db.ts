@@ -172,6 +172,9 @@ function bootstrapSqlite(sqlite: { exec(sql: string): unknown }): void {
       severity TEXT NOT NULL DEFAULT 'medium',
       polarity TEXT NOT NULL DEFAULT 'failure',
       enabled INTEGER NOT NULL DEFAULT 1,
+      sample_rate REAL NOT NULL DEFAULT 1,
+      scope_mode TEXT NOT NULL DEFAULT 'all',
+      agent_ids TEXT,
       created_at INTEGER NOT NULL
     );
 
@@ -187,6 +190,7 @@ function bootstrapSqlite(sqlite: { exec(sql: string): unknown }): void {
       redaction_mode TEXT NOT NULL DEFAULT 'standard',
       threshold_overrides TEXT,
       approval_policy TEXT,
+      channels TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -200,6 +204,8 @@ function bootstrapSqlite(sqlite: { exec(sql: string): unknown }): void {
       severity TEXT NOT NULL,
       polarity TEXT NOT NULL DEFAULT 'failure',
       status TEXT NOT NULL DEFAULT 'open',
+      review_status TEXT,
+      recommended_actions TEXT,
       summary TEXT NOT NULL,
       root_cause TEXT,
       agent_id TEXT,
@@ -212,7 +218,41 @@ function bootstrapSqlite(sqlite: { exec(sql: string): unknown }): void {
 
     CREATE UNIQUE INDEX IF NOT EXISTS monitor_signals_pattern_key_agent_id
       ON monitor_signals (pattern_key, agent_id);
+
+    CREATE TABLE IF NOT EXISTS monitor_signal_feedback (
+      id TEXT PRIMARY KEY,
+      signal_id TEXT NOT NULL,
+      metric TEXT NOT NULL,
+      original_score REAL,
+      corrected_score REAL,
+      rationale TEXT NOT NULL,
+      queued_for_autotune INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
+
+  // Columns added after the tables above already shipped: CREATE TABLE IF NOT EXISTS doesn't
+  // retrofit existing databases, so anyone with a pre-existing ~/.agentx/agentx.db needs these
+  // added explicitly. SQLite has no ADD COLUMN IF NOT EXISTS, so each is tried individually and a
+  // "duplicate column" failure (already applied) is swallowed; anything else rethrows.
+  const columnMigrations: Array<[string, string]> = [
+    ["monitor_patterns", "ALTER TABLE monitor_patterns ADD COLUMN sample_rate REAL NOT NULL DEFAULT 1"],
+    ["monitor_patterns", "ALTER TABLE monitor_patterns ADD COLUMN scope_mode TEXT NOT NULL DEFAULT 'all'"],
+    ["monitor_patterns", "ALTER TABLE monitor_patterns ADD COLUMN agent_ids TEXT"],
+    ["monitor_profiles", "ALTER TABLE monitor_profiles ADD COLUMN channels TEXT"],
+    ["monitor_signals", "ALTER TABLE monitor_signals ADD COLUMN review_status TEXT"],
+    ["monitor_signals", "ALTER TABLE monitor_signals ADD COLUMN recommended_actions TEXT"],
+  ];
+  for (const [, statement] of columnMigrations) {
+    try {
+      sqlite.exec(statement);
+    } catch (err) {
+      if (!(err instanceof Error) || !/duplicate column name/i.test(err.message)) {
+        throw err;
+      }
+    }
+  }
 }
 
 // Postgres mirror of bootstrapSqlite above: same tables, same idempotent "IF NOT EXISTS"
@@ -305,6 +345,9 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       severity TEXT NOT NULL DEFAULT 'medium',
       polarity TEXT NOT NULL DEFAULT 'failure',
       enabled BOOLEAN NOT NULL DEFAULT true,
+      sample_rate DOUBLE PRECISION NOT NULL DEFAULT 1,
+      scope_mode TEXT NOT NULL DEFAULT 'all',
+      agent_ids JSONB,
       created_at TIMESTAMP NOT NULL
     );
 
@@ -320,6 +363,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       redaction_mode TEXT NOT NULL DEFAULT 'standard',
       threshold_overrides JSONB,
       approval_policy JSONB,
+      channels JSONB,
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL
     );
@@ -333,6 +377,8 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       severity TEXT NOT NULL,
       polarity TEXT NOT NULL DEFAULT 'failure',
       status TEXT NOT NULL DEFAULT 'open',
+      review_status TEXT,
+      recommended_actions JSONB,
       summary TEXT NOT NULL,
       root_cause TEXT,
       agent_id TEXT,
@@ -345,5 +391,27 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
 
     CREATE UNIQUE INDEX IF NOT EXISTS monitor_signals_pattern_key_agent_id
       ON monitor_signals (pattern_key, agent_id);
+
+    CREATE TABLE IF NOT EXISTS monitor_signal_feedback (
+      id TEXT PRIMARY KEY,
+      signal_id TEXT NOT NULL,
+      metric TEXT NOT NULL,
+      original_score DOUBLE PRECISION,
+      corrected_score DOUBLE PRECISION,
+      rationale TEXT NOT NULL,
+      queued_for_autotune BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL
+    );
+
+    -- Postgres supports IF NOT EXISTS on ADD COLUMN natively, unlike SQLite (see
+    -- bootstrapSqlite's columnMigrations for the equivalent there), so pre-existing databases
+    -- from before these columns existed can just re-run this same statement safely.
+    ALTER TABLE monitor_patterns ADD COLUMN IF NOT EXISTS sample_rate DOUBLE PRECISION NOT NULL DEFAULT 1;
+    ALTER TABLE monitor_patterns ADD COLUMN IF NOT EXISTS scope_mode TEXT NOT NULL DEFAULT 'all';
+    ALTER TABLE monitor_patterns ADD COLUMN IF NOT EXISTS agent_ids JSONB;
+    ALTER TABLE monitor_profiles ADD COLUMN IF NOT EXISTS channels JSONB;
+    ALTER TABLE monitor_signals ADD COLUMN IF NOT EXISTS review_status TEXT;
+    ALTER TABLE monitor_signals ADD COLUMN IF NOT EXISTS recommended_actions JSONB;
   `);
 }

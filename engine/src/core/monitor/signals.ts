@@ -10,6 +10,8 @@ export type SignalRow = {
   severity: string;
   polarity: string;
   status: string;
+  reviewStatus: string | null;
+  recommendedActions: string[] | null;
   summary: string;
   rootCause: string | null;
   agentId: string | null;
@@ -33,6 +35,8 @@ function toWire(row: SignalRow) {
     severity: row.severity,
     polarity: row.polarity,
     status: row.status,
+    reviewStatus: row.reviewStatus ?? undefined,
+    recommendedActions: row.recommendedActions ?? undefined,
     summary: row.summary,
     rootCause: row.rootCause ?? undefined,
     // AgentX-Python's MonitorSignal.agent_id expects the hosted SaaS's populated shape
@@ -89,6 +93,8 @@ export async function upsertSignal(
       severity: detected.severity,
       polarity: detected.polarity ?? "failure",
       status: "open",
+      reviewStatus: null,
+      recommendedActions: null,
       summary: detected.summary,
       rootCause: detected.rootCause ?? null,
       agentId,
@@ -131,17 +137,29 @@ export async function upsertSignal(
   return toWire(updated);
 }
 
-export async function listSignals(
-  db: Db,
-  filter: { severity?: string; status?: string; agentId?: string } = {},
-  limit = 50
-) {
+export async function listSignalRows(db: Db): Promise<SignalRow[]> {
   const rows =
     db.kind === "sqlite" ? db.db.select().from(db.schema.monitorSignals).all() : await db.db.select().from(db.schema.monitorSignals);
-  let filtered = rows as SignalRow[];
+  return rows as SignalRow[];
+}
+
+export async function listSignals(
+  db: Db,
+  filter: { severity?: string; status?: string; agentId?: string; polarity?: string } = {},
+  limit = 50
+) {
+  const rows = await listSignalRows(db);
+  let filtered = rows;
   if (filter.severity) filtered = filtered.filter(r => r.severity === filter.severity);
   if (filter.status) filtered = filtered.filter(r => r.status === filter.status);
   if (filter.agentId) filtered = filtered.filter(r => r.agentId === filter.agentId);
+  // Matches the hosted SaaS/SDK docs' documented default ("failures only" unless polarity is
+  // passed): unfiltered defaults to "failure" rather than returning everything, so the
+  // "healthy-response" tally runMonitorCheck now records (see detect.ts) doesn't show up in
+  // existing triage views (dashboard or `client.monitor.signals.list()`) that predate its
+  // existence and never pass polarity at all. Explicit "all" opts into both.
+  const effectivePolarity = filter.polarity ?? "failure";
+  if (effectivePolarity !== "all") filtered = filtered.filter(r => r.polarity === effectivePolarity);
   filtered.sort((a, b) => b.lastSeenAt.getTime() - a.lastSeenAt.getTime());
   return filtered.slice(0, limit).map(toWire);
 }
@@ -158,4 +176,55 @@ export async function getSignal(db: Db, id: string) {
       | undefined;
   }
   return row ? toWire(row) : null;
+}
+
+export async function getSignalRow(db: Db, id: string): Promise<SignalRow | null> {
+  let row: SignalRow | undefined;
+  if (db.kind === "sqlite") {
+    row = db.db.select().from(db.schema.monitorSignals).where(eq(db.schema.monitorSignals.id, id)).all()[0] as
+      | SignalRow
+      | undefined;
+  } else {
+    row = (await db.db.select().from(db.schema.monitorSignals).where(eq(db.schema.monitorSignals.id, id)))[0] as
+      | SignalRow
+      | undefined;
+  }
+  return row ?? null;
+}
+
+export type UpdateSignalInput = Partial<{
+  status: string;
+  severity: string;
+  reviewStatus: string;
+  recommendedActions: string[];
+}>;
+
+// Every current caller (SignalRow.tsx in AgentX-web-front) only ever sends `status`
+// (triaged/resolved) — severity/reviewStatus/recommendedActions are part of the frontend's type
+// contract but have no live caller yet, see the investigation this was scoped from. Accepted here
+// anyway since it costs nothing extra to support the full contract.
+export async function updateSignal(db: Db, id: string, patch: UpdateSignalInput) {
+  const existing = await getSignalRow(db, id);
+  if (!existing) {
+    return null;
+  }
+  const updated: SignalRow = {
+    ...existing,
+    status: patch.status ?? existing.status,
+    severity: patch.severity ?? existing.severity,
+    reviewStatus: patch.reviewStatus ?? existing.reviewStatus,
+    recommendedActions: patch.recommendedActions ?? existing.recommendedActions,
+  };
+  const setValues = {
+    status: updated.status,
+    severity: updated.severity,
+    reviewStatus: updated.reviewStatus,
+    recommendedActions: updated.recommendedActions,
+  };
+  if (db.kind === "sqlite") {
+    await db.db.update(db.schema.monitorSignals).set(setValues).where(eq(db.schema.monitorSignals.id, id));
+  } else {
+    await db.db.update(db.schema.monitorSignals).set(setValues).where(eq(db.schema.monitorSignals.id, id));
+  }
+  return toWire(updated);
 }

@@ -69,13 +69,14 @@ monitorRouter.put("/profiles/:agentId", async (req: Request, res: Response) => {
 });
 
 monitorRouter.get("/signals", async (req: Request, res: Response) => {
-  const { severity, status, agentId, limit } = req.query;
+  const { severity, status, agentId, polarity, limit } = req.query;
   const signals = await listSignals(
     getDb(),
     {
       severity: typeof severity === "string" ? severity : undefined,
       status: typeof status === "string" ? status : undefined,
       agentId: typeof agentId === "string" ? agentId : undefined,
+      polarity: typeof polarity === "string" ? polarity : undefined,
     },
     limit ? Math.min(Number(limit) || 50, 100) : 50
   );

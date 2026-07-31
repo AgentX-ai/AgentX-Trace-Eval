@@ -94,6 +94,9 @@ export const monitorPatterns = pgTable("monitor_patterns", {
   severity: text("severity").notNull().default("medium"),
   polarity: text("polarity").notNull().default("failure"),
   enabled: boolean("enabled").notNull().default(true),
+  sampleRate: doublePrecision("sample_rate").notNull().default(1),
+  scopeMode: text("scope_mode").notNull().default("all"),
+  agentIds: jsonb("agent_ids"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
 });
 
@@ -111,6 +114,7 @@ export const monitorProfiles = pgTable(
     redactionMode: text("redaction_mode").notNull().default("standard"),
     thresholdOverrides: jsonb("threshold_overrides"),
     approvalPolicy: jsonb("approval_policy"),
+    channels: jsonb("channels"),
     createdAt: timestamp("created_at", { mode: "date" }).notNull(),
     updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
   },
@@ -128,6 +132,8 @@ export const monitorSignals = pgTable(
     severity: text("severity").notNull(),
     polarity: text("polarity").notNull().default("failure"),
     status: text("status").notNull().default("open"),
+    reviewStatus: text("review_status"),
+    recommendedActions: jsonb("recommended_actions"),
     summary: text("summary").notNull(),
     rootCause: text("root_cause"),
     agentId: text("agent_id"),
@@ -142,12 +148,25 @@ export const monitorSignals = pgTable(
   })
 );
 
+export const monitorSignalFeedback = pgTable("monitor_signal_feedback", {
+  id: text("id").primaryKey(),
+  signalId: text("signal_id").notNull(),
+  metric: text("metric").notNull(),
+  originalScore: doublePrecision("original_score"),
+  correctedScore: doublePrecision("corrected_score"),
+  rationale: text("rationale").notNull(),
+  queuedForAutotune: boolean("queued_for_autotune").notNull().default(false),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
+});
+
 export type PgSchema = {
   traces: typeof traces;
   datasets: typeof datasets;
   evaluationSettings: typeof evaluationSettings;
   evaluationRuns: typeof evaluationRuns;
   evaluationRunResults: typeof evaluationRunResults;
+  monitorSignalFeedback: typeof monitorSignalFeedback;
   monitorPatterns: typeof monitorPatterns;
   monitorProfiles: typeof monitorProfiles;
   monitorSignals: typeof monitorSignals;
