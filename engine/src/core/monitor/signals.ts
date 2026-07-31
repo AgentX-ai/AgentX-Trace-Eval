@@ -1,0 +1,161 @@
+import { nanoid } from "nanoid";
+import { and, eq, isNull } from "drizzle-orm";
+import type { Db } from "../../storage/db.js";
+
+// Matches AgentX-Python's MonitorSignal field aliases (agentx/monitor/models.py).
+export type SignalRow = {
+  id: string;
+  patternKey: string;
+  type: string;
+  severity: string;
+  polarity: string;
+  status: string;
+  summary: string;
+  rootCause: string | null;
+  agentId: string | null;
+  traceId: string | null;
+  evidence: Record<string, unknown> | null;
+  occurrenceCount: number;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+};
+
+// Serves both AgentX-Python's MonitorSignal (agentx/monitor/models.py) and AgentX-web-front's
+// AgentMonitoringSignal (src/types/agentMonitoring.ts) — workspaceId/createdAt/updatedAt are
+// required by the latter but not the former; self-host has no separate created-vs-first-seen
+// timestamp to report, so createdAt/updatedAt alias firstSeenAt/lastSeenAt.
+function toWire(row: SignalRow) {
+  return {
+    _id: row.id,
+    workspaceId: "local",
+    patternKey: row.patternKey,
+    type: row.type,
+    severity: row.severity,
+    polarity: row.polarity,
+    status: row.status,
+    summary: row.summary,
+    rootCause: row.rootCause ?? undefined,
+    // AgentX-Python's MonitorSignal.agent_id expects the hosted SaaS's populated shape
+    // ({_id, name, avatar}, from Mongoose .populate("agentId", "name avatar")), not a bare
+    // string. Self-host has no agent registry to populate from, so agentId doubles as both.
+    agentId: row.agentId ? { _id: row.agentId, name: row.agentId } : undefined,
+    evidence: row.evidence ?? undefined,
+    occurrenceCount: row.occurrenceCount,
+    firstSeenAt: row.firstSeenAt.toISOString(),
+    lastSeenAt: row.lastSeenAt.toISOString(),
+    createdAt: row.firstSeenAt.toISOString(),
+    updatedAt: row.lastSeenAt.toISOString(),
+  };
+}
+
+export type DetectedSignal = {
+  type: string;
+  severity: string;
+  polarity?: string;
+  summary: string;
+  patternKey: string;
+  rootCause?: string;
+};
+
+// Upsert deduped by (patternKey, agentId): a re-detected issue for the same pattern/agent
+// increments occurrenceCount and bumps lastSeenAt instead of creating a new row, mirroring the
+// hosted SaaS's upsertMonitoringSignal (agentMonitoringService.ts).
+export async function upsertSignal(
+  db: Db,
+  detected: DetectedSignal,
+  ctx: { agentId?: string | null; traceId?: string | null; evidence?: Record<string, unknown> }
+) {
+  const agentId = ctx.agentId ?? null;
+  // eq(col, "") would never match a real NULL column value (SQL's NULL isn't equal to anything,
+  // including ""), silently breaking dedup for any signal with no agentId, so a separate isNull
+  // branch is needed here rather than coercing null to "".
+  const cond = and(
+    eq(db.schema.monitorSignals.patternKey, detected.patternKey),
+    agentId === null ? isNull(db.schema.monitorSignals.agentId) : eq(db.schema.monitorSignals.agentId, agentId)
+  );
+
+  const existing =
+    db.kind === "sqlite"
+      ? (db.db.select().from(db.schema.monitorSignals).where(cond).all()[0] as SignalRow | undefined)
+      : ((await db.db.select().from(db.schema.monitorSignals).where(cond))[0] as SignalRow | undefined);
+
+  const now = new Date();
+
+  if (!existing) {
+    const row: SignalRow = {
+      id: nanoid(),
+      patternKey: detected.patternKey,
+      type: detected.type,
+      severity: detected.severity,
+      polarity: detected.polarity ?? "failure",
+      status: "open",
+      summary: detected.summary,
+      rootCause: detected.rootCause ?? null,
+      agentId,
+      traceId: ctx.traceId ?? null,
+      evidence: ctx.evidence ?? null,
+      occurrenceCount: 1,
+      firstSeenAt: now,
+      lastSeenAt: now,
+    };
+    if (db.kind === "sqlite") {
+      await db.db.insert(db.schema.monitorSignals).values(row);
+    } else {
+      await db.db.insert(db.schema.monitorSignals).values(row);
+    }
+    return toWire(row);
+  }
+
+  const updated: SignalRow = {
+    ...existing,
+    summary: detected.summary,
+    severity: detected.severity,
+    traceId: ctx.traceId ?? existing.traceId,
+    evidence: ctx.evidence ?? existing.evidence,
+    occurrenceCount: existing.occurrenceCount + 1,
+    lastSeenAt: now,
+  };
+  const setValues = {
+    summary: updated.summary,
+    severity: updated.severity,
+    traceId: updated.traceId,
+    evidence: updated.evidence,
+    occurrenceCount: updated.occurrenceCount,
+    lastSeenAt: updated.lastSeenAt,
+  };
+  if (db.kind === "sqlite") {
+    await db.db.update(db.schema.monitorSignals).set(setValues).where(cond);
+  } else {
+    await db.db.update(db.schema.monitorSignals).set(setValues).where(cond);
+  }
+  return toWire(updated);
+}
+
+export async function listSignals(
+  db: Db,
+  filter: { severity?: string; status?: string; agentId?: string } = {},
+  limit = 50
+) {
+  const rows =
+    db.kind === "sqlite" ? db.db.select().from(db.schema.monitorSignals).all() : await db.db.select().from(db.schema.monitorSignals);
+  let filtered = rows as SignalRow[];
+  if (filter.severity) filtered = filtered.filter(r => r.severity === filter.severity);
+  if (filter.status) filtered = filtered.filter(r => r.status === filter.status);
+  if (filter.agentId) filtered = filtered.filter(r => r.agentId === filter.agentId);
+  filtered.sort((a, b) => b.lastSeenAt.getTime() - a.lastSeenAt.getTime());
+  return filtered.slice(0, limit).map(toWire);
+}
+
+export async function getSignal(db: Db, id: string) {
+  let row: SignalRow | undefined;
+  if (db.kind === "sqlite") {
+    row = db.db.select().from(db.schema.monitorSignals).where(eq(db.schema.monitorSignals.id, id)).all()[0] as
+      | SignalRow
+      | undefined;
+  } else {
+    row = (await db.db.select().from(db.schema.monitorSignals).where(eq(db.schema.monitorSignals.id, id)))[0] as
+      | SignalRow
+      | undefined;
+  }
+  return row ? toWire(row) : null;
+}

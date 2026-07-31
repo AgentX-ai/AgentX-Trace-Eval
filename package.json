@@ -1,0 +1,8 @@
+{
+  "name": "agentx-selfhosted",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "engine"
+  ]
+}

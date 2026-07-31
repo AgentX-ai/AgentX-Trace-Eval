@@ -1,0 +1,21 @@
+node_modules/
+dist/
+*.log
+.env
+.env.local
+
+# Go
+cli/agentx-server
+cli/agentx
+
+# local runtime data (agentx-server --dev writes here by default, mirrors ~/.agentx)
+.agentx/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# web/: built by build.sh from the sibling AgentX-web-front checkout (yarn build:selfhost),
+# not source in this repo. See README's "What's in this repo".
+web/*
+!web/.gitkeep
