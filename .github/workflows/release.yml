@@ -61,6 +61,13 @@ jobs:
       - name: Install workspace dependencies
         run: yarn install --frozen-lockfile
 
+      - name: Build @agentx/judge-core
+        # packages/judge-core is a real published-shape package (main/module/types all point at
+        # dist/, built via tsup) shared with AgentX-web-api, not source the engine imports
+        # directly — dist/ is gitignored (build output), so a fresh checkout has to build it
+        # before `bun build` can resolve `@agentx/judge-core` from engine/src/core/evaluate/judge.ts.
+        run: yarn workspace @agentx/judge-core build
+
       - name: Cross-compile CLI + engine for every platform
         run: |
           set -euo pipefail
