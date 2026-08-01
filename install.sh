@@ -9,6 +9,11 @@ set -euo pipefail
 
 REPO="AgentX-ai/AgentX-trace-eval"
 INSTALL_DIR="${AGENTX_INSTALL_DIR:-$HOME/.agentx/bin}"
+# Script-global, not local to main(): the `trap ... EXIT` below fires after main() returns (once
+# the script reaches its natural end at the bottom), by which point a `local` tmp_dir would
+# already be out of scope — under `set -u` that was an unbound-variable error on every single
+# run, not just a corner case, verified by actually running this script end to end.
+tmp_dir=""
 
 os() {
   case "$(uname -s)" in
@@ -27,7 +32,7 @@ arch() {
 }
 
 main() {
-  local platform_os platform_arch version url tmp_dir
+  local platform_os platform_arch version url
   platform_os="$(os)"
   platform_arch="$(arch)"
   version="${AGENTX_VERSION:-latest}"
