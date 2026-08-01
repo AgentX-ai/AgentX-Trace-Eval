@@ -61,3 +61,47 @@ export async function suggestHumanFeedback(db: Db, signalId: string): Promise<st
   }
   return payload.feedback.trim();
 }
+
+const expectedResultsSchema = {
+  type: "object",
+  properties: { expectedResults: { type: "string" }, resolution: { type: "string" } },
+  required: ["expectedResults"],
+};
+
+// Drafts the "correct" answer field for DraftEvaluatorDialog's create-evaluator flow (routes/
+// agentMonitoringDashboard.ts), given a human reviewer's note on what was actually wrong —
+// the same reviewer-voice framing as suggestHumanFeedback above, but proposing the fix rather
+// than describing the problem.
+export async function suggestExpectedResults(
+  db: Db,
+  signalId: string,
+  humanFeedback: string
+): Promise<{ expectedResults: string; resolution?: string }> {
+  const signal = await getSignal(db, signalId);
+  if (!signal) {
+    throw new Error("Signal not found");
+  }
+
+  const evidence = signal.evidence as { input?: unknown; output?: unknown } | undefined;
+  const userMessage = [
+    "A reviewer flagged this agent response as wrong and explained why. Draft what the agent's ",
+    "response SHOULD have said instead — this becomes the expected answer in a golden test case, ",
+    "so write the ideal response itself, not a description of the fix.",
+    "",
+    `Issue: ${signal.summary}`,
+    evidence?.input !== undefined ? `Original input: ${JSON.stringify(evidence.input)}` : null,
+    evidence?.output !== undefined ? `Original (wrong) output: ${JSON.stringify(evidence.output)}` : null,
+    `Reviewer's explanation: ${humanFeedback}`,
+    "",
+    'Respond with JSON {"expectedResults": "...", "resolution": "one-sentence summary of the fix"}.',
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\n");
+
+  const result = await callJudgeJson({ model: DEFAULT_JUDGE_MODEL, jsonSchema: expectedResultsSchema, userMessage });
+  const payload = result.payload as { expectedResults?: string; resolution?: string } | null;
+  if (typeof payload?.expectedResults !== "string" || !payload.expectedResults.trim()) {
+    throw new Error("Judge model did not return usable expected results");
+  }
+  return { expectedResults: payload.expectedResults.trim(), resolution: payload.resolution?.trim() };
+}

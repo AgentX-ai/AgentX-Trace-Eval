@@ -8,6 +8,10 @@ import type { Db } from "../../storage/db.js";
 // Sovereignty & Portability model comparison are accepted but not acted on: out of scope for this
 // pass, see plan task #109.
 export type CreateDatasetInput = {
+  // Set by routes/evaluateDashboard.ts to create a dataset+evaluationSettings twin sharing one id
+  // (see that file's header comment). Omitted (SDK path via routes/evaluations.ts): a fresh id is
+  // generated here as before.
+  id?: string;
   name: string;
   description?: string;
   acceptanceCriteria?: string;
@@ -15,6 +19,8 @@ export type CreateDatasetInput = {
   evaluationCriteria?: string;
   questions: unknown[];
 };
+
+export type UpdateDatasetInput = Omit<CreateDatasetInput, "id">;
 
 export type DatasetRow = {
   id: string;
@@ -38,12 +44,13 @@ function toWire(row: DatasetRow) {
     evaluationCriteria: row.evaluationCriteria ?? undefined,
     questions: row.questions,
     status: "published",
+    createdAt: row.createdAt,
   };
 }
 
 export async function createDataset(db: Db, input: CreateDatasetInput) {
   const row: DatasetRow = {
-    id: nanoid(),
+    id: input.id ?? nanoid(),
     name: input.name,
     description: input.description ?? null,
     acceptanceCriteria: input.acceptanceCriteria ?? null,
@@ -58,6 +65,26 @@ export async function createDataset(db: Db, input: CreateDatasetInput) {
     await db.db.insert(db.schema.datasets).values(row);
   }
   return toWire(row);
+}
+
+// Dashboard edits always submit the full form, so this is a full replace, not a sparse patch
+// (same convention as agentMonitoringDashboard.ts's updatePattern). Returns null if the id
+// doesn't exist, same as getDataset.
+export async function updateDataset(db: Db, id: string, input: UpdateDatasetInput) {
+  const values = {
+    name: input.name,
+    description: input.description ?? null,
+    acceptanceCriteria: input.acceptanceCriteria ?? null,
+    rejectionCriteria: input.rejectionCriteria ?? null,
+    evaluationCriteria: input.evaluationCriteria ?? null,
+    questions: input.questions,
+  };
+  if (db.kind === "sqlite") {
+    await db.db.update(db.schema.datasets).set(values).where(eq(db.schema.datasets.id, id));
+  } else {
+    await db.db.update(db.schema.datasets).set(values).where(eq(db.schema.datasets.id, id));
+  }
+  return getDataset(db, id);
 }
 
 export async function getDataset(db: Db, id: string) {

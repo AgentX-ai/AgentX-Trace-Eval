@@ -187,6 +187,26 @@ export const monitorSignalFeedback = sqliteTable("monitor_signal_feedback", {
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
 
+// One row per detection *check* (matched or healthy), timestamped — monitor_signals only stores
+// deduped aggregates (occurrenceCount/firstSeenAt/lastSeenAt), which is enough for triage but not
+// for anything windowed (Overview's KPI strip/trend chart/top-failing breakdown all need to know
+// *when* things happened, not just totals-to-date). Written alongside monitor_signals' existing
+// upsert in core/monitor/detect.ts, not instead of it.
+export const monitorEvents = sqliteTable("monitor_events", {
+  id: text("id").primaryKey(),
+  // Null for a healthy-response event, since upsertSignal still writes a monitor_signals row for
+  // those (the "healthy-response" dedup key) — set to that row's id here too for consistency, kept
+  // nullable in case a future caller records an event with nowhere to point it.
+  signalId: text("signal_id"),
+  patternKey: text("pattern_key").notNull(),
+  type: text("type").notNull(),
+  severity: text("severity").notNull(),
+  polarity: text("polarity").notNull(),
+  agentId: text("agent_id"),
+  traceId: text("trace_id"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
 export type SqliteSchema = {
   traces: typeof traces;
   datasets: typeof datasets;
@@ -197,4 +217,5 @@ export type SqliteSchema = {
   monitorSignalFeedback: typeof monitorSignalFeedback;
   monitorProfiles: typeof monitorProfiles;
   monitorSignals: typeof monitorSignals;
+  monitorEvents: typeof monitorEvents;
 };

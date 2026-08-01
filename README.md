@@ -117,6 +117,36 @@ export AGENTX_API_BASE_URL=http://localhost:4700/api/v1
 export AGENTX_API_KEY=<printed by agentx-server on first run>
 ```
 
+## OpenTelemetry
+
+Trace also accepts real OTLP/HTTP traces — point any OpenTelemetry SDK/exporter or the Collector's
+`otlphttpexporter` at this engine directly, no AgentX SDK required, the same way you'd point one at
+LangSmith's `/otel` endpoint:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4700/api/v1/otel
+export OTEL_EXPORTER_OTLP_HEADERS="x-api-key=<printed by agentx-server on first run>"
+```
+
+Both OTLP/HTTP wire formats work (protobuf — the default, and the *only* transport Python's
+`opentelemetry-exporter-otlp-proto-http` ships — and JSON via
+`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`). One incoming span becomes one AgentX trace row (this
+schema is already "one row per named call," which is what a span is too — no whole-trace
+aggregation needed). Attributes are mapped using the GenAI semantic conventions (`gen_ai.*`,
+still "Development" status upstream and already renamed fields more than once —
+`gen_ai.system`/`gen_ai.provider.name`, `gen_ai.prompt`/`gen_ai.input.messages`, both generations
+supported), OpenLLMetry's legacy indexed `gen_ai.prompt.N.*`/`completion.N.*` attributes, and
+OpenInference's `input.value`/`output.value`/`llm.model_name` — see `engine/src/otel/mapping.ts`
+for the exact priority order. Monitor runs against every OTel-ingested span by default (this is
+effectively the opt-in signal, since there's no per-call `monitor: true` flag on the wire); set
+`AGENTX_OTEL_MONITOR=false` to disable it. Known gaps: reconstructing a parent LLM span's
+`tool_calls` from separate child tool-call spans isn't attempted (GenAI semconv doesn't define a
+stable way to do that yet — only a span that IS a tool call itself, via `gen_ai.tool.name`, maps to
+anything), gRPC transport isn't supported (HTTP only), and the JSON path expects the protobuf
+canonical JSON mapping's lowerCamelCase field names (a `resourceSpans`/`traceId` body), not the
+literal snake_case `.proto` field names some hand-rolled JSON producers use for the top-level
+fields (tolerated) or nested ones (not tolerated).
+
 ## Dashboard release
 
 `AgentX-web-front` (the app that builds into `web/`) is AgentX's private, closed-source SaaS
@@ -151,6 +181,19 @@ layout (`build.sh` builds both and lays them out the same way a release would), 
 compiled `agentx-engine` binary actually serving the built SPA plus real ingested trace data
 through its API.
 
+Trace also has a real OTLP/HTTP receiver (`/api/v1/otel/v1/traces`, see "OpenTelemetry" above),
+verified against both wire formats: hand-built protobuf payloads (via `protobufjs` against the
+vendored official `.proto` schema, not a guessed encoding) simulating an OpenLLMetry-instrumented
+OpenAI call and a legacy `gen_ai.prompt`/`completion` shape, and a JSON payload using the current
+`gen_ai.provider.name`/`gen_ai.input.messages`/`output.messages` convention — both correctly
+produced mapped `input`/`output`/`model`/tokens/`framework` and triggered Monitor's built-in
+error-detection pattern on a `STATUS_CODE_ERROR` span, all checked against the compiled
+`agentx-engine` binary too (not just `tsx dev`), confirming `protobufjs` survives `bun build
+--compile`. A real bug was caught this way before it shipped: attribute values were initially read
+via protobufjs's `toObject({oneofs:true})` virtual discriminator field, which doesn't exist on a
+genuine OTLP/JSON body from a real exporter — fixed to check field presence directly instead, which
+works for both wire formats.
+
 Dashboard scope covers Governance's shell, the Observe tab (Trace ingest + Monitor
 signals/patterns), pattern CRUD (create/update/delete under `/agent-monitoring/patterns`, plus
 LLM-assisted regex generation from a plain-language description), AgentsTab (agent list derived
@@ -164,18 +207,46 @@ success path specifically, which needs a real `OPENAI_API_KEY`/`ANTHROPIC_API_KE
 in this environment; their failure path (missing key, signal not found) is verified. All of this
 via curl rather than a real browser (also none available here). `/agent-monitoring/estimate` is a
 flat stub (self-host has no billing/credits concept) confirmed sufficient for the one dialog that
-calls it unconditionally. Not yet wired up within Monitor: create-evaluator-from-signal and
-suggest-expected-results (both depend on Evaluate, which doesn't exist on this engine at all), the
-autotune/"Improve" proposal system, and OverviewTab's KPIs/trend/top-failing aggregates (would
-need a proper per-occurrence event log to compute honestly over time windows — the current
-`monitor_signals` table only stores deduped aggregates, not timestamped history). Pattern
-`sampleRate`/`scopeMode`/`agentIds` are persisted and round-trip through the dashboard's editor
-but aren't enforced yet in `core/monitor/detect.ts` (every enabled pattern still runs against
-every trace, unscoped/unsampled). EvaluateTab (dataset/run management UI) is untouched — there's
-no `/api/v1/evaluate` router at all, a much larger gap (run orchestration, async LLM analysis,
-instruction-diff workflow, dataset/config versioning) than everything else listed here. The
-self-host build still ships web-front's full ~30-route bundle rather than a build trimmed to just
-Governance; there's no hot-reload loop between an `AgentX-web-front` dev server and this engine
+calls it unconditionally. create-evaluator-from-signal and suggest-expected-results (the
+production-to-dataset action behind DraftEvaluatorDialog) are wired up: a signal's evidence
+becomes a new test case in a per-agent "Monitor findings: `<agentId>`" dataset (created on first
+use, appended to after that), reusing `core/evaluate/datasets.ts`'s `createDataset`/`updateDataset`
+— verified end to end including through the real dialog (fill human feedback, fill/generate the
+expected answer, "Add to dataset", confirmed the new question actually lands in the target
+dataset). Pattern `sampleRate`/`scopeMode`/`agentIds` and profile-level
+`enabled`/`sampleRate`/`failureDetectionEnabled`/`infoDetectionEnabled` (all persisted since
+before, silently ignored before now) are enforced in `core/monitor/detect.ts` — verified with
+statistical sampling tests and agent-scope isolation tests, plus a regression check that the
+unconfigured default (sampleRate 1, scopeMode "all") still matches every time, unchanged from
+before. `monitor_profiles.channels` entries of the form `webhook:<url>` fire a fire-and-forget,
+Slack-compatible JSON POST on every failure-polarity signal (not on the healthy tally) — verified
+against a real local HTTP listener, including confirming a healthy trace triggers no delivery.
+OverviewTab's KPIs strip/trend chart/top-failing breakdown are backed by a new `monitor_events`
+table (one row per detection check, not just matches, pruned per-agent on write against
+`profile.retentionDays`) feeding new `/agent-monitoring/kpis`/`/trend`/`/top-failing` routes —
+verified with seeded traces against hand-computed expected counts (health rate, p95 latency,
+tool-failure rate, top-failing agents/patterns/tools). What's still genuinely missing, not just
+undisclosed: an "online evaluator" concept (attaching a judge/EvaluationSettings config to score
+sampled live traffic continuously, LangSmith's actual "online evals" — distinct from Monitor's
+pattern-matching, which this engine already does) has no backend or dashboard surface at all yet.
+The autotune/"Improve" proposal system (candidate branch creation, evaluation, merging)
+is explicitly **out of scope**, not deferred: it's fundamentally tied to AgentX's native agent
+config-branching system, which self-host doesn't have — the web-front self-host build hides that
+tab entirely (`governanceUi.tsx`) rather than shipping a permanently-broken one. EvaluateTab's "Runs" and "Datasets" sub-views are wired up
+against a new `/api/v1/evaluate` router (`routes/evaluateDashboard.ts`) reusing the same
+`core/evaluate` modules the SDK-facing router already used — dataset CRUD (list/get/create/update,
+a dataset+evaluationSettings twin sharing one id, same pattern the hosted SaaS's
+`upsertDatasetTwin` uses) and a flat run list/detail with real per-question results, verified with
+a real headless browser against a real SQLite-backed engine, including submitting the real
+create/edit dialogs and opening a run's detail view — not just curl. EvaluateTab's third sub-view,
+"Evaluator" (creating a standalone grading config with no dataset attached), dataset/config version
+history, and anything tied to AgentX's native agent-building/config-branching system
+(agentConfigVersion, robotConfigBranch, evaluationSettingsConfigVersion, datasetConfigVersion,
+agent/team-scoped run endpoints — self-host has no agent/team registry or config-branching at all)
+are explicitly out of scope, not deferred; the version-history and batch-version-count endpoints
+those dialogs call unconditionally on open are stubbed to return empty rather than left to error.
+The self-host build still ships web-front's full ~30-route bundle rather than a build trimmed to
+just Governance; there's no hot-reload loop between an `AgentX-web-front` dev server and this engine
 yet (see "Running from source"). Also not yet done: the install script,
 Homebrew formula, and `build.sh`'s download fallback are structurally correct and match each
 other's expected asset names/layout (verified: `build.sh`'s fallback path was exercised directly

@@ -312,6 +312,65 @@ export async function getRun(db: Db, runId: string) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Dashboard-facing reads (routes/evaluateDashboard.ts). Separate from getRunRow/getRun above
+// (SDK-facing, routes/evaluations.ts) rather than widening those: the dashboard needs the run's
+// full row (evaluationSubject/runSource/createdAt) and its raw per-question results, neither of
+// which the SDK's summary shape exposes or needs.
+// ---------------------------------------------------------------------------
+
+export type FullRunRow = {
+  id: string;
+  datasetId: string;
+  evaluationSettingsId: string | null;
+  evaluationSubject: unknown;
+  runSource: string | null;
+  status: string;
+  createdAt: Date;
+};
+
+export async function getRunRowFull(db: Db, id: string): Promise<FullRunRow | null> {
+  const row =
+    db.kind === "sqlite"
+      ? (db.db.select().from(db.schema.evaluationRuns).where(eq(db.schema.evaluationRuns.id, id)).all()[0] as
+          | FullRunRow
+          | undefined)
+      : ((await db.db.select().from(db.schema.evaluationRuns).where(eq(db.schema.evaluationRuns.id, id)))[0] as
+          | FullRunRow
+          | undefined);
+  return row ?? null;
+}
+
+export async function listRunRows(db: Db): Promise<FullRunRow[]> {
+  const rows = (
+    db.kind === "sqlite" ? db.db.select().from(db.schema.evaluationRuns).all() : await db.db.select().from(db.schema.evaluationRuns)
+  ) as FullRunRow[];
+  rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  return rows;
+}
+
+export type RunResultRow = {
+  questionIndex: number | null;
+  runNumber: number | null;
+  input: { query?: string } | null;
+  output: { text?: string } | null;
+  error: { type: string; message: string } | null;
+  rating: number | null;
+  justification: string | null;
+  createdAt: Date;
+};
+
+export async function getRunResults(db: Db, runId: string): Promise<RunResultRow[]> {
+  const cond = eq(db.schema.evaluationRunResults.runId, runId);
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.evaluationRunResults).where(cond).all()
+      : await db.db.select().from(db.schema.evaluationRunResults).where(cond)
+  ) as RunResultRow[];
+  rows.sort((a, b) => (a.questionIndex ?? 0) - (b.questionIndex ?? 0) || (a.runNumber ?? 0) - (b.runNumber ?? 0));
+  return rows;
+}
+
 // Not part of the SDK-compatible surface (AgentX-Python has no list_runs() call), added for the
 // web dashboard's Evaluate tab (plan task #112).
 export async function listRuns(db: Db, limit = 50) {

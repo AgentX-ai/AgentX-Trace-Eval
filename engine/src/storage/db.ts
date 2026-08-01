@@ -230,6 +230,21 @@ function bootstrapSqlite(sqlite: { exec(sql: string): unknown }): void {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS monitor_events (
+      id TEXT PRIMARY KEY,
+      signal_id TEXT,
+      pattern_key TEXT NOT NULL,
+      type TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      polarity TEXT NOT NULL,
+      agent_id TEXT,
+      trace_id TEXT,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS monitor_events_agent_id_created_at ON monitor_events (agent_id, created_at);
+    CREATE INDEX IF NOT EXISTS monitor_events_created_at ON monitor_events (created_at);
   `);
 
   // Columns added after the tables above already shipped: CREATE TABLE IF NOT EXISTS doesn't
@@ -403,6 +418,21 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS monitor_events (
+      id TEXT PRIMARY KEY,
+      signal_id TEXT,
+      pattern_key TEXT NOT NULL,
+      type TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      polarity TEXT NOT NULL,
+      agent_id TEXT,
+      trace_id TEXT,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS monitor_events_agent_id_created_at ON monitor_events (agent_id, created_at);
+    CREATE INDEX IF NOT EXISTS monitor_events_created_at ON monitor_events (created_at);
 
     -- Postgres supports IF NOT EXISTS on ADD COLUMN natively, unlike SQLite (see
     -- bootstrapSqlite's columnMigrations for the equivalent there), so pre-existing databases

@@ -7,7 +7,9 @@ import { updateProfile, listProfilesWire } from "../core/monitor/profiles.js";
 import { listAgentsWire } from "../core/monitor/agents.js";
 import { getPerformance } from "../core/monitor/performance.js";
 import { createFeedback, listFeedbackForSignal } from "../core/monitor/feedback.js";
-import { generateRegex, suggestHumanFeedback } from "../core/monitor/suggestions.js";
+import { generateRegex, suggestHumanFeedback, suggestExpectedResults } from "../core/monitor/suggestions.js";
+import { getKpis, getTrend, getTopFailing, type MonitoringWindow } from "../core/monitor/events.js";
+import { listDatasets, createDataset, updateDataset } from "../core/evaluate/datasets.js";
 
 // Mounted at /api/v1/agent-monitoring — the paths AgentX-web-front's dashboard actually calls
 // (src/data/apiPaths.ts's getMonitoring*/*MonitoringProfile/*MonitoringPattern), a different
@@ -160,6 +162,28 @@ agentMonitoringDashboardRouter.get("/performance", async (_req: Request, res: Re
   res.status(200).json(performance);
 });
 
+// OverviewTab's KPI strip/trend chart/top-failing breakdown (src/data/queries/agentMonitoring/
+// useGetMonitoringKpis|Trend|TopFailing.ts) — windowed, unlike /performance above (all-time),
+// backed by core/monitor/events.ts's monitor_events log rather than monitor_signals' deduped
+// aggregates. workspaceId accepted for wire compatibility with the hosted SaaS's payload shape,
+// unused (self-host is single-tenant).
+function parseWindow(req: Request): MonitoringWindow {
+  const raw = req.query.window;
+  return raw === "24h" || raw === "30d" ? raw : "7d";
+}
+
+agentMonitoringDashboardRouter.get("/kpis", async (req: Request, res: Response) => {
+  res.status(200).json(await getKpis(getDb(), parseWindow(req)));
+});
+
+agentMonitoringDashboardRouter.get("/trend", async (req: Request, res: Response) => {
+  res.status(200).json(await getTrend(getDb(), parseWindow(req)));
+});
+
+agentMonitoringDashboardRouter.get("/top-failing", async (req: Request, res: Response) => {
+  res.status(200).json(await getTopFailing(getDb(), parseWindow(req)));
+});
+
 agentMonitoringDashboardRouter.get("/signals/:signalId", async (req: Request, res: Response) => {
   const signal = await getSignal(getDb(), req.params.signalId!);
   if (!signal) {
@@ -216,6 +240,94 @@ agentMonitoringDashboardRouter.post("/signals/:signalId/suggest-human-feedback",
     const status = err instanceof Error && err.message === "Signal not found" ? 404 : 502;
     res.status(status).json({ error: err instanceof Error ? err.message : "Failed to draft feedback" });
   }
+});
+
+agentMonitoringDashboardRouter.post("/signals/:signalId/suggest-expected-results", async (req: Request, res: Response) => {
+  const humanFeedback = typeof req.body?.humanFeedback === "string" ? req.body.humanFeedback.trim() : "";
+  if (!humanFeedback) {
+    res.status(400).json({ error: "humanFeedback is required" });
+    return;
+  }
+  try {
+    const result = await suggestExpectedResults(getDb(), req.params.signalId!, humanFeedback);
+    res.status(200).json(result);
+  } catch (err) {
+    const status = err instanceof Error && err.message === "Signal not found" ? 404 : 502;
+    res.status(status).json({ error: err instanceof Error ? err.message : "Failed to draft expected results" });
+  }
+});
+
+// The production-to-dataset action (DraftEvaluatorDialog.tsx / useCreateMonitoringEvaluatorFromSignal.ts):
+// turns a flagged signal into a new golden test case. The dialog never sends a datasetId (confirmed
+// by reading DraftEvaluatorDialogBody — the hosted SaaS resolves the target dataset server-side),
+// so self-host does the same via a deterministic per-agent convention: one dataset named
+// "Monitor findings: <agentId>", created on first use, appended to on every call after that.
+async function resolveMonitorFindingsDataset(agentId: string) {
+  const name = `Monitor findings: ${agentId}`;
+  const existing = (await listDatasets(getDb())).find(d => d.name === name);
+  if (existing) {
+    return existing;
+  }
+  return createDataset(getDb(), {
+    name,
+    description: `Test cases created from Monitor signals flagged on "${agentId}".`,
+    questions: [],
+  });
+}
+
+agentMonitoringDashboardRouter.post("/signals/:signalId/create-evaluator", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  const expectedResults = typeof body.expectedResults === "string" ? body.expectedResults.trim() : "";
+  if (!expectedResults) {
+    res.status(400).json({ error: "expectedResults is required" });
+    return;
+  }
+
+  const signal = await getSignal(getDb(), req.params.signalId!);
+  if (!signal) {
+    res.status(404).json({ error: "Signal not found" });
+    return;
+  }
+
+  const agentId: string | undefined =
+    typeof body.agentId === "string" && body.agentId
+      ? body.agentId
+      : typeof signal.agentId === "object" && signal.agentId
+        ? (signal.agentId as { _id: string })._id
+        : undefined;
+  if (!agentId) {
+    res.status(400).json({ error: "Unable to determine which agent to draft this evaluator for" });
+    return;
+  }
+
+  const evidence = signal.evidence as { input?: unknown } | undefined;
+  const query = typeof evidence?.input === "string" ? evidence.input : JSON.stringify(evidence?.input ?? "");
+  const newQuestion = { main_question: { query, expectedResults }, follow_up_questions: [] };
+
+  const dataset = await resolveMonitorFindingsDataset(agentId);
+  const questions = [...(dataset.questions as unknown[]), newQuestion];
+  const updated = await updateDataset(getDb(), dataset._id, {
+    name: dataset.name,
+    description: dataset.description,
+    acceptanceCriteria: dataset.acceptanceCriteria,
+    rejectionCriteria: dataset.rejectionCriteria,
+    evaluationCriteria: dataset.evaluationCriteria,
+    questions,
+  });
+  if (!updated) {
+    res.status(500).json({ error: "Failed to save the new test case" });
+    return;
+  }
+
+  res.status(200).json({
+    signal,
+    draft: {
+      status: "created",
+      evaluationSettingsId: updated._id,
+      questionIndex: questions.length - 1,
+      message: `Added a new test case to "${dataset.name}".`,
+    },
+  });
 });
 
 // Self-host has no billing/credits concept at all — this only exists so

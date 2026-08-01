@@ -5,6 +5,8 @@ import { ingestRouter } from "./routes/ingest.js";
 import { evaluationsRouter } from "./routes/evaluations.js";
 import { monitorRouter } from "./routes/monitor.js";
 import { agentMonitoringDashboardRouter } from "./routes/agentMonitoringDashboard.js";
+import { evaluateDashboardRouter } from "./routes/evaluateDashboard.js";
+import { otlpRouter } from "./routes/otlp.js";
 import { initDb } from "./storage/db.js";
 import { findWebIndexHtml } from "./web.js";
 
@@ -28,6 +30,8 @@ async function main() {
   app.use("/api/v1/custom-agent-evaluations", requireApiKey(apiKey), evaluationsRouter);
   app.use("/api/v1/monitor", requireApiKey(apiKey), monitorRouter);
   app.use("/api/v1/agent-monitoring", requireApiKey(apiKey), agentMonitoringDashboardRouter);
+  app.use("/api/v1/evaluate", requireApiKey(apiKey), evaluateDashboardRouter);
+  app.use("/api/v1/otel", requireApiKey(apiKey), otlpRouter);
 
   // Unauthenticated on purpose: self-host has no multi-tenant boundary the API key protects
   // across (one local instance = one implicit tenant, see plan's "Auth" decision), so letting the

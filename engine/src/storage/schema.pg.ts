@@ -160,6 +160,19 @@ export const monitorSignalFeedback = pgTable("monitor_signal_feedback", {
   updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
 });
 
+// See schema.sqlite.ts's monitorEvents for the full comment.
+export const monitorEvents = pgTable("monitor_events", {
+  id: text("id").primaryKey(),
+  signalId: text("signal_id"),
+  patternKey: text("pattern_key").notNull(),
+  type: text("type").notNull(),
+  severity: text("severity").notNull(),
+  polarity: text("polarity").notNull(),
+  agentId: text("agent_id"),
+  traceId: text("trace_id"),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+});
+
 export type PgSchema = {
   traces: typeof traces;
   datasets: typeof datasets;
@@ -170,4 +183,5 @@ export type PgSchema = {
   monitorPatterns: typeof monitorPatterns;
   monitorProfiles: typeof monitorProfiles;
   monitorSignals: typeof monitorSignals;
+  monitorEvents: typeof monitorEvents;
 };

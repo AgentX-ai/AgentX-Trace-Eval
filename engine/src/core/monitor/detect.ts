@@ -1,9 +1,34 @@
 import type { Db } from "../../storage/db.js";
 import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { evaluatePatternConditions, type PatternCondition, type SemanticJudge, type TraceLike } from "./conditions.js";
-import { listCustomPatterns, getPatternRow } from "./patterns.js";
-import { resolveLatencyThresholdMs } from "./profiles.js";
+import { listCustomPatterns, getPatternRow, type PatternRow } from "./patterns.js";
+import { resolveLatencyThresholdMs, getProfileRow } from "./profiles.js";
 import { upsertSignal, type DetectedSignal } from "./signals.js";
+import { recordEvent, pruneOldEvents } from "./events.js";
+import { extractWebhookUrls, notifyWebhooks } from "./webhooks.js";
+
+// Routing/throttling gates shared by both the automatic sweep (detectCustomPatterns) and the
+// explicit pattern_ids path (runMonitorCheck's "scoped" branch) — a pattern scoped to one agent
+// shouldn't match another agent's trace just because the caller named it explicitly by id.
+function patternMatchesAgent(pattern: PatternRow, agentId: string | null): boolean {
+  if (pattern.scopeMode !== "specific") {
+    return true;
+  }
+  const agentIds = (pattern.agentIds as string[] | null) ?? [];
+  return agentId !== null && agentIds.includes(agentId);
+}
+
+// Sampling is only applied to the automatic sweep, not the explicit pattern_ids path — a caller
+// naming a specific pattern id is asking "does this match right now", not "sample this trace".
+function passesSampleRate(sampleRate: number): boolean {
+  if (sampleRate >= 1) {
+    return true;
+  }
+  if (sampleRate <= 0) {
+    return false;
+  }
+  return Math.random() < sampleRate;
+}
 
 // Built-in checks, evaluated in code rather than stored as pattern rows (same list as
 // AgentX-web-api's BUILT_IN_AGENT_MONITORING_PATTERNS, minus "negative-feedback": that one is
@@ -112,11 +137,13 @@ const llmSemanticJudge: SemanticJudge = async (rubric, text) => {
   return payload?.matches === true;
 };
 
-async function detectCustomPatterns(db: Db, trace: TraceLike): Promise<DetectedSignal | null> {
+async function detectCustomPatterns(db: Db, trace: TraceLike, agentId: string | null): Promise<DetectedSignal | null> {
   const patterns = await listCustomPatterns(db);
   const responseText = typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output ?? "");
   for (const pattern of patterns) {
     if (!pattern.enabled) continue;
+    if (!patternMatchesAgent(pattern, agentId)) continue;
+    if (!passesSampleRate(pattern.sampleRate)) continue;
     const matched = await evaluatePatternConditions({
       conditions: pattern.conditions as PatternCondition[],
       responseText,
@@ -145,6 +172,20 @@ export async function runMonitorCheck(
   trace: TraceLike & { latencyMs?: number | null },
   ctx: { agentId?: string | null; traceId?: string | null; patternIds?: string[] }
 ): Promise<void> {
+  const agentId = ctx.agentId ?? null;
+  // Profile-level gates: enabled/sampleRate/failureDetectionEnabled/infoDetectionEnabled are
+  // persisted (core/monitor/profiles.ts) and round-trip through the dashboard's per-agent settings
+  // dialog, but were never actually consulted here — only thresholdOverrides.latencyMs was, via
+  // resolveLatencyThresholdMs below. No profile row (agent never configured) behaves exactly like
+  // today: fully on, unsampled.
+  const profile = agentId ? await getProfileRow(db, agentId) : null;
+  if (profile && !profile.enabled) {
+    return;
+  }
+  if (profile && !passesSampleRate(profile.sampleRate)) {
+    return;
+  }
+
   const scoped = ctx.patternIds && ctx.patternIds.length > 0;
 
   let detected: DetectedSignal | null = null;
@@ -153,6 +194,7 @@ export async function runMonitorCheck(
     for (const id of ctx.patternIds!) {
       const pattern = await getPatternRow(db, id);
       if (!pattern || !pattern.enabled) continue;
+      if (!patternMatchesAgent(pattern, agentId)) continue;
       const responseText = typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output ?? "");
       const matched = await evaluatePatternConditions({
         conditions: pattern.conditions as PatternCondition[],
@@ -173,28 +215,68 @@ export async function runMonitorCheck(
       }
     }
   } else {
-    const latencyThresholdMs = await resolveLatencyThresholdMs(db, ctx.agentId ?? "default");
-    detected = detectBuiltIn(trace, latencyThresholdMs) ?? (await detectCustomPatterns(db, trace));
+    const latencyThresholdMs = await resolveLatencyThresholdMs(db, agentId ?? "default");
+    const builtIn = profile?.failureDetectionEnabled === false ? null : detectBuiltIn(trace, latencyThresholdMs);
+    detected = builtIn ?? (await detectCustomPatterns(db, trace, agentId));
   }
 
   if (!detected) {
+    // infoDetectionEnabled === false: the agent's profile opted out of the healthy/"proper"
+    // tally specifically (core/monitor/performance.ts's health-rate still just won't count this
+    // check either way) — failure detection above already ran regardless, this only skips logging
+    // the "nothing wrong" case.
+    if (profile?.infoDetectionEnabled === false) {
+      return;
+    }
     // Mirrors the hosted SaaS: a checked trace that matches nothing becomes a healthy "info"
     // tally instead of nothing at all, which is what core/monitor/performance.ts's health-rate
     // computation (GET /agent-monitoring/performance) sums against per agent. Deduped by
     // upsertSignal the same as every other signal, so this is one row per agent (occurrenceCount
     // incrementing), not one row per healthy trace. listSignals defaults to polarity "failure",
     // so this doesn't show up in triage views unless polarity=all/proper is explicitly requested.
-    await upsertSignal(
-      db,
-      { type: "healthy_response", severity: "low", polarity: "proper", summary: "No issues detected.", patternKey: "healthy-response" },
-      { agentId: ctx.agentId, traceId: ctx.traceId }
-    );
+    const healthy = { type: "healthy_response", severity: "low", polarity: "proper", summary: "No issues detected.", patternKey: "healthy-response" };
+    const signal = await upsertSignal(db, healthy, { agentId: ctx.agentId, traceId: ctx.traceId });
+    await recordEvent(db, {
+      signalId: signal._id,
+      patternKey: healthy.patternKey,
+      type: healthy.type,
+      severity: healthy.severity,
+      polarity: healthy.polarity,
+      agentId,
+      traceId: ctx.traceId ?? null,
+    });
+    if (profile) {
+      await pruneOldEvents(db, agentId, profile.retentionDays);
+    }
     return;
   }
 
-  await upsertSignal(db, detected, {
+  const signal = await upsertSignal(db, detected, {
     agentId: ctx.agentId,
     traceId: ctx.traceId,
     evidence: { input: trace.input, output: trace.output },
   });
+  await recordEvent(db, {
+    signalId: signal._id,
+    patternKey: detected.patternKey,
+    type: detected.type,
+    severity: detected.severity,
+    polarity: detected.polarity ?? "failure",
+    agentId,
+    traceId: ctx.traceId ?? null,
+  });
+  // Only failure-polarity detections page anyone — a "proper" custom pattern match is a positive
+  // signal (see performance.ts's comment on that distinction), not something to alert on.
+  if ((detected.polarity ?? "failure") === "failure") {
+    notifyWebhooks(extractWebhookUrls(profile?.channels), {
+      summary: detected.summary,
+      severity: detected.severity,
+      patternKey: detected.patternKey,
+      agentId,
+      rootCause: detected.rootCause,
+    });
+  }
+  if (profile) {
+    await pruneOldEvents(db, agentId, profile.retentionDays);
+  }
 }
