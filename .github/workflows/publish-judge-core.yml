@@ -83,8 +83,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="judge-core-v${{ steps.bump.outputs.version }}"
+          # --latest=false: without this, `gh release create` defaults to marking whatever it
+          # just created as this repo's overall "latest" release — stealing that slot from the
+          # actual engine/CLI/dashboard release (see release.yml, which explicitly passes
+          # --latest for exactly that reason). install.sh, agentx-python's CLI launcher, and the
+          # docs all resolve "latest" to fetch agentx_<os>_<arch>.tar.gz/agentx-web.tar.gz, not
+          # this tarball, so a judge-core release becoming "latest" breaks every one of them.
           gh release create "$tag" "packages/judge-core/${{ steps.pack.outputs.filename }}" \
             --repo "${{ github.repository }}" \
             --title "$tag" \
-            --notes "Automated release of @agentx/judge-core ${{ steps.bump.outputs.version }}."
+            --notes "Automated release of @agentx/judge-core ${{ steps.bump.outputs.version }}." \
+            --latest=false
           echo "Published $tag: https://github.com/${{ github.repository }}/releases/download/$tag/${{ steps.pack.outputs.filename }}"
