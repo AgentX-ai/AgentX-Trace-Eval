@@ -14,7 +14,13 @@ import type Anthropic from "@anthropic-ai/sdk";
 // extraction must not change.
 
 export type TokenUsage = { inputTokens: number; outputTokens: number };
-export type JudgeCallResult = { payload: unknown; usage: TokenUsage | null };
+// `error`/`failureReason` are populated on failure (empty provider response, or a JSON parse
+// failure) so callers with their own logging setup (e.g. AgentX-web-api's structured `logger`,
+// see its evaluationAnalysisService.ts) can reproduce their exact original log level/message/
+// error object instead of relying on this package's own console.error fallback below, which
+// still fires unconditionally as a baseline for callers that don't inspect these fields.
+export type JudgeFailureReason = "emptyResponse" | "parseError";
+export type JudgeCallResult = { payload: unknown; usage: TokenUsage | null; error?: unknown; failureReason?: JudgeFailureReason };
 export type LlmProvider = "openai" | "anthropic";
 
 export function getProviderForModel(model: string): LlmProvider {
@@ -81,13 +87,13 @@ export async function callJudgeJson({
     .join("")
     .trim();
   if (!text) {
-    return { payload: null, usage };
+    return { payload: null, usage, failureReason: "emptyResponse" };
   }
   try {
     return { payload: JSON.parse(stripJsonFences(text)), usage };
   } catch (error) {
     console.error("judge-core: Anthropic judge returned invalid JSON", error);
-    return { payload: text, usage };
+    return { payload: text, usage, error, failureReason: "parseError" };
   }
 }
 
@@ -124,14 +130,14 @@ async function callOpenAIJson({
   const rawContent = typeof response?.output_text === "string" ? response.output_text.trim() : null;
   if (!rawContent) {
     console.error("judge-core: OpenAI returned an empty response");
-    return { payload: null, usage };
+    return { payload: null, usage, failureReason: "emptyResponse" };
   }
 
   try {
     return { payload: JSON.parse(rawContent), usage };
   } catch (error) {
     console.error("judge-core: error parsing OpenAI response", error);
-    return { payload: null, usage };
+    return { payload: null, usage, error, failureReason: "parseError" };
   }
 }
 
@@ -151,7 +157,12 @@ export type JudgePromptVariable = (typeof JUDGE_PROMPT_VARIABLES)[number];
 // in `vars`) are left as-is rather than stripped, so a typo'd variable name is visible in the
 // resulting prompt instead of silently disappearing.
 export function applyJudgePromptTemplate(template: string, vars: Record<string, string>): string {
-  return template.replace(/\{(\w+)\}/g, (match, key: string) => (key in vars ? (vars[key] ?? match) : match));
+  // `vars[key] as string` (not `?? match`): this package's tsconfig has noUncheckedIndexedAccess
+  // on, unlike the original web-api code this was extracted from, so a plain `vars[key]` here
+  // types as `string | undefined` even after the `key in vars` check. The cast is erased at
+  // compile time and changes nothing at runtime — it's the same `key in vars ? vars[key] : match`
+  // as the original, not the `?? match` fallback that would actually change behavior.
+  return template.replace(/\{(\w+)\}/g, (match, key: string) => (key in vars ? (vars[key] as string) : match));
 }
 
 // Default judge model, used whenever a config has no judgeModel set.

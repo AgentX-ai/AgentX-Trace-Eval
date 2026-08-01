@@ -1,0 +1,85 @@
+name: Publish @agentx/judge-core
+# packages/judge-core is consumed two different ways: AgentX-trace-eval's own engine (this repo)
+# resolves it as an in-repo yarn workspace package (engine/package.json's "@agentx/judge-core":
+# "*"), no publishing needed for that. AgentX-web-api is a *separate* repo, so it can't reach
+# into this workspace — it needs a real, versioned dependency instead of the
+# file:../AgentX-trace-eval/... path it was using before (which only worked with both repos
+# checked out side by side locally, not in a cloud build).
+#
+# Ships that as a GitHub Release asset (a real npm-shaped tarball, built with `npm pack`) rather
+# than publishing to the npm registry — same mechanism this repo's own release.yml already uses
+# for the engine/CLI binaries, reusing the built-in GITHUB_TOKEN instead of needing a separate
+# NPM_TOKEN. AgentX-web-api's package.json then depends on the tarball's direct download URL
+# (npm/yarn both support installing a dependency straight from a .tgz URL — verified locally: it
+# installs under the correct package name and imports/requires correctly), pinned to one exact
+# release rather than following a semver range, so picking up a judge-core fix there is a
+# deliberate one-line package.json change, not a silent auto-upgrade.
+#
+# Auto-bumps the patch version and runs on every push to main that touches packages/judge-core,
+# same pattern as agentx-python's own release.yml. The bump commit's "[skip ci]" marker is GitHub
+# Actions' built-in convention for skipping workflow runs on that commit, preventing this from
+# re-triggering itself.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/judge-core/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@3235b876344d2a9aa001b8d1453c930bba69e610
+        with:
+          node-version: 24.x
+          cache: yarn
+          cache-dependency-path: yarn.lock
+
+      - name: Install workspace dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Bump patch version
+        id: bump
+        working-directory: packages/judge-core
+        run: |
+          new_version=$(npm version patch --no-git-tag-version)
+          echo "version=${new_version#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit version bump
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add packages/judge-core/package.json
+          git commit -m "judge-core: bump to ${{ steps.bump.outputs.version }} [skip ci]"
+          git push
+
+      - name: Build
+        run: yarn workspace @agentx/judge-core build
+
+      - name: Pack
+        id: pack
+        working-directory: packages/judge-core
+        run: |
+          filename=$(npm pack --silent)
+          echo "filename=$filename" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="judge-core-v${{ steps.bump.outputs.version }}"
+          gh release create "$tag" "packages/judge-core/${{ steps.pack.outputs.filename }}" \
+            --repo "${{ github.repository }}" \
+            --title "$tag" \
+            --notes "Automated release of @agentx/judge-core ${{ steps.bump.outputs.version }}."
+          echo "Published $tag: https://github.com/${{ github.repository }}/releases/download/$tag/${{ steps.pack.outputs.filename }}"
