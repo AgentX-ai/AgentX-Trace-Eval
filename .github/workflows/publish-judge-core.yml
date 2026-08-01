@@ -52,8 +52,13 @@ jobs:
         id: bump
         working-directory: packages/judge-core
         run: |
-          new_version=$(npm version patch --no-git-tag-version)
-          echo "version=${new_version#v}" >> "$GITHUB_OUTPUT"
+          # `npm version` writes more than just the version to stdout (package name, "up to date"
+          # notices, funding nags) — capturing it directly via $(...) produces a multi-line value,
+          # which $GITHUB_OUTPUT's key=value format rejects outright. Discard its stdout and read
+          # the bumped version back from package.json instead, the actual source of truth.
+          npm version patch --no-git-tag-version > /dev/null
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Commit version bump
         run: |
