@@ -9,8 +9,8 @@
 class Agentx < Formula
   desc "Self-hostable AgentX governance layer: Evaluate, Monitor, and Trace for AI agents"
   homepage "https://github.com/AgentX-ai/AgentX-trace-eval"
-  url "https://github.com/AgentX-ai/AgentX-trace-eval/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "" # filled in per release
+  url "https://github.com/AgentX-ai/AgentX-trace-eval/archive/refs/tags/v0.1.6.tar.gz"
+  sha256 "f5f20a49224d7a253f9078c0f5ccf9bc697b0f30c0f3a1ee6b8b857ebddcee61" # v0.1.6 source tarball
   license "Apache-2.0"
 
   depends_on "go" => :build
@@ -32,7 +32,7 @@ class Agentx < Formula
     # agentx/agentx-server come from the `go build` above instead.
     platform = "#{OS.mac? ? "darwin" : "linux"}_#{Hardware::CPU.arm? ? "arm64" : "amd64"}"
     system "curl", "-fsSL",
-           "https://github.com/AgentX-ai/AgentX-trace-eval/releases/download/v0.1.0/agentx_#{platform}.tar.gz",
+           "https://github.com/AgentX-ai/AgentX-trace-eval/releases/download/v0.1.6/agentx_#{platform}.tar.gz",
            "-o", "agentx-engine-bundle.tar.gz"
     system "tar", "-xzf", "agentx-engine-bundle.tar.gz", "agentx-engine"
     bin.install "agentx-engine"
@@ -45,7 +45,7 @@ class Agentx < Formula
     # findWebIndexHtml looks in agentx-engine's own directory first), not embedded in the binary.
     (bin/"web").mkpath
     system "curl", "-fsSL",
-           "https://github.com/AgentX-ai/AgentX-trace-eval/releases/download/v0.1.0/agentx-web.tar.gz",
+           "https://github.com/AgentX-ai/AgentX-trace-eval/releases/download/v0.1.6/agentx-web.tar.gz",
            "-o", "agentx-web.tar.gz"
     system "tar", "-xzf", "agentx-web.tar.gz", "-C", bin/"web"
   end
