@@ -70,7 +70,9 @@ export type TraceRow = {
   framework: string | null;
   model: string | null;
   toolCalls: unknown;
+  metadata: unknown;
   sessionId: string | null;
+  performanceSummary: unknown;
   inputTokens: number | null;
   outputTokens: number | null;
   createdAt: Date;
@@ -91,6 +93,33 @@ function toWire(row: TraceRow) {
     model: row.model ?? undefined,
     toolCalls: row.toolCalls ?? undefined,
     sessionId: row.sessionId ?? undefined,
+    source: "sdk" as const,
+    createdAt: row.createdAt.toISOString(),
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+  };
+}
+
+// Full single-trace detail for the self-host TraceDialog (routes/ingest.ts's GET /traces/:id) —
+// unlike toWire() above (list view, deliberately lean), this includes performanceSummary and
+// metadata, the fields the detail view actually needs. Same field-naming convention as toWire()
+// (inputTokens not inputTokenSize, etc.) rather than matching AgentX-web-front's IPromptTrace
+// type's hosted-platform-era field names directly — useGetSelfHostTrace.ts on the frontend maps
+// this into that shape, keeping this wire contract independent of one frontend type's naming.
+export function toTraceDetailWire(row: TraceRow) {
+  return {
+    _id: row.id,
+    name: row.name,
+    input: row.input ?? undefined,
+    output: row.output ?? undefined,
+    latencyMs: row.latencyMs ?? undefined,
+    error: row.error ?? undefined,
+    framework: row.framework ?? undefined,
+    model: row.model ?? undefined,
+    toolCalls: row.toolCalls ?? undefined,
+    sessionId: row.sessionId ?? undefined,
+    metadata: row.metadata ?? undefined,
+    performanceSummary: row.performanceSummary ?? undefined,
     source: "sdk" as const,
     createdAt: row.createdAt.toISOString(),
     inputTokens: row.inputTokens,
@@ -145,7 +174,10 @@ export async function listTracesPaginated(
   };
 }
 
-async function getTraceRow(db: Db, id: string): Promise<TraceRow | undefined> {
+// Exported for core/evaluate/portability.ts's model-portability check, which needs the raw
+// input/metadata/model/tokens a single trace actually captured — everything listTracesPaginated's
+// own use of this (cursor resolution) doesn't need.
+export async function getTraceRow(db: Db, id: string): Promise<TraceRow | undefined> {
   if (db.kind === "sqlite") {
     return db.db.select().from(db.schema.traces).where(eq(db.schema.traces.id, id)).all()[0] as
       | TraceRow

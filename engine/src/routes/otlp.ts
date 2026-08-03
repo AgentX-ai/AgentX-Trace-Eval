@@ -3,6 +3,7 @@ import express from "express";
 import { getDb } from "../storage/db.js";
 import { ingestTraceSchema, ingestTrace } from "../core/trace/ingest.js";
 import { runMonitorCheck } from "../core/monitor/detect.js";
+import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
 import { decodeProtobufExportRequest, encodeProtobufResponse } from "../otel/protoTypes.js";
 import { normalizeExportRequest } from "../otel/normalize.js";
 import { otelSpanToIngestInput } from "../otel/mapping.js";
@@ -76,18 +77,32 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
     const input = validation.data;
     const { traceId } = await ingestTrace(db, input);
 
+    // Both wrapped in try/catch: a judge failure (missing API key, provider outage) must never
+    // break OTLP ingestion for the rest of the batch — see routes/ingest.ts's identical comment
+    // for why this wasn't already the case before online evaluators made it much more likely to
+    // actually be hit.
     if (MONITOR_OTEL_TRACES) {
-      await runMonitorCheck(
-        db,
-        {
-          input: input.input,
-          output: input.output,
-          error: input.error ?? null,
-          toolCalls: (input.tool_calls as Array<{ name?: string; output?: unknown; input?: unknown; success?: boolean }>) ?? null,
-          latencyMs: input.latency_ms ?? null,
-        },
-        { agentId: input.name, traceId }
-      );
+      try {
+        await runMonitorCheck(
+          db,
+          {
+            input: input.input,
+            output: input.output,
+            error: input.error ?? null,
+            toolCalls: (input.tool_calls as Array<{ name?: string; output?: unknown; input?: unknown; success?: boolean }>) ?? null,
+            latencyMs: input.latency_ms ?? null,
+          },
+          { agentId: input.name, traceId }
+        );
+      } catch (err) {
+        console.error("Monitor check failed:", err instanceof Error ? err.message : err);
+      }
+    }
+
+    try {
+      await runOnlineEvaluators(db, { input: input.input, output: input.output }, { agentId: input.name, traceId });
+    } catch (err) {
+      console.error("Online evaluator scoring failed:", err instanceof Error ? err.message : err);
     }
   }
 

@@ -25,10 +25,17 @@ class Agentx < Formula
 
     # Prebuilt engine binary for this platform, downloaded from the matching GitHub release
     # rather than built here (Bun isn't a Homebrew build dependency for this formula).
+    #
+    # release.yml never publishes a standalone `agentx-engine_<os>_<arch>` asset -- only the
+    # bundled `agentx_<os>_<arch>.tar.gz` (agentx + agentx-server + agentx-engine together, see
+    # that workflow's "Cross-compile" step). Fetch the tarball and pull out just agentx-engine;
+    # agentx/agentx-server come from the `go build` above instead.
+    platform = "#{OS.mac? ? "darwin" : "linux"}_#{Hardware::CPU.arm? ? "arm64" : "amd64"}"
     system "curl", "-fsSL",
-           "https://github.com/AgentX-ai/AgentX-trace-eval/releases/download/v0.1.0/agentx-engine_#{OS.mac? ? "darwin" : "linux"}_#{Hardware::CPU.arm? ? "arm64" : "amd64"}",
-           "-o", bin/"agentx-engine"
-    chmod 0755, bin/"agentx-engine"
+           "https://github.com/AgentX-ai/AgentX-trace-eval/releases/download/v0.1.0/agentx_#{platform}.tar.gz",
+           "-o", "agentx-engine-bundle.tar.gz"
+    system "tar", "-xzf", "agentx-engine-bundle.tar.gz", "agentx-engine"
+    bin.install "agentx-engine"
 
     # The dashboard is a separate, platform-independent release asset (built by
     # AgentX-web-front's own private CI, see that repo's publish-selfhost-web.yml workflow and

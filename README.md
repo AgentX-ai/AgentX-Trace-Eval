@@ -102,6 +102,9 @@ OPENAI_API_KEY=sk-... ./scripts/smoke-test.sh
   always-logged-in local user/workspace and points `restClient` at this engine's local API key
   instead of session cookies (see `src/lib/selfHostMode.ts`, `AuthProvider`/`WorkspaceProvider`,
   `initAxios.ts` there).
+- `skills/`: Claude Code skills for self-host users to copy into their own `.claude/skills/`.
+  `improve-prompt/` reads real evidence from a running self-host engine and proposes a prompt
+  rewrite using Claude's own reasoning instead of a server-side judge call — see "Status" below.
 - `homebrew-tap/`: the Homebrew formula.
 - `install.sh`: the `curl | bash` installer.
 - `build.sh`: builds a local `dist/` laid out the same way an install would (`agentx`,
@@ -139,7 +142,10 @@ supported), OpenLLMetry's legacy indexed `gen_ai.prompt.N.*`/`completion.N.*` at
 OpenInference's `input.value`/`output.value`/`llm.model_name` — see `engine/src/otel/mapping.ts`
 for the exact priority order. Monitor runs against every OTel-ingested span by default (this is
 effectively the opt-in signal, since there's no per-call `monitor: true` flag on the wire); set
-`AGENTX_OTEL_MONITOR=false` to disable it. Known gaps: reconstructing a parent LLM span's
+`AGENTX_OTEL_MONITOR=false` to disable it. Online evaluators (see below) also run against every
+OTel-ingested span, same as SDK-ingested traces — no separate opt-in, since they're a
+server-side-configured feature rather than a per-call flag either way. Known gaps: reconstructing
+a parent LLM span's
 `tool_calls` from separate child tool-call spans isn't attempted (GenAI semconv doesn't define a
 stable way to do that yet — only a span that IS a tool call itself, via `gen_ai.tool.name`, maps to
 anything), gRPC transport isn't supported (HTTP only), and the JSON path expects the protobuf
@@ -215,36 +221,290 @@ use, appended to after that), reusing `core/evaluate/datasets.ts`'s `createDatas
 expected answer, "Add to dataset", confirmed the new question actually lands in the target
 dataset). Pattern `sampleRate`/`scopeMode`/`agentIds` and profile-level
 `enabled`/`sampleRate`/`failureDetectionEnabled`/`infoDetectionEnabled` (all persisted since
-before, silently ignored before now) are enforced in `core/monitor/detect.ts` — verified with
-statistical sampling tests and agent-scope isolation tests, plus a regression check that the
-unconfigured default (sampleRate 1, scopeMode "all") still matches every time, unchanged from
-before. `monitor_profiles.channels` entries of the form `webhook:<url>` fire a fire-and-forget,
+before, silently ignored before now) are enforced in `core/monitor/routing.ts`/`detect.ts` —
+verified with statistical sampling tests and agent-scope isolation tests, plus a regression check
+that the unconfigured default (sampleRate 1, scopeMode "all") still matches every time, unchanged
+from before. One real bug caught late (while building the online-evaluators frontend and checking
+what value the real dashboard actually sends): the initial scoping check compared against
+`scopeMode === "specific"`, but `AgentX-web-front`'s `PatternApplyToAgentsDialog.tsx`/
+`monitoringUnitSettingsUtils.ts` actually write `"selected"` — the first version of this check
+would have silently no-op'd agent-scoping for every real dashboard user (only the curl tests,
+which used the same wrong string, "passed"). Fixed and re-verified against the real string, same
+agent-isolation test as before but now actually exercising the real convention.
+`monitor_profiles.channels` entries of the form `webhook:<url>` fire a fire-and-forget,
 Slack-compatible JSON POST on every failure-polarity signal (not on the healthy tally) — verified
 against a real local HTTP listener, including confirming a healthy trace triggers no delivery.
 OverviewTab's KPIs strip/trend chart/top-failing breakdown are backed by a new `monitor_events`
 table (one row per detection check, not just matches, pruned per-agent on write against
 `profile.retentionDays`) feeding new `/agent-monitoring/kpis`/`/trend`/`/top-failing` routes —
 verified with seeded traces against hand-computed expected counts (health rate, p95 latency,
-tool-failure rate, top-failing agents/patterns/tools). What's still genuinely missing, not just
-undisclosed: an "online evaluator" concept (attaching a judge/EvaluationSettings config to score
-sampled live traffic continuously, LangSmith's actual "online evals" — distinct from Monitor's
-pattern-matching, which this engine already does) has no backend or dashboard surface at all yet.
+tool-failure rate, top-failing agents/patterns/tools). Online evaluators (`monitor_online_evaluators`,
+`core/monitor/onlineEvaluators.ts`) are wired up on the backend: a judge config with its own inline
+criteria (not tied to a dataset/EvaluationSettings row) scored continuously against sampled live
+traffic — LangSmith's actual "online evals," distinct from Monitor's pattern-matching above, and
+reusing the exact same judge-scoring primitive (`core/evaluate/judge.ts`'s `scoreAgainstCriteria`,
+extracted out of `runs.ts`'s offline `scoreOneResult` so both call sites share one implementation).
+CRUD at `/agent-monitoring/online-evaluators`, ratings-over-time at
+`/agent-monitoring/online-evaluators/:id/ratings`; results land in the same `monitor_events` log,
+explicitly excluded from the KPI/trend/top-failing health-rate math above (verified: inserting a
+synthetic rated event row left `/kpis`/`/top-failing` output unchanged, and showed up correctly in
+`/ratings`). A real dashboard UI now exists too (`AgentX-web-front`, a 4th "Online Evaluators"
+sub-view under Evaluate's Runs/Datasets/Evaluator `SegmentedControl`, gated behind `IS_SELF_HOSTED`
+since the backend it calls only exists on this engine) — CRUD table, create/edit dialog, and a
+ratings-over-time chart (`LazyLineChart`, the first consumer of that primitive in Governance),
+verified end to end through the real browser: create, edit, pause, view an empty ratings chart,
+delete, each producing the real toast and table update. The Governance header's native
+"New evaluation" button (built around picking a native AgentX Agent/Team, which self-host has no
+registry for) is now hidden there too, same `IS_SELF_HOSTED` gate. Building the frontend also
+caught a real bug in the already-shipped pattern-scoping backend: the `scopeMode` check compared
+against `"specific"`, but `AgentX-web-front`'s actual pattern-scoping UI writes `"selected"` — the
+original check would have silently no-op'd agent-scoping for every real dashboard user, only
+passing because the earlier curl-only verification used the same wrong string. Fixed in
+`core/monitor/routing.ts` and re-verified against the real value. Building the online evaluators
+backend also surfaced and fixed a separate real pre-existing bug: neither
+ingest path (`routes/ingest.ts`, `routes/otlp.ts`) wrapped Monitor's judge calls in a try/catch,
+and there's no global Express error handler — a custom pattern's "semantic" detector throwing (e.g.
+no `OPENAI_API_KEY` configured) left the request hanging with no response instead of failing
+gracefully; same fix also isolates each pattern/online-evaluator's judge call individually, so one
+failing check no longer silently skips every check after it for that trace.
+
+Custom monitor patterns gained a fourth condition detector: `external` (`core/monitor/conditions.ts`).
+The first three (`phrase`/`regex`/`semantic`) all run logic AgentX itself owns; `external` POSTs
+the trace to a URL the user controls and awaits a `{matches: boolean, reason?: string}` verdict —
+the user's own validation logic, entirely outside AgentX, the same "call out, don't reimplement"
+shape as this repo's other integration points. Distinct from `monitor_profiles.channels`'
+`"webhook:<url>"` notification targets (`core/monitor/webhooks.ts`): that one is fire-and-forget
+and never consumes a response; this one is awaited synchronously and its response *is* the
+detection result, so it needed a bounded timeout (fixed 8s via `AbortSignal.timeout`) and a defined
+request/response contract, which the notification webhooks never needed. A genuine failure
+(network error, timeout, non-2xx, malformed JSON) is deliberately **not** swallowed inside the
+detector the way a syntactically-invalid regex is — it propagates the same way a `semantic`
+condition's judge-call failure already did, up to `detectCustomPatterns`'s existing per-pattern
+try/catch: skip *this pattern* for *this trace*, log clearly, never block ingest or abort the
+sweep. Building this surfaced a real, small pre-existing gap while touching the exact same code
+path: `semantic`'s LLM judge already returned a `reason` alongside its verdict, but
+`evaluateDetector` silently discarded it — fixed alongside `external` (which needed the same
+"reason" concept for the feedback the user explicitly asked for), so both detector kinds now
+thread their reason through `evaluatePatternConditions` into the resulting signal's `summary`.
+Also fixed in the same pass: a stale comment on `PatternRow.sampleRate` claiming scoping/sampling
+"aren't read" by `detectCustomPatterns` — false since routing.ts's `matchesAgentScope`/
+`passesSampleRate` extraction, the comment just never got updated. Self-host only in the dashboard
+(`AgentMonitoringPatternConditionDetectors.EXTERNAL`, gated out of the hosted platform's detector
+picker via `SELECTABLE_DETECTORS` in `monitoringPatternConstants.ts`, since the hosted backend has
+no route for it) — verified against a real running engine and a throwaway local HTTP listener
+covering all four outcomes (match with reason surfaced in the signal summary, explicit no-match,
+a 500 response, and a hung connection actually timing out at ~8s), confirmed coexisting correctly
+with a same-agent online evaluator on the same ingested traces (matching this session's other
+Monitor-plus-Evaluate coexistence check), and confirmed the exact request payload sent matches the
+documented schema byte-for-byte, not just structurally. The client-side "test this rule" preview
+(`PatternRuleTester.tsx`) can't fake a real HTTP call the way `semantic`'s word-overlap heuristic
+loosely approximates a judge, so an `external` condition renders a distinct "can't preview" state
+there instead of guessing.
+
+Model portability (`core/evaluate/portability.ts`, `core/evaluate/models.ts`) estimates how a
+different model would handle an already-captured trace's input — cost, latency, and a quality
+rating alongside what the agent actually returned. Explicitly scoped as an **input-only replay**,
+not a full agent re-run: self-host doesn't own the agent, so there's no guaranteed system
+prompt/tools/history the way native autotune's `RobotConfig` would have them, only whatever the
+trace itself captured. Checked against the real `AgentX-Python` tracer before writing this, not
+assumed: the raw Anthropic client patch captures the full `messages` array (multi-turn, though not
+Anthropic's separate `system` kwarg), the manual `tracer.trace(input=..., metadata=...)` API is
+fully free-form, and the higher-level framework integrations flatten to plain text unless the
+caller also passes richer `metadata`. `reconstructMessages` makes a best-effort, multi-shape
+attempt at recovering a real conversation from whatever a trace's `input`/`metadata` actually
+contains — same defensive "try every known shape" posture `routes/otlp.ts`'s OTel attribute
+parsing already uses — falling back to single-turn-text replay when nothing structured is
+recognized. Deliberately does not reproduce tool-calling even when tool definitions are found in
+metadata (translating an arbitrary captured schema into each provider's own tool format is real,
+separate work); found tool definitions are surfaced to the user for transparency instead, not sent
+to candidate models. A new plain-completion primitive (`callModelCompletion` in
+`core/evaluate/judge.ts`, alongside the existing JSON-schema-constrained `callJudgeJson`) calls
+each candidate model with the reconstructed context; every model's output — including the
+originally-captured one, re-scored for a fair comparison — is judged with one new no-ground-truth
+rubric (`scorePortabilityResponse`) so ratings are directly comparable. Cost is computed from real
+measured token usage against a small static price table (`PORTABILITY_MODELS`), explicitly
+commented as approximate/point-in-time, not a live pricing feed. Explicit, per-trace,
+user-triggered only (never automatic — this is a real multi-model, multi-judge-call action), and
+nothing is persisted, same "compute and return" posture as the Prompt Registry's `/propose`. One
+model failing (bad key, rate limit, unrecognized id) is isolated per-candidate, same pattern as
+`detectCustomPatterns`/`runOnlineEvaluators`, and the trace's own baseline row still renders (cost,
+latency, captured output) even when scoring itself fails for lack of a judge key. Verified against
+a real running engine: a structured-input trace (message array + `metadata.systemPrompt`)
+correctly reconstructed system + full history; a plain-string trace correctly fell back to
+single-turn; cost math for the baseline row matched hand computation exactly
+(`(120/1e6)×0.15 + (15/1e6)×0.6 = 2.7e-05`, confirmed byte-for-byte against the actual response);
+a bogus model id and two real ones with no API key configured all failed cleanly and
+independently, with every other row (including the baseline) still rendering correctly. Frontend
+(`TracePortabilityDialog.tsx`, opened from a new self-host-only button on the shared
+`TraceDialog.tsx`) is `tsc`/`eslint` clean and ships correctly in a `yarn build:selfhost` production
+build; not verified with a live browser this session (no automation tool available, same disclosed
+gap as every other frontend change today).
+
+The candidate model list + pricing that feature reads from moved from a hardcoded array to a
+dashboard-editable table (`portability_models`, both dialects + bootstrap DDL, first migration
+this specific table has needed) — a user reported wanting this "in UI as well" rather than a code
+change to add a model or fix a stale price. `core/evaluate/models.ts` changed from a static array
++ synchronous lookups to real DB-backed CRUD (`listPortabilityModels`/`getPortabilityModel`/
+`createPortabilityModel`/`updatePortabilityModel`/`deletePortabilityModel`); `estimateCostUSD`
+stayed a pure function, unaffected. A **one-time seed** (`storage/db.ts`'s
+`seedPortabilityModelsIfEmpty`, called once per `initDb()`) inserts the same 7 defaults the static
+array used to hold, but only when the table is genuinely empty — implemented with drizzle's own
+cross-dialect query builder rather than a hand-rolled conditional multi-row `INSERT` across two
+SQL dialects (considered and rejected: correctly scoping a single `NOT EXISTS` check across 7 rows
+in raw SQL, with dialect-specific "now in epoch ms" timestamp functions, was real unnecessary
+fragility next to just doing a `select().limit(1)` check in TypeScript). Deleting a seeded default
+is permanent — it does not reappear on the next restart, confirmed by testing the exact scenario:
+create, update, and delete against a real running engine, then re-list. New CRUD routes
+(`POST/PUT/DELETE /agent-monitoring/portability/models[/:id]`) mirror Online Evaluators' exact
+shape. Frontend: a "Manage models" affordance inside `TracePortabilityDialog.tsx` opens a new
+`PortabilityModelsDialog.tsx` (add/edit/delete, inline form) rather than a new top-level nav
+destination — this is small supporting config for a trace-detail feature, not a first-class
+surface the way Prompts/Online Evaluators are. Verified end to end against a real running engine:
+confirmed the 7 defaults seed correctly on a true first boot, full CRUD round-trip (create, 409 on
+a duplicate id, update, delete, 404 on an unknown id), and — the part that actually matters — a
+real portability check run *after* editing a model's price picks up the new price correctly
+(hand-computed `(1000/1e6)×0.5 + (500/1e6)×2.0 = 0.0015`, confirmed byte-for-byte against the
+actual response). Frontend `tsc`/`eslint` clean, ships correctly in a `yarn build:selfhost`
+production build; no live browser this session, same disclosed gap as above.
+
 The autotune/"Improve" proposal system (candidate branch creation, evaluation, merging)
 is explicitly **out of scope**, not deferred: it's fundamentally tied to AgentX's native agent
 config-branching system, which self-host doesn't have — the web-front self-host build hides that
-tab entirely (`governanceUi.tsx`) rather than shipping a permanently-broken one. EvaluateTab's "Runs" and "Datasets" sub-views are wired up
+tab entirely (`governanceUi.tsx`) rather than shipping a permanently-broken one, and the Governance
+header's native "New evaluation" button (also built around picking a native Agent/Team) is hidden
+the same way. What autotune's comparison half *does* have a self-host analog for: run the same
+external agent twice against a dataset via the SDK, tag each run's `evaluationSubject` with a
+version label (`subject={"metadata": {"version": "..."}}`, no SDK changes needed — self-host
+extracts `evaluationSubject.version ?? evaluationSubject.metadata.version` at `initRun` time into
+a new queryable `evaluation_runs.version` column, the table's first-ever migration), and
+`core/evaluate/runs.ts`'s `getVersionComparison` groups results by version and reports
+`candidateAvg >= baselineAvg` for the two most recent versions — the same verdict native
+autotune's `/validate` computes, just comparing two already-run averages instead of two
+branch-scoped evaluations, since there's no config here for AgentX to branch, merge, or apply in
+the first place. Exposed at `GET /evaluate/datasets/:id/run-comparison` and a real "Compare
+versions" dialog on the Datasets table (self-host-gated) — verified end to end: seeded two
+versioned runs with deterministic ratings via direct DB inserts (bypassing the judge, which needs
+a real API key not available here) for a passing case, a failing case, and a single-version
+"nothing to compare yet" case, all three matched hand-computed expectations; the dialog itself
+confirmed against the real running dashboard. A prompt registry now exists too (`core/evaluate/prompts.ts`, `prompts`/`prompt_versions`
+tables), the piece version-comparison above didn't have: LangSmith (Promptim) and Langfuse (its
+Claude-skill prompt-improvement flow) both solve "we don't own the customer's agent code" the same
+way — become the prompt's source of truth (Prompt Hub / Prompt Management) so the agent's own code
+pulls a version at runtime, then treat "optimization" as propose → human-approve → publish a new
+version to that registry, never a direct edit to the customer's deployed code. This engine now does
+the same: `client.evaluations.prompts.get(name)` (new `PromptClient` in `AgentX-Python`, SDK-facing
+`POST/GET /prompts`, `GET /prompts/:name?version=N` in `routes/evaluations.ts`, deliberately
+read-mostly — no SDK-side publish) pulls a version's text for the caller's own agent to use as its
+system prompt, and `POST /prompts/:id/propose` (dashboard-only) reuses the *existing* judge
+primitive (`core/evaluate/judge.ts`'s `callJudgeJson`) to pull the worst-rated eval results tagged
+`evaluationSubject.metadata.promptName === <name>` and ask a judge for a full rewrite plus
+reasoning — returned for review, never written until a human explicitly calls
+`POST /prompts/:id/versions` (source `"manual"` for a hand-edit, `"proposed"` to accept a
+suggestion). Deliberately does not duplicate the "which version won" comparison: tag a run's
+existing `metadata.version` as `<promptName>@v<N>` and the already-built version-comparison dialog
+above shows it with zero changes there. Verified on the engine side via curl (create, pull default
+vs an explicit historical `?version=`, list, manual publish bumping the version, dataset-scoped and
+unscoped `/propose` correctly finding/excluding seeded low-rated results, delete cascading to
+`prompts`/`prompt_versions` and 404ing the SDK pull afterward) and via a real `AgentX-Python`
+`EvaluationsClient` round-trip against the running engine (`create` → `get` → `list`, not just the
+HTTP layer). No `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` is available in this environment, so
+`/propose`'s actual judge call was verified up to (and including) its clean "needs an API key" setup
+error rather than a real generated rewrite — same disclosed limitation as `/agent-monitoring`'s
+LLM-assist endpoints above. The dashboard UI (`EvaluateTab`'s 5th self-host-only sub-view,
+`PromptsTab`/`PromptsTable`/`PromptEditorDialog`/`PromptHistoryDialog`/`PromptProposalDialog`) is
+verified via a self-host production build (`yarn build:selfhost`) succeeding, `tsc`/`eslint` clean,
+and the built bundle — served through the real compiled dashboard path — confirmed to actually
+contain the new dialogs' copy in the correct lazy-loaded chunk; unlike the online-evaluators UI
+above, this session had no real browser automation available, so the dialogs' actual click-through
+behavior (open/submit/close, real toasts) is **not** verified end to end yet, only statically.
+
+There's now a second, judge-key-free way to drive the same propose-improvement loop: a Claude Code
+skill (`skills/improve-prompt/SKILL.md`), the same idea as Langfuse's own Claude-skill prompt
+workflow — read real evidence, let Claude's own reasoning stand in for a separate judge API call
+(no `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` needed on the engine at all), show the user a rewrite, only
+publish on explicit approval. Required extracting the "gather this prompt's worst-rated examples"
+half of `proposePromptImprovement` into its own `getWorstRatedExamples` (`core/evaluate/prompts.ts`)
+so it has no judge call in it, exposed as a new `GET /prompts/:id/examples` route
+(`routes/evaluateDashboard.ts`) that both `/propose` and the skill now call — one implementation,
+two callers. The skill discovers its own connection info (reads `apiKey` straight out of
+`$AGENTX_HOME/config.json`, same file `src/auth/apiKey.ts` writes on first run; base URL defaults
+to `AGENTX_API_BASE_URL`/`http://localhost:4700/api/v1`, same convention the SDK itself uses) and
+publishes through the exact same `POST /prompts/:id/versions` the dashboard's own "Publish as new
+version" button calls — a rewrite only ever reaches storage through that one human-approved write
+path, regardless of which surface produced it. Verified: `GET /prompts/:id/examples` cross-checked
+against `/propose`'s internal data for the same seeded low-rated results (unscoped, scoped to the
+matching dataset, scoped to an unrelated dataset, and an unknown prompt id, all matching
+expectations), and every curl command written into the skill file was run against the real running
+engine and confirmed to match its actual request/response shape exactly — not trusted from memory.
+Not verified: an actual live Claude Code session running the skill end to end, which needs a
+separate session to drive (same disclosed gap as the dashboard UI's click-through above).
+
+A follow-up quality pass on this skill (explicitly requested, since it's the primary judge-key-free
+path to "autotune" self-host has) caught two real correctness bugs before either shipped further:
+(1) the original draft wrote the publish step's request body as an inline `curl -d '{"text":
+"..."}'` shell string with the rewritten prompt substituted directly in — since prompt text is
+free-form natural language, any apostrophe or embedded quote (`"don't"`, `"you're"`, a judge-style
+`"say \"I don't know\""`) breaks that string outright; reproduced the exact failure (a raw
+body-parser `SyntaxError` HTML page, not even a clean JSON error) against the real engine, then
+fixed it to have the skill write the JSON body to a file via Claude's Write tool and send it with
+`curl --data-binary @file` instead, which round-trips arbitrary text (quotes, apostrophes,
+newlines, all tested together) with zero shell-escaping involved. (2) The original draft also
+implied `$API_KEY`/`$BASE_URL`/`$PROMPT_ID` were shell variables set once and reused across later
+steps — but Claude Code's Bash tool does not share shell state between separate calls (only the
+working directory persists), so those "variables" would have silently been empty by the time a
+later step actually ran. Rewrote every step to show explicit `<PLACEHOLDER>` values instead, with
+an explicit instruction to substitute the literal value read earlier rather than rely on export
+surviving. Re-verified the full corrected flow against a running engine end to end (list → fetch
+examples → publish with the exact adversarial text above), confirming the version actually bumped
+and the text round-tripped byte-for-byte.
+
+A later pass rebuilt "Suggest improvement"/`GET /prompts/:id/examples`'s evidence-gathering
+(`getWorstRatedExamples`, `proposePromptImprovement` in `core/evaluate/prompts.ts`) after two real
+gaps were found by inspection: it only ever looked at deliberate, on-demand Evaluate runs — Online
+Evaluator ratings on real production traffic never fed in at all — and its only filter was "which
+dataset," never "which prompt version," so a v3 prompt's rewrite could get polluted by worst-rated
+examples from a v1 run whose issues v2/v3 may have already fixed. Now: eval-run examples default to
+the current published version only (`run.version === "<name>@v<currentVersion>"`, the same tag
+`metadata.version` convention the version-comparison feature already used), auto-widening to every
+version if that's fewer than 3 examples so a brand-new version isn't left with nothing to learn
+from; Online Evaluator examples are pulled from `monitor_events` in a caller-chosen time window
+(default 7d) and joined back to `traces` via the existing `getTraceRow` (no schema migration —
+`monitor_events` has no input/output text of its own, and `traces` already does) to find rows whose
+trace was tagged `metadata.promptName === <name>`, same tagging convention as eval runs, confirmed
+the Python SDK's `client.tracer.trace(name, metadata={...})` already supports with zero SDK
+changes. Both example sets share one 0-10 rating scale already (both go through
+`core/evaluate/judge.ts`'s `scoreAgainstCriteria`), merge, sort worst-first, and cap at 20; the
+response now reports `scope: { versionScoped, window }` and `sourceBreakdown: { evalRun,
+onlineEvaluator }` so a caller can see what was actually used instead of it changing silently. The
+dashboard's `PromptProposalDialog` dropped its "Dataset" dropdown (the wrong axis, and confusing as
+the only control) for a time-window picker scoping just the Online Evaluator half, plus a line
+showing the real breakdown and whether it fell back to all versions. Verified live end to end
+against the running engine, not just typechecked: version-scoping correctly auto-widened on real
+pre-existing data (four examples all tagged `@v1` while the prompt had already moved to `v2`);
+ingesting a real trace tagged with the prompt's name and a deliberately bad response scored it 0/10
+through a live Online Evaluator and it showed up merged and sorted first; the follow-on `/propose`
+call's judge reasoning explicitly cited fixing that exact worst example, confirming the merge
+changes the actual rewrite, not just the count. One real bug surfaced during this verification pass
+(unrelated to the feature logic itself): `tsx watch`'s restart hit `EADDRINUSE` mid-edit and crashed
+outright rather than retrying, silently leaving a stale process serving old code on the same port —
+caught because the new Online Evaluator examples weren't appearing, traced to the crash, not a code
+defect.
+
+EvaluateTab's "Runs" and "Datasets" sub-views are wired up
 against a new `/api/v1/evaluate` router (`routes/evaluateDashboard.ts`) reusing the same
 `core/evaluate` modules the SDK-facing router already used — dataset CRUD (list/get/create/update,
 a dataset+evaluationSettings twin sharing one id, same pattern the hosted SaaS's
 `upsertDatasetTwin` uses) and a flat run list/detail with real per-question results, verified with
 a real headless browser against a real SQLite-backed engine, including submitting the real
 create/edit dialogs and opening a run's detail view — not just curl. EvaluateTab's third sub-view,
-"Evaluator" (creating a standalone grading config with no dataset attached), dataset/config version
-history, and anything tied to AgentX's native agent-building/config-branching system
-(agentConfigVersion, robotConfigBranch, evaluationSettingsConfigVersion, datasetConfigVersion,
-agent/team-scoped run endpoints — self-host has no agent/team registry or config-branching at all)
-are explicitly out of scope, not deferred; the version-history and batch-version-count endpoints
-those dialogs call unconditionally on open are stubbed to return empty rather than left to error.
+"Evaluator" (a standalone grading config with no dataset attached), was out of scope at the time
+this paragraph was first written — a later pass built it for real (see below); what's still
+explicitly out of scope, not deferred: dataset/config version history, and anything tied to
+AgentX's native agent-building/config-branching system (agentConfigVersion, robotConfigBranch,
+evaluationSettingsConfigVersion, datasetConfigVersion, agent/team-scoped run endpoints — self-host
+has no agent/team registry or config-branching at all). The version-history and batch-version-count
+endpoints those dialogs call unconditionally on open are stubbed to return empty rather than left
+to error.
 The self-host build still ships web-front's full ~30-route bundle rather than a build trimmed to
 just Governance; there's no hot-reload loop between an `AgentX-web-front` dev server and this engine
 yet (see "Running from source"). Also not yet done: the install script,
@@ -258,6 +518,73 @@ a one-time `SELFHOST_RELEASE_TOKEN` secret set up in `AgentX-web-front`'s repo s
 "Dashboard release"); Guardrail isn't started (see the plan, it
 doesn't exist yet even on the hosted SaaS); Evaluate's async whole-run analysis
 (`analyze_run`/`get_report`) is deliberately out of scope for now.
+
+An explicit request to re-audit every self-host feature specifically for the "external agent, not
+an AgentX-registered one" premise (`AgentX-web-front`'s Governance UI reused for self-host, not
+this repo) surfaced five real bugs, all pre-existing (not introduced by any change described
+above) and all now fixed:
+
+1. **`AgentsTab.tsx`** (both desktop and mobile row rendering): every agent's name linked to
+   `ROUTES.editAgent(unit._id)`, the native agent editor — but self-host's `unit._id` is always
+   just a trace name (`core/monitor/agents.ts`'s `listAgentsWire` always sets `agentType:
+   "external"`, confirmed by reading it fresh), not a real agent id. Every agent in the most basic
+   Monitor list was a dead link. Fixed: an `editHref()` helper only links when `agentType !==
+   "external"`, otherwise renders plain text.
+2. **`SignalRow.tsx`**: the same class of bug for each signal's agent name — `MonitoringAgentRef`
+   carries no per-item "external" flag to check, so this gates on `IS_SELF_HOSTED` outright instead
+   (self-host never has a native agent to link to, full stop).
+3. **`MonitoringUnitSettingsFields.tsx`**: the "Approval policy" section showed all 8
+   `AGENT_MONITORING_APPROVAL_ACTIONS` toggles unconditionally, but self-host's engine never reads
+   `approvalPolicy` for any decision at all (`core/monitor/profiles.ts` only stores/round-trips
+   it) — every toggle was a silent no-op, and 6 of the 8 actions (candidate branch creation/merge,
+   production promotion, ...) are native-autotune-only concepts self-host doesn't have regardless.
+   Hidden entirely for self-host, same treatment as "Improve"/"New evaluation" elsewhere.
+4. **`EvaluationsTab.tsx`**: the "No evaluations found" empty state's "Create Your First
+   Evaluation" button was a second, unguarded way to open the same native-agent-picker
+   `CreateEvaluationDialog` the header's copy of this button is already correctly hidden for — and
+   since it's the empty state, it's exactly what a brand-new self-host user's first visit to Runs
+   would show. Fixed: self-host sees SDK guidance (`client.evaluations.run(...)`) instead.
+5. **`EvaluateTab.tsx`** (the most significant): the "Evaluator" sub-view (standalone grading
+   configs with no dataset attached) has been documented everywhere — this README, the mintlify
+   docs, `routes/evaluateDashboard.ts`'s own header comment — as explicitly out of scope for
+   self-host, not deferred. It was never actually excluded from `VIEW_OPTIONS`: fully visible and
+   clickable in self-host this entire time. Worse than a dead end — its create flow would have
+   silently created an unwanted dataset+settings twin every time (self-host's only creation path,
+   `POST /evaluationSettings/create`, always creates both together; there's no config-only path),
+   directly violating the "standalone config" concept the tab claims to offer. Fixed *at the time*:
+   added to a `HOSTED_ONLY_VIEWS` filter, the mirror image of the existing `SELF_HOST_ONLY_VIEWS`
+   one — hidden rather than built, since building a real config-only creation path wasn't in scope
+   for that pass. **Superseded by a later pass** (see the "make self-host support it" work further
+   down): a real `POST /evaluationSettings/create-standalone` route now exists
+   (`core/evaluate/evaluationSettings.ts`), `HOSTED_ONLY_VIEWS` no longer excludes it, and the tab
+   is fully functional for self-host — this item is kept for the historical record of the bug, not
+   as a description of current behavior.
+
+All five re-verified: `tsc`/`eslint` clean, a full `yarn build:selfhost` production build succeeds.
+Not re-verified with a live browser (none available this session, same disclosed gap as the
+Prompt Registry UI above) — these are confirmed-correct by re-reading the actual conditional logic
+and cross-checking it against the real backend behavior described above, not by clicking through
+the running app.
+
+A later pass actually built the "Evaluator" sub-view (bug 5 above only ever hid it) — the user
+asked directly why it had disappeared, which is what surfaced that it had been out of scope this
+whole time rather than genuinely broken. `core/evaluate/evaluationSettings.ts` gained `isDefault`/
+`status` columns (migration, both dialects) and a real `POST /evaluationSettings/create-standalone`
+route (`routes/evaluateDashboard.ts`) that creates a bare `evaluation_settings` row with no dataset
+twin — the underlying table already supported this shape for the SDK's `EvaluationSettingsBuilder`,
+only the dashboard-facing creation path was missing. `GET /evaluationSettings` now actually honors
+`kind=config|dataset|all` instead of always returning everything (or, for `kind=config`, a
+hardcoded empty list). The single-default invariant (at most one config marked `isDefault` at a
+time) is enforced server-side on both create and update. `PUT /evaluationSettings/:id` now branches
+between the pre-existing dataset-twin full-replace path (unchanged) and a new sparse-merge path
+(`patchEvaluationSettings`) for standalone configs — needed because the dashboard's "Make default"
+action sends a partial payload (`{isDefault: true}` alone), which the old full-replace logic would
+have nulled every other field out to satisfy. `HOSTED_ONLY_VIEWS` no longer excludes `"config"`.
+Verified live against the real local `~/.agentx/agentx.db` (not just curl against throwaway data):
+created a real config, confirmed `kind=config`/`kind=dataset` filters actually differ, created a
+second config with `isDefault: true` and confirmed the first one's default was cleared, sent a
+bare `{isDefault: true}` PUT and confirmed every other field survived untouched, and confirmed the
+pre-existing dataset-twin PUT path is completely unaffected by the branch.
 
 ## License
 

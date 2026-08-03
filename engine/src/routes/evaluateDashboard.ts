@@ -6,8 +6,34 @@ import {
   createEvaluationSettings,
   getEvaluationSettingsRow,
   updateEvaluationSettings,
+  patchEvaluationSettings,
+  listStandaloneEvaluationSettings,
 } from "../core/evaluate/evaluationSettings.js";
-import { getRunRowFull, getRunResults, listRunRows, type FullRunRow, type RunResultRow } from "../core/evaluate/runs.js";
+import {
+  getRunRowFull,
+  getRunResults,
+  listRunRows,
+  getVersionComparison,
+  type FullRunRow,
+  type RunResultRow,
+} from "../core/evaluate/runs.js";
+import {
+  createPrompt,
+  listPromptsWire,
+  getPromptWithVersionsWire,
+  publishPromptVersion,
+  proposePromptImprovement,
+  getWorstRatedExamples,
+  deletePrompt,
+} from "../core/evaluate/prompts.js";
+import type { MonitoringWindow } from "../core/monitor/events.js";
+
+// Same convention as agentMonitoringDashboard.ts's parseWindow — not shared across route files,
+// each route file is self-contained.
+function parseWindow(req: Request): MonitoringWindow {
+  const raw = req.query.window ?? req.body?.window;
+  return raw === "24h" || raw === "30d" ? raw : "7d";
+}
 
 // Mounted at /api/v1/evaluate — the paths AgentX-web-front's Evaluate tab (Governance ->
 // EvaluateTab.tsx's "Runs" and "Datasets" sub-views) actually calls (src/data/apiPaths.ts's
@@ -16,15 +42,18 @@ import { getRunRowFull, getRunResults, listRunRows, type FullRunRow, type RunRes
 // evaluations router (routes/evaluations.ts): same underlying core logic, different response
 // envelope/query params, same convention as agentMonitoringDashboard.ts.
 //
-// Scope for this pass: Datasets CRUD (list/get/create/update) and a flat Runs list/detail. Not
-// built: the standalone "Evaluator" sub-tab (creating a grading config with no dataset attached —
-// self-host's dashboard-created entries are always dataset-backed twins, see
-// getMergedEvaluationSettings below), dataset/config version history (stubbed as empty so the
-// dialogs that unconditionally fetch it don't error, see the /versions routes below), and
-// anything tied to AgentX's native agent-building/config-branching system (agentConfigVersion,
-// robotConfigBranch, evaluationSettingsConfigVersion, datasetConfigVersion, agent/team-scoped run
-// endpoints) — self-host has no agent/team registry or config-branching, so those fields are
-// simply omitted rather than faked. See README's Status section.
+// Scope for this pass: Datasets CRUD (list/get/create/update), the standalone "Evaluator" sub-tab
+// (a grading config with no dataset attached — POST /evaluationSettings/create-standalone below;
+// distinct from the dataset+settings twin getMergedEvaluationSettings merges), and a flat Runs
+// list/detail. Similarity metrics (vectorSimilarity/jaccard/bleu/rouge) and Sovereignty &
+// Portability model comparison are accepted on both dataset and standalone-config payloads but not
+// acted on, same as core/evaluate/datasets.ts's CreateDatasetInput — out of scope for this pass,
+// see plan task #109. Not built: dataset/config version history (stubbed as empty so the dialogs
+// that unconditionally fetch it don't error, see the /versions routes below), and anything tied to
+// AgentX's native agent-building/config-branching system (agentConfigVersion, robotConfigBranch,
+// evaluationSettingsConfigVersion, datasetConfigVersion, agent/team-scoped run endpoints) — self-
+// host has no agent/team registry or config-branching, so those fields are simply omitted rather
+// than faked. See README's Status section.
 export const evaluateDashboardRouter = Router();
 
 // Matches AgentX-web-front's src/lib/selfHostMode.ts LOCAL_USER exactly (same synthetic
@@ -76,7 +105,8 @@ async function getMergedEvaluationSettings(db: Db, id: string) {
     rejectionCriteria: settingsRow!.rejectionCriteria ?? undefined,
     evaluationCriteria: settingsRow!.evaluationCriteria ?? undefined,
     questions: [],
-    status: "published",
+    status: settingsRow!.status,
+    isDefault: settingsRow!.isDefault,
     createdAt: settingsRow!.createdAt,
   };
   return {
@@ -104,18 +134,26 @@ async function listMergedEvaluationSettings(db: Db) {
   return merged;
 }
 
+async function listStandaloneConfigsWire(db: Db) {
+  const configs = await listStandaloneEvaluationSettings(db);
+  return configs.map(c => ({ ...c, creator: LOCAL_USER }));
+}
+
+// "dataset" restricts to real datasets (questions attached), "config" to standalone grading
+// configs (no dataset twin — see listStandaloneEvaluationSettings), "all" (default) merges both,
+// matching AgentX-web-front's EvaluationSettingsKind contract exactly (useGetAllEvaluationSettings.ts).
 evaluateDashboardRouter.get("/evaluationSettings", async (req: Request, res: Response) => {
   const { page, limit } = parsePageLimit(req);
-  // "config" (standalone grading configs with no dataset) isn't buildable from this dashboard yet
-  // (see this file's header comment) — nothing to list for that kind.
-  if (req.query.kind === "config") {
-    res.status(200).json({
-      evaluationSettings: [],
-      pagination: { currentPage: 1, totalPages: 1, totalCount: 0, hasNextPage: false, hasPrevPage: false },
-    });
-    return;
+  const kind = req.query.kind;
+  let all: unknown[];
+  if (kind === "config") {
+    all = await listStandaloneConfigsWire(getDb());
+  } else if (kind === "dataset") {
+    all = await listMergedEvaluationSettings(getDb());
+  } else {
+    const [datasets, configs] = await Promise.all([listMergedEvaluationSettings(getDb()), listStandaloneConfigsWire(getDb())]);
+    all = [...datasets, ...configs].sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0));
   }
-  const all = await listMergedEvaluationSettings(getDb());
   const { page: evaluationSettings, pagination } = paginate(all, page, limit);
   res.status(200).json({ evaluationSettings, pagination });
 });
@@ -134,6 +172,117 @@ evaluateDashboardRouter.get("/evaluationSettings/:id/versions", async (_req: Req
 
 evaluateDashboardRouter.get("/datasets/:id/versions", async (_req: Request, res: Response) => {
   res.status(200).json([]);
+});
+
+// Not the same concept as the /versions stub above (that's dataset *edit* history, not built).
+// This is the external-agent analog to native autotune's baseline-vs-candidate comparison: group
+// this dataset's runs by the version label their evaluationSubject was tagged with (see
+// core/evaluate/runs.ts's extractVersion/getVersionComparison), average ratings per version, and
+// report whether the most recent version beat the one before it.
+evaluateDashboardRouter.get("/datasets/:datasetId/run-comparison", async (req: Request, res: Response) => {
+  res.status(200).json(await getVersionComparison(getDb(), req.params.datasetId!));
+});
+
+// Prompt registry dashboard routes (core/evaluate/prompts.ts) — the external-agent analog to
+// native autotune's config-mutation step: AgentX doesn't own the agent's code, so instead of
+// branching/applying a RobotConfig, it becomes the prompt's source of truth (see LangSmith Prompt
+// Hub / Langfuse Prompt Management), and a human approves every write. Registered before the
+// catch-all GET "/:id" route below so "/prompts" (a bare list) isn't swallowed by it.
+evaluateDashboardRouter.get("/prompts", async (_req: Request, res: Response) => {
+  res.status(200).json({ prompts: await listPromptsWire(getDb()) });
+});
+
+evaluateDashboardRouter.post("/prompts", async (req: Request, res: Response) => {
+  const { name, text, description } = req.body ?? {};
+  if (typeof name !== "string" || !name.trim()) {
+    res.status(400).json({ error: "name is required" });
+    return;
+  }
+  if (typeof text !== "string" || !text.trim()) {
+    res.status(400).json({ error: "text is required" });
+    return;
+  }
+  const prompt = await createPrompt(getDb(), { name, text, description });
+  res.status(201).json(prompt);
+});
+
+evaluateDashboardRouter.get("/prompts/:id", async (req: Request, res: Response) => {
+  const prompt = await getPromptWithVersionsWire(getDb(), req.params.id!);
+  if (!prompt) {
+    res.status(404).json({ error: "Prompt not found" });
+    return;
+  }
+  res.status(200).json(prompt);
+});
+
+// Manual edit and accept-a-proposal both land here — the only write path for a new version, so
+// a judge-proposed rewrite never reaches storage without this explicit human-triggered call.
+evaluateDashboardRouter.post("/prompts/:id/versions", async (req: Request, res: Response) => {
+  const { text, source, reasoning, basedOnVersion } = req.body ?? {};
+  if (typeof text !== "string" || !text.trim()) {
+    res.status(400).json({ error: "text is required" });
+    return;
+  }
+  const prompt = await publishPromptVersion(getDb(), req.params.id!, {
+    text,
+    source: source === "proposed" ? "proposed" : "manual",
+    reasoning,
+    basedOnVersion,
+  });
+  if (!prompt) {
+    res.status(404).json({ error: "Prompt not found" });
+    return;
+  }
+  res.status(201).json(prompt);
+});
+
+// The data half of /propose with no judge call, for a Claude Code skill (or any other caller) to
+// do its own reasoning instead of this engine's — see core/evaluate/prompts.ts's
+// getWorstRatedExamples for why this is a real evidence feed rather than a second stub.
+evaluateDashboardRouter.get("/prompts/:id/examples", async (req: Request, res: Response) => {
+  const datasetId = req.query.datasetId;
+  const gathered = await getWorstRatedExamples(getDb(), req.params.id!, {
+    datasetId: typeof datasetId === "string" && datasetId ? datasetId : undefined,
+    includeAllVersions: req.query.includeAllVersions === "true",
+    window: parseWindow(req),
+  });
+  if (!gathered) {
+    res.status(404).json({ error: "Prompt not found" });
+    return;
+  }
+  res.status(200).json({ ...gathered, exampleCount: gathered.examples.length });
+});
+
+// Never writes on its own — returns a suggestion for the dashboard to show, which the human then
+// accepts via POST /prompts/:id/versions (source: "proposed") or discards outright.
+evaluateDashboardRouter.post("/prompts/:id/propose", async (req: Request, res: Response) => {
+  const { datasetId, includeAllVersions } = req.body ?? {};
+  try {
+    const proposal = await proposePromptImprovement(getDb(), req.params.id!, {
+      datasetId: typeof datasetId === "string" && datasetId ? datasetId : undefined,
+      includeAllVersions: includeAllVersions === true,
+      window: parseWindow(req),
+    });
+    if (!proposal) {
+      res.status(404).json({ error: "Prompt not found" });
+      return;
+    }
+    res.status(200).json(proposal);
+  } catch (err) {
+    // Most commonly a missing OPENAI_API_KEY/ANTHROPIC_API_KEY (core/evaluate/judge.ts's
+    // callJudgeJson throws a clear setup error for that) — surfaced to the dialog instead of
+    // hanging or 500ing opaquely.
+    res.status(422).json({ error: err instanceof Error ? err.message : "Unable to generate a proposal" });
+  }
+});
+
+evaluateDashboardRouter.delete("/prompts/:id", async (req: Request, res: Response) => {
+  const deleted = await deletePrompt(getDb(), req.params.id!);
+  if (!deleted) {
+    res.status(404).json({ error: "Prompt not found" });
+    return;
+  }
+  res.status(200).json({ success: true });
 });
 
 evaluateDashboardRouter.get("/evaluationSettings/:id", async (req: Request, res: Response) => {
@@ -168,9 +317,61 @@ evaluateDashboardRouter.post("/evaluationSettings/create", async (req: Request, 
   res.status(201).json({ ...datasetWire, creator: LOCAL_USER });
 });
 
+// A standalone, reusable grading config — no dataset/questions attached, no twin (see this file's
+// header comment). EvaluationConfigsTab.tsx / CreateEvaluationSettingsConfigDialog.tsx's create
+// flow (distinct from the "New dataset" flow above, which always pairs one). numberOfRequests/
+// vectorSimilarity/jaccardSimilarity/bleuScore/rougeScore/sovereigntyIndex/thresholds are accepted
+// but not persisted or acted on — same scope boundary as CreateDatasetInput, see plan task #109.
+evaluateDashboardRouter.post("/evaluationSettings/create-standalone", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.name !== "string" || !body.name.trim()) {
+    res.status(400).json({ error: "name is required" });
+    return;
+  }
+  const settings = await createEvaluationSettings(getDb(), {
+    name: body.name as string,
+    description: body.description as string | undefined,
+    acceptanceCriteria: body.acceptanceCriteria as string | undefined,
+    rejectionCriteria: body.rejectionCriteria as string | undefined,
+    evaluationCriteria: body.evaluationCriteria as string | undefined,
+    judgePrompt: body.judgePrompt as string | undefined,
+    judgeModel: body.judgeModel as string | undefined,
+    isDefault: body.isDefault === true,
+    status: typeof body.status === "string" ? body.status : undefined,
+  });
+  res.status(201).json({ ...settings, creator: LOCAL_USER });
+});
+
 evaluateDashboardRouter.put("/evaluationSettings/:id", async (req: Request, res: Response) => {
   const id = req.params.id!;
   const body = req.body ?? {};
+
+  // Two shapes share this one route: a dataset+settings twin (dashboard "New dataset" flow, full-
+  // form submit every time) vs. a standalone config (Evaluator tab, which also sends partial
+  // payloads like `{ isDefault: true }` from "Make default" — see patchEvaluationSettings's
+  // comment for why that needs sparse-merge semantics instead of updateEvaluationSettings's full
+  // replace). Branch on whether a dataset row actually exists for this id.
+  const existingDataset = await getDataset(getDb(), id);
+  if (!existingDataset) {
+    const updated = await patchEvaluationSettings(getDb(), id, {
+      name: typeof body.name === "string" ? body.name : undefined,
+      description: body.description as string | undefined,
+      acceptanceCriteria: body.acceptanceCriteria as string | undefined,
+      rejectionCriteria: body.rejectionCriteria as string | undefined,
+      evaluationCriteria: body.evaluationCriteria as string | undefined,
+      judgePrompt: body.judgePrompt as string | undefined,
+      judgeModel: body.judgeModel as string | undefined,
+      isDefault: typeof body.isDefault === "boolean" ? body.isDefault : undefined,
+      status: typeof body.status === "string" ? body.status : undefined,
+    });
+    if (!updated) {
+      res.status(404).json({ error: "Evaluation settings not found" });
+      return;
+    }
+    res.status(200).json({ ...updated, creator: LOCAL_USER });
+    return;
+  }
+
   const questions = Array.isArray(body.questions) ? body.questions : [];
   const shared = {
     name: body.name as string,

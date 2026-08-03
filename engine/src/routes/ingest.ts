@@ -1,7 +1,8 @@
 import { Router, type Request, type Response } from "express";
 import { getDb } from "../storage/db.js";
-import { ingestTraceSchema, ingestTrace, listTracesPaginated } from "../core/trace/ingest.js";
+import { ingestTraceSchema, ingestTrace, listTracesPaginated, getTraceRow, toTraceDetailWire } from "../core/trace/ingest.js";
 import { runMonitorCheck } from "../core/monitor/detect.js";
+import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
 
 // Path matters here: AgentX-Python's IngestClient builds its endpoint as
 // f"{base_url}/ingest/traces" (agentx/tracing/ingest_client.py). Mounting this router at
@@ -17,21 +18,51 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
   }
   const { traceId } = await ingestTrace(getDb(), parsed.data);
 
-  // Mirrors tracer.trace(..., monitor=True, pattern_ids=[...]): checked synchronously here so a
-  // caller polling client.monitor.signals right after this call (as the sample scripts do) sees
-  // the result. No background job queue in self-host, see plan task #110.
-  if (parsed.data.monitor) {
+  // Checked synchronously here so a caller polling client.monitor.signals right after this call
+  // (as the sample scripts do) sees the result. No background job queue in self-host, see plan
+  // task #110.
+  //
+  // Both calls are wrapped in try/catch: callJudgeJson throws a clear error on a missing judge API
+  // key (core/evaluate/judge.ts, deliberate UX for the direct-call case), and neither call site
+  // here had a catch before — an unhandled rejection with no global Express error middleware
+  // (index.ts has none) left the request hanging with no response instead of failing gracefully.
+  // Trace ingestion is this endpoint's actual job; a judge failure must never break it.
+  //
+  // Two paths: mirrors tracer.trace(..., monitor=True, pattern_ids=[...]) when the caller opted in
+  // per-trace (explicit — "no profile row" runs the full default sweep, no dashboard setup
+  // required); otherwise still runs, but gated by requireEnabledProfile so it's a no-op unless the
+  // dashboard's per-agent monitoring toggle (AgentMonitoringProfile) was actually turned on for
+  // this agent — without this, an enabled profile had zero effect on regular SDK traces (only
+  // OTLP-ingested ones, via routes/otlp.ts, ever got automatic coverage).
+  const traceForMonitor = {
+    input: parsed.data.input,
+    output: parsed.data.output,
+    error: parsed.data.error ?? null,
+    toolCalls: (parsed.data.tool_calls as Array<{ name?: string; output?: unknown; input?: unknown; success?: boolean }>) ?? null,
+    latencyMs: parsed.data.latency_ms ?? null,
+  };
+  try {
     await runMonitorCheck(
       getDb(),
-      {
-        input: parsed.data.input,
-        output: parsed.data.output,
-        error: parsed.data.error ?? null,
-        toolCalls: (parsed.data.tool_calls as Array<{ name?: string; output?: unknown; input?: unknown; success?: boolean }>) ?? null,
-        latencyMs: parsed.data.latency_ms ?? null,
-      },
-      { agentId: parsed.data.name, traceId, patternIds: parsed.data.pattern_ids }
+      traceForMonitor,
+      parsed.data.monitor
+        ? { agentId: parsed.data.name, traceId, patternIds: parsed.data.pattern_ids }
+        : { agentId: parsed.data.name, traceId, requireEnabledProfile: true }
     );
+  } catch (err) {
+    console.error("Monitor check failed:", err instanceof Error ? err.message : err);
+  }
+
+  // Independent of the `monitor` flag above: online evaluators are a server-side-configured
+  // feature (opt in by creating one, not by a per-call flag), see core/monitor/onlineEvaluators.ts.
+  try {
+    await runOnlineEvaluators(
+      getDb(),
+      { input: parsed.data.input, output: parsed.data.output },
+      { agentId: parsed.data.name, traceId }
+    );
+  } catch (err) {
+    console.error("Online evaluator scoring failed:", err instanceof Error ? err.message : err);
   }
 
   // trace_id is the one field send_trace_sync() reads (see ingest_client.py); the fire-and-forget
@@ -51,4 +82,25 @@ ingestRouter.get("/traces", async (req: Request, res: Response) => {
     framework: typeof framework === "string" ? framework : undefined,
   });
   res.status(200).json(result);
+});
+
+// Single-trace detail for AgentX-web-front's self-host trace dialog (src/components/dialogs/
+// TraceDialog/TraceDialog.tsx -> TraceDetails.tsx). The hosted platform's equivalent dialog reads
+// from a different, hosted-only endpoint (chat/conversation/message/traces/:id) tied to its own
+// conversation/message model, which doesn't exist here — this is the self-host-specific
+// counterpart, powering the same shared TraceDetails component via its own dedicated hook
+// (useGetSelfHostTrace), the same "separate hook per host-mode" split useGetProductionTraces
+// already uses for the list view, rather than branching inside one hook.
+ingestRouter.get("/traces/:traceId", async (req: Request, res: Response) => {
+  const { traceId } = req.params;
+  if (!traceId) {
+    res.status(400).json({ error: "traceId is required" });
+    return;
+  }
+  const row = await getTraceRow(getDb(), traceId);
+  if (!row) {
+    res.status(404).json({ error: "Trace not found" });
+    return;
+  }
+  res.status(200).json(toTraceDetailWire(row));
 });

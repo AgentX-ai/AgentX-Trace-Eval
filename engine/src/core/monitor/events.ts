@@ -27,10 +27,28 @@ export type EventRow = {
   agentId: string | null;
   traceId: string | null;
   createdAt: Date;
+  // Set only for online-evaluator rows (core/monitor/onlineEvaluators.ts) — a continuous judge
+  // rating on sampled live traffic, not a failure/healthy pattern-match tally. Every classification
+  // function below must skip these (see tallyEvent/getTopFailing), or they'd silently corrupt the
+  // health-rate math those routes already ship.
+  onlineEvaluatorId: string | null;
+  rating: number | null;
+  justification: string | null;
 };
 
-export async function recordEvent(db: Db, input: Omit<EventRow, "id" | "createdAt">): Promise<void> {
-  const row: EventRow = { id: nanoid(), createdAt: new Date(), ...input };
+export async function recordEvent(
+  db: Db,
+  input: Omit<EventRow, "id" | "createdAt" | "onlineEvaluatorId" | "rating" | "justification"> &
+    Partial<Pick<EventRow, "onlineEvaluatorId" | "rating" | "justification">>
+): Promise<void> {
+  const row: EventRow = {
+    id: nanoid(),
+    createdAt: new Date(),
+    onlineEvaluatorId: null,
+    rating: null,
+    justification: null,
+    ...input,
+  };
   if (db.kind === "sqlite") {
     await db.db.insert(db.schema.monitorEvents).values(row);
   } else {
@@ -52,6 +70,20 @@ export async function pruneOldEvents(db: Db, agentId: string | null, retentionDa
   } else {
     await db.db.delete(db.schema.monitorEvents).where(cond);
   }
+}
+
+// One row per detection is already recorded here (recordEvent, called from detect.ts on every
+// match) — this is the real per-occurrence history AgentX-web-front's SignalRow.tsx expects on
+// `signal.occurrences[]`, which core/monitor/signals.ts's toWire() never populated (only the
+// aggregate occurrenceCount). Newest-last (chronological), matching the frontend's own
+// `[...recorded].reverse()` to display newest-first.
+export async function listOccurrencesForSignal(db: Db, signalId: string): Promise<EventRow[]> {
+  const cond = eq(db.schema.monitorEvents.signalId, signalId);
+  const rows =
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.monitorEvents).where(cond).orderBy(db.schema.monitorEvents.createdAt).all()
+      : await db.db.select().from(db.schema.monitorEvents).where(cond).orderBy(db.schema.monitorEvents.createdAt);
+  return rows as EventRow[];
 }
 
 async function listEventsSince(db: Db, since: Date): Promise<EventRow[]> {
@@ -102,6 +134,9 @@ function emptyCounts(): WindowedCounts {
 }
 
 function tallyEvent(counts: WindowedCounts, row: EventRow): void {
+  if (row.onlineEvaluatorId) {
+    return;
+  }
   counts.total++;
   if (row.patternKey === "healthy-response") {
     counts.healthy++;
@@ -275,6 +310,9 @@ export async function getTopFailing(db: Db, window: MonitoringWindow, limit = 10
   const byPattern = new Map<string, { patternKey: string; name: string; count: number }>();
 
   for (const row of rows) {
+    if (row.onlineEvaluatorId) {
+      continue;
+    }
     if (row.agentId) {
       const entry = byAgent.get(row.agentId) ?? { total: 0, failing: 0 };
       entry.total++;
@@ -319,4 +357,40 @@ export async function getTopFailing(db: Db, window: MonitoringWindow, limit = 10
     .slice(0, limit);
 
   return { window, agents, tools, patterns };
+}
+
+export type OnlineEvaluatorRatingPoint = { label: string; ts: number; averageRating: number | null; count: number };
+
+// Bucketed average rating over time for one online evaluator — the read side of Phase 4's
+// continuous scoring, same bucketing approach as getTrend above but filtered to one evaluator's
+// rows and averaging `rating` instead of computing a healthy/failing rate.
+export async function getOnlineEvaluatorRatings(
+  db: Db,
+  evaluatorId: string,
+  window: MonitoringWindow
+): Promise<{ window: MonitoringWindow; points: OnlineEvaluatorRatingPoint[] }> {
+  const { days, bucketHours } = windowConfig(window);
+  const bucketMs = bucketHours * 60 * 60 * 1000;
+  const bucketCount = Math.ceil((days * 24 * 60 * 60 * 1000) / bucketMs);
+  const bucketStartMs = Date.now() - bucketCount * bucketMs;
+
+  const rows = (await listEventsSince(db, new Date(bucketStartMs))).filter(
+    r => r.onlineEvaluatorId === evaluatorId && r.rating !== null
+  );
+
+  const buckets: { sum: number; count: number }[] = Array.from({ length: bucketCount }, () => ({ sum: 0, count: 0 }));
+  for (const row of rows) {
+    const index = Math.floor((row.createdAt.getTime() - bucketStartMs) / bucketMs);
+    if (index >= 0 && index < bucketCount) {
+      buckets[index]!.sum += row.rating as number;
+      buckets[index]!.count++;
+    }
+  }
+
+  const points = buckets.map(({ sum, count }, i) => {
+    const ts = bucketStartMs + i * bucketMs;
+    return { label: new Date(ts).toISOString(), ts, averageRating: count > 0 ? sum / count : null, count };
+  });
+
+  return { window, points };
 }

@@ -8,22 +8,36 @@ import { listAgentsWire } from "../core/monitor/agents.js";
 import { getPerformance } from "../core/monitor/performance.js";
 import { createFeedback, listFeedbackForSignal } from "../core/monitor/feedback.js";
 import { generateRegex, suggestHumanFeedback, suggestExpectedResults } from "../core/monitor/suggestions.js";
-import { getKpis, getTrend, getTopFailing, type MonitoringWindow } from "../core/monitor/events.js";
+import { getKpis, getTrend, getTopFailing, getOnlineEvaluatorRatings, type MonitoringWindow } from "../core/monitor/events.js";
 import { listDatasets, createDataset, updateDataset } from "../core/evaluate/datasets.js";
+import {
+  createOnlineEvaluator,
+  updateOnlineEvaluator,
+  deleteOnlineEvaluator,
+  listOnlineEvaluatorsWire,
+  InvalidEvaluationSettingsIdError,
+} from "../core/monitor/onlineEvaluators.js";
+import { getPortabilityPreview, runModelPortabilityCheck } from "../core/evaluate/portability.js";
+import {
+  listPortabilityModels,
+  createPortabilityModel,
+  updatePortabilityModel,
+  deletePortabilityModel,
+} from "../core/evaluate/models.js";
 
 // Mounted at /api/v1/agent-monitoring — the paths AgentX-web-front's dashboard actually calls
 // (src/data/apiPaths.ts's getMonitoring*/*MonitoringProfile/*MonitoringPattern), a different
 // dialect from the SDK-facing /api/v1/monitor router (routes/monitor.ts): same underlying core
 // logic, different response envelope/query params to match what the dashboard's data hooks
-// expect. Third slice: the first was Observe-only (signals/patterns listing), the second added
-// AgentsTab + pattern CRUD, this one adds signal detail/triage/feedback + the two LLM-assist
-// endpoints (regex generation, feedback drafting) + a credit-estimate stub (self-host has no
-// billing, see /estimate below). Still out of scope: create-evaluator-from-signal and
-// suggest-expected-results (both depend on Evaluate, which doesn't exist on this engine yet),
-// the autotune/"Improve" proposal system, and OverviewTab's kpis/trend/top-failing (needs a
-// proper per-occurrence event log to compute honestly over time windows — the current
-// monitor_signals table only stores deduped aggregates, not a timestamped history). See README's
-// Status section.
+// expect. Grown in slices: Observe-only (signals/patterns listing), AgentsTab + pattern CRUD,
+// signal detail/triage/feedback + the two LLM-assist endpoints (regex generation, feedback
+// drafting) + a credit-estimate stub (self-host has no billing, see /estimate below),
+// create-evaluator-from-signal/suggest-expected-results (production-to-dataset, reusing
+// core/evaluate/datasets.ts), kpis/trend/top-failing (core/monitor/events.ts's per-occurrence
+// log), and online-evaluators (continuous judge scoring on sampled live traffic — LangSmith's
+// actual "online evals", distinct from pattern-matching; no dashboard UI for this yet, backend
+// only for now). Still out of scope: the autotune/"Improve" proposal system, tied to AgentX's
+// native agent config-branching, which self-host doesn't have. See README's Status section.
 export const agentMonitoringDashboardRouter = Router();
 
 agentMonitoringDashboardRouter.get("/signals", async (req: Request, res: Response) => {
@@ -184,6 +198,85 @@ agentMonitoringDashboardRouter.get("/top-failing", async (req: Request, res: Res
   res.status(200).json(await getTopFailing(getDb(), parseWindow(req)));
 });
 
+// Online evaluators (core/monitor/onlineEvaluators.ts): LangSmith's actual "online evals" —
+// a judge scored continuously against sampled live traffic, distinct from pattern-matching above.
+// CRUD mirrors /patterns exactly (same routing/sampling shape, see core/monitor/routing.ts).
+agentMonitoringDashboardRouter.get("/online-evaluators", async (_req: Request, res: Response) => {
+  const evaluators = await listOnlineEvaluatorsWire(getDb());
+  res.status(200).json({ evaluators });
+});
+
+agentMonitoringDashboardRouter.post("/online-evaluators", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.name !== "string" || !body.name.trim()) {
+    res.status(400).json({ error: "Online evaluator name is required" });
+    return;
+  }
+  if (typeof body.evaluationSettingsId !== "string" || !body.evaluationSettingsId.trim()) {
+    res.status(400).json({ error: "evaluationSettingsId is required" });
+    return;
+  }
+  try {
+    const evaluator = await createOnlineEvaluator(getDb(), {
+      name: body.name,
+      evaluationSettingsId: body.evaluationSettingsId,
+      sampleRate: body.sampleRate,
+      scopeMode: body.scopeMode,
+      agentIds: body.agentIds,
+      enabled: body.enabled,
+    });
+    res.status(201).json({ evaluator });
+  } catch (err) {
+    if (err instanceof InvalidEvaluationSettingsIdError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
+});
+
+agentMonitoringDashboardRouter.put("/online-evaluators/:evaluatorId", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (body.evaluationSettingsId !== undefined && (typeof body.evaluationSettingsId !== "string" || !body.evaluationSettingsId.trim())) {
+    res.status(400).json({ error: "evaluationSettingsId must be a non-empty string" });
+    return;
+  }
+  try {
+    const evaluator = await updateOnlineEvaluator(getDb(), req.params.evaluatorId!, {
+      name: body.name,
+      evaluationSettingsId: body.evaluationSettingsId,
+      sampleRate: body.sampleRate,
+      scopeMode: body.scopeMode,
+      agentIds: body.agentIds,
+      enabled: body.enabled,
+    });
+    if (!evaluator) {
+      res.status(404).json({ error: "Online evaluator not found" });
+      return;
+    }
+    res.status(200).json({ evaluator });
+  } catch (err) {
+    if (err instanceof InvalidEvaluationSettingsIdError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
+});
+
+agentMonitoringDashboardRouter.delete("/online-evaluators/:evaluatorId", async (req: Request, res: Response) => {
+  const deleted = await deleteOnlineEvaluator(getDb(), req.params.evaluatorId!);
+  if (!deleted) {
+    res.status(404).json({ error: "Online evaluator not found" });
+    return;
+  }
+  res.status(204).send();
+});
+
+agentMonitoringDashboardRouter.get("/online-evaluators/:evaluatorId/ratings", async (req: Request, res: Response) => {
+  res.status(200).json(await getOnlineEvaluatorRatings(getDb(), req.params.evaluatorId!, parseWindow(req)));
+});
+
 agentMonitoringDashboardRouter.get("/signals/:signalId", async (req: Request, res: Response) => {
   const signal = await getSignal(getDb(), req.params.signalId!);
   if (!signal) {
@@ -337,4 +430,109 @@ agentMonitoringDashboardRouter.post("/signals/:signalId/create-evaluator", async
 // implementing a self-host credit system that doesn't apply here.
 agentMonitoringDashboardRouter.post("/estimate", async (req: Request, res: Response) => {
   res.status(200).json({ action: req.body?.action, estimatedCredits: 0 });
+});
+
+// Model portability (core/evaluate/portability.ts) — an input-only replay of a captured trace
+// against alternative models, not a full agent re-run (self-host doesn't own the agent). Explicit,
+// per-trace, user-triggered only: never runs automatically, and nothing about the *comparison
+// itself* is persisted (a disclosed scope cut, matching /prompts/:id/propose's same "compute and
+// return, don't write" posture) — but the candidate models + pricing this reads from ARE
+// dashboard-editable (portability_models table, core/evaluate/models.ts), seeded once with a
+// small default set on first boot rather than a hardcoded array a code change was needed to fix.
+agentMonitoringDashboardRouter.get("/portability/models", async (_req: Request, res: Response) => {
+  res.status(200).json({ models: await listPortabilityModels(getDb()) });
+});
+
+agentMonitoringDashboardRouter.post("/portability/models", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.id !== "string" || !body.id.trim()) {
+    res.status(400).json({ error: "id is required (the exact model string sent to the provider's API)" });
+    return;
+  }
+  if (body.provider !== "openai" && body.provider !== "anthropic") {
+    res.status(400).json({ error: 'provider must be "openai" or "anthropic"' });
+    return;
+  }
+  if (typeof body.label !== "string" || !body.label.trim()) {
+    res.status(400).json({ error: "label is required" });
+    return;
+  }
+  if (typeof body.pricePerMInputTokens !== "number" || typeof body.pricePerMOutputTokens !== "number") {
+    res.status(400).json({ error: "pricePerMInputTokens and pricePerMOutputTokens must be numbers" });
+    return;
+  }
+  const existing = await listPortabilityModels(getDb());
+  if (existing.some(m => m.id === body.id)) {
+    res.status(409).json({ error: `A model with id "${body.id}" already exists` });
+    return;
+  }
+  const model = await createPortabilityModel(getDb(), {
+    id: body.id,
+    provider: body.provider,
+    label: body.label,
+    pricePerMInputTokens: body.pricePerMInputTokens,
+    pricePerMOutputTokens: body.pricePerMOutputTokens,
+  });
+  res.status(201).json({ model });
+});
+
+agentMonitoringDashboardRouter.put("/portability/models/:id", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (body.provider !== "openai" && body.provider !== "anthropic") {
+    res.status(400).json({ error: 'provider must be "openai" or "anthropic"' });
+    return;
+  }
+  if (typeof body.label !== "string" || !body.label.trim()) {
+    res.status(400).json({ error: "label is required" });
+    return;
+  }
+  if (typeof body.pricePerMInputTokens !== "number" || typeof body.pricePerMOutputTokens !== "number") {
+    res.status(400).json({ error: "pricePerMInputTokens and pricePerMOutputTokens must be numbers" });
+    return;
+  }
+  const model = await updatePortabilityModel(getDb(), req.params.id!, {
+    provider: body.provider,
+    label: body.label,
+    pricePerMInputTokens: body.pricePerMInputTokens,
+    pricePerMOutputTokens: body.pricePerMOutputTokens,
+  });
+  if (!model) {
+    res.status(404).json({ error: "Model not found" });
+    return;
+  }
+  res.status(200).json({ model });
+});
+
+agentMonitoringDashboardRouter.delete("/portability/models/:id", async (req: Request, res: Response) => {
+  const deleted = await deletePortabilityModel(getDb(), req.params.id!);
+  if (!deleted) {
+    res.status(404).json({ error: "Model not found" });
+    return;
+  }
+  res.status(200).json({ success: true });
+});
+
+// Reconstruction only, no model calls, no cost — lets the dashboard show "here's what we'll send"
+// before the user commits to spending money on the real comparison below.
+agentMonitoringDashboardRouter.get("/traces/:traceId/portability-preview", async (req: Request, res: Response) => {
+  const preview = await getPortabilityPreview(getDb(), req.params.traceId!);
+  if (!preview) {
+    res.status(404).json({ error: "Trace not found" });
+    return;
+  }
+  res.status(200).json(preview);
+});
+
+agentMonitoringDashboardRouter.post("/traces/:traceId/portability", async (req: Request, res: Response) => {
+  const modelIds = Array.isArray(req.body?.modelIds) ? req.body.modelIds.filter((id: unknown) => typeof id === "string") : [];
+  if (modelIds.length === 0) {
+    res.status(400).json({ error: "modelIds must be a non-empty array" });
+    return;
+  }
+  const result = await runModelPortabilityCheck(getDb(), req.params.traceId!, modelIds);
+  if (!result) {
+    res.status(404).json({ error: "Trace not found" });
+    return;
+  }
+  res.status(200).json(result);
 });

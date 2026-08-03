@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 
 // Mirrors AgentX-Python's EvaluationSettingsBuilder.publish() payload and the EvaluationSettings
@@ -17,6 +17,9 @@ export type CreateEvaluationSettingsInput = {
   evaluationCriteria?: string;
   judgePrompt?: string;
   judgeModel?: string;
+  // Only meaningful for a standalone config — see the isDefault comment on the schema column.
+  isDefault?: boolean;
+  status?: string;
 };
 
 export type UpdateEvaluationSettingsInput = Omit<CreateEvaluationSettingsInput, "id">;
@@ -30,6 +33,8 @@ export type EvaluationSettingsRow = {
   evaluationCriteria: string | null;
   judgePrompt: string | null;
   judgeModel: string | null;
+  isDefault: boolean;
+  status: string;
   createdAt: Date;
 };
 
@@ -44,9 +49,24 @@ function toWire(row: EvaluationSettingsRow) {
     evaluationCriteria: row.evaluationCriteria ?? undefined,
     judgePrompt: row.judgePrompt ?? undefined,
     judgeModel: row.judgeModel ?? undefined,
-    status: "published",
+    isDefault: row.isDefault,
+    status: row.status,
     createdAt: row.createdAt,
   };
+}
+
+// At most one standalone config is "default" at a time (EvaluationConfigSelector preselects it) —
+// clear any existing default before a create/update sets a new one, mirroring the hosted SaaS's
+// single-default invariant.
+async function clearDefaultEvaluationSettings(db: Db, exceptId?: string): Promise<void> {
+  const cond = exceptId
+    ? and(eq(db.schema.evaluationSettings.isDefault, true), ne(db.schema.evaluationSettings.id, exceptId))
+    : eq(db.schema.evaluationSettings.isDefault, true);
+  if (db.kind === "sqlite") {
+    await db.db.update(db.schema.evaluationSettings).set({ isDefault: false }).where(cond);
+  } else {
+    await db.db.update(db.schema.evaluationSettings).set({ isDefault: false }).where(cond);
+  }
 }
 
 export async function createEvaluationSettings(db: Db, input: CreateEvaluationSettingsInput) {
@@ -59,8 +79,13 @@ export async function createEvaluationSettings(db: Db, input: CreateEvaluationSe
     evaluationCriteria: input.evaluationCriteria ?? null,
     judgePrompt: input.judgePrompt ?? null,
     judgeModel: input.judgeModel ?? null,
+    isDefault: input.isDefault ?? false,
+    status: input.status ?? "published",
     createdAt: new Date(),
   };
+  if (row.isDefault) {
+    await clearDefaultEvaluationSettings(db);
+  }
   if (db.kind === "sqlite") {
     await db.db.insert(db.schema.evaluationSettings).values(row);
   } else {
@@ -82,6 +107,38 @@ export async function updateEvaluationSettings(db: Db, id: string, input: Update
     evaluationCriteria: input.evaluationCriteria ?? null,
     judgePrompt: input.judgePrompt ?? null,
     judgeModel: input.judgeModel ?? null,
+  };
+  if (db.kind === "sqlite") {
+    await db.db.update(db.schema.evaluationSettings).set(values).where(eq(db.schema.evaluationSettings.id, id));
+  } else {
+    await db.db.update(db.schema.evaluationSettings).set(values).where(eq(db.schema.evaluationSettings.id, id));
+  }
+  return getEvaluationSettings(db, id);
+}
+
+// Sparse patch, unlike updateEvaluationSettings's full replace — used by the standalone-config PUT
+// path (routes/evaluateDashboard.ts), whose callers can send a partial payload (e.g.
+// EvaluationConfigsTab.tsx's "Make default" action sends only `{ isDefault: true }`). A full
+// replace would null out every other field on a payload like that; merging onto the existing row
+// keeps whatever wasn't sent untouched, same pattern as core/monitor/signals.ts's updateSignal.
+export async function patchEvaluationSettings(db: Db, id: string, patch: Partial<UpdateEvaluationSettingsInput>) {
+  const existing = await getEvaluationSettingsRow(db, id);
+  if (!existing) {
+    return null;
+  }
+  if (patch.isDefault) {
+    await clearDefaultEvaluationSettings(db, id);
+  }
+  const values = {
+    name: patch.name ?? existing.name,
+    description: patch.description ?? existing.description,
+    acceptanceCriteria: patch.acceptanceCriteria ?? existing.acceptanceCriteria,
+    rejectionCriteria: patch.rejectionCriteria ?? existing.rejectionCriteria,
+    evaluationCriteria: patch.evaluationCriteria ?? existing.evaluationCriteria,
+    judgePrompt: patch.judgePrompt ?? existing.judgePrompt,
+    judgeModel: patch.judgeModel ?? existing.judgeModel,
+    isDefault: patch.isDefault ?? existing.isDefault,
+    status: patch.status ?? existing.status,
   };
   if (db.kind === "sqlite") {
     await db.db.update(db.schema.evaluationSettings).set(values).where(eq(db.schema.evaluationSettings.id, id));
@@ -116,4 +173,24 @@ export async function listEvaluationSettings(db: Db) {
       ? db.db.select().from(db.schema.evaluationSettings).all()
       : await db.db.select().from(db.schema.evaluationSettings);
   return (rows as EvaluationSettingsRow[]).map(toWire);
+}
+
+// Rows in evaluation_settings with no matching id in datasets — the standalone "Evaluator" configs
+// (EvaluationConfigsTab.tsx), as opposed to a dataset+settings twin created via the dashboard's
+// "New dataset" flow (both share one id, see routes/evaluateDashboard.ts's header comment).
+// Filtered in JS rather than a NOT IN subquery: self-host's local scale doesn't need it, and it
+// keeps this dialect-agnostic without leaning on drizzle's subquery typing across sqlite/pg.
+export async function listStandaloneEvaluationSettings(db: Db) {
+  const [allRows, datasetIdRows] =
+    db.kind === "sqlite"
+      ? [
+          db.db.select().from(db.schema.evaluationSettings).all() as EvaluationSettingsRow[],
+          db.db.select({ id: db.schema.datasets.id }).from(db.schema.datasets).all(),
+        ]
+      : await Promise.all([
+          db.db.select().from(db.schema.evaluationSettings) as Promise<EvaluationSettingsRow[]>,
+          db.db.select({ id: db.schema.datasets.id }).from(db.schema.datasets),
+        ]);
+  const datasetIds = new Set(datasetIdRows.map(r => r.id));
+  return allRows.filter(row => !datasetIds.has(row.id)).map(toWire);
 }

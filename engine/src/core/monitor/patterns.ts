@@ -71,10 +71,11 @@ export type PatternRow = {
   severity: string;
   polarity: string;
   enabled: boolean;
-  // Not read by core/monitor/detect.ts's detectCustomPatterns (which still runs every enabled
-  // pattern, unscoped/unsampled, against every trace) — persisted only so the dashboard's pattern
-  // editor round-trips these fields on edit instead of silently losing them. Enforcing them is a
-  // disclosed follow-up.
+  // Enforced by core/monitor/detect.ts's detectCustomPatterns via routing.ts's matchesAgentScope/
+  // passesSampleRate, on the default (unscoped) sweep every ingest triggers. Not consulted on
+  // runMonitorCheck's explicit-pattern_ids path (still checks matchesAgentScope there, but
+  // deliberately skips sampling — routing.ts's own comment: naming a pattern by id is "check this
+  // exact one right now", not "sample this trace").
   sampleRate: number;
   scopeMode: string;
   agentIds: unknown;

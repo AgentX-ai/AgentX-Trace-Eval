@@ -48,6 +48,11 @@ export const evaluationSettings = sqliteTable("evaluation_settings", {
   // hosted SaaS's EvaluationSettings.judgePrompt/judgeModel.
   judgePrompt: text("judge_prompt"),
   judgeModel: text("judge_model"),
+  // Only meaningful for a standalone config (no dataset twin) — used by EvaluationConfigSelector
+  // to preselect a judge config when starting a run without picking one explicitly. At most one
+  // row has isDefault=true at a time (enforced in core/evaluate/evaluationSettings.ts, not here).
+  isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
+  status: text("status").notNull().default("published"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
 
@@ -56,6 +61,11 @@ export const evaluationRuns = sqliteTable("evaluation_runs", {
   datasetId: text("dataset_id").notNull(),
   evaluationSettingsId: text("evaluation_settings_id"),
   evaluationSubject: text("evaluation_subject", { mode: "json" }),
+  // Extracted from evaluationSubject.version / evaluationSubject.metadata.version at initRun time
+  // (core/evaluate/runs.ts) so it's a queryable/groupable column instead of buried in an opaque
+  // JSON blob — the external-agent analog to autotune: tag two SDK runs of the same dataset with
+  // different version labels, compare their average ratings (getVersionComparison below).
+  version: text("version"),
   runSource: text("run_source"),
   sdkInfo: text("sdk_info", { mode: "json" }),
   status: text("status").notNull().default("in_progress"),
@@ -205,6 +215,82 @@ export const monitorEvents = sqliteTable("monitor_events", {
   agentId: text("agent_id"),
   traceId: text("trace_id"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  // Set only for type: "online_eval_score" rows (core/monitor/onlineEvaluators.ts) — a continuous
+  // judge rating on sampled live traffic, distinct from every other row here which is a
+  // failure/healthy pattern-match tally. core/monitor/events.ts's KPI/trend classification
+  // explicitly skips rows with an onlineEvaluatorId set, so this doesn't corrupt that math.
+  onlineEvaluatorId: text("online_evaluator_id"),
+  rating: real("rating"),
+  justification: text("justification"),
+});
+
+// Mirrors monitor_patterns' routing fields (sampleRate/scopeMode/agentIds, see core/monitor/
+// routing.ts) — the same filter+sample primitive, applied to a judge-scoring config instead of a
+// pattern-matching one. References an evaluationSettings row for its criteria/judge prompt/judge
+// model (evaluationSettingsId) rather than storing its own copy — that used to be inline before
+// Evaluate's standalone-config creation UI existed; now that it does, the "Evaluator" config is
+// the single source of truth, reused via EvaluationConfigSelector on the frontend.
+export const monitorOnlineEvaluators = sqliteTable("monitor_online_evaluators", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  evaluationSettingsId: text("evaluation_settings_id"),
+  // Every check here is a real LLM call against the user's own API key (unlike pattern-matching,
+  // which is usually free string/regex matching) — defaults meaningfully lower than a pattern's.
+  sampleRate: real("sample_rate").notNull().default(0.1),
+  scopeMode: text("scope_mode").notNull().default("all"),
+  agentIds: text("agent_ids", { mode: "json" }),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+// The external-agent prompt registry (see core/evaluate/prompts.ts): AgentX doesn't own the
+// external agent's code, so it can't branch/merge/apply a config the way native autotune does.
+// Instead, like LangSmith's Prompt Hub / Langfuse's Prompt Management, AgentX becomes the
+// prompt's source of truth — the SDK pulls prompts.currentVersion's text at runtime, and a
+// human-approved "propose improvement" step (core/evaluate/prompts.ts's
+// proposePromptImprovement, reusing core/evaluate/judge.ts's callJudgeJson) writes new rows here,
+// never straight into a caller's code.
+export const prompts = sqliteTable("prompts", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description"),
+  currentVersion: integer("current_version").notNull().default(1),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export const promptVersions = sqliteTable(
+  "prompt_versions",
+  {
+    id: text("id").primaryKey(),
+    promptId: text("prompt_id").notNull(),
+    version: integer("version").notNull(),
+    text: text("text").notNull(),
+    // "manual": a human wrote/edited this version directly. "proposed": accepted from
+    // proposePromptImprovement's judge-generated suggestion (reasoning/basedOnVersion set).
+    source: text("source").notNull().default("manual"),
+    reasoning: text("reasoning"),
+    basedOnVersion: integer("based_on_version"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  table => ({
+    promptVersionUnique: uniqueIndex("prompt_versions_prompt_id_version").on(table.promptId, table.version),
+  })
+);
+
+// Model Portability's candidate models + $/M-token pricing (core/evaluate/models.ts) —
+// dashboard-editable rather than the hardcoded array it started as, so a stale price or a missing
+// model doesn't need a code change/redeploy to fix. `id` is the model string itself (e.g.
+// "gpt-4.1", whatever gets sent to the provider's API), not a separate generated row id — that's
+// the natural unique key here, no reason to add a second one.
+export const portabilityModels = sqliteTable("portability_models", {
+  id: text("id").primaryKey(),
+  provider: text("provider").notNull(),
+  label: text("label").notNull(),
+  pricePerMInputTokens: real("price_per_m_input_tokens").notNull(),
+  pricePerMOutputTokens: real("price_per_m_output_tokens").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
 
 export type SqliteSchema = {
@@ -218,4 +304,8 @@ export type SqliteSchema = {
   monitorProfiles: typeof monitorProfiles;
   monitorSignals: typeof monitorSignals;
   monitorEvents: typeof monitorEvents;
+  monitorOnlineEvaluators: typeof monitorOnlineEvaluators;
+  prompts: typeof prompts;
+  promptVersions: typeof promptVersions;
+  portabilityModels: typeof portabilityModels;
 };

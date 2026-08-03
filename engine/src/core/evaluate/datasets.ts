@@ -70,7 +70,11 @@ export async function createDataset(db: Db, input: CreateDatasetInput) {
 // Dashboard edits always submit the full form, so this is a full replace, not a sparse patch
 // (same convention as agentMonitoringDashboard.ts's updatePattern). Returns null if the id
 // doesn't exist, same as getDataset.
-export async function updateDataset(db: Db, id: string, input: UpdateDatasetInput) {
+export async function updateDataset(
+  db: Db,
+  id: string,
+  input: UpdateDatasetInput,
+) {
   const values = {
     name: input.name,
     description: input.description ?? null,
@@ -80,9 +84,15 @@ export async function updateDataset(db: Db, id: string, input: UpdateDatasetInpu
     questions: input.questions,
   };
   if (db.kind === "sqlite") {
-    await db.db.update(db.schema.datasets).set(values).where(eq(db.schema.datasets.id, id));
+    await db.db
+      .update(db.schema.datasets)
+      .set(values)
+      .where(eq(db.schema.datasets.id, id));
   } else {
-    await db.db.update(db.schema.datasets).set(values).where(eq(db.schema.datasets.id, id));
+    await db.db
+      .update(db.schema.datasets)
+      .set(values)
+      .where(eq(db.schema.datasets.id, id));
   }
   return getDataset(db, id);
 }
@@ -90,19 +100,26 @@ export async function updateDataset(db: Db, id: string, input: UpdateDatasetInpu
 export async function getDataset(db: Db, id: string) {
   let row: DatasetRow | undefined;
   if (db.kind === "sqlite") {
-    row = db.db.select().from(db.schema.datasets).where(eq(db.schema.datasets.id, id)).all()[0] as
-      | DatasetRow
-      | undefined;
+    row = db.db
+      .select()
+      .from(db.schema.datasets)
+      .where(eq(db.schema.datasets.id, id))
+      .all()[0] as DatasetRow | undefined;
   } else {
-    row = (await db.db.select().from(db.schema.datasets).where(eq(db.schema.datasets.id, id)))[0] as
-      | DatasetRow
-      | undefined;
+    row = (
+      await db.db
+        .select()
+        .from(db.schema.datasets)
+        .where(eq(db.schema.datasets.id, id))
+    )[0] as DatasetRow | undefined;
   }
   return row ? toWire(row) : null;
 }
 
 export async function listDatasets(db: Db) {
   const rows =
-    db.kind === "sqlite" ? db.db.select().from(db.schema.datasets).all() : await db.db.select().from(db.schema.datasets);
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.datasets).all()
+      : await db.db.select().from(db.schema.datasets);
   return (rows as DatasetRow[]).map(toWire);
 }

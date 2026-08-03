@@ -3,6 +3,7 @@ import { getDb } from "../storage/db.js";
 import { createDataset, getDataset, listDatasets } from "../core/evaluate/datasets.js";
 import { createEvaluationSettings, getEvaluationSettings, listEvaluationSettings } from "../core/evaluate/evaluationSettings.js";
 import { initRun, appendResults, finalizeRun, getRun, listRuns, MAX_BATCH_SIZE } from "../core/evaluate/runs.js";
+import { createPrompt, getPromptForSdk, listPromptsForSdk } from "../core/evaluate/prompts.js";
 
 // Mounted at /api/v1/custom-agent-evaluations, matching AgentX-Python's
 // EvaluationsClient._DEFAULT_BASE_URL (agentx/evaluations/client.py) so pointing the SDK at a
@@ -138,4 +139,42 @@ evaluationsRouter.get("/runs/:runId", async (req: Request, res: Response) => {
     return;
   }
   res.status(200).json(run);
+});
+
+// Prompt registry (client.evaluations.prompts): deliberately read-mostly from the SDK — only
+// create + pull, no SDK-side publish. A prompt only ever gets a new version through the
+// dashboard's human-approved propose/publish flow (routes/evaluateDashboard.ts), matching how
+// LangSmith/Langfuse both require a human step before a rewritten prompt reaches Prompt Hub /
+// Prompt Management too.
+evaluationsRouter.post("/prompts", async (req: Request, res: Response) => {
+  const { name, text, description } = req.body ?? {};
+  if (typeof name !== "string" || !name.trim()) {
+    res.status(400).json({ error: "name is required" });
+    return;
+  }
+  if (typeof text !== "string" || !text.trim()) {
+    res.status(400).json({ error: "text is required" });
+    return;
+  }
+  const prompt = await createPrompt(getDb(), { name, text, description });
+  res.status(201).json(prompt);
+});
+
+evaluationsRouter.get("/prompts", async (_req: Request, res: Response) => {
+  res.status(200).json({ prompts: await listPromptsForSdk(getDb()) });
+});
+
+evaluationsRouter.get("/prompts/:name", async (req: Request, res: Response) => {
+  const versionParam = req.query.version;
+  const version = typeof versionParam === "string" && versionParam.trim() ? Number(versionParam) : undefined;
+  if (version !== undefined && !Number.isInteger(version)) {
+    res.status(400).json({ error: "version must be an integer" });
+    return;
+  }
+  const prompt = await getPromptForSdk(getDb(), req.params.name!, version);
+  if (!prompt) {
+    res.status(404).json({ error: "Prompt not found" });
+    return;
+  }
+  res.status(200).json(prompt);
 });

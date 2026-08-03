@@ -1,8 +1,8 @@
 import { nanoid } from "nanoid";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { getEvaluationSettingsRow, type EvaluationSettingsRow } from "./evaluationSettings.js";
-import { callJudgeJson, applyJudgePromptTemplate, DEFAULT_JUDGE_PROMPT, DEFAULT_JUDGE_MODEL } from "./judge.js";
+import { scoreAgainstCriteria, DEFAULT_JUDGE_PROMPT, DEFAULT_JUDGE_MODEL } from "./judge.js";
 
 export const MAX_BATCH_SIZE = 10;
 
@@ -60,6 +60,25 @@ async function getDatasetRow(db: Db, id: string) {
 // init_run
 // ---------------------------------------------------------------------------
 
+// Extracted from evaluationSubject.version (if the SDK ever adds a first-class field) or
+// evaluationSubject.metadata.version (works today, zero SDK changes needed — see
+// AgentX-Python's EvaluationSubject.metadata, a free-form dict) — the external-agent analog to
+// autotune: tag two SDK runs of the same dataset with different labels, compare their average
+// ratings (getVersionComparison below) instead of AgentX branching/merging a config it doesn't own.
+function extractVersion(evaluationSubject: unknown): string | null {
+  if (!evaluationSubject || typeof evaluationSubject !== "object") {
+    return null;
+  }
+  const subject = evaluationSubject as { version?: unknown; metadata?: { version?: unknown } };
+  if (typeof subject.version === "string" && subject.version.trim()) {
+    return subject.version.trim();
+  }
+  if (typeof subject.metadata?.version === "string" && subject.metadata.version.trim()) {
+    return subject.metadata.version.trim();
+  }
+  return null;
+}
+
 export async function initRun(
   db: Db,
   input: {
@@ -80,6 +99,7 @@ export async function initRun(
     datasetId: input.datasetId,
     evaluationSettingsId: input.evaluationSettingsId ?? null,
     evaluationSubject: input.evaluationSubject ?? null,
+    version: extractVersion(input.evaluationSubject),
     runSource: input.runSource ?? "sdk",
     sdkInfo: input.sdk ?? null,
     status: "in_progress",
@@ -102,15 +122,6 @@ export async function initRun(
 // AgentX-web-api/src/services/evaluationScoringService.ts's scoreResult.
 // ---------------------------------------------------------------------------
 
-const scoreSchema = {
-  type: "object",
-  properties: {
-    rating: { type: "number", description: "Rating from 0-10" },
-    justification: { type: "string", description: "Detailed explanation" },
-  },
-  required: ["rating", "justification"],
-};
-
 type SubmittedResult = {
   caseId?: string;
   questionIndex?: number;
@@ -124,32 +135,12 @@ type SubmittedResult = {
 async function scoreOneResult(config: ResolvedRunConfig, item: SubmittedResult): Promise<{ rating: number; justification: string }> {
   const question = item.questionIndex != null ? config.questions[item.questionIndex] : undefined;
   const mainQ = question?.main_question;
-  const expectedResults = mainQ?.expectedResults;
-  const judgeGuideline = mainQ?.judgeGuideline;
-
-  const substitutedPrompt = applyJudgePromptTemplate(config.judgePrompt, {
+  return scoreAgainstCriteria(config, {
     input: item.input?.query || "",
     output: item.output?.text || "",
-    expected: expectedResults || "N/A",
+    expected: mainQ?.expectedResults,
+    judgeGuideline: mainQ?.judgeGuideline,
   });
-
-  const additionalContext = `
-${judgeGuideline ? `**Judge Guideline (specific to this question):** ${judgeGuideline}` : ""}
-${config.acceptanceCriteria ? `**Acceptance Criteria:** ${config.acceptanceCriteria}` : ""}
-${config.rejectionCriteria ? `**Rejection Criteria:** ${config.rejectionCriteria}` : ""}
-${config.evaluationCriteria ? `**Evaluation Criteria:** ${config.evaluationCriteria}` : ""}
-`;
-
-  const judgeResult = await callJudgeJson({
-    model: config.judgeModel,
-    jsonSchema: scoreSchema,
-    userMessage: `${substitutedPrompt}\n${additionalContext}`,
-  });
-  const payload = judgeResult.payload as { rating: number; justification: string } | null;
-  if (!payload) {
-    return { rating: 0, justification: "Scoring failed: no result returned from the judge model" };
-  }
-  return { rating: payload.rating, justification: payload.justification };
 }
 
 export async function appendResults(
@@ -324,6 +315,7 @@ export type FullRunRow = {
   datasetId: string;
   evaluationSettingsId: string | null;
   evaluationSubject: unknown;
+  version: string | null;
   runSource: string | null;
   status: string;
   createdAt: Date;
@@ -369,6 +361,115 @@ export async function getRunResults(db: Db, runId: string): Promise<RunResultRow
   ) as RunResultRow[];
   rows.sort((a, b) => (a.questionIndex ?? 0) - (b.questionIndex ?? 0) || (a.runNumber ?? 0) - (b.runNumber ?? 0));
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Version comparison (routes/evaluateDashboard.ts): the external-agent analog to AgentX's native
+// autotune. Run the same external agent twice against a dataset, tag each run with a version
+// label (see extractVersion above), see which one scored higher — the same candidateAvg >=
+// baselineAvg check native autotune's /validate does, just comparing two already-computed run
+// averages instead of two branch-scoped evaluations, since self-host owns no agent config to
+// branch/merge/apply in the first place.
+// ---------------------------------------------------------------------------
+
+export type VersionComparisonEntry = {
+  version: string;
+  runCount: number;
+  ratedCount: number;
+  averageRating: number | null;
+  lastRunAt: string;
+};
+
+export type VersionComparisonResult = {
+  versions: VersionComparisonEntry[];
+  comparison: {
+    candidateVersion: string;
+    baselineVersion: string;
+    candidateAvg: number | null;
+    baselineAvg: number | null;
+    passed: boolean | null;
+  } | null;
+};
+
+const UNVERSIONED = "(unversioned)";
+
+export async function getVersionComparison(db: Db, datasetId: string): Promise<VersionComparisonResult> {
+  const runsCond = eq(db.schema.evaluationRuns.datasetId, datasetId);
+  const runs = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.evaluationRuns).where(runsCond).all()
+      : await db.db.select().from(db.schema.evaluationRuns).where(runsCond)
+  ) as { id: string; version: string | null; createdAt: Date }[];
+
+  if (runs.length === 0) {
+    return { versions: [], comparison: null };
+  }
+
+  const runIds = runs.map(r => r.id);
+  const resultsCond = inArray(db.schema.evaluationRunResults.runId, runIds);
+  const results = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.evaluationRunResults).where(resultsCond).all()
+      : await db.db.select().from(db.schema.evaluationRunResults).where(resultsCond)
+  ) as { runId: string; rating: number | null }[];
+
+  const versionByRunId = new Map(runs.map(r => [r.id, r.version?.trim() || UNVERSIONED]));
+
+  type Bucket = { runIds: Set<string>; ratedSum: number; ratedCount: number; lastRunAt: Date };
+  const buckets = new Map<string, Bucket>();
+
+  for (const run of runs) {
+    const version = versionByRunId.get(run.id)!;
+    const bucket = buckets.get(version) ?? { runIds: new Set<string>(), ratedSum: 0, ratedCount: 0, lastRunAt: run.createdAt };
+    bucket.runIds.add(run.id);
+    if (run.createdAt.getTime() > bucket.lastRunAt.getTime()) {
+      bucket.lastRunAt = run.createdAt;
+    }
+    buckets.set(version, bucket);
+  }
+
+  // A true average across every rated result in a version's runs, not an average of per-run
+  // averages — averaging averages would misweight versions whose runs have different result
+  // counts (e.g. one run of 50 questions vs three runs of 5).
+  for (const result of results) {
+    if (result.rating == null) {
+      continue;
+    }
+    const version = versionByRunId.get(result.runId);
+    const bucket = version ? buckets.get(version) : undefined;
+    if (!bucket) {
+      continue;
+    }
+    bucket.ratedSum += result.rating;
+    bucket.ratedCount += 1;
+  }
+
+  const versions: VersionComparisonEntry[] = Array.from(buckets.entries())
+    .map(([version, bucket]) => ({
+      version,
+      runCount: bucket.runIds.size,
+      ratedCount: bucket.ratedCount,
+      averageRating: bucket.ratedCount > 0 ? bucket.ratedSum / bucket.ratedCount : null,
+      lastRunAt: bucket.lastRunAt.toISOString(),
+    }))
+    .sort((a, b) => new Date(b.lastRunAt).getTime() - new Date(a.lastRunAt).getTime());
+
+  let comparison: VersionComparisonResult["comparison"] = null;
+  if (versions.length >= 2) {
+    const [candidate, baseline] = versions as [VersionComparisonEntry, VersionComparisonEntry];
+    comparison = {
+      candidateVersion: candidate.version,
+      baselineVersion: baseline.version,
+      candidateAvg: candidate.averageRating,
+      baselineAvg: baseline.averageRating,
+      passed:
+        candidate.averageRating !== null
+          ? baseline.averageRating === null || candidate.averageRating >= baseline.averageRating
+          : null,
+    };
+  }
+
+  return { versions, comparison };
 }
 
 // Not part of the SDK-compatible surface (AgentX-Python has no list_runs() call), added for the

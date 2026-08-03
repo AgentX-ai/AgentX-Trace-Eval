@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { listOccurrencesForSignal, type EventRow } from "./events.js";
 
 // Matches AgentX-Python's MonitorSignal field aliases (agentx/monitor/models.py).
 export type SignalRow = {
@@ -26,7 +27,13 @@ export type SignalRow = {
 // AgentMonitoringSignal (src/types/agentMonitoring.ts) — workspaceId/createdAt/updatedAt are
 // required by the latter but not the former; self-host has no separate created-vs-first-seen
 // timestamp to report, so createdAt/updatedAt alias firstSeenAt/lastSeenAt.
-function toWire(row: SignalRow) {
+//
+// `occurrences` is optional here (populated by the two callers below via listOccurrencesForSignal
+// — a DB round-trip toWire() itself can't do since it's a sync function) — AgentX-web-front's
+// SignalRow.tsx renders exactly this array as the per-occurrence list under "N occurrences"; a
+// missing/empty array there silently collapses to a single synthesized fallback row, which is the
+// "shows 4 occurrences but only 1 in the list" bug this closes.
+function toWire(row: SignalRow, occurrences: EventRow[] = []) {
   return {
     _id: row.id,
     workspaceId: "local",
@@ -45,6 +52,14 @@ function toWire(row: SignalRow) {
     agentId: row.agentId ? { _id: row.agentId, name: row.agentId } : undefined,
     evidence: row.evidence ?? undefined,
     occurrenceCount: row.occurrenceCount,
+    // Matches AgentMonitoringSignalOccurrence's shape (types/agentMonitoring.ts): self-host has no
+    // conversationId/messageId (native-chat-only concepts), but does have a real traceId/agentId
+    // per detection.
+    occurrences: occurrences.map(e => ({
+      agentId: e.agentId ? { _id: e.agentId, name: e.agentId } : undefined,
+      traceId: e.traceId ?? undefined,
+      seenAt: e.createdAt.toISOString(),
+    })),
     firstSeenAt: row.firstSeenAt.toISOString(),
     lastSeenAt: row.lastSeenAt.toISOString(),
     createdAt: row.firstSeenAt.toISOString(),
@@ -161,7 +176,8 @@ export async function listSignals(
   const effectivePolarity = filter.polarity ?? "failure";
   if (effectivePolarity !== "all") filtered = filtered.filter(r => r.polarity === effectivePolarity);
   filtered.sort((a, b) => b.lastSeenAt.getTime() - a.lastSeenAt.getTime());
-  return filtered.slice(0, limit).map(toWire);
+  const page = filtered.slice(0, limit);
+  return Promise.all(page.map(async row => toWire(row, await listOccurrencesForSignal(db, row.id))));
 }
 
 export async function getSignal(db: Db, id: string) {
@@ -175,7 +191,7 @@ export async function getSignal(db: Db, id: string) {
       | SignalRow
       | undefined;
   }
-  return row ? toWire(row) : null;
+  return row ? toWire(row, await listOccurrencesForSignal(db, row.id)) : null;
 }
 
 export async function getSignalRow(db: Db, id: string): Promise<SignalRow | null> {

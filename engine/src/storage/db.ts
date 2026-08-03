@@ -2,11 +2,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { nanoid } from "nanoid";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { drizzle as drizzlePg, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import * as sqliteSchema from "./schema.sqlite.js";
 import * as pgSchema from "./schema.pg.js";
+import { seedExampleDataIfEmpty } from "../core/seed.js";
 
 export const AGENTX_HOME = process.env.AGENTX_HOME || path.join(os.homedir(), ".agentx");
 
@@ -22,6 +24,11 @@ export type Db =
   | { kind: "postgres"; db: NodePgDatabase<typeof pgSchema>; schema: typeof pgSchema };
 
 let cached: Db | null = null;
+// The raw handle underneath `cached` (better-sqlite3/bun:sqlite Database or pg Pool) isn't part
+// of the `Db` type downstream code sees, but graceful shutdown needs it to flush WAL / release the
+// connection cleanly instead of leaving the process to SIGKILL it. Kept module-private, closed via
+// closeDb() below.
+let closeHandle: (() => void | Promise<void>) | null = null;
 
 // Node's `better-sqlite3` is a native addon whose module-root lookup breaks inside Bun's
 // `--compile`d virtual filesystem (`/$bunfs/root/...` has no real package.json to find), so the
@@ -44,6 +51,9 @@ export async function initDb(): Promise<Db> {
     const pool = new Pool({ connectionString: url });
     await bootstrapPostgres(pool);
     cached = { kind: "postgres", db: drizzlePg(pool, { schema: pgSchema }), schema: pgSchema };
+    closeHandle = () => pool.end();
+    await seedPortabilityModelsIfEmpty(cached);
+    await seedExampleDataIfEmpty(cached);
     return cached;
   }
 
@@ -61,6 +71,9 @@ export async function initDb(): Promise<Db> {
       db: drizzleBun(sqlite, { schema: sqliteSchema }) as unknown as BetterSQLite3Database<typeof sqliteSchema>,
       schema: sqliteSchema,
     };
+    closeHandle = () => {
+      sqlite.close();
+    };
   } else {
     const { default: BetterSqlite3 } = await import("better-sqlite3");
     const { drizzle: drizzleSqlite } = await import("drizzle-orm/better-sqlite3");
@@ -68,8 +81,52 @@ export async function initDb(): Promise<Db> {
     sqlite.pragma("journal_mode = WAL");
     bootstrapSqlite(sqlite);
     cached = { kind: "sqlite", db: drizzleSqlite(sqlite, { schema: sqliteSchema }), schema: sqliteSchema };
+    closeHandle = () => {
+      sqlite.close();
+    };
   }
+  await seedPortabilityModelsIfEmpty(cached);
+  await seedExampleDataIfEmpty(cached);
   return cached;
+}
+
+// One-time seed, not a permanent hardcoded fallback: Model Portability's candidate models used to
+// be a static array (core/evaluate/models.ts) — now a dashboard-editable table
+// (portability_models). Only inserts when the table is genuinely empty (a real first boot), using
+// drizzle's own cross-dialect query builder rather than hand-rolled conditional SQL across two
+// dialects, so a user who later deletes some or all of these never sees them silently reappear on
+// the next restart. Prices are approximate/point-in-time — see core/evaluate/models.ts's comment.
+const DEFAULT_PORTABILITY_MODELS: Array<{
+  id: string;
+  provider: "openai" | "anthropic";
+  label: string;
+  pricePerMInputTokens: number;
+  pricePerMOutputTokens: number;
+}> = [
+  { id: "gpt-4.1", provider: "openai", label: "GPT-4.1", pricePerMInputTokens: 2.0, pricePerMOutputTokens: 8.0 },
+  { id: "gpt-4.1-mini", provider: "openai", label: "GPT-4.1 mini", pricePerMInputTokens: 0.4, pricePerMOutputTokens: 1.6 },
+  { id: "gpt-4o", provider: "openai", label: "GPT-4o", pricePerMInputTokens: 2.5, pricePerMOutputTokens: 10.0 },
+  { id: "gpt-4o-mini", provider: "openai", label: "GPT-4o mini", pricePerMInputTokens: 0.15, pricePerMOutputTokens: 0.6 },
+  { id: "claude-opus-4-1", provider: "anthropic", label: "Claude Opus 4.1", pricePerMInputTokens: 15.0, pricePerMOutputTokens: 75.0 },
+  { id: "claude-sonnet-4-5", provider: "anthropic", label: "Claude Sonnet 4.5", pricePerMInputTokens: 3.0, pricePerMOutputTokens: 15.0 },
+  { id: "claude-haiku-4-5", provider: "anthropic", label: "Claude Haiku 4.5", pricePerMInputTokens: 1.0, pricePerMOutputTokens: 5.0 },
+];
+
+async function seedPortabilityModelsIfEmpty(db: Db): Promise<void> {
+  const existing =
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.portabilityModels).limit(1).all()
+      : await db.db.select().from(db.schema.portabilityModels).limit(1);
+  if (existing.length > 0) {
+    return;
+  }
+  const now = new Date();
+  const rows = DEFAULT_PORTABILITY_MODELS.map(m => ({ ...m, createdAt: now, updatedAt: now }));
+  if (db.kind === "sqlite") {
+    await db.db.insert(db.schema.portabilityModels).values(rows);
+  } else {
+    await db.db.insert(db.schema.portabilityModels).values(rows);
+  }
 }
 
 export function getDb(): Db {
@@ -79,15 +136,28 @@ export function getDb(): Db {
   return cached;
 }
 
+// Called from index.ts's SIGINT/SIGTERM handler. Flushes SQLite's WAL file / releases the pg pool
+// instead of leaving the OS to reclaim the file descriptor when the process is killed outright.
+export async function closeDb(): Promise<void> {
+  await closeHandle?.();
+  cached = null;
+  closeHandle = null;
+}
+
 function defaultSqlitePath(): string {
   return path.join(AGENTX_HOME, "agentx.db");
 }
 
+type SqliteHandle = {
+  exec(sql: string): unknown;
+  prepare(sql: string): { all(...args: unknown[]): unknown[]; run(...args: unknown[]): unknown };
+};
+
 // Hand-written, idempotent bootstrap DDL, so `agentx-server --dev` works out of the box with
 // zero setup. Replace with real drizzle-kit migrations (`db:generate` script already wired in
-// package.json) once the schema stabilizes, see plan task #107. `exec()` has the same signature
-// on both better-sqlite3's and bun:sqlite's Database, so this one function serves both.
-function bootstrapSqlite(sqlite: { exec(sql: string): unknown }): void {
+// package.json) once the schema stabilizes, see plan task #107. `exec()`/`prepare()` have the same
+// signature on both better-sqlite3's and bun:sqlite's Database, so this one function serves both.
+function bootstrapSqlite(sqlite: SqliteHandle): void {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS traces (
       id TEXT PRIMARY KEY,
@@ -127,6 +197,8 @@ function bootstrapSqlite(sqlite: { exec(sql: string): unknown }): void {
       evaluation_criteria TEXT,
       judge_prompt TEXT,
       judge_model TEXT,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'published',
       created_at INTEGER NOT NULL
     );
 
@@ -135,6 +207,7 @@ function bootstrapSqlite(sqlite: { exec(sql: string): unknown }): void {
       dataset_id TEXT NOT NULL,
       evaluation_settings_id TEXT,
       evaluation_subject TEXT,
+      version TEXT,
       run_source TEXT,
       sdk_info TEXT,
       status TEXT NOT NULL DEFAULT 'in_progress',
@@ -245,6 +318,50 @@ function bootstrapSqlite(sqlite: { exec(sql: string): unknown }): void {
 
     CREATE INDEX IF NOT EXISTS monitor_events_agent_id_created_at ON monitor_events (agent_id, created_at);
     CREATE INDEX IF NOT EXISTS monitor_events_created_at ON monitor_events (created_at);
+
+    CREATE TABLE IF NOT EXISTS monitor_online_evaluators (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      evaluation_settings_id TEXT,
+      sample_rate REAL NOT NULL DEFAULT 0.1,
+      scope_mode TEXT NOT NULL DEFAULT 'all',
+      agent_ids TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS prompts (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      current_version INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS prompt_versions (
+      id TEXT PRIMARY KEY,
+      prompt_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      text TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'manual',
+      reasoning TEXT,
+      based_on_version INTEGER,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS prompt_versions_prompt_id_version
+      ON prompt_versions (prompt_id, version);
+
+    CREATE TABLE IF NOT EXISTS portability_models (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      label TEXT NOT NULL,
+      price_per_m_input_tokens REAL NOT NULL,
+      price_per_m_output_tokens REAL NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
 
   // Columns added after the tables above already shipped: CREATE TABLE IF NOT EXISTS doesn't
@@ -258,12 +375,87 @@ function bootstrapSqlite(sqlite: { exec(sql: string): unknown }): void {
     ["monitor_profiles", "ALTER TABLE monitor_profiles ADD COLUMN channels TEXT"],
     ["monitor_signals", "ALTER TABLE monitor_signals ADD COLUMN review_status TEXT"],
     ["monitor_signals", "ALTER TABLE monitor_signals ADD COLUMN recommended_actions TEXT"],
+    ["monitor_events", "ALTER TABLE monitor_events ADD COLUMN online_evaluator_id TEXT"],
+    ["monitor_events", "ALTER TABLE monitor_events ADD COLUMN rating REAL"],
+    ["monitor_events", "ALTER TABLE monitor_events ADD COLUMN justification TEXT"],
+    ["evaluation_runs", "ALTER TABLE evaluation_runs ADD COLUMN version TEXT"],
+    ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0"],
+    ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN status TEXT NOT NULL DEFAULT 'published'"],
+    ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN evaluation_settings_id TEXT"],
   ];
   for (const [, statement] of columnMigrations) {
     try {
       sqlite.exec(statement);
     } catch (err) {
       if (!(err instanceof Error) || !/duplicate column name/i.test(err.message)) {
+        throw err;
+      }
+    }
+  }
+
+  migrateOnlineEvaluatorsToConfigsSqlite(sqlite);
+}
+
+// One-time backfill: online evaluators used to store their own acceptance_criteria/
+// rejection_criteria/evaluation_criteria/judge_prompt/judge_model instead of referencing an
+// evaluation_settings row (see schema.sqlite.ts's monitorOnlineEvaluators comment). Every row
+// created before this migration has evaluation_settings_id NULL but still has its legacy columns
+// physically present (added above via columnMigrations, never dropped until this function drops
+// them at the end) — read them once, materialize a real evaluation_settings row per evaluator (so
+// existing judge criteria aren't lost), point the evaluator at it, then drop the now-unused legacy
+// columns. Safe to re-run: the SELECT only matches rows still missing evaluation_settings_id, and
+// the DROP COLUMNs are individually guarded the same way columnMigrations above are.
+function migrateOnlineEvaluatorsToConfigsSqlite(sqlite: SqliteHandle): void {
+  let legacyRows: Array<{
+    id: string;
+    name: string;
+    acceptance_criteria: string | null;
+    rejection_criteria: string | null;
+    evaluation_criteria: string | null;
+    judge_prompt: string | null;
+    judge_model: string | null;
+  }>;
+  try {
+    legacyRows = sqlite
+      .prepare(
+        `SELECT id, name, acceptance_criteria, rejection_criteria, evaluation_criteria, judge_prompt, judge_model
+         FROM monitor_online_evaluators WHERE evaluation_settings_id IS NULL`
+      )
+      .all() as typeof legacyRows;
+  } catch {
+    // Legacy columns already dropped by a previous run of this migration — nothing left to do.
+    legacyRows = [];
+  }
+
+  const now = Date.now();
+  for (const row of legacyRows) {
+    const settingsId = nanoid();
+    sqlite
+      .prepare(
+        `INSERT INTO evaluation_settings
+           (id, name, acceptance_criteria, rejection_criteria, evaluation_criteria, judge_prompt, judge_model, is_default, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'published', ?)`
+      )
+      .run(
+        settingsId,
+        row.name,
+        row.acceptance_criteria,
+        row.rejection_criteria,
+        row.evaluation_criteria,
+        row.judge_prompt,
+        row.judge_model,
+        now
+      );
+    sqlite
+      .prepare(`UPDATE monitor_online_evaluators SET evaluation_settings_id = ? WHERE id = ?`)
+      .run(settingsId, row.id);
+  }
+
+  for (const column of ["acceptance_criteria", "rejection_criteria", "evaluation_criteria", "judge_prompt", "judge_model"]) {
+    try {
+      sqlite.exec(`ALTER TABLE monitor_online_evaluators DROP COLUMN ${column}`);
+    } catch (err) {
+      if (!(err instanceof Error) || !/no such column/i.test(err.message)) {
         throw err;
       }
     }
@@ -315,6 +507,8 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       evaluation_criteria TEXT,
       judge_prompt TEXT,
       judge_model TEXT,
+      is_default BOOLEAN NOT NULL DEFAULT FALSE,
+      status TEXT NOT NULL DEFAULT 'published',
       created_at TIMESTAMP NOT NULL
     );
 
@@ -323,6 +517,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       dataset_id TEXT NOT NULL,
       evaluation_settings_id TEXT,
       evaluation_subject JSONB,
+      version TEXT,
       run_source TEXT,
       sdk_info JSONB,
       status TEXT NOT NULL DEFAULT 'in_progress',
@@ -434,6 +629,50 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     CREATE INDEX IF NOT EXISTS monitor_events_agent_id_created_at ON monitor_events (agent_id, created_at);
     CREATE INDEX IF NOT EXISTS monitor_events_created_at ON monitor_events (created_at);
 
+    CREATE TABLE IF NOT EXISTS monitor_online_evaluators (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      evaluation_settings_id TEXT,
+      sample_rate DOUBLE PRECISION NOT NULL DEFAULT 0.1,
+      scope_mode TEXT NOT NULL DEFAULT 'all',
+      agent_ids JSONB,
+      enabled BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS prompts (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      current_version INTEGER NOT NULL DEFAULT 1,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS prompt_versions (
+      id TEXT PRIMARY KEY,
+      prompt_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      text TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'manual',
+      reasoning TEXT,
+      based_on_version INTEGER,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS prompt_versions_prompt_id_version
+      ON prompt_versions (prompt_id, version);
+
+    CREATE TABLE IF NOT EXISTS portability_models (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      label TEXT NOT NULL,
+      price_per_m_input_tokens DOUBLE PRECISION NOT NULL,
+      price_per_m_output_tokens DOUBLE PRECISION NOT NULL,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL
+    );
+
     -- Postgres supports IF NOT EXISTS on ADD COLUMN natively, unlike SQLite (see
     -- bootstrapSqlite's columnMigrations for the equivalent there), so pre-existing databases
     -- from before these columns existed can just re-run this same statement safely.
@@ -443,5 +682,54 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE monitor_profiles ADD COLUMN IF NOT EXISTS channels JSONB;
     ALTER TABLE monitor_signals ADD COLUMN IF NOT EXISTS review_status TEXT;
     ALTER TABLE monitor_signals ADD COLUMN IF NOT EXISTS recommended_actions JSONB;
+    ALTER TABLE monitor_events ADD COLUMN IF NOT EXISTS online_evaluator_id TEXT;
+    ALTER TABLE monitor_events ADD COLUMN IF NOT EXISTS rating DOUBLE PRECISION;
+    ALTER TABLE monitor_events ADD COLUMN IF NOT EXISTS justification TEXT;
+    ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS version TEXT;
+    ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'published';
+    ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS evaluation_settings_id TEXT;
   `);
+
+  await migrateOnlineEvaluatorsToConfigsPostgres(pool);
+}
+
+// Postgres mirror of migrateOnlineEvaluatorsToConfigsSqlite above — see that function's comment
+// for the full rationale. information_schema check up front since Postgres (unlike SQLite) errors
+// immediately on SELECTing a column that's already been dropped by a previous run, rather than
+// only erroring on the DROP itself.
+async function migrateOnlineEvaluatorsToConfigsPostgres(pool: Pool): Promise<void> {
+  const { rows: existingCols } = await pool.query<{ column_name: string }>(
+    `SELECT column_name FROM information_schema.columns WHERE table_name = 'monitor_online_evaluators'`
+  );
+  const legacyColumns = ["acceptance_criteria", "rejection_criteria", "evaluation_criteria", "judge_prompt", "judge_model"];
+  const hasLegacyColumns = legacyColumns.some(col => existingCols.some(c => c.column_name === col));
+
+  if (hasLegacyColumns) {
+    const { rows: legacyRows } = await pool.query<{
+      id: string;
+      name: string;
+      acceptance_criteria: string | null;
+      rejection_criteria: string | null;
+      evaluation_criteria: string | null;
+      judge_prompt: string | null;
+      judge_model: string | null;
+    }>(
+      `SELECT id, name, acceptance_criteria, rejection_criteria, evaluation_criteria, judge_prompt, judge_model
+       FROM monitor_online_evaluators WHERE evaluation_settings_id IS NULL`
+    );
+    for (const row of legacyRows) {
+      const settingsId = nanoid();
+      await pool.query(
+        `INSERT INTO evaluation_settings
+           (id, name, acceptance_criteria, rejection_criteria, evaluation_criteria, judge_prompt, judge_model, is_default, status, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, 'published', NOW())`,
+        [settingsId, row.name, row.acceptance_criteria, row.rejection_criteria, row.evaluation_criteria, row.judge_prompt, row.judge_model]
+      );
+      await pool.query(`UPDATE monitor_online_evaluators SET evaluation_settings_id = $1 WHERE id = $2`, [settingsId, row.id]);
+    }
+    for (const column of legacyColumns) {
+      await pool.query(`ALTER TABLE monitor_online_evaluators DROP COLUMN IF EXISTS ${column}`);
+    }
+  }
 }

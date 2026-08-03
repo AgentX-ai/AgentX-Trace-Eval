@@ -1,34 +1,12 @@
 import type { Db } from "../../storage/db.js";
 import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { evaluatePatternConditions, type PatternCondition, type SemanticJudge, type TraceLike } from "./conditions.js";
-import { listCustomPatterns, getPatternRow, type PatternRow } from "./patterns.js";
+import { listCustomPatterns, getPatternRow } from "./patterns.js";
 import { resolveLatencyThresholdMs, getProfileRow } from "./profiles.js";
 import { upsertSignal, type DetectedSignal } from "./signals.js";
 import { recordEvent, pruneOldEvents } from "./events.js";
 import { extractWebhookUrls, notifyWebhooks } from "./webhooks.js";
-
-// Routing/throttling gates shared by both the automatic sweep (detectCustomPatterns) and the
-// explicit pattern_ids path (runMonitorCheck's "scoped" branch) — a pattern scoped to one agent
-// shouldn't match another agent's trace just because the caller named it explicitly by id.
-function patternMatchesAgent(pattern: PatternRow, agentId: string | null): boolean {
-  if (pattern.scopeMode !== "specific") {
-    return true;
-  }
-  const agentIds = (pattern.agentIds as string[] | null) ?? [];
-  return agentId !== null && agentIds.includes(agentId);
-}
-
-// Sampling is only applied to the automatic sweep, not the explicit pattern_ids path — a caller
-// naming a specific pattern id is asking "does this match right now", not "sample this trace".
-function passesSampleRate(sampleRate: number): boolean {
-  if (sampleRate >= 1) {
-    return true;
-  }
-  if (sampleRate <= 0) {
-    return false;
-  }
-  return Math.random() < sampleRate;
-}
+import { matchesAgentScope, passesSampleRate } from "./routing.js";
 
 // Built-in checks, evaluated in code rather than stored as pattern rows (same list as
 // AgentX-web-api's BUILT_IN_AGENT_MONITORING_PATTERNS, minus "negative-feedback": that one is
@@ -125,37 +103,53 @@ const semanticMatchSchema = {
 
 // Real LLM-based semantic judge for custom patterns' "semantic" detector, reusing the same
 // multi-provider judge-calling helper Evaluate's judge scoring uses (BYO OPENAI_API_KEY /
-// ANTHROPIC_API_KEY). AgentX-web-api's equivalent (evaluateSemanticPattern) also returns a reason;
-// self-host folds that straight into the signal's rootCause via the caller.
+// ANTHROPIC_API_KEY). Returns `reason` alongside the boolean (previously discarded here) so
+// callers can surface it on the resulting signal, same as the new "external" detector does.
 const llmSemanticJudge: SemanticJudge = async (rubric, text) => {
   const result = await callJudgeJson({
     model: DEFAULT_JUDGE_MODEL,
     jsonSchema: semanticMatchSchema,
     userMessage: `Does the following text match this rubric?\n\nRubric: ${rubric}\n\nText:\n${text}\n\nRespond with JSON {"matches": true|false, "reason": "..."}.`,
   });
-  const payload = result.payload as { matches?: boolean } | null;
-  return payload?.matches === true;
+  const payload = result.payload as { matches?: boolean; reason?: string } | null;
+  return { matched: payload?.matches === true, reason: payload?.reason };
 };
 
-async function detectCustomPatterns(db: Db, trace: TraceLike, agentId: string | null): Promise<DetectedSignal | null> {
+function withReasons(summary: string, reasons: string[]): string {
+  return reasons.length ? `${summary} (${reasons.join("; ")})` : summary;
+}
+
+async function detectCustomPatterns(db: Db, trace: TraceLike, agentId: string | null, traceId: string | null): Promise<DetectedSignal | null> {
   const patterns = await listCustomPatterns(db);
   const responseText = typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output ?? "");
   for (const pattern of patterns) {
     if (!pattern.enabled) continue;
-    if (!patternMatchesAgent(pattern, agentId)) continue;
+    if (!matchesAgentScope(pattern, agentId)) continue;
     if (!passesSampleRate(pattern.sampleRate)) continue;
-    const matched = await evaluatePatternConditions({
-      conditions: pattern.conditions as PatternCondition[],
-      responseText,
-      trace,
-      semanticJudge: llmSemanticJudge,
-    });
-    if (!matched) continue;
+    let outcome: { overall: boolean; reasons: string[] };
+    try {
+      outcome = await evaluatePatternConditions({
+        conditions: pattern.conditions as PatternCondition[],
+        responseText,
+        trace,
+        semanticJudge: llmSemanticJudge,
+        agentId,
+        traceId,
+      });
+    } catch (err) {
+      // One "semantic" or "external" condition failing (missing judge API key, provider outage,
+      // the user's own endpoint being down/timing out/returning garbage) must not silently skip
+      // every other pattern after it, or the entire healthy-tally/failure detection for this
+      // trace — isolated per-pattern rather than letting the whole sweep abort partway.
+      console.error(`Pattern "${pattern.name}" failed to evaluate:`, err instanceof Error ? err.message : err);
+      continue;
+    }
+    if (!outcome.overall) continue;
     return {
       type: "custom_pattern_match",
       severity: pattern.severity,
       polarity: pattern.polarity,
-      summary: pattern.description || `${pattern.name} matched this response.`,
+      summary: withReasons(pattern.description || `${pattern.name} matched this response.`, outcome.reasons),
       patternKey: pattern.key,
       rootCause: pattern.name,
     };
@@ -163,22 +157,32 @@ async function detectCustomPatterns(db: Db, trace: TraceLike, agentId: string | 
   return null;
 }
 
-// Entry point called from routes/ingest.ts when a trace is submitted with monitor=true. Mirrors
-// tracer.trace(..., monitor=True, pattern_ids=[...]): explicit pattern_ids restricts detection to
-// exactly those custom pattern ids (skipping built-ins); omitted runs the full default sweep
-// (all built-in checks plus every enabled custom pattern).
+// Entry point called from routes/ingest.ts, two ways: explicitly, when a trace is submitted with
+// monitor=true (mirrors tracer.trace(..., monitor=True, pattern_ids=[...]): explicit pattern_ids
+// restricts detection to exactly those custom pattern ids, skipping built-ins; omitted runs the
+// full default sweep), and implicitly, on every other trace, gated by requireEnabledProfile below
+// so a dashboard-enabled AgentMonitoringProfile actually takes effect on regular SDK traces
+// instead of only ever mattering for OTLP-ingested ones (routes/otlp.ts already calls this
+// unconditionally).
 export async function runMonitorCheck(
   db: Db,
   trace: TraceLike & { latencyMs?: number | null },
-  ctx: { agentId?: string | null; traceId?: string | null; patternIds?: string[] }
+  ctx: { agentId?: string | null; traceId?: string | null; patternIds?: string[]; requireEnabledProfile?: boolean }
 ): Promise<void> {
   const agentId = ctx.agentId ?? null;
   // Profile-level gates: enabled/sampleRate/failureDetectionEnabled/infoDetectionEnabled are
   // persisted (core/monitor/profiles.ts) and round-trip through the dashboard's per-agent settings
-  // dialog, but were never actually consulted here — only thresholdOverrides.latencyMs was, via
-  // resolveLatencyThresholdMs below. No profile row (agent never configured) behaves exactly like
-  // today: fully on, unsampled.
+  // dialog. No profile row (agent never configured) behaves exactly like today for the *explicit*
+  // monitor=true path: fully on, unsampled — that's the "no dashboard setup required" SDK-first
+  // design goal.
   const profile = agentId ? await getProfileRow(db, agentId) : null;
+  // The *implicit* path (every trace, not just monitor=true ones) is the opposite: "no profile"
+  // must mean "skip", not "fully on" — otherwise every agent would start being monitored (and
+  // judge-API-billed) automatically the moment any trace is ingested, before anyone touched the
+  // dashboard at all. Only an agent with a real, explicitly-enabled profile gets implicit coverage.
+  if (ctx.requireEnabledProfile && !profile?.enabled) {
+    return;
+  }
   if (profile && !profile.enabled) {
     return;
   }
@@ -194,20 +198,28 @@ export async function runMonitorCheck(
     for (const id of ctx.patternIds!) {
       const pattern = await getPatternRow(db, id);
       if (!pattern || !pattern.enabled) continue;
-      if (!patternMatchesAgent(pattern, agentId)) continue;
+      if (!matchesAgentScope(pattern, agentId)) continue;
       const responseText = typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output ?? "");
-      const matched = await evaluatePatternConditions({
-        conditions: pattern.conditions as PatternCondition[],
-        responseText,
-        trace,
-        semanticJudge: llmSemanticJudge,
-      });
-      if (matched) {
+      let outcome: { overall: boolean; reasons: string[] };
+      try {
+        outcome = await evaluatePatternConditions({
+          conditions: pattern.conditions as PatternCondition[],
+          responseText,
+          trace,
+          semanticJudge: llmSemanticJudge,
+          agentId,
+          traceId: ctx.traceId ?? null,
+        });
+      } catch (err) {
+        console.error(`Pattern "${pattern.name}" failed to evaluate:`, err instanceof Error ? err.message : err);
+        continue;
+      }
+      if (outcome.overall) {
         detected = {
           type: "custom_pattern_match",
           severity: pattern.severity,
           polarity: pattern.polarity,
-          summary: pattern.description || `${pattern.name} matched this response.`,
+          summary: withReasons(pattern.description || `${pattern.name} matched this response.`, outcome.reasons),
           patternKey: pattern.key,
           rootCause: pattern.name,
         };
@@ -217,7 +229,7 @@ export async function runMonitorCheck(
   } else {
     const latencyThresholdMs = await resolveLatencyThresholdMs(db, agentId ?? "default");
     const builtIn = profile?.failureDetectionEnabled === false ? null : detectBuiltIn(trace, latencyThresholdMs);
-    detected = builtIn ?? (await detectCustomPatterns(db, trace, agentId));
+    detected = builtIn ?? (await detectCustomPatterns(db, trace, agentId, ctx.traceId ?? null));
   }
 
   if (!detected) {
