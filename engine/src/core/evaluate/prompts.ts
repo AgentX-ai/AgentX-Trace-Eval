@@ -7,7 +7,7 @@ import { getTraceRow } from "../trace/ingest.js";
 import type { MonitoringWindow } from "../monitor/events.js";
 
 // The external-agent prompt registry: how LangSmith (Prompt Hub) and Langfuse (Prompt
-// Management) close the "we don't own the agent's code" gap — AgentX becomes the prompt's
+// Management) close the "we don't own the agent's code" gap: AgentX becomes the prompt's
 // source of truth, the SDK pulls it at runtime (client.evaluations.prompts.get(name)), and a
 // human-approved "propose improvement" step (proposePromptImprovement below) writes new
 // versions here, never into the caller's own code. See the plan's Context section for the full
@@ -33,7 +33,7 @@ export type PromptVersionRow = {
   createdAt: Date;
 };
 
-// Same free-form `evaluationSubject.metadata` trick as runs.ts's extractVersion — a run tagged
+// Same free-form `evaluationSubject.metadata` trick as runs.ts's extractVersion: a run tagged
 // via `subject={"metadata": {"promptName": "...", "version": "name@vN"}}` needs zero SDK changes
 // to be discoverable here.
 function extractPromptName(evaluationSubject: unknown): string | null {
@@ -181,7 +181,7 @@ export async function listPromptsForSdk(db: Db) {
   });
 }
 
-// The only write path for a version — used both for a manual edit and for accepting a proposal
+// The only write path for a version, used both for a manual edit and for accepting a proposal
 // (source: "proposed", reasoning/basedOnVersion set), keeping propose/publish as two separate
 // calls so a proposal never reaches storage without a human explicitly approving it.
 export async function publishPromptVersion(
@@ -229,23 +229,33 @@ export async function deletePrompt(db: Db, id: string): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// Propose improvement — the actual "autotune" step. Never writes on its own; the dashboard
+// Propose improvement: the actual "autotune" step. Never writes on its own; the dashboard
 // shows the result and a human calls publishPromptVersion (source: "proposed") to accept it.
 // ---------------------------------------------------------------------------
 
 export type WorstRatedExample = {
+  // Stable id of the underlying row (evaluation_run_results.id for "eval_run",
+  // monitor_events.id for "online_evaluator"), lets a caller select a subset of examples (see
+  // proposePromptImprovement's exampleIds) by referencing exactly what GET /prompts/:id/examples
+  // returned, instead of re-deriving a match from mutable fields like rating/input.
+  id: string;
   // "eval_run": a deliberate, on-demand Evaluate run against a dataset. "online_evaluator": a
-  // continuous LLM-judge rating of real production traffic (core/monitor/onlineEvaluators.ts) —
+  // continuous LLM-judge rating of real production traffic (core/monitor/onlineEvaluators.ts):
   // no dataset behind it, so never has expectedResults.
   source: "eval_run" | "online_evaluator";
   input: string;
   output: string;
   rating: number;
   justification: string | null;
+  createdAt: string;
   // The dataset author's golden answer for this example's question, when resolvable (see
-  // getWorstRatedExamples) — lets the rewriting judge compare actual-vs-expected directly instead
+  // getWorstRatedExamples), lets the rewriting judge compare actual-vs-expected directly instead
   // of only through the original grading judge's paraphrase (`justification`).
   expectedResults?: string;
+  // Present when the underlying result/event has one (both sources can, see toResultWire's
+  // traceId and monitor_events' own column), lets the dashboard link straight to the trace
+  // instead of only showing the input/output text captured at scoring time.
+  traceId?: string;
 };
 export type WorstRatedExamplesResult = {
   promptName: string;
@@ -253,7 +263,7 @@ export type WorstRatedExamplesResult = {
   currentText: string;
   examples: WorstRatedExample[];
   // What was actually used to gather `examples`, so a caller (the dashboard) can show it instead
-  // of the scope silently changing — see getWorstRatedExamples's auto-widen fallback.
+  // of the scope silently changing, see getWorstRatedExamples's auto-widen fallback.
   scope: { versionScoped: boolean; window: MonitoringWindow };
 };
 
@@ -263,7 +273,7 @@ export type WorstRatedExamplesResult = {
 // instead: the skill's own reasoning stands in for the judge call, so a self-host install with no
 // OPENAI_API_KEY/ANTHROPIC_API_KEY configured on the engine can still drive the exact same
 // propose -> human-approve -> publish loop. One implementation, two callers.
-// Merges both sources' examples (worst first) and caps the total — same 20-example cap either
+// Merges both sources' examples (worst first) and caps the total: same 20-example cap either
 // side used individually before this merge existed.
 function mergeAndCap(examples: WorstRatedExample[]): WorstRatedExample[] {
   return examples
@@ -284,7 +294,7 @@ export async function getWorstRatedExamples(
 
   const window = opts.window ?? "7d";
   // Same two-line cutoff-math convention core/monitor/events.ts's private windowConfig() (and
-  // every one of its callers) already uses — not exported there, so replicated here rather than
+  // every one of its callers) already uses, not exported there, so replicated here rather than
   // forcing a new export for one caller.
   const windowDays = window === "24h" ? 1 : window === "30d" ? 30 : 7;
   const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
@@ -303,7 +313,7 @@ export async function getWorstRatedExamples(
     ) as { id: string; datasetId: string; version: string | null; evaluationSubject: unknown }[];
 
     // Matches PromptClient's documented tagging convention (subject.metadata.version =
-    // "{name}@v{version}") — same string the sample script and every caller of prompts.get()
+    // "{name}@v{version}"), same string the sample script and every caller of prompts.get()
     // is expected to use. Without this, a v3 prompt's rewrite gets polluted by v1 complaints
     // that v2/v3 may have already fixed.
     const currentVersionTag = `${prompt.name}@v${prompt.currentVersion}`;
@@ -323,12 +333,15 @@ export async function getWorstRatedExamples(
         ? db.db.select().from(db.schema.evaluationRunResults).where(resultsCond).all()
         : await db.db.select().from(db.schema.evaluationRunResults).where(resultsCond)
     ) as {
+      id: string;
       runId: string;
       questionIndex: number | null;
       input: unknown;
       output: unknown;
       rating: number | null;
       justification: string | null;
+      traceId: string | null;
+      createdAt: Date;
     }[];
 
     const rated = results
@@ -337,7 +350,7 @@ export async function getWorstRatedExamples(
       .slice(0, 20);
 
     // Resolve each example's expected result (the dataset author's golden answer for that
-    // question) so the rewriting judge can compare actual-vs-expected directly — see
+    // question) so the rewriting judge can compare actual-vs-expected directly, see
     // WorstRatedExample's comment. Only resolves main questions
     // (questions[i].main_question.expectedResults); follow-up questions aren't separately
     // indexed by the SDK's current run-building logic, so this covers every example in practice
@@ -359,19 +372,22 @@ export async function getWorstRatedExamples(
 
     return Promise.all(
       rated.map(async r => ({
+        id: r.id,
         source: "eval_run" as const,
         input: extractText(r.input),
         output: extractText(r.output),
         rating: r.rating,
         justification: r.justification,
+        createdAt: r.createdAt.toISOString(),
         expectedResults: await resolveExpectedResults(r.runId, r.questionIndex),
+        traceId: r.traceId ?? undefined,
       }))
     );
   };
 
   // --- Online Evaluator half: continuous LLM-judge ratings of real production traffic -----------
   // monitor_events has no input/output text (see core/monitor/onlineEvaluators.ts's recordEvent
-  // call — only rating/justification/traceId), so this joins back to `traces` via getTraceRow
+  // call, only rating/justification/traceId), so this joins back to `traces` via getTraceRow
   // (core/trace/ingest.ts, already used by portability.ts for the same "need the raw
   // input/metadata" need). Filtering by the time window first (monitor_events has an index on
   // created_at) keeps the join count bounded without needing a new promptName column anywhere.
@@ -381,7 +397,13 @@ export async function getWorstRatedExamples(
       db.kind === "sqlite"
         ? db.db.select().from(db.schema.monitorEvents).where(cond).all()
         : await db.db.select().from(db.schema.monitorEvents).where(cond)
-    ) as { traceId: string | null; rating: number | null; justification: string | null }[];
+    ) as {
+      id: string;
+      traceId: string | null;
+      rating: number | null;
+      justification: string | null;
+      createdAt: Date;
+    }[];
 
     const rated = events
       .filter((e): e is typeof e & { rating: number; traceId: string } => e.rating !== null && e.traceId !== null)
@@ -396,11 +418,14 @@ export async function getWorstRatedExamples(
           return null;
         }
         const example: WorstRatedExample = {
+          id: e.id,
           source: "online_evaluator",
           input: extractText(trace.input),
           output: extractText(trace.output),
           rating: e.rating,
           justification: e.justification,
+          createdAt: e.createdAt.toISOString(),
+          traceId: e.traceId,
         };
         return example;
       })
@@ -432,16 +457,34 @@ export async function getWorstRatedExamples(
   };
 }
 
+// One line of the judge's structured "what changed" summary, replacing a single freeform
+// paragraph so the dashboard can render each change as its own tagged row instead of a wall of
+// prose. `reasoning` is kept alongside as a short overall summary (also used as the version's
+// stored `reasoning` on publish).
+export type PromptChange = {
+  tag: "added" | "tightened" | "removed";
+  text: string;
+};
+
 export type ProposalResult = {
   hasExamples: boolean;
   exampleCount: number;
-  // How many of `exampleCount` came from each source — the dashboard shows this so "based on
+  // How many of `exampleCount` came from each source: the dashboard shows this so "based on
   // real evaluation feedback" isn't just the merged total, both contributions stay visible.
   sourceBreakdown: { evalRun: number; onlineEvaluator: number };
   basedOnVersion: number;
   revisedText: string | null;
   reasoning: string | null;
+  changes: PromptChange[];
+  // The actual judge model used, echoed back rather than hardcoded client-side, so the dashboard
+  // never shows a model name that doesn't match what really produced the proposal.
+  judgeModel: string;
   scope: { versionScoped: boolean; window: MonitoringWindow };
+  // The exact evidence the judge above was given, worst-rated first, so the dialog can show it
+  // instead of just a count, this is what actually produced the rewrite, not a re-fetch that
+  // could in principle drift from what the judge saw (a new online-evaluator score landing
+  // between two separate calls, say).
+  examples: WorstRatedExample[];
 };
 
 function countBySource(examples: WorstRatedExample[]): { evalRun: number; onlineEvaluator: number } {
@@ -454,10 +497,19 @@ function countBySource(examples: WorstRatedExample[]): { evalRun: number; online
 export async function proposePromptImprovement(
   db: Db,
   promptId: string,
-  opts: { datasetId?: string; includeAllVersions?: boolean; window?: MonitoringWindow } = {}
+  opts: { datasetId?: string; includeAllVersions?: boolean; window?: MonitoringWindow; exampleIds?: string[] } = {}
 ): Promise<ProposalResult | null> {
   const gathered = await getWorstRatedExamples(db, promptId, opts);
   if (!gathered) return null;
+
+  // A caller (the dashboard's evidence checklist) can narrow generation down to the examples a
+  // human picked as representative, instead of always using every worst-rated example gathered.
+  // Ids come from the same GET /prompts/:id/examples response the checklist renders, so this
+  // never generates from anything the human didn't actually see.
+  const selectedExamples =
+    opts.exampleIds && opts.exampleIds.length > 0
+      ? gathered.examples.filter(e => opts.exampleIds!.includes(e.id))
+      : gathered.examples;
 
   const notEnoughData: ProposalResult = {
     hasExamples: false,
@@ -466,13 +518,16 @@ export async function proposePromptImprovement(
     basedOnVersion: gathered.currentVersion,
     revisedText: null,
     reasoning: null,
+    changes: [],
+    judgeModel: DEFAULT_JUDGE_MODEL,
     scope: gathered.scope,
+    examples: [],
   };
-  if (gathered.examples.length === 0) {
+  if (selectedExamples.length === 0) {
     return notEnoughData;
   }
 
-  const examplesText = gathered.examples
+  const examplesText = selectedExamples
     .map((r, i) => {
       const expectedLine = r.expectedResults ? `\nExpected: ${r.expectedResults}` : "";
       const sourceLabel = r.source === "online_evaluator" ? "production monitoring" : "eval dataset run";
@@ -487,11 +542,11 @@ Current prompt:
 ${gathered.currentText}
 """
 
-Below are the worst-rated examples of this agent's actual behavior when using this prompt, each with a judge's rating (0-10), the expected/golden answer when one was authored for that question, and feedback explaining what went wrong. "[eval dataset run]" examples are from deliberate test runs against a hand-authored dataset; "[production monitoring]" examples are from real live traffic, sampled and scored continuously — weigh both as real evidence of how this prompt performs.
+Below are the worst-rated examples of this agent's actual behavior when using this prompt, each with a judge's rating (0-10), the expected/golden answer when one was authored for that question, and feedback explaining what went wrong. "[eval dataset run]" examples are from deliberate test runs against a hand-authored dataset; "[production monitoring]" examples are from real live traffic, sampled and scored continuously. Weigh both as real evidence of how this prompt performs.
 
 ${examplesText}
 
-Where an "Expected" answer is given, use it as ground truth for what the response should have looked like, not just the judge feedback's paraphrase of it. Rewrite the prompt to address the recurring issues shown above. Return the complete revised prompt text (not a diff or partial edit) and a short explanation of what changed and why.`;
+Where an "Expected" answer is given, use it as ground truth for what the response should have looked like, not just the judge feedback's paraphrase of it. Rewrite the prompt to address the recurring issues shown above. Return the complete revised prompt text (not a diff or partial edit), a short overall explanation of what changed and why, and an itemized list of specific changes, each tagged "added" (a new instruction), "tightened" (an existing instruction clarified or strengthened), or "removed" (an instruction taken out), with a one-sentence description each.`;
 
   const judgeResult = await callJudgeJson({
     model: DEFAULT_JUDGE_MODEL,
@@ -500,26 +555,119 @@ Where an "Expected" answer is given, use it as ground truth for what the respons
       type: "object",
       properties: {
         revisedPrompt: { type: "string", description: "The complete rewritten prompt text" },
-        reasoning: { type: "string", description: "What changed and why, based on the examples" },
+        reasoning: { type: "string", description: "A short overall summary of what changed and why" },
+        changes: {
+          type: "array",
+          description: "Itemized list of specific changes made",
+          items: {
+            type: "object",
+            properties: {
+              tag: { type: "string", enum: ["added", "tightened", "removed"] },
+              text: { type: "string", description: "One-sentence description of this specific change" },
+            },
+            required: ["tag", "text"],
+          },
+        },
       },
-      required: ["revisedPrompt", "reasoning"],
+      required: ["revisedPrompt", "reasoning", "changes"],
     },
   });
 
-  const payload = judgeResult.payload as { revisedPrompt: string; reasoning: string } | null;
+  const payload = judgeResult.payload as { revisedPrompt: string; reasoning: string; changes?: PromptChange[] } | null;
   if (!payload) {
     throw new Error("Judge model returned no proposal");
   }
 
   return {
     hasExamples: true,
-    exampleCount: gathered.examples.length,
-    sourceBreakdown: countBySource(gathered.examples),
+    exampleCount: selectedExamples.length,
+    sourceBreakdown: countBySource(selectedExamples),
     basedOnVersion: gathered.currentVersion,
     revisedText: payload.revisedPrompt,
     reasoning: payload.reasoning,
+    changes: Array.isArray(payload.changes) ? payload.changes : [],
+    judgeModel: DEFAULT_JUDGE_MODEL,
     scope: gathered.scope,
+    examples: selectedExamples,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Failure theme clustering: a lightweight second judge pass over the same evidence, purely for
+// display (see the dashboard's Evidence panel), grouping the worst-rated examples into a handful
+// of named recurring failure modes. Never affects the actual rewrite, propose above still reads
+// straight from the individual examples' justification, this exists only so a human scanning the
+// evidence list gets a "what's actually going wrong, in aggregate" summary instead of having to
+// read every justification themselves.
+// ---------------------------------------------------------------------------
+
+export type FailureTheme = {
+  label: string;
+  count: number;
+};
+
+export type FailureThemesResult = {
+  themes: FailureTheme[];
+  scope: { versionScoped: boolean; window: MonitoringWindow };
+};
+
+async function clusterFailureThemes(examples: WorstRatedExample[]): Promise<FailureTheme[]> {
+  const examplesText = examples
+    .map((r, i) => `Example ${i}: ${r.justification ?? `Output: ${r.output}`}`)
+    .join("\n");
+
+  const userMessage = `Below are judge justifications for why an AI agent's responses scored poorly, each prefixed with its example number.
+
+${examplesText}
+
+Group these into 3-6 short, specific recurring failure themes (e.g. "Curt or unempathetic tone", "No concrete next step offered"). Every example should belong to at least one theme; an example can belong to more than one if it exhibits multiple problems. Return each theme's short label and the example numbers that exhibit it.`;
+
+  const judgeResult = await callJudgeJson({
+    model: DEFAULT_JUDGE_MODEL,
+    userMessage,
+    jsonSchema: {
+      type: "object",
+      properties: {
+        themes: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              label: { type: "string", description: "Short (3-6 word) name for this failure theme" },
+              exampleIndices: { type: "array", items: { type: "number" }, description: "0-based example numbers exhibiting this theme" },
+            },
+            required: ["label", "exampleIndices"],
+          },
+        },
+      },
+      required: ["themes"],
+    },
+  });
+
+  const payload = judgeResult.payload as { themes?: { label: string; exampleIndices?: number[] }[] } | null;
+  if (!payload || !Array.isArray(payload.themes)) {
+    return [];
+  }
+
+  return payload.themes
+    .map(t => ({ label: t.label, count: Array.isArray(t.exampleIndices) ? t.exampleIndices.length : 0 }))
+    .filter(t => t.count > 0)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 6);
+}
+
+export async function getFailureThemes(
+  db: Db,
+  promptId: string,
+  opts: { datasetId?: string; includeAllVersions?: boolean; window?: MonitoringWindow } = {}
+): Promise<FailureThemesResult | null> {
+  const gathered = await getWorstRatedExamples(db, promptId, opts);
+  if (!gathered) return null;
+  if (gathered.examples.length === 0) {
+    return { themes: [], scope: gathered.scope };
+  }
+  const themes = await clusterFailureThemes(gathered.examples);
+  return { themes, scope: gathered.scope };
 }
 
 function extractText(value: unknown): string {

@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 import { and, eq, gte, isNull, lt } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { getTraceRow } from "../trace/ingest.js";
 
 // Matches AgentX-web-front's MonitoringWindow (src/types/agentMonitoring.ts).
 export type MonitoringWindow = "24h" | "7d" | "30d";
@@ -393,4 +394,67 @@ export async function getOnlineEvaluatorRatings(
   });
 
   return { window, points };
+}
+
+function extractText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    const obj = value as { query?: string; text?: string };
+    if (typeof obj.query === "string") return obj.query;
+    if (typeof obj.text === "string") return obj.text;
+  }
+  return JSON.stringify(value ?? "");
+}
+
+export type OnlineEvaluatorEvent = {
+  id: string;
+  traceId: string;
+  rating: number;
+  justification: string | null;
+  createdAt: Date;
+  input: string;
+  output: string;
+};
+
+// Individual scored traces for one online evaluator within a window, worst-rated first — the
+// per-trace complement to getOnlineEvaluatorRatings' bucketed aggregate above, so a low point on
+// that chart can be traced back to exactly which conversation(s) pulled the average down and why.
+// Same trace-join pattern as core/evaluate/prompts.ts's gatherOnlineEvaluatorExamples (that one
+// feeds the prompt-registry autotune judge; this one is for direct human review in the dashboard).
+export async function getOnlineEvaluatorEvents(
+  db: Db,
+  evaluatorId: string,
+  window: MonitoringWindow,
+  limit = 20
+): Promise<{ events: OnlineEvaluatorEvent[]; totalCount: number }> {
+  const { days } = windowConfig(window);
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  const rows = (await listEventsSince(db, since)).filter(
+    (r): r is EventRow & { rating: number; traceId: string } =>
+      r.onlineEvaluatorId === evaluatorId && r.rating !== null && r.traceId !== null
+  );
+  rows.sort((a, b) => a.rating - b.rating);
+
+  const resolved = await Promise.all(
+    rows.slice(0, limit).map(async row => {
+      const trace = await getTraceRow(db, row.traceId);
+      if (!trace) return null;
+      const event: OnlineEvaluatorEvent = {
+        id: row.id,
+        traceId: row.traceId,
+        rating: row.rating,
+        justification: row.justification,
+        createdAt: row.createdAt,
+        input: extractText(trace.input),
+        output: extractText(trace.output),
+      };
+      return event;
+    })
+  );
+  // totalCount is every scored row in the window, not just the ones with a still-resolvable trace
+  // (a trace could in principle be pruned/missing) — deliberately the denominator a caller would
+  // expect "worst 20 of totalCount" to add up against, matching what the window's real event count
+  // actually is rather than silently under-counting to match resolved.length.
+  return { events: resolved.filter((e): e is OnlineEvaluatorEvent => e !== null), totalCount: rows.length };
 }

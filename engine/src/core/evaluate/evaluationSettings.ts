@@ -1,6 +1,9 @@
 import { nanoid } from "nanoid";
 import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import type { SimilarityConfig } from "./datasets.js";
+
+export type { SimilarityConfig };
 
 // Mirrors AgentX-Python's EvaluationSettingsBuilder.publish() payload and the EvaluationSettings
 // pydantic model's field aliases (agentx/evaluations/evaluation_settings.py, models.py). A
@@ -12,6 +15,8 @@ export type CreateEvaluationSettingsInput = {
   id?: string;
   name: string;
   description?: string;
+  numberOfRequests?: number;
+  similarityConfig?: SimilarityConfig;
   acceptanceCriteria?: string;
   rejectionCriteria?: string;
   evaluationCriteria?: string;
@@ -28,6 +33,8 @@ export type EvaluationSettingsRow = {
   id: string;
   name: string;
   description: string | null;
+  numberOfRequests: number;
+  similarityConfig: unknown;
   acceptanceCriteria: string | null;
   rejectionCriteria: string | null;
   evaluationCriteria: string | null;
@@ -43,7 +50,8 @@ function toWire(row: EvaluationSettingsRow) {
     _id: row.id,
     name: row.name,
     description: row.description ?? undefined,
-    numberOfRequests: 1,
+    numberOfRequests: row.numberOfRequests,
+    ...((row.similarityConfig as SimilarityConfig | null) ?? {}),
     acceptanceCriteria: row.acceptanceCriteria ?? undefined,
     rejectionCriteria: row.rejectionCriteria ?? undefined,
     evaluationCriteria: row.evaluationCriteria ?? undefined,
@@ -74,6 +82,8 @@ export async function createEvaluationSettings(db: Db, input: CreateEvaluationSe
     id: input.id ?? nanoid(),
     name: input.name,
     description: input.description ?? null,
+    numberOfRequests: input.numberOfRequests ?? 1,
+    similarityConfig: input.similarityConfig ?? null,
     acceptanceCriteria: input.acceptanceCriteria ?? null,
     rejectionCriteria: input.rejectionCriteria ?? null,
     evaluationCriteria: input.evaluationCriteria ?? null,
@@ -102,6 +112,8 @@ export async function updateEvaluationSettings(db: Db, id: string, input: Update
   const values = {
     name: input.name,
     description: input.description ?? null,
+    numberOfRequests: input.numberOfRequests ?? 1,
+    similarityConfig: input.similarityConfig ?? null,
     acceptanceCriteria: input.acceptanceCriteria ?? null,
     rejectionCriteria: input.rejectionCriteria ?? null,
     evaluationCriteria: input.evaluationCriteria ?? null,
@@ -132,6 +144,8 @@ export async function patchEvaluationSettings(db: Db, id: string, patch: Partial
   const values = {
     name: patch.name ?? existing.name,
     description: patch.description ?? existing.description,
+    numberOfRequests: patch.numberOfRequests ?? existing.numberOfRequests,
+    similarityConfig: patch.similarityConfig ?? existing.similarityConfig,
     acceptanceCriteria: patch.acceptanceCriteria ?? existing.acceptanceCriteria,
     rejectionCriteria: patch.rejectionCriteria ?? existing.rejectionCriteria,
     evaluationCriteria: patch.evaluationCriteria ?? existing.evaluationCriteria,
@@ -192,5 +206,8 @@ export async function listStandaloneEvaluationSettings(db: Db) {
           db.db.select({ id: db.schema.datasets.id }).from(db.schema.datasets),
         ]);
   const datasetIds = new Set(datasetIdRows.map(r => r.id));
-  return allRows.filter(row => !datasetIds.has(row.id)).map(toWire);
+  return allRows
+    .filter(row => !datasetIds.has(row.id))
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .map(toWire);
 }

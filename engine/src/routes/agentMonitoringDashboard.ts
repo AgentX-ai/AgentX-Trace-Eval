@@ -8,7 +8,14 @@ import { listAgentsWire } from "../core/monitor/agents.js";
 import { getPerformance } from "../core/monitor/performance.js";
 import { createFeedback, listFeedbackForSignal } from "../core/monitor/feedback.js";
 import { generateRegex, suggestHumanFeedback, suggestExpectedResults } from "../core/monitor/suggestions.js";
-import { getKpis, getTrend, getTopFailing, getOnlineEvaluatorRatings, type MonitoringWindow } from "../core/monitor/events.js";
+import {
+  getKpis,
+  getTrend,
+  getTopFailing,
+  getOnlineEvaluatorRatings,
+  getOnlineEvaluatorEvents,
+  type MonitoringWindow,
+} from "../core/monitor/events.js";
 import { listDatasets, createDataset, updateDataset } from "../core/evaluate/datasets.js";
 import {
   createOnlineEvaluator,
@@ -224,6 +231,8 @@ agentMonitoringDashboardRouter.post("/online-evaluators", async (req: Request, r
       scopeMode: body.scopeMode,
       agentIds: body.agentIds,
       enabled: body.enabled,
+      alertThreshold: body.alertThreshold,
+      severity: body.severity,
     });
     res.status(201).json({ evaluator });
   } catch (err) {
@@ -249,6 +258,8 @@ agentMonitoringDashboardRouter.put("/online-evaluators/:evaluatorId", async (req
       scopeMode: body.scopeMode,
       agentIds: body.agentIds,
       enabled: body.enabled,
+      alertThreshold: body.alertThreshold,
+      severity: body.severity,
     });
     if (!evaluator) {
       res.status(404).json({ error: "Online evaluator not found" });
@@ -275,6 +286,13 @@ agentMonitoringDashboardRouter.delete("/online-evaluators/:evaluatorId", async (
 
 agentMonitoringDashboardRouter.get("/online-evaluators/:evaluatorId/ratings", async (req: Request, res: Response) => {
   res.status(200).json(await getOnlineEvaluatorRatings(getDb(), req.params.evaluatorId!, parseWindow(req)));
+});
+
+// Individual scored traces behind the ratings chart above, worst-rated first — lets a low point
+// on that chart be traced back to exactly which conversation(s) caused it and why.
+agentMonitoringDashboardRouter.get("/online-evaluators/:evaluatorId/events", async (req: Request, res: Response) => {
+  const result = await getOnlineEvaluatorEvents(getDb(), req.params.evaluatorId!, parseWindow(req));
+  res.status(200).json(result);
 });
 
 agentMonitoringDashboardRouter.get("/signals/:signalId", async (req: Request, res: Response) => {

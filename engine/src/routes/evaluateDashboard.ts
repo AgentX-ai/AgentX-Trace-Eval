@@ -1,7 +1,14 @@
 import { Router, type Request, type Response } from "express";
 import { nanoid } from "nanoid";
 import { getDb, type Db } from "../storage/db.js";
-import { createDataset, getDataset, listDatasets, updateDataset } from "../core/evaluate/datasets.js";
+import {
+  createDataset,
+  getDataset,
+  listDatasets,
+  updateDataset,
+  extractSimilarityConfig,
+  type SimilarityConfig,
+} from "../core/evaluate/datasets.js";
 import {
   createEvaluationSettings,
   getEvaluationSettingsRow,
@@ -24,6 +31,7 @@ import {
   publishPromptVersion,
   proposePromptImprovement,
   getWorstRatedExamples,
+  getFailureThemes,
   deletePrompt,
 } from "../core/evaluate/prompts.js";
 import type { MonitoringWindow } from "../core/monitor/events.js";
@@ -100,7 +108,8 @@ async function getMergedEvaluationSettings(db: Db, id: string) {
     _id: id,
     name: settingsRow!.name,
     description: settingsRow!.description ?? undefined,
-    numberOfRequests: 1,
+    numberOfRequests: settingsRow!.numberOfRequests,
+    ...((settingsRow!.similarityConfig as SimilarityConfig | null) ?? {}),
     acceptanceCriteria: settingsRow!.acceptanceCriteria ?? undefined,
     rejectionCriteria: settingsRow!.rejectionCriteria ?? undefined,
     evaluationCriteria: settingsRow!.evaluationCriteria ?? undefined,
@@ -253,15 +262,39 @@ evaluateDashboardRouter.get("/prompts/:id/examples", async (req: Request, res: R
   res.status(200).json({ ...gathered, exampleCount: gathered.examples.length });
 });
 
+// A second, purely-informational judge pass over the same evidence (core/evaluate/prompts.ts's
+// clusterFailureThemes), grouping it into a handful of named recurring failure modes for the
+// Evidence panel. Its own endpoint (rather than folding into /examples) since it's a real LLM
+// call with its own cost/latency and its own "no judge key configured" failure mode, while
+// /examples stays a plain data read.
+evaluateDashboardRouter.get("/prompts/:id/themes", async (req: Request, res: Response) => {
+  const datasetId = req.query.datasetId;
+  try {
+    const result = await getFailureThemes(getDb(), req.params.id!, {
+      datasetId: typeof datasetId === "string" && datasetId ? datasetId : undefined,
+      includeAllVersions: req.query.includeAllVersions === "true",
+      window: parseWindow(req),
+    });
+    if (!result) {
+      res.status(404).json({ error: "Prompt not found" });
+      return;
+    }
+    res.status(200).json(result);
+  } catch (err) {
+    res.status(422).json({ error: err instanceof Error ? err.message : "Unable to cluster failure themes" });
+  }
+});
+
 // Never writes on its own — returns a suggestion for the dashboard to show, which the human then
 // accepts via POST /prompts/:id/versions (source: "proposed") or discards outright.
 evaluateDashboardRouter.post("/prompts/:id/propose", async (req: Request, res: Response) => {
-  const { datasetId, includeAllVersions } = req.body ?? {};
+  const { datasetId, includeAllVersions, exampleIds } = req.body ?? {};
   try {
     const proposal = await proposePromptImprovement(getDb(), req.params.id!, {
       datasetId: typeof datasetId === "string" && datasetId ? datasetId : undefined,
       includeAllVersions: includeAllVersions === true,
       window: parseWindow(req),
+      exampleIds: Array.isArray(exampleIds) ? exampleIds.filter((id: unknown) => typeof id === "string") : undefined,
     });
     if (!proposal) {
       res.status(404).json({ error: "Prompt not found" });
@@ -306,6 +339,8 @@ evaluateDashboardRouter.post("/evaluationSettings/create", async (req: Request, 
     id,
     name: body.name as string,
     description: body.description as string | undefined,
+    numberOfRequests: typeof body.numberOfRequests === "number" ? body.numberOfRequests : undefined,
+    similarityConfig: extractSimilarityConfig(body),
     acceptanceCriteria: body.acceptanceCriteria as string | undefined,
     rejectionCriteria: body.rejectionCriteria as string | undefined,
     evaluationCriteria: body.evaluationCriteria as string | undefined,
@@ -319,9 +354,10 @@ evaluateDashboardRouter.post("/evaluationSettings/create", async (req: Request, 
 
 // A standalone, reusable grading config — no dataset/questions attached, no twin (see this file's
 // header comment). EvaluationConfigsTab.tsx / CreateEvaluationSettingsConfigDialog.tsx's create
-// flow (distinct from the "New dataset" flow above, which always pairs one). numberOfRequests/
-// vectorSimilarity/jaccardSimilarity/bleuScore/rougeScore/sovereigntyIndex/thresholds are accepted
-// but not persisted or acted on — same scope boundary as CreateDatasetInput, see plan task #109.
+// flow (distinct from the "New dataset" flow above, which always pairs one). numberOfRequests and
+// the similarity-metric toggles are both persisted (read back at run-scoring time, see
+// core/evaluate/runs.ts's scoreOneResult); sovereigntyIndex/thresholds are still accepted but not
+// persisted or acted on, see plan task #109.
 evaluateDashboardRouter.post("/evaluationSettings/create-standalone", async (req: Request, res: Response) => {
   const body = req.body ?? {};
   if (typeof body.name !== "string" || !body.name.trim()) {
@@ -331,6 +367,8 @@ evaluateDashboardRouter.post("/evaluationSettings/create-standalone", async (req
   const settings = await createEvaluationSettings(getDb(), {
     name: body.name as string,
     description: body.description as string | undefined,
+    numberOfRequests: typeof body.numberOfRequests === "number" ? body.numberOfRequests : undefined,
+    similarityConfig: extractSimilarityConfig(body),
     acceptanceCriteria: body.acceptanceCriteria as string | undefined,
     rejectionCriteria: body.rejectionCriteria as string | undefined,
     evaluationCriteria: body.evaluationCriteria as string | undefined,
@@ -356,6 +394,8 @@ evaluateDashboardRouter.put("/evaluationSettings/:id", async (req: Request, res:
     const updated = await patchEvaluationSettings(getDb(), id, {
       name: typeof body.name === "string" ? body.name : undefined,
       description: body.description as string | undefined,
+      numberOfRequests: typeof body.numberOfRequests === "number" ? body.numberOfRequests : undefined,
+      similarityConfig: extractSimilarityConfig(body),
       acceptanceCriteria: body.acceptanceCriteria as string | undefined,
       rejectionCriteria: body.rejectionCriteria as string | undefined,
       evaluationCriteria: body.evaluationCriteria as string | undefined,
@@ -376,6 +416,8 @@ evaluateDashboardRouter.put("/evaluationSettings/:id", async (req: Request, res:
   const shared = {
     name: body.name as string,
     description: body.description as string | undefined,
+    numberOfRequests: typeof body.numberOfRequests === "number" ? body.numberOfRequests : undefined,
+    similarityConfig: extractSimilarityConfig(body),
     acceptanceCriteria: body.acceptanceCriteria as string | undefined,
     rejectionCriteria: body.rejectionCriteria as string | undefined,
     evaluationCriteria: body.evaluationCriteria as string | undefined,
@@ -391,7 +433,22 @@ evaluateDashboardRouter.put("/evaluationSettings/:id", async (req: Request, res:
   res.status(200).json({ ...datasetWire, creator: LOCAL_USER });
 });
 
-function toResultWire(r: RunResultRow) {
+type QuestionsShape = Array<{ main_question?: { expectedResults?: string } }>;
+
+// expectedResults: prefers the run's own evaluationSettings.questions (matches the hosted SaaS
+// shape, where a dataset and its grading config are the same twin object), falling back to the
+// dataset's questions — needed because a standalone grading config (evaluationSettings/create-
+// standalone) has no questions of its own by design, so a run scored against one but backed by a
+// real dataset would otherwise show no expected answer at all, even though the dataset has one.
+// Same fallback core/evaluate/prompts.ts's getWorstRatedExamples already uses for this exact gap.
+function toResultWire(r: RunResultRow, evaluationSettingsQuestions: unknown, datasetQuestions: unknown) {
+  const questionIndex = r.questionIndex ?? 0;
+  const settingsQuestions = (evaluationSettingsQuestions ?? []) as QuestionsShape;
+  const fallbackQuestions = (datasetQuestions ?? []) as QuestionsShape;
+  const expectedResults =
+    settingsQuestions[questionIndex]?.main_question?.expectedResults ??
+    fallbackQuestions[questionIndex]?.main_question?.expectedResults ??
+    undefined;
   return {
     message: "",
     responseMessage: r.output?.text ?? (r.error ? `Error: ${r.error.type}: ${r.error.message}` : ""),
@@ -400,6 +457,17 @@ function toResultWire(r: RunResultRow) {
     questionIndex: r.questionIndex ?? undefined,
     runNumber: r.runNumber ?? undefined,
     questionText: r.input?.query ?? "",
+    expectedResults,
+    traceId: r.traceId ?? undefined,
+    isSmokeTestVariant: r.isSmokeTestVariant,
+    smokeTestVariantText: r.smokeTestVariantText ?? undefined,
+    latencyMs: r.latencyMs ?? undefined,
+    inputTokens: r.inputTokens ?? undefined,
+    outputTokens: r.outputTokens ?? undefined,
+    vectorSimilarity: r.vectorSimilarity ?? undefined,
+    jaccardSimilarity: r.jaccardSimilarity ?? undefined,
+    bleuScore: r.bleuScore ?? undefined,
+    rougeScore: r.rougeScore ?? undefined,
   };
 }
 
@@ -421,7 +489,7 @@ async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) 
     _id: run.id,
     evaluationSettings: evaluationSettings ?? undefined,
     datasetId: dataset ? { _id: dataset._id, name: dataset.name, description: dataset.description } : run.datasetId,
-    results: includeResults ? results.map(toResultWire) : [],
+    results: includeResults ? results.map(r => toResultWire(r, evaluationSettings?.questions, dataset?.questions)) : [],
     creator: LOCAL_USER,
     executor: LOCAL_USER,
     status: run.status,

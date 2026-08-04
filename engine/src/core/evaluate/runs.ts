@@ -2,7 +2,17 @@ import { nanoid } from "nanoid";
 import { eq, and, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { getEvaluationSettingsRow, type EvaluationSettingsRow } from "./evaluationSettings.js";
-import { scoreAgainstCriteria, DEFAULT_JUDGE_PROMPT, DEFAULT_JUDGE_MODEL } from "./judge.js";
+import type { SimilarityConfig } from "./datasets.js";
+import {
+  scoreAgainstCriteria,
+  generateSmokeTestVariants,
+  computeJaccardSimilarity,
+  computeBleuScore,
+  computeRougeScore,
+  computeVectorSimilarity,
+  DEFAULT_JUDGE_PROMPT,
+  DEFAULT_JUDGE_MODEL,
+} from "./judge.js";
 
 export const MAX_BATCH_SIZE = 10;
 
@@ -21,6 +31,7 @@ type ResolvedRunConfig = {
   evaluationCriteria: string;
   judgePrompt: string;
   judgeModel: string;
+  similarityConfig: SimilarityConfig;
   questions: Array<{ main_question?: { query?: string; expectedResults?: string; judgeGuideline?: string } }>;
 };
 
@@ -44,12 +55,20 @@ async function resolveRunConfig(
     evaluationCriteria: source?.evaluationCriteria ?? "",
     judgePrompt: (settings?.judgePrompt ?? "").trim() || DEFAULT_JUDGE_PROMPT,
     judgeModel: settings?.judgeModel ?? DEFAULT_JUDGE_MODEL,
+    similarityConfig: (source?.similarityConfig as SimilarityConfig | null) ?? {},
     questions,
   };
 }
 
 async function getDatasetRow(db: Db, id: string) {
-  type Row = { id: string; acceptanceCriteria: string | null; rejectionCriteria: string | null; evaluationCriteria: string | null; questions: unknown };
+  type Row = {
+    id: string;
+    acceptanceCriteria: string | null;
+    rejectionCriteria: string | null;
+    evaluationCriteria: string | null;
+    similarityConfig: unknown;
+    questions: unknown;
+  };
   if (db.kind === "sqlite") {
     return db.db.select().from(db.schema.datasets).where(eq(db.schema.datasets.id, id)).all()[0] as Row | undefined;
   }
@@ -94,6 +113,7 @@ export async function initRun(
     return null;
   }
   const id = nanoid();
+  const smokeTestVariants = await generateSmokeTestVariantsForDataset(dataset.questions);
   const runRow = {
     id,
     datasetId: input.datasetId,
@@ -102,6 +122,7 @@ export async function initRun(
     version: extractVersion(input.evaluationSubject),
     runSource: input.runSource ?? "sdk",
     sdkInfo: input.sdk ?? null,
+    smokeTestVariants,
     status: "in_progress",
     createdAt: new Date(),
   };
@@ -114,7 +135,38 @@ export async function initRun(
     runId: id,
     datasetId: input.datasetId,
     status: "in_progress",
+    smokeTestVariants,
   };
+}
+
+type SmokeTestQuestion = {
+  main_question?: {
+    query?: string;
+    smokeTest?: { enabled?: boolean; count?: number; guidance?: string };
+  };
+};
+
+// One group per question with smokeTest.enabled, generated once here and frozen for the run's
+// lifetime (see schema.sqlite.ts's evaluationRuns.smokeTestVariants). Returns null (not []) when
+// no question requests it, matching AgentX-Python's EvaluationRun.smoke_test_variants being
+// Optional/absent rather than an empty list in that case.
+async function generateSmokeTestVariantsForDataset(
+  questions: unknown
+): Promise<{ questionIndex: number; variants: string[] }[] | null> {
+  const typed = (questions as SmokeTestQuestion[] | undefined) ?? [];
+  const requests = typed
+    .map((q, questionIndex) => ({ questionIndex, smokeTest: q.main_question?.smokeTest, query: q.main_question?.query }))
+    .filter(r => r.smokeTest?.enabled && (r.smokeTest?.count ?? 0) > 0 && r.query);
+  if (requests.length === 0) {
+    return null;
+  }
+  const groups = await Promise.all(
+    requests.map(async r => ({
+      questionIndex: r.questionIndex,
+      variants: await generateSmokeTestVariants(r.query!, r.smokeTest!.count!, r.smokeTest!.guidance),
+    }))
+  );
+  return groups;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,17 +182,47 @@ type SubmittedResult = {
   input?: { query?: string };
   output?: { text?: string };
   error?: { type: string; message: string };
+  traceId?: string;
+  isSmokeTestVariant?: boolean;
+  smokeTestVariantText?: string;
+  // AgentX-Python's normalize_result nests these under `timings` (top-level input_tokens/
+  // output_tokens on the callable's returned dict, or metadata.input_tokens/prompt_tokens as a
+  // fallback, get folded in there client-side before the result is submitted).
+  timings?: { latencyMs?: number; inputTokens?: number; outputTokens?: number };
 };
 
-async function scoreOneResult(config: ResolvedRunConfig, item: SubmittedResult): Promise<{ rating: number; justification: string }> {
+type SimilarityScores = {
+  vectorSimilarity: number | null;
+  jaccardSimilarity: number | null;
+  bleuScore: number | null;
+  rougeScore: number | null;
+};
+
+async function scoreOneResult(
+  config: ResolvedRunConfig,
+  item: SubmittedResult
+): Promise<{ rating: number; justification: string } & SimilarityScores> {
   const question = item.questionIndex != null ? config.questions[item.questionIndex] : undefined;
   const mainQ = question?.main_question;
-  return scoreAgainstCriteria(config, {
-    input: item.input?.query || "",
-    output: item.output?.text || "",
-    expected: mainQ?.expectedResults,
-    judgeGuideline: mainQ?.judgeGuideline,
-  });
+  const expected = mainQ?.expectedResults;
+  const actual = item.output?.text;
+
+  const [judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore] = await Promise.all([
+    scoreAgainstCriteria(config, {
+      input: item.input?.query || "",
+      output: actual || "",
+      expected,
+      judgeGuideline: mainQ?.judgeGuideline,
+    }),
+    config.similarityConfig.vectorSimilarity?.enabled
+      ? computeVectorSimilarity(expected, actual, config.similarityConfig.vectorSimilarity.model)
+      : Promise.resolve(null),
+    config.similarityConfig.jaccardSimilarity?.enabled ? computeJaccardSimilarity(expected, actual) : null,
+    config.similarityConfig.bleuScore?.enabled ? computeBleuScore(expected, actual) : null,
+    config.similarityConfig.rougeScore?.enabled ? computeRougeScore(expected, actual) : null,
+  ]);
+
+  return { ...judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore };
 }
 
 export async function appendResults(
@@ -180,6 +262,7 @@ export async function appendResults(
     let rating: number | null = null;
     let justification: string | null = null;
     let status: "scored" | "failed" | "skipped" = "scored";
+    let similarity: SimilarityScores = { vectorSimilarity: null, jaccardSimilarity: null, bleuScore: null, rougeScore: null };
 
     if (item.error) {
       status = "failed";
@@ -190,6 +273,7 @@ export async function appendResults(
         const scored = await scoreOneResult(config, item);
         rating = scored.rating;
         justification = scored.justification;
+        similarity = scored;
       } catch (err) {
         status = "skipped";
         justification = err instanceof Error ? err.message : "Scoring failed";
@@ -212,6 +296,16 @@ export async function appendResults(
       input: item.input ?? null,
       output: item.output ?? null,
       error: item.error ?? null,
+      traceId: item.traceId ?? null,
+      isSmokeTestVariant: item.isSmokeTestVariant ?? false,
+      smokeTestVariantText: item.smokeTestVariantText ?? null,
+      latencyMs: item.timings?.latencyMs ?? null,
+      inputTokens: item.timings?.inputTokens ?? null,
+      outputTokens: item.timings?.outputTokens ?? null,
+      vectorSimilarity: similarity.vectorSimilarity,
+      jaccardSimilarity: similarity.jaccardSimilarity,
+      bleuScore: similarity.bleuScore,
+      rougeScore: similarity.rougeScore,
       rating,
       justification,
       status,
@@ -347,6 +441,16 @@ export type RunResultRow = {
   input: { query?: string } | null;
   output: { text?: string } | null;
   error: { type: string; message: string } | null;
+  traceId: string | null;
+  isSmokeTestVariant: boolean;
+  smokeTestVariantText: string | null;
+  latencyMs: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  vectorSimilarity: number | null;
+  jaccardSimilarity: number | null;
+  bleuScore: number | null;
+  rougeScore: number | null;
   rating: number | null;
   justification: string | null;
   createdAt: Date;

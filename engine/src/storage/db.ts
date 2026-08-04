@@ -181,6 +181,8 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       description TEXT,
+      number_of_requests INTEGER NOT NULL DEFAULT 1,
+      similarity_config TEXT,
       acceptance_criteria TEXT,
       rejection_criteria TEXT,
       evaluation_criteria TEXT,
@@ -192,6 +194,8 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       description TEXT,
+      number_of_requests INTEGER NOT NULL DEFAULT 1,
+      similarity_config TEXT,
       acceptance_criteria TEXT,
       rejection_criteria TEXT,
       evaluation_criteria TEXT,
@@ -210,6 +214,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       version TEXT,
       run_source TEXT,
       sdk_info TEXT,
+      smoke_test_variants TEXT,
       status TEXT NOT NULL DEFAULT 'in_progress',
       created_at INTEGER NOT NULL
     );
@@ -225,6 +230,16 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       input TEXT,
       output TEXT,
       error TEXT,
+      trace_id TEXT,
+      is_smoke_test_variant INTEGER NOT NULL DEFAULT 0,
+      smoke_test_variant_text TEXT,
+      latency_ms INTEGER,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      vector_similarity REAL,
+      jaccard_similarity REAL,
+      bleu_score REAL,
+      rouge_score REAL,
       rating REAL,
       justification TEXT,
       status TEXT NOT NULL,
@@ -327,6 +342,10 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       scope_mode TEXT NOT NULL DEFAULT 'all',
       agent_ids TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
+      -- NULL means "never raise a Signal for a low score", distinct from 0 (raise below any
+      -- score including 0).
+      alert_threshold REAL DEFAULT 5,
+      severity TEXT NOT NULL DEFAULT 'medium',
       created_at INTEGER NOT NULL
     );
 
@@ -382,6 +401,27 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0"],
     ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN status TEXT NOT NULL DEFAULT 'published'"],
     ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN evaluation_settings_id TEXT"],
+    // Existing rows backfill to 5 (the same default a fresh evaluator gets) rather than NULL, so
+    // upgrading a self-host install doesn't silently turn off the new Signals integration for
+    // evaluators created before this shipped; NULL remains available going forward as the
+    // explicit "never raise a Signal for this evaluator" opt-out.
+    ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN alert_threshold REAL DEFAULT 5"],
+    ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN severity TEXT NOT NULL DEFAULT 'medium'"],
+    ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN trace_id TEXT"],
+    ["datasets", "ALTER TABLE datasets ADD COLUMN number_of_requests INTEGER NOT NULL DEFAULT 1"],
+    ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN number_of_requests INTEGER NOT NULL DEFAULT 1"],
+    ["evaluation_runs", "ALTER TABLE evaluation_runs ADD COLUMN smoke_test_variants TEXT"],
+    ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN is_smoke_test_variant INTEGER NOT NULL DEFAULT 0"],
+    ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN smoke_test_variant_text TEXT"],
+    ["datasets", "ALTER TABLE datasets ADD COLUMN similarity_config TEXT"],
+    ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN similarity_config TEXT"],
+    ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN vector_similarity REAL"],
+    ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN jaccard_similarity REAL"],
+    ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN bleu_score REAL"],
+    ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN rouge_score REAL"],
+    ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN latency_ms INTEGER"],
+    ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN input_tokens INTEGER"],
+    ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN output_tokens INTEGER"],
   ];
   for (const [, statement] of columnMigrations) {
     try {
@@ -491,6 +531,8 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       description TEXT,
+      number_of_requests INTEGER NOT NULL DEFAULT 1,
+      similarity_config JSONB,
       acceptance_criteria TEXT,
       rejection_criteria TEXT,
       evaluation_criteria TEXT,
@@ -502,6 +544,8 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       description TEXT,
+      number_of_requests INTEGER NOT NULL DEFAULT 1,
+      similarity_config JSONB,
       acceptance_criteria TEXT,
       rejection_criteria TEXT,
       evaluation_criteria TEXT,
@@ -520,6 +564,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       version TEXT,
       run_source TEXT,
       sdk_info JSONB,
+      smoke_test_variants JSONB,
       status TEXT NOT NULL DEFAULT 'in_progress',
       created_at TIMESTAMP NOT NULL
     );
@@ -535,6 +580,16 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       input JSONB,
       output JSONB,
       error JSONB,
+      trace_id TEXT,
+      is_smoke_test_variant BOOLEAN NOT NULL DEFAULT FALSE,
+      smoke_test_variant_text TEXT,
+      latency_ms INTEGER,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      vector_similarity DOUBLE PRECISION,
+      jaccard_similarity DOUBLE PRECISION,
+      bleu_score DOUBLE PRECISION,
+      rouge_score DOUBLE PRECISION,
       rating DOUBLE PRECISION,
       justification TEXT,
       status TEXT NOT NULL,
@@ -637,6 +692,8 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       scope_mode TEXT NOT NULL DEFAULT 'all',
       agent_ids JSONB,
       enabled BOOLEAN NOT NULL DEFAULT true,
+      alert_threshold DOUBLE PRECISION DEFAULT 5,
+      severity TEXT NOT NULL DEFAULT 'medium',
       created_at TIMESTAMP NOT NULL
     );
 
@@ -689,6 +746,23 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'published';
     ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS evaluation_settings_id TEXT;
+    ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS alert_threshold DOUBLE PRECISION DEFAULT 5;
+    ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS severity TEXT NOT NULL DEFAULT 'medium';
+    ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS trace_id TEXT;
+    ALTER TABLE datasets ADD COLUMN IF NOT EXISTS number_of_requests INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS number_of_requests INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS smoke_test_variants JSONB;
+    ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS is_smoke_test_variant BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS smoke_test_variant_text TEXT;
+    ALTER TABLE datasets ADD COLUMN IF NOT EXISTS similarity_config JSONB;
+    ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS similarity_config JSONB;
+    ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS vector_similarity DOUBLE PRECISION;
+    ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS jaccard_similarity DOUBLE PRECISION;
+    ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS bleu_score DOUBLE PRECISION;
+    ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS rouge_score DOUBLE PRECISION;
+    ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS latency_ms INTEGER;
+    ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS input_tokens INTEGER;
+    ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS output_tokens INTEGER;
   `);
 
   await migrateOnlineEvaluatorsToConfigsPostgres(pool);

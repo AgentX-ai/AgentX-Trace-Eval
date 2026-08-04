@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { getDb } from "../storage/db.js";
-import { createDataset, getDataset, listDatasets } from "../core/evaluate/datasets.js";
+import { createDataset, getDataset, listDatasets, extractSimilarityConfig } from "../core/evaluate/datasets.js";
 import { createEvaluationSettings, getEvaluationSettings, listEvaluationSettings } from "../core/evaluate/evaluationSettings.js";
 import { initRun, appendResults, finalizeRun, getRun, listRuns, MAX_BATCH_SIZE } from "../core/evaluate/runs.js";
 import { createPrompt, getPromptForSdk, listPromptsForSdk } from "../core/evaluate/prompts.js";
@@ -17,7 +17,8 @@ import { createPrompt, getPromptForSdk, listPromptsForSdk } from "../core/evalua
 export const evaluationsRouter = Router();
 
 evaluationsRouter.post("/datasets", async (req: Request, res: Response) => {
-  const { name, description, acceptanceCriteria, rejectionCriteria, evaluationCriteria, questions } = req.body ?? {};
+  const { name, description, numberOfRequests, acceptanceCriteria, rejectionCriteria, evaluationCriteria, questions } =
+    req.body ?? {};
   if (typeof name !== "string" || !name.trim()) {
     res.status(400).json({ error: "name is required" });
     return;
@@ -25,6 +26,8 @@ evaluationsRouter.post("/datasets", async (req: Request, res: Response) => {
   const dataset = await createDataset(getDb(), {
     name,
     description,
+    numberOfRequests: typeof numberOfRequests === "number" ? numberOfRequests : undefined,
+    similarityConfig: extractSimilarityConfig(req.body ?? {}),
     acceptanceCriteria,
     rejectionCriteria,
     evaluationCriteria,
@@ -47,8 +50,16 @@ evaluationsRouter.get("/datasets/:id", async (req: Request, res: Response) => {
 });
 
 evaluationsRouter.post("/evaluation-settings", async (req: Request, res: Response) => {
-  const { name, description, acceptanceCriteria, rejectionCriteria, evaluationCriteria, judgePrompt, judgeModel } =
-    req.body ?? {};
+  const {
+    name,
+    description,
+    numberOfRequests,
+    acceptanceCriteria,
+    rejectionCriteria,
+    evaluationCriteria,
+    judgePrompt,
+    judgeModel,
+  } = req.body ?? {};
   if (typeof name !== "string" || !name.trim()) {
     res.status(400).json({ error: "name is required" });
     return;
@@ -56,6 +67,8 @@ evaluationsRouter.post("/evaluation-settings", async (req: Request, res: Respons
   const settings = await createEvaluationSettings(getDb(), {
     name,
     description,
+    numberOfRequests: typeof numberOfRequests === "number" ? numberOfRequests : undefined,
+    similarityConfig: extractSimilarityConfig(req.body ?? {}),
     acceptanceCriteria,
     rejectionCriteria,
     evaluationCriteria,

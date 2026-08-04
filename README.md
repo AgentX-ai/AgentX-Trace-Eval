@@ -586,6 +586,64 @@ second config with `isDefault: true` and confirmed the first one's default was c
 bare `{isDefault: true}` PUT and confirmed every other field survived untouched, and confirmed the
 pre-existing dataset-twin PUT path is completely unaffected by the branch.
 
+A later pass reworked "Suggest improvement" again, this time to stop hiding the evidence behind the
+judge call. `GET /prompts/:id/examples`'s `WorstRatedExample`/`getWorstRatedExamples`
+(`core/evaluate/prompts.ts`) gained a stable `id` (the underlying `evaluation_run_results.id` or
+`monitor_events.id`) and `createdAt`, so the dashboard's evidence list can load and render
+immediately when the dialog opens (a real data read, no judge call) instead of only appearing
+after "Generate suggestion" ran. `POST /prompts/:id/propose` now accepts an optional `exampleIds`
+list, filtering `gathered.examples` down to a human-picked subset (checkboxes in the new evidence
+panel, source-filterable All/Production/Eval runs) before building the judge prompt, so a rewrite
+can be scoped to specific examples instead of always using everything gathered. The judge call's
+JSON schema grew a structured `changes: {tag: "added"|"tightened"|"removed", text}[]` array
+alongside the existing freeform `reasoning`, and the response now echoes the actual `judgeModel`
+used instead of the dashboard hardcoding a label. A new `getFailureThemes`/`GET
+/prompts/:id/themes` runs a second, purely informational judge pass clustering the same evidence
+into 3-6 named recurring failure modes (`clusterFailureThemes`) for the evidence panel's "Failure
+themes" bar chart, never affects the actual rewrite, which still reads the individual examples'
+justifications directly. On the frontend, `InstructionDiffViewer.tsx` (previously read-only, shared
+with the hosted-parity instruction-diff dialog) gained an `editable` mode: added (+) lines render
+as an inline-editable textarea instead of static text, with the diff's row/hunk structure computed
+once per generation (keyed off the frozen judge output, never the live-edited text) so a keystroke
+never reshuffles rows or steals focus: only regenerating produces a new diff. Removed and
+unchanged lines stay read-only. Verified live end to end against the running engine: fetched real
+examples with `id`/`createdAt` populated, called `/propose` with a 2-of-4 `exampleIds` subset and
+confirmed the response's `examples`/`exampleCount`/`sourceBreakdown` reflected exactly that subset
+(not the full gathered set), confirmed `/themes` returns real named clusters (not fixture data) for
+seeded low-rated examples, and confirmed `changes`/`judgeModel` round-trip correctly. One process
+bug, not a code bug: a mid-session correction to a SQLite migration line (removing an accidental
+`NOT NULL`) was skipped as a "duplicate column" no-op because `tsx watch` had already applied the
+first, wrong version to the local dev database before the fix landed, caught via `PRAGMA
+table_info`, fixed by rebuilding the affected table directly (SQLite has no `ALTER COLUMN DROP NOT
+NULL`), a reminder that this migration pattern is only idempotent against a *stable* migration list,
+not one still being edited live against a running watched process.
+
+The same pass closed a real UX gap the user flagged directly: pattern matches always show up in
+Signals for triage, but Online Evaluator scores never did: the only way to see one was opening
+that evaluator's own ratings dialog. `monitor_online_evaluators` gained `alertThreshold` (nullable,
+default 5) and `severity` (default `"medium"`) columns (both dialects, migrated the same
+`ADD COLUMN`-per-line way every other post-ship column here has been). `runOnlineEvaluators`
+(`core/monitor/onlineEvaluators.ts`) now calls the same `upsertSignal` pattern-matching already
+uses whenever a score falls below `alertThreshold`, reusing the score event's own `patternKey`
+(`online-eval:<evaluatorId>`) as the dedup key, so a recurring low score accumulates
+`occurrenceCount` on one signal instead of spawning a new row per trace, exactly like a pattern
+match. `alertThreshold: null` opts an evaluator out entirely (scores without ever raising a
+signal). Dashboard: the evaluator editor gained a threshold slider and a 4-level severity picker
+(no "Info" tier: a low score is always a failure, unlike a pattern's optional "proper" polarity);
+the Signals list resolves an evaluator-sourced signal's display name from the evaluator itself
+(not a generic "Triggered pattern" fallback) and tags it "LLM judge"; "View triggered pattern" on
+one of these now opens that evaluator's ratings dialog (`OnlineEvaluatorsTab`'s new
+`evaluatorIdToView`/`onEvaluatorViewed` props, the same mechanism `PatternsTab`'s
+`patternToView`/`onPatternViewed` already used) instead of landing on an empty Patterns view.
+`AgentX-Python`'s `MonitorOnlineEvaluatorBuilder`/`MonitorOnlineEvaluatorClient.update` gained
+matching `alert_threshold`/`severity` parameters. Verified live end to end, including through the
+real SDK, not just curl: raised the threshold on a real evaluator, ingested a genuinely bad trace,
+confirmed a signal appeared with the evaluator's name and correct summary/severity; ingested the
+same bad trace again and confirmed `occurrenceCount` incremented instead of duplicating; and
+round-tripped `alert_threshold=None` (disable) through `client.monitor.online_evaluators.update`
+and back to a real number, confirming the opt-out path works through the SDK, not just the REST
+shape.
+
 ## License
 
 Apache-2.0 (see `LICENSE`).

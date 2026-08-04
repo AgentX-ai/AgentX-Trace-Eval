@@ -4,6 +4,7 @@ import type { Db } from "../../storage/db.js";
 import { scoreAgainstCriteria, DEFAULT_JUDGE_PROMPT, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { matchesAgentScope, passesSampleRate } from "./routing.js";
 import { recordEvent } from "./events.js";
+import { upsertSignal } from "./signals.js";
 import { getEvaluationSettingsRow } from "../evaluate/evaluationSettings.js";
 
 // LangSmith's actual "online evals": a real judge scoring sampled live traffic continuously,
@@ -20,6 +21,11 @@ export type CreateOnlineEvaluatorInput = {
   scopeMode?: string;
   agentIds?: string[];
   enabled?: boolean;
+  // A score below this raises/updates a Signal (see runOnlineEvaluators below), same triage
+  // surface a failing Pattern match already lands on. Pass null to score without ever raising a
+  // Signal, e.g. an evaluator being run purely to populate the ratings chart.
+  alertThreshold?: number | null;
+  severity?: string;
 };
 
 export type UpdateOnlineEvaluatorInput = Partial<CreateOnlineEvaluatorInput>;
@@ -32,6 +38,8 @@ export type OnlineEvaluatorRow = {
   scopeMode: string;
   agentIds: unknown;
   enabled: boolean;
+  alertThreshold: number | null;
+  severity: string;
   createdAt: Date;
 };
 
@@ -44,6 +52,8 @@ function toWire(row: OnlineEvaluatorRow) {
     scopeMode: row.scopeMode,
     agentIds: (row.agentIds as string[] | null) ?? [],
     enabled: row.enabled,
+    alertThreshold: row.alertThreshold,
+    severity: row.severity,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -73,6 +83,8 @@ export async function createOnlineEvaluator(db: Db, input: CreateOnlineEvaluator
     scopeMode: input.scopeMode ?? "all",
     agentIds: input.agentIds ?? null,
     enabled: input.enabled ?? true,
+    alertThreshold: input.alertThreshold !== undefined ? input.alertThreshold : 5,
+    severity: input.severity ?? "medium",
     createdAt: new Date(),
   };
   if (db.kind === "sqlite") {
@@ -128,6 +140,8 @@ export async function updateOnlineEvaluator(db: Db, id: string, input: UpdateOnl
     scopeMode: input.scopeMode ?? existing.scopeMode,
     agentIds: input.agentIds !== undefined ? input.agentIds : existing.agentIds,
     enabled: input.enabled ?? existing.enabled,
+    alertThreshold: input.alertThreshold !== undefined ? input.alertThreshold : existing.alertThreshold,
+    severity: input.severity ?? existing.severity,
   };
   const setValues = {
     name: updated.name,
@@ -136,6 +150,8 @@ export async function updateOnlineEvaluator(db: Db, id: string, input: UpdateOnl
     scopeMode: updated.scopeMode,
     agentIds: updated.agentIds,
     enabled: updated.enabled,
+    alertThreshold: updated.alertThreshold,
+    severity: updated.severity,
   };
   if (db.kind === "sqlite") {
     await db.db.update(db.schema.monitorOnlineEvaluators).set(setValues).where(eq(db.schema.monitorOnlineEvaluators.id, id));
@@ -214,8 +230,30 @@ export async function runOnlineEvaluators(
       continue;
     }
 
+    // Below the configured threshold, this is a failure exactly like a matched Pattern is, so it
+    // raises/updates a Signal the same way (upsertSignal, deduped on patternKey+agentId) instead
+    // of only ever being visible by opening this evaluator's own ratings dialog. alertThreshold
+    // null means the evaluator was deliberately configured to never do this (e.g. one only run to
+    // populate the ratings chart, no triage intended).
+    let signalId: string | null = null;
+    if (evaluator.alertThreshold !== null && rating < evaluator.alertThreshold) {
+      const signal = await upsertSignal(
+        db,
+        {
+          type: "online_evaluator_low_score",
+          severity: evaluator.severity,
+          polarity: "failure",
+          summary: `"${evaluator.name}" rated this response ${rating.toFixed(1)}/10 (below the ${evaluator.alertThreshold} threshold): ${justification}`,
+          patternKey: `online-eval:${evaluator.id}`,
+          rootCause: evaluator.name,
+        },
+        { agentId: ctx.agentId, traceId: ctx.traceId, evidence: { input: trace.input, output: trace.output } }
+      );
+      signalId = signal._id;
+    }
+
     await recordEvent(db, {
-      signalId: null,
+      signalId,
       patternKey: `online-eval:${evaluator.id}`,
       type: "online_eval_score",
       severity: "low",

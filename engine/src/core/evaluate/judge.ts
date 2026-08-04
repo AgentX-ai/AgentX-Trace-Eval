@@ -4,7 +4,12 @@ import {
   callJudgeJson as callJudgeJsonShared,
   getProviderForModel,
   applyJudgePromptTemplate,
+  computeJaccardSimilarity,
+  computeBleuScore,
+  computeRougeScore,
+  computeVectorSimilarity as computeVectorSimilarityShared,
   DEFAULT_JUDGE_PROMPT as SHARED_DEFAULT_JUDGE_PROMPT,
+  DEFAULT_EMBEDDING_MODEL,
   type JudgeCallResult,
 } from "@agentx/judge-core";
 
@@ -14,7 +19,7 @@ import {
 // billing) and keeps self-host's existing "throw a clear setup error" UX for a missing key,
 // which the package itself doesn't do (it returns a null payload instead, appropriate for a
 // library that shouldn't assume how a caller wants to surface that).
-export { getProviderForModel, applyJudgePromptTemplate, type JudgeCallResult };
+export { getProviderForModel, applyJudgePromptTemplate, computeJaccardSimilarity, computeBleuScore, computeRougeScore, type JudgeCallResult };
 
 // The hosted SaaS's default judge model ("gpt-5.5") is an internal alias, not a model string a
 // plain OpenAI API key can call, so self-host defaults to a real public model name instead.
@@ -122,6 +127,28 @@ export async function callJudgeJson({
   });
 }
 
+// Vector similarity needs an OpenAI client for embeddings regardless of which provider judges the
+// rating — self-host's judge model can be Anthropic, but embeddings are OpenAI-only here (matches
+// the hosted platform's own vectorSimilarityHelper.ts). Returns null (not a throw) when no
+// OPENAI_API_KEY is set, same graceful-degradation behavior as a missing expected/actual string —
+// this metric is opt-in, so a missing key shouldn't fail the whole result's scoring.
+export async function computeVectorSimilarity(
+  expected: string | null | undefined,
+  actual: string | null | undefined,
+  model: string = DEFAULT_EMBEDDING_MODEL
+): Promise<number | null> {
+  const client = getOpenAI();
+  if (!client) {
+    return null;
+  }
+  try {
+    return await computeVectorSimilarityShared(expected, actual, client, model);
+  } catch (err) {
+    console.error("Vector similarity computation failed:", err);
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Model portability (core/evaluate/portability.ts) — a plain, free-text completion, distinct from
 // callJudgeJson above which always forces a JSON-schema-constrained response. Portability needs a
@@ -177,6 +204,49 @@ export async function callModelCompletion(model: string, reconstructed: Reconstr
       ? { inputTokens: response.usage.prompt_tokens, outputTokens: response.usage.completion_tokens }
       : null;
   return { text, usage };
+}
+
+const SMOKE_TEST_VARIANTS_SCHEMA = {
+  type: "object",
+  properties: {
+    variants: {
+      type: "array",
+      items: { type: "string" },
+      description: "Paraphrased variants of the original question, same intent, different wording",
+    },
+  },
+  required: ["variants"],
+};
+
+// Smoke test: paraphrased variants of a question, to catch an agent that's brittle to phrasing
+// rather than genuinely wrong (see AgentX-Python's DatasetBuilder.add_case's smoke_test_count/
+// smoke_test_guidance). Called once at init_run time (core/evaluate/runs.ts) per question that
+// requests it, frozen for the lifetime of that run — never regenerated mid-run.
+//
+// Best-effort: a judge-call failure (missing API key, provider outage) returns an empty array
+// rather than failing the whole run. Smoke tests are additive on top of a run's normal questions;
+// losing them shouldn't block scoring the questions that matter.
+export async function generateSmokeTestVariants(
+  query: string,
+  count: number,
+  guidance: string | undefined,
+  judgeModel: string = DEFAULT_JUDGE_MODEL
+): Promise<string[]> {
+  const guidanceLine = guidance ? `\nStyle guidance for the variants: ${guidance}` : "";
+  const prompt = `Generate exactly ${count} different paraphrased versions of the question below — each one a realistic way a real user might actually type it. Keep the same underlying intent/meaning as the original; only the phrasing/wording should change.${guidanceLine}
+
+Original question: ${query}`;
+  try {
+    const result = await callJudgeJson({ model: judgeModel, jsonSchema: SMOKE_TEST_VARIANTS_SCHEMA, userMessage: prompt });
+    const payload = result.payload as { variants?: unknown } | null;
+    const variants = Array.isArray(payload?.variants)
+      ? payload!.variants.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+      : [];
+    return variants.slice(0, count);
+  } catch (err) {
+    console.error("Smoke test variant generation failed:", err);
+    return [];
+  }
 }
 
 // No "expected results" framing at all, unlike DEFAULT_JUDGE_PROMPT above — a live captured trace

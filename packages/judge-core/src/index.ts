@@ -206,3 +206,164 @@ Consider:
 - Capability/Tool Usage: Only require tools or capabilities when explicitly specified; otherwise tools are optional. If references appear in the prompt trace, the agent had document context, do not penalize for no explicit tool call.
 - Relevance: Is the response on-topic and helpful?
 - Quality: Is the response well-structured and clear?`;
+
+// ---------------------------------------------------------------------------
+// Similarity metrics — ported from AgentX-web-api's src/helpers/vectorSimilarityHelper.ts
+// (verbatim algorithm, same behavior), extracted here so self-host's engine doesn't need a second
+// copy. computeVectorSimilarity takes an injected OpenAI client (same DI pattern as callJudgeJson
+// above) rather than a module-level singleton import, since AgentX-web-api and AgentX-trace-eval
+// each construct their own client (app-managed API key vs. BYO env var).
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
+
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+export function computeJaccardSimilarity(expected: string | null | undefined, actual: string | null | undefined): number | null {
+  if (!expected?.trim() || !actual?.trim()) {
+    return null;
+  }
+  const a = new Set(tokenize(expected));
+  const b = new Set(tokenize(actual));
+  if (a.size === 0 && b.size === 0) {
+    return null;
+  }
+  let intersectionSize = 0;
+  for (const token of a) {
+    if (b.has(token)) intersectionSize++;
+  }
+  const unionSize = a.size + b.size - intersectionSize;
+  if (unionSize === 0) {
+    return null;
+  }
+  return intersectionSize / unionSize;
+}
+
+function getNgrams(tokens: string[], n: number): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (let i = 0; i + n <= tokens.length; i++) {
+    const gram = tokens.slice(i, i + n).join(" ");
+    counts.set(gram, (counts.get(gram) || 0) + 1);
+  }
+  return counts;
+}
+
+// Sentence-level BLEU (up to 4-gram) with brevity penalty. Higher-order n-grams (n>=2) use
+// Chen & Cherry (2014) method-1 additive smoothing — otherwise a single unmatched 3- or 4-gram
+// (common on short eval responses) zeroes out the whole geometric-mean score. Unigram precision
+// (n=1) is left unsmoothed: a response sharing zero words with the expected result should score 0.
+export function computeBleuScore(expected: string | null | undefined, actual: string | null | undefined): number | null {
+  if (!expected?.trim() || !actual?.trim()) {
+    return null;
+  }
+  const reference = tokenize(expected);
+  const candidate = tokenize(actual);
+  if (reference.length === 0 || candidate.length === 0) {
+    return null;
+  }
+
+  const maxOrder = Math.min(4, candidate.length, reference.length);
+  const precisions: number[] = [];
+  for (let n = 1; n <= maxOrder; n++) {
+    const refGrams = getNgrams(reference, n);
+    const candGrams = getNgrams(candidate, n);
+    let matches = 0;
+    let total = 0;
+    for (const [gram, count] of candGrams) {
+      matches += Math.min(count, refGrams.get(gram) || 0);
+      total += count;
+    }
+    precisions.push(n === 1 ? (total > 0 ? matches / total : 0) : (matches + 1) / (total + 1));
+  }
+
+  if (precisions[0] === 0) {
+    return 0;
+  }
+
+  const logSum = precisions.reduce((sum, p) => sum + Math.log(p), 0) / precisions.length;
+  const brevityPenalty = candidate.length > reference.length ? 1 : Math.exp(1 - reference.length / candidate.length);
+  return Math.max(0, Math.min(1, brevityPenalty * Math.exp(logSum)));
+}
+
+function longestCommonSubsequenceLength(a: string[], b: string[]): number {
+  const dp: number[][] = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i]![j] = a[i - 1] === b[j - 1] ? dp[i - 1]![j - 1]! + 1 : Math.max(dp[i - 1]![j]!, dp[i]![j - 1]!);
+    }
+  }
+  return dp[a.length]![b.length]!;
+}
+
+// ROUGE-L: F1 of precision/recall over the longest common (in-order) subsequence.
+export function computeRougeScore(expected: string | null | undefined, actual: string | null | undefined): number | null {
+  if (!expected?.trim() || !actual?.trim()) {
+    return null;
+  }
+  const reference = tokenize(expected);
+  const candidate = tokenize(actual);
+  if (reference.length === 0 || candidate.length === 0) {
+    return null;
+  }
+
+  const lcsLength = longestCommonSubsequenceLength(reference, candidate);
+  if (lcsLength === 0) {
+    return 0;
+  }
+  const recall = lcsLength / reference.length;
+  const precision = lcsLength / candidate.length;
+  return Math.max(0, Math.min(1, (2 * precision * recall) / (precision + recall)));
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) {
+    return 0;
+  }
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i]! * b[i]!;
+    normA += a[i]! * a[i]!;
+    normB += b[i]! * b[i]!;
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  if (denom === 0) {
+    return 0;
+  }
+  return dot / denom;
+}
+
+async function getEmbedding(client: OpenAI, text: string, model: string): Promise<number[] | null> {
+  const trimmed = text?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const response = await client.embeddings.create({ model, input: trimmed });
+  return response.data?.[0]?.embedding ?? null;
+}
+
+export async function computeVectorSimilarity(
+  expected: string | null | undefined,
+  actual: string | null | undefined,
+  openaiClient: OpenAI,
+  model: string = DEFAULT_EMBEDDING_MODEL
+): Promise<number | null> {
+  if (!expected?.trim() || !actual?.trim()) {
+    return null;
+  }
+  const [expectedEmb, actualEmb] = await Promise.all([
+    getEmbedding(openaiClient, expected, model),
+    getEmbedding(openaiClient, actual, model),
+  ]);
+  if (!expectedEmb || !actualEmb) {
+    return null;
+  }
+  return Math.max(0, Math.min(1, cosineSimilarity(expectedEmb, actualEmb)));
+}

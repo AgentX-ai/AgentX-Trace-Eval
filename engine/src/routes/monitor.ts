@@ -4,6 +4,15 @@ import { createPattern, getPattern, listPatternsWire, legacyPayloadToConditions 
 import { builtInPatternsWire } from "../core/monitor/detect.js";
 import { getProfile, updateProfile } from "../core/monitor/profiles.js";
 import { listSignals, getSignal } from "../core/monitor/signals.js";
+import {
+  createOnlineEvaluator,
+  listOnlineEvaluatorsWire,
+  getOnlineEvaluator,
+  updateOnlineEvaluator,
+  deleteOnlineEvaluator,
+  InvalidEvaluationSettingsIdError,
+} from "../core/monitor/onlineEvaluators.js";
+import { getOnlineEvaluatorRatings, getOnlineEvaluatorEvents, type MonitoringWindow } from "../core/monitor/events.js";
 
 // Mounted at /api/v1/monitor, matching AgentX-Python's MonitorClient base URL
 // (agentx/monitor/client.py appends "/monitor" to AGENTX_API_BASE_URL if not already present).
@@ -90,4 +99,106 @@ monitorRouter.get("/signals/:id", async (req: Request, res: Response) => {
     return;
   }
   res.status(200).json({ signal });
+});
+
+function parseWindow(req: Request): MonitoringWindow {
+  const raw = req.query.window;
+  return raw === "24h" || raw === "30d" ? raw : "7d";
+}
+
+// Online evaluators (core/monitor/onlineEvaluators.ts): a judge scored continuously against
+// sampled live traffic, distinct from pattern-matching above. CRUD mirrors /patterns' shape;
+// previously dashboard-only (routes/agentMonitoringDashboard.ts), added here so
+// client.monitor.online_evaluators works the same way client.monitor.patterns already does.
+monitorRouter.post("/online-evaluators", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.name !== "string" || !body.name.trim()) {
+    res.status(400).json({ error: "Online evaluator name is required" });
+    return;
+  }
+  if (typeof body.evaluationSettingsId !== "string" || !body.evaluationSettingsId.trim()) {
+    res.status(400).json({ error: "evaluationSettingsId is required" });
+    return;
+  }
+  try {
+    const evaluator = await createOnlineEvaluator(getDb(), {
+      name: body.name,
+      evaluationSettingsId: body.evaluationSettingsId,
+      sampleRate: body.sampleRate,
+      scopeMode: body.scopeMode,
+      agentIds: body.agentIds,
+      enabled: body.enabled,
+      alertThreshold: body.alertThreshold,
+      severity: body.severity,
+    });
+    res.status(201).json({ evaluator });
+  } catch (err) {
+    if (err instanceof InvalidEvaluationSettingsIdError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
+});
+
+monitorRouter.get("/online-evaluators", async (_req: Request, res: Response) => {
+  const evaluators = await listOnlineEvaluatorsWire(getDb());
+  res.status(200).json({ evaluators });
+});
+
+monitorRouter.get("/online-evaluators/:id", async (req: Request, res: Response) => {
+  const evaluator = await getOnlineEvaluator(getDb(), req.params.id!);
+  if (!evaluator) {
+    res.status(404).json({ error: "Online evaluator not found" });
+    return;
+  }
+  res.status(200).json({ evaluator });
+});
+
+monitorRouter.put("/online-evaluators/:id", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (body.evaluationSettingsId !== undefined && (typeof body.evaluationSettingsId !== "string" || !body.evaluationSettingsId.trim())) {
+    res.status(400).json({ error: "evaluationSettingsId must be a non-empty string" });
+    return;
+  }
+  try {
+    const evaluator = await updateOnlineEvaluator(getDb(), req.params.id!, {
+      name: body.name,
+      evaluationSettingsId: body.evaluationSettingsId,
+      sampleRate: body.sampleRate,
+      scopeMode: body.scopeMode,
+      agentIds: body.agentIds,
+      enabled: body.enabled,
+      alertThreshold: body.alertThreshold,
+      severity: body.severity,
+    });
+    if (!evaluator) {
+      res.status(404).json({ error: "Online evaluator not found" });
+      return;
+    }
+    res.status(200).json({ evaluator });
+  } catch (err) {
+    if (err instanceof InvalidEvaluationSettingsIdError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
+});
+
+monitorRouter.delete("/online-evaluators/:id", async (req: Request, res: Response) => {
+  const deleted = await deleteOnlineEvaluator(getDb(), req.params.id!);
+  if (!deleted) {
+    res.status(404).json({ error: "Online evaluator not found" });
+    return;
+  }
+  res.status(204).send();
+});
+
+monitorRouter.get("/online-evaluators/:id/ratings", async (req: Request, res: Response) => {
+  res.status(200).json(await getOnlineEvaluatorRatings(getDb(), req.params.id!, parseWindow(req)));
+});
+
+monitorRouter.get("/online-evaluators/:id/events", async (req: Request, res: Response) => {
+  res.status(200).json(await getOnlineEvaluatorEvents(getDb(), req.params.id!, parseWindow(req)));
 });

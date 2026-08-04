@@ -28,6 +28,11 @@ export const datasets = sqliteTable("datasets", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   description: text("description"),
+  numberOfRequests: integer("number_of_requests").notNull().default(1),
+  // { vectorSimilarity?: { enabled, model? }, jaccardSimilarity?: { enabled }, bleuScore?: { enabled },
+  // rougeScore?: { enabled } } — matches AgentX-Python's DatasetBuilder/EvaluationSettingsBuilder
+  // wire payload exactly, so no reshaping is needed on either side of the create/update routes.
+  similarityConfig: text("similarity_config", { mode: "json" }),
   acceptanceCriteria: text("acceptance_criteria"),
   rejectionCriteria: text("rejection_criteria"),
   evaluationCriteria: text("evaluation_criteria"),
@@ -41,6 +46,9 @@ export const evaluationSettings = sqliteTable("evaluation_settings", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   description: text("description"),
+  numberOfRequests: integer("number_of_requests").notNull().default(1),
+  // See datasets.similarityConfig's comment for the exact shape.
+  similarityConfig: text("similarity_config", { mode: "json" }),
   acceptanceCriteria: text("acceptance_criteria"),
   rejectionCriteria: text("rejection_criteria"),
   evaluationCriteria: text("evaluation_criteria"),
@@ -68,6 +76,10 @@ export const evaluationRuns = sqliteTable("evaluation_runs", {
   version: text("version"),
   runSource: text("run_source"),
   sdkInfo: text("sdk_info", { mode: "json" }),
+  // [{ questionIndex, variants: string[] }] — generated once at initRun time (core/evaluate/
+  // judge.ts's generateSmokeTestVariants) for questions with main_question.smokeTest.enabled,
+  // frozen for the lifetime of the run so a later call can't see it change mid-run.
+  smokeTestVariants: text("smoke_test_variants", { mode: "json" }),
   status: text("status").notNull().default("in_progress"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
@@ -85,6 +97,19 @@ export const evaluationRunResults = sqliteTable(
     input: text("input", { mode: "json" }),
     output: text("output", { mode: "json" }),
     error: text("error", { mode: "json" }),
+    traceId: text("trace_id"),
+    isSmokeTestVariant: integer("is_smoke_test_variant", { mode: "boolean" }).notNull().default(false),
+    smokeTestVariantText: text("smoke_test_variant_text"),
+    // From the SDK result's `timings: { latencyMs, inputTokens, outputTokens }` (see
+    // AgentX-Python's normalize_result) — top-level input_tokens/output_tokens on the callable's
+    // returned dict, or metadata.input_tokens/prompt_tokens as a fallback.
+    latencyMs: integer("latency_ms"),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    vectorSimilarity: real("vector_similarity"),
+    jaccardSimilarity: real("jaccard_similarity"),
+    bleuScore: real("bleu_score"),
+    rougeScore: real("rouge_score"),
     rating: real("rating"),
     justification: text("justification"),
     status: text("status").notNull(),
@@ -240,6 +265,11 @@ export const monitorOnlineEvaluators = sqliteTable("monitor_online_evaluators", 
   scopeMode: text("scope_mode").notNull().default("all"),
   agentIds: text("agent_ids", { mode: "json" }),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  // NULL: never raise a Signal for a low score on this evaluator (the pre-Signals-integration
+  // behavior). Not-null: a score below this raises/updates a Signal the same way a failing
+  // Pattern match does, see core/monitor/onlineEvaluators.ts's runOnlineEvaluators.
+  alertThreshold: real("alert_threshold").default(5),
+  severity: text("severity").notNull().default("medium"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
 
