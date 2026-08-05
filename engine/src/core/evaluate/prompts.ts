@@ -119,6 +119,18 @@ async function getPromptRowByName(db: Db, name: string): Promise<PromptRow | nul
   return row ?? null;
 }
 
+// SDK callers may hand back either the human-chosen name they originally pulled by, or the
+// prompt.id they got in that same response (e.g. round-tripping an id they stored earlier).
+// Names and nanoid ids don't collide in practice, so trying name first and falling back to id
+// lets `get()` accept either without needing a second SDK method or route.
+async function getPromptRowByNameOrId(db: Db, identifier: string): Promise<PromptRow | null> {
+  const byName = await getPromptRowByName(db, identifier);
+  if (byName) {
+    return byName;
+  }
+  return getPromptRow(db, identifier);
+}
+
 export async function getPromptVersionRow(db: Db, promptId: string, version: number): Promise<PromptVersionRow | null> {
   const cond = and(eq(db.schema.promptVersions.promptId, promptId), eq(db.schema.promptVersions.version, version));
   const row =
@@ -158,11 +170,12 @@ export async function getPromptWithVersionsWire(db: Db, id: string) {
   return { ...promptToWire(row), versions: versions.map(versionToWire) };
 }
 
-// SDK-facing pull: `client.evaluations.prompts.get(name, version=None)`. Defaults to the
-// current published version; an explicit version pulls that historical text (e.g. for
-// re-running an older prompt against a dataset for comparison).
-export async function getPromptForSdk(db: Db, name: string, version?: number) {
-  const row = await getPromptRowByName(db, name);
+// SDK-facing pull: `client.evaluations.prompts.get(name_or_id, version=None)`. Accepts either the
+// prompt's name or its id (see getPromptRowByNameOrId), defaults to the current published
+// version; an explicit version pulls that historical text (e.g. for re-running an older prompt
+// against a dataset for comparison).
+export async function getPromptForSdk(db: Db, nameOrId: string, version?: number) {
+  const row = await getPromptRowByNameOrId(db, nameOrId);
   if (!row) return null;
   const versionRow = await getPromptVersionRow(db, row.id, version ?? row.currentVersion);
   if (!versionRow) return null;

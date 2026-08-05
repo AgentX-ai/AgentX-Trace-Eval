@@ -18,21 +18,32 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
   }
   const { traceId } = await ingestTrace(getDb(), parsed.data);
 
-  // Checked synchronously here so a caller polling client.monitor.signals right after this call
-  // (as the sample scripts do) sees the result. No background job queue in self-host, see plan
-  // task #110.
+  // trace_id is the one field send_trace_sync() reads (see ingest_client.py); the fire-and-forget
+  // enqueue() path used by default doesn't inspect the body at all, so this shape covers both.
+  // Sent as soon as the trace itself is durably stored, not after the checks below finish: those
+  // used to be awaited here too, so a workspace with several online evaluators (each check is a
+  // real judge call) routinely pushed this response past the SDK's sync=True 10-second timeout,
+  // the client gave up and returned trace_id=None even though ingestion itself had already
+  // succeeded and the real id was about to be sent.
+  res.status(200).json({ trace_id: traceId });
+
+  // Checked in the background, after responding: no background job queue in self-host (see plan
+  // task #110), this is the same in-process fire-and-forget shape, just no longer blocking the
+  // response the caller is actually waiting on. A caller polling client.monitor.signals or
+  // .online_evaluators.ratings/events right after this call (as the sample scripts do) already
+  // has to poll/retry regardless, detection was never guaranteed to finish inside the old
+  // synchronous window either, just usually did.
   //
-  // Both calls are wrapped in try/catch: callJudgeJson throws a clear error on a missing judge API
-  // key (core/evaluate/judge.ts, deliberate UX for the direct-call case), and neither call site
-  // here had a catch before — an unhandled rejection with no global Express error middleware
-  // (index.ts has none) left the request hanging with no response instead of failing gracefully.
-  // Trace ingestion is this endpoint's actual job; a judge failure must never break it.
+  // Both calls are wrapped in .catch(): callJudgeJson throws a clear error on a missing judge API
+  // key (core/evaluate/judge.ts, deliberate UX for the direct-call case), and an unhandled
+  // rejection here (now fully detached from the request/response cycle) would otherwise be a
+  // silent, uncaught background rejection instead of a logged one.
   //
   // Two paths: mirrors tracer.trace(..., monitor=True, pattern_ids=[...]) when the caller opted in
-  // per-trace (explicit — "no profile row" runs the full default sweep, no dashboard setup
+  // per-trace (explicit, "no profile row" runs the full default sweep, no dashboard setup
   // required); otherwise still runs, but gated by requireEnabledProfile so it's a no-op unless the
   // dashboard's per-agent monitoring toggle (AgentMonitoringProfile) was actually turned on for
-  // this agent — without this, an enabled profile had zero effect on regular SDK traces (only
+  // this agent, without this, an enabled profile had zero effect on regular SDK traces (only
   // OTLP-ingested ones, via routes/otlp.ts, ever got automatic coverage).
   const traceForMonitor = {
     input: parsed.data.input,
@@ -41,33 +52,25 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
     toolCalls: (parsed.data.tool_calls as Array<{ name?: string; output?: unknown; input?: unknown; success?: boolean }>) ?? null,
     latencyMs: parsed.data.latency_ms ?? null,
   };
-  try {
-    await runMonitorCheck(
-      getDb(),
-      traceForMonitor,
-      parsed.data.monitor
-        ? { agentId: parsed.data.name, traceId, patternIds: parsed.data.pattern_ids }
-        : { agentId: parsed.data.name, traceId, requireEnabledProfile: true }
-    );
-  } catch (err) {
+  runMonitorCheck(
+    getDb(),
+    traceForMonitor,
+    parsed.data.monitor
+      ? { agentId: parsed.data.name, traceId, patternIds: parsed.data.pattern_ids }
+      : { agentId: parsed.data.name, traceId, requireEnabledProfile: true }
+  ).catch(err => {
     console.error("Monitor check failed:", err instanceof Error ? err.message : err);
-  }
+  });
 
   // Independent of the `monitor` flag above: online evaluators are a server-side-configured
   // feature (opt in by creating one, not by a per-call flag), see core/monitor/onlineEvaluators.ts.
-  try {
-    await runOnlineEvaluators(
-      getDb(),
-      { input: parsed.data.input, output: parsed.data.output },
-      { agentId: parsed.data.name, traceId }
-    );
-  } catch (err) {
+  runOnlineEvaluators(
+    getDb(),
+    { input: parsed.data.input, output: parsed.data.output },
+    { agentId: parsed.data.name, traceId }
+  ).catch(err => {
     console.error("Online evaluator scoring failed:", err instanceof Error ? err.message : err);
-  }
-
-  // trace_id is the one field send_trace_sync() reads (see ingest_client.py); the fire-and-forget
-  // enqueue() path used by default doesn't inspect the body at all, so this shape covers both.
-  res.status(200).json({ trace_id: traceId });
+  });
 });
 
 // Not part of the SDK-compatible surface (the SDK only ever POSTs here, see the comment above),

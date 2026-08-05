@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import express from "express";
 import { getDb } from "../storage/db.js";
-import { ingestTraceSchema, ingestTrace } from "../core/trace/ingest.js";
+import { ingestTraceSchema, ingestTrace, type IngestTraceInput } from "../core/trace/ingest.js";
 import { runMonitorCheck } from "../core/monitor/detect.js";
 import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
 import { decodeProtobufExportRequest, encodeProtobufResponse } from "../otel/protoTypes.js";
@@ -65,6 +65,13 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   const db = getDb();
   let rejected = 0;
   let lastError = "";
+  // Ingested first, fully independent of the (possibly slow) checks below: a batch export can
+  // carry many spans, and awaiting a real judge call per online evaluator per span before ever
+  // responding routinely pushed well past what an OTel exporter's own export timeout tolerates,
+  // an exporter that gives up mid-batch doesn't know the spans it already sent were, in fact,
+  // ingested successfully. Collected here so the checks can run in the background after
+  // responding, same fix as routes/ingest.ts's POST /traces.
+  const checkTargets: { traceId: string; input: IngestTraceInput }[] = [];
 
   for (const span of spans) {
     const candidate = otelSpanToIngestInput(span);
@@ -76,34 +83,7 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
     }
     const input = validation.data;
     const { traceId } = await ingestTrace(db, input);
-
-    // Both wrapped in try/catch: a judge failure (missing API key, provider outage) must never
-    // break OTLP ingestion for the rest of the batch — see routes/ingest.ts's identical comment
-    // for why this wasn't already the case before online evaluators made it much more likely to
-    // actually be hit.
-    if (MONITOR_OTEL_TRACES) {
-      try {
-        await runMonitorCheck(
-          db,
-          {
-            input: input.input,
-            output: input.output,
-            error: input.error ?? null,
-            toolCalls: (input.tool_calls as Array<{ name?: string; output?: unknown; input?: unknown; success?: boolean }>) ?? null,
-            latencyMs: input.latency_ms ?? null,
-          },
-          { agentId: input.name, traceId }
-        );
-      } catch (err) {
-        console.error("Monitor check failed:", err instanceof Error ? err.message : err);
-      }
-    }
-
-    try {
-      await runOnlineEvaluators(db, { input: input.input, output: input.output }, { agentId: input.name, traceId });
-    } catch (err) {
-      console.error("Online evaluator scoring failed:", err instanceof Error ? err.message : err);
-    }
+    checkTargets.push({ traceId, input });
   }
 
   const partialSuccess = rejected > 0 ? { rejectedSpans: rejected, errorMessage: lastError } : undefined;
@@ -111,5 +91,31 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
     res.status(200).type("application/x-protobuf").send(Buffer.from(encodeProtobufResponse(partialSuccess)));
   } else {
     res.status(200).json(partialSuccess ? { partialSuccess } : {});
+  }
+
+  // Checked in the background, after responding: a judge failure (missing API key, provider
+  // outage) must never break OTLP ingestion, and now that these run detached from the request
+  // they're wrapped in .catch() rather than try/catch so a rejection is logged instead of
+  // becoming a silent unhandled one.
+  for (const { traceId, input } of checkTargets) {
+    if (MONITOR_OTEL_TRACES) {
+      runMonitorCheck(
+        db,
+        {
+          input: input.input,
+          output: input.output,
+          error: input.error ?? null,
+          toolCalls: (input.tool_calls as Array<{ name?: string; output?: unknown; input?: unknown; success?: boolean }>) ?? null,
+          latencyMs: input.latency_ms ?? null,
+        },
+        { agentId: input.name, traceId }
+      ).catch(err => {
+        console.error("Monitor check failed:", err instanceof Error ? err.message : err);
+      });
+    }
+
+    runOnlineEvaluators(db, { input: input.input, output: input.output }, { agentId: input.name, traceId }).catch(err => {
+      console.error("Online evaluator scoring failed:", err instanceof Error ? err.message : err);
+    });
   }
 });

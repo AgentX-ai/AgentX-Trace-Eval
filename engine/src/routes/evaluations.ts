@@ -177,14 +177,17 @@ evaluationsRouter.get("/prompts", async (_req: Request, res: Response) => {
   res.status(200).json({ prompts: await listPromptsForSdk(getDb()) });
 });
 
-evaluationsRouter.get("/prompts/:name", async (req: Request, res: Response) => {
+// Accepts either the prompt's name or its id in the same path segment (see
+// getPromptForSdk/getPromptRowByNameOrId), letting `client.evaluations.prompts.get()` take either
+// without a second route or SDK method.
+evaluationsRouter.get("/prompts/:identifier", async (req: Request, res: Response) => {
   const versionParam = req.query.version;
   const version = typeof versionParam === "string" && versionParam.trim() ? Number(versionParam) : undefined;
   if (version !== undefined && !Number.isInteger(version)) {
     res.status(400).json({ error: "version must be an integer" });
     return;
   }
-  const prompt = await getPromptForSdk(getDb(), req.params.name!, version);
+  const prompt = await getPromptForSdk(getDb(), req.params.identifier!, version);
   if (!prompt) {
     res.status(404).json({ error: "Prompt not found" });
     return;

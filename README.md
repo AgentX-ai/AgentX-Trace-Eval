@@ -392,9 +392,11 @@ Claude-skill prompt-improvement flow) both solve "we don't own the customer's ag
 way — become the prompt's source of truth (Prompt Hub / Prompt Management) so the agent's own code
 pulls a version at runtime, then treat "optimization" as propose → human-approve → publish a new
 version to that registry, never a direct edit to the customer's deployed code. This engine now does
-the same: `client.evaluations.prompts.get(name)` (new `PromptClient` in `AgentX-Python`, SDK-facing
-`POST/GET /prompts`, `GET /prompts/:name?version=N` in `routes/evaluations.ts`, deliberately
-read-mostly — no SDK-side publish) pulls a version's text for the caller's own agent to use as its
+the same: `client.evaluations.prompts.get(name_or_id)` (new `PromptClient` in `AgentX-Python`, SDK-facing
+`POST/GET /prompts`, `GET /prompts/:identifier?version=N` in `routes/evaluations.ts`, accepting either
+the prompt's name or its id, name tried first then id as a fallback, see `getPromptRowByNameOrId` in
+`core/evaluate/prompts.ts`, deliberately read-mostly, no SDK-side publish) pulls a version's text
+for the caller's own agent to use as its
 system prompt, and `POST /prompts/:id/propose` (dashboard-only) reuses the *existing* judge
 primitive (`core/evaluate/judge.ts`'s `callJudgeJson`) to pull the worst-rated eval results tagged
 `evaluationSubject.metadata.promptName === <name>` and ask a judge for a full rewrite plus
