@@ -8,6 +8,10 @@ import type { Db } from "../../storage/db.js";
 export type FeedbackRow = {
   id: string;
   signalId: string;
+  // Which occurrence (monitor_events.id) this note is about — null for signal-level feedback (no
+  // occurrence picked, or an older row from before this existed). See resolveOccurrenceContext in
+  // suggestions.ts for the read side.
+  eventId: string | null;
   metric: string;
   originalScore: number | null;
   correctedScore: number | null;
@@ -22,6 +26,7 @@ function toWire(row: FeedbackRow) {
     _id: row.id,
     workspaceId: "local",
     signalId: row.signalId,
+    occurrenceId: row.eventId ?? undefined,
     metric: row.metric,
     originalScore: row.originalScore ?? undefined,
     correctedScore: row.correctedScore ?? undefined,
@@ -37,6 +42,7 @@ function toWire(row: FeedbackRow) {
 export type CreateFeedbackInput = {
   metric: string;
   rationale: string;
+  occurrenceId?: string;
   originalScore?: number;
   correctedScore?: number;
   queuedForAutotune?: boolean;
@@ -47,6 +53,7 @@ export async function createFeedback(db: Db, signalId: string, input: CreateFeed
   const row: FeedbackRow = {
     id: nanoid(),
     signalId,
+    eventId: input.occurrenceId ?? null,
     metric: input.metric,
     originalScore: input.originalScore ?? null,
     correctedScore: input.correctedScore ?? null,

@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
 import { z } from "zod";
-import { desc, lt, and, eq, type SQL } from "drizzle-orm";
+import { desc, lt, and, eq, isNull, type SQL } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 
 // Mirrors the wire payload agentx.tracing.tracer.Tracer._send builds in the Python SDK
@@ -21,6 +21,16 @@ export const ingestTraceSchema = z.object({
   performance_summary: z.record(z.unknown()).optional(),
   input_tokens: z.number().optional(),
   output_tokens: z.number().optional(),
+  // Real span hierarchy — sent by the OTel ingestion path (routes/otlp.ts via
+  // otel/mapping.ts's otelSpanToIngestInput) unconditionally, and by the Python SDK's own
+  // tracer.trace() when a caller opts into span_tree=True (see AgentX-Python's tracer.py) so
+  // nested spans link to a real parent instead of folding into one row's performance_summary.
+  // started_at_unix_nano is a string (matches how OTel's own nano timestamps arrive on the wire,
+  // see otel/normalize.ts) since it exceeds safe-integer precision as a JS number — the SDK sends
+  // the same string shape for consistency, even though Python's own precision would fit a number.
+  span_id: z.string().optional(),
+  parent_span_id: z.string().optional(),
+  started_at_unix_nano: z.string().optional(),
   // Accepted for wire compatibility with the hosted SaaS's SDK payload shape; self-host is
   // single-tenant so these don't gate anything here. Monitor's own trace-time check
   // (monitor/pattern_ids) is ported alongside Monitor's core logic, plan task #110.
@@ -48,6 +58,9 @@ export async function ingestTrace(db: Db, payload: IngestTraceInput): Promise<{ 
     performanceSummary: payload.performance_summary ?? null,
     inputTokens: payload.input_tokens ?? null,
     outputTokens: payload.output_tokens ?? null,
+    spanId: payload.span_id ?? null,
+    parentSpanId: payload.parent_span_id ?? null,
+    startedAt: payload.started_at_unix_nano ? new Date(Number(BigInt(payload.started_at_unix_nano) / 1_000_000n)) : null,
     createdAt: new Date(),
   };
 
@@ -75,6 +88,9 @@ export type TraceRow = {
   performanceSummary: unknown;
   inputTokens: number | null;
   outputTokens: number | null;
+  spanId: string | null;
+  parentSpanId: string | null;
+  startedAt: Date | null;
   createdAt: Date;
 };
 
@@ -93,6 +109,9 @@ function toWire(row: TraceRow) {
     model: row.model ?? undefined,
     toolCalls: row.toolCalls ?? undefined,
     sessionId: row.sessionId ?? undefined,
+    spanId: row.spanId ?? undefined,
+    parentSpanId: row.parentSpanId ?? undefined,
+    startedAt: row.startedAt ? row.startedAt.toISOString() : undefined,
     source: "sdk" as const,
     createdAt: row.createdAt.toISOString(),
     inputTokens: row.inputTokens,
@@ -118,6 +137,9 @@ export function toTraceDetailWire(row: TraceRow) {
     model: row.model ?? undefined,
     toolCalls: row.toolCalls ?? undefined,
     sessionId: row.sessionId ?? undefined,
+    spanId: row.spanId ?? undefined,
+    parentSpanId: row.parentSpanId ?? undefined,
+    startedAt: row.startedAt ? row.startedAt.toISOString() : undefined,
     metadata: row.metadata ?? undefined,
     performanceSummary: row.performanceSummary ?? undefined,
     source: "sdk" as const,
@@ -143,10 +165,16 @@ export async function listTracesPaginated(
     cursorCreatedAt = cursorRow?.createdAt ?? null;
   }
 
-  const conditions: SQL[] = [];
+  // Root spans only: a span_tree=True SDK trace or a multi-span OTel session otherwise floods
+  // this list with one row per LLM call/tool call (e.g. "LLM Call 1", "policy_lookup") instead of
+  // one row per actual interaction, which reads as noise, not a trace list. A row with siblings
+  // (parentSpanId set) is still fully reachable — opening the root's trace dialog fetches every
+  // spanId/parentSpanId-linked row via GET /sessions/:sessionId/spans (TraceSpanTreePanel), this
+  // only changes what the top-level list itself enumerates.
+  const conditions: SQL[] = [isNull(db.schema.traces.parentSpanId)];
   if (framework) conditions.push(eq(db.schema.traces.framework, framework));
   if (cursorCreatedAt) conditions.push(lt(db.schema.traces.createdAt, cursorCreatedAt));
-  const where = conditions.length ? and(...conditions) : undefined;
+  const where = and(...conditions);
 
   const rows = (
     db.kind === "sqlite"
@@ -186,6 +214,23 @@ export async function getTraceRow(db: Db, id: string): Promise<TraceRow | undefi
   return (await db.db.select().from(db.schema.traces).where(eq(db.schema.traces.id, id)))[0] as
     | TraceRow
     | undefined;
+}
+
+// Every span belonging to one OTel trace (sessionId = the OTel traceId, see otel/mapping.ts's
+// otelSpanToIngestInput) — deliberately not part of listTracesPaginated's cursor pagination (capped
+// at 100/page, no sessionId filter): a session's spans need one unbounded fetch to assemble a tree
+// from, not a page. Ordered by startedAt (real span start) where available, falling back to
+// createdAt for any row that predates this column or came from a non-OTel source — irrelevant in
+// practice since a session only ever contains OTel-ingested rows, but keeps the ordering total
+// rather than undefined for a row with a null startedAt.
+export async function listSessionSpans(db: Db, sessionId: string) {
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.traces).where(eq(db.schema.traces.sessionId, sessionId)).all()
+      : await db.db.select().from(db.schema.traces).where(eq(db.schema.traces.sessionId, sessionId))
+  ) as TraceRow[];
+  rows.sort((a, b) => (a.startedAt ?? a.createdAt).getTime() - (b.startedAt ?? b.createdAt).getTime());
+  return rows.map(toTraceDetailWire);
 }
 
 // Kept for the debug listing used before pagination existed; still handy for quick local checks.

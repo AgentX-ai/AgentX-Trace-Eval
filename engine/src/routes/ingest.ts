@@ -1,14 +1,27 @@
 import { Router, type Request, type Response } from "express";
 import { getDb } from "../storage/db.js";
-import { ingestTraceSchema, ingestTrace, listTracesPaginated, getTraceRow, toTraceDetailWire } from "../core/trace/ingest.js";
+import {
+  ingestTraceSchema,
+  ingestTrace,
+  listTracesPaginated,
+  getTraceRow,
+  toTraceDetailWire,
+  listSessionSpans,
+} from "../core/trace/ingest.js";
 import { runMonitorCheck } from "../core/monitor/detect.js";
 import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
+import { runClassification } from "../core/monitor/topics.js";
 
 // Path matters here: AgentX-Python's IngestClient builds its endpoint as
 // f"{base_url}/ingest/traces" (agentx/tracing/ingest_client.py). Mounting this router at
 // /api/v1/ingest with a POST /traces route reproduces that exactly, so pointing the existing
 // SDK at AGENTX_API_BASE_URL=http://localhost:<port>/api/v1 works with zero SDK changes.
 export const ingestRouter = Router();
+
+// See routes/otlp.ts's identical constant for the full rationale (Braintrust/Langfuse both
+// default online scoring to the trace/root level, not per-span). Applies here too now that a
+// span_tree-enabled SDK trace can send a child span through this same route.
+const MONITOR_CHILD_SPANS = process.env.AGENTX_MONITOR_CHILD_SPANS === "true";
 
 ingestRouter.post("/traces", async (req: Request, res: Response) => {
   const parsed = ingestTraceSchema.safeParse(req.body);
@@ -26,6 +39,13 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
   // the client gave up and returned trace_id=None even though ingestion itself had already
   // succeeded and the real id was about to be sent.
   res.status(200).json({ trace_id: traceId });
+
+  // Root spans only by default (see the MONITOR_CHILD_SPANS constant above) — a child span from a
+  // span_tree-enabled trace skips Monitor/online-evaluator/classification entirely rather than
+  // being scored as if it were the whole interaction.
+  if (parsed.data.parent_span_id && !MONITOR_CHILD_SPANS) {
+    return;
+  }
 
   // Checked in the background, after responding: no background job queue in self-host (see plan
   // task #110), this is the same in-process fire-and-forget shape, just no longer blocking the
@@ -71,6 +91,17 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
   ).catch(err => {
     console.error("Online evaluator scoring failed:", err instanceof Error ? err.message : err);
   });
+
+  // Third independent pass, same fire-and-forget shape — see core/monitor/topics.ts. Opt-in via
+  // AgentMonitoringProfile.topicsEnabled (checked inside runClassification itself), so this is a
+  // no-op unless the dashboard's per-agent "Topics" toggle was actually turned on.
+  runClassification(
+    getDb(),
+    { input: parsed.data.input, output: parsed.data.output },
+    { agentId: parsed.data.name, traceId }
+  ).catch(err => {
+    console.error("Trace classification failed:", err instanceof Error ? err.message : err);
+  });
 });
 
 // Not part of the SDK-compatible surface (the SDK only ever POSTs here, see the comment above),
@@ -106,4 +137,19 @@ ingestRouter.get("/traces/:traceId", async (req: Request, res: Response) => {
     return;
   }
   res.status(200).json(toTraceDetailWire(row));
+});
+
+// Every span belonging to one OTel trace (sessionId = the OTel traceId, see otel/mapping.ts's
+// otelSpanToIngestInput), for the self-host trace dialog's span-tree navigation panel. Deliberately
+// its own route rather than a sessionId filter on GET /traces above: that one is cursor-paginated
+// and capped at 100/page, wrong shape for "give me every span in this session" (see
+// core/trace/ingest.ts's listSessionSpans).
+ingestRouter.get("/sessions/:sessionId/spans", async (req: Request, res: Response) => {
+  const { sessionId } = req.params;
+  if (!sessionId) {
+    res.status(400).json({ error: "sessionId is required" });
+    return;
+  }
+  const spans = await listSessionSpans(getDb(), sessionId);
+  res.status(200).json({ spans });
 });

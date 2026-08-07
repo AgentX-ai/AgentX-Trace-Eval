@@ -185,6 +185,15 @@ export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
     // free grouping available on the wire, and better than leaving every OTel-ingested trace
     // ungrouped.
     session_id: span.traceIdHex || undefined,
+    // Real span hierarchy, promoted to first-class ingestTraceSchema fields (see core/trace/
+    // ingest.ts) so a session's rows can be assembled into a tree — kept in metadata.otel too
+    // below, harmless redundancy, not worth a second edit to remove now that both exist.
+    // normalize.ts's base64ToHex falls back to "" (not null/undefined) for malformed wire ids, so
+    // these are guarded to "" -> undefined rather than trusting truthiness alone would already
+    // catch it (it does, but the intent is worth being explicit about here).
+    span_id: span.spanIdHex || undefined,
+    parent_span_id: span.parentSpanIdHex || undefined,
+    started_at_unix_nano: span.startTimeUnixNano > 0n ? span.startTimeUnixNano.toString() : undefined,
     metadata: {
       otel: {
         traceId: span.traceIdHex,

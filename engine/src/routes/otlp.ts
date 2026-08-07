@@ -4,6 +4,7 @@ import { getDb } from "../storage/db.js";
 import { ingestTraceSchema, ingestTrace, type IngestTraceInput } from "../core/trace/ingest.js";
 import { runMonitorCheck } from "../core/monitor/detect.js";
 import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
+import { runClassification } from "../core/monitor/topics.js";
 import { decodeProtobufExportRequest, encodeProtobufResponse } from "../otel/protoTypes.js";
 import { normalizeExportRequest } from "../otel/normalize.js";
 import { otelSpanToIngestInput } from "../otel/mapping.js";
@@ -36,6 +37,14 @@ otlpRouter.use(express.raw({ type: "application/x-protobuf", limit: "10mb" }));
 // at this endpoint at all is itself the opt-in signal, and leaving it off by default would
 // silently leave Observe empty for anyone trying this out. AGENTX_OTEL_MONITOR=false disables it.
 const MONITOR_OTEL_TRACES = process.env.AGENTX_OTEL_MONITOR !== "false";
+
+// Braintrust and Langfuse both default online scoring to the trace/root level, not per-span —
+// scoring a tool call's output as if it were the whole interaction is misleading, and it
+// multiplies judge-API calls by however many spans a trace has. Root spans (no parent_span_id)
+// always get checked; a child span (real hierarchy, from this OTel path or from a span_tree-
+// enabled SDK trace) is skipped by default. AGENTX_MONITOR_CHILD_SPANS=true restores the old
+// per-span behavior for an operator who deliberately wants it.
+const MONITOR_CHILD_SPANS = process.env.AGENTX_MONITOR_CHILD_SPANS === "true";
 
 otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   const isProtobuf = Boolean(req.is("application/x-protobuf"));
@@ -98,6 +107,10 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   // they're wrapped in .catch() rather than try/catch so a rejection is logged instead of
   // becoming a silent unhandled one.
   for (const { traceId, input } of checkTargets) {
+    if (input.parent_span_id && !MONITOR_CHILD_SPANS) {
+      continue;
+    }
+
     if (MONITOR_OTEL_TRACES) {
       runMonitorCheck(
         db,
@@ -116,6 +129,10 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
 
     runOnlineEvaluators(db, { input: input.input, output: input.output }, { agentId: input.name, traceId }).catch(err => {
       console.error("Online evaluator scoring failed:", err instanceof Error ? err.message : err);
+    });
+
+    runClassification(db, { input: input.input, output: input.output }, { agentId: input.name, traceId }).catch(err => {
+      console.error("Trace classification failed:", err instanceof Error ? err.message : err);
     });
   }
 });

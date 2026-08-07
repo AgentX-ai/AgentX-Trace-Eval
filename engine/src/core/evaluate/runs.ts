@@ -3,6 +3,7 @@ import { eq, and, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { getEvaluationSettingsRow, type EvaluationSettingsRow } from "./evaluationSettings.js";
 import type { SimilarityConfig } from "./datasets.js";
+import { runCodeScorer, type CodeScorerConfig, type CodeScorerResult } from "./codeScorer.js";
 import {
   scoreAgainstCriteria,
   generateSmokeTestVariants,
@@ -32,6 +33,7 @@ type ResolvedRunConfig = {
   judgePrompt: string;
   judgeModel: string;
   similarityConfig: SimilarityConfig;
+  codeScorers: CodeScorerConfig[];
   questions: Array<{ main_question?: { query?: string; expectedResults?: string; judgeGuideline?: string } }>;
 };
 
@@ -56,6 +58,7 @@ async function resolveRunConfig(
     judgePrompt: (settings?.judgePrompt ?? "").trim() || DEFAULT_JUDGE_PROMPT,
     judgeModel: settings?.judgeModel ?? DEFAULT_JUDGE_MODEL,
     similarityConfig: (source?.similarityConfig as SimilarityConfig | null) ?? {},
+    codeScorers: ((source?.codeScorers as CodeScorerConfig[] | null) ?? []).filter(s => s.enabled),
     questions,
   };
 }
@@ -67,6 +70,7 @@ async function getDatasetRow(db: Db, id: string) {
     rejectionCriteria: string | null;
     evaluationCriteria: string | null;
     similarityConfig: unknown;
+    codeScorers: unknown;
     questions: unknown;
   };
   if (db.kind === "sqlite") {
@@ -201,13 +205,13 @@ type SimilarityScores = {
 async function scoreOneResult(
   config: ResolvedRunConfig,
   item: SubmittedResult
-): Promise<{ rating: number; justification: string } & SimilarityScores> {
+): Promise<{ rating: number; justification: string } & SimilarityScores & { codeScorerResults: CodeScorerResult[] }> {
   const question = item.questionIndex != null ? config.questions[item.questionIndex] : undefined;
   const mainQ = question?.main_question;
   const expected = mainQ?.expectedResults;
   const actual = item.output?.text;
 
-  const [judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore] = await Promise.all([
+  const [judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore, codeScorerResults] = await Promise.all([
     scoreAgainstCriteria(config, {
       input: item.input?.query || "",
       output: actual || "",
@@ -220,9 +224,17 @@ async function scoreOneResult(
     config.similarityConfig.jaccardSimilarity?.enabled ? computeJaccardSimilarity(expected, actual) : null,
     config.similarityConfig.bleuScore?.enabled ? computeBleuScore(expected, actual) : null,
     config.similarityConfig.rougeScore?.enabled ? computeRougeScore(expected, actual) : null,
+    // Each code scorer isolates its own failure into { score: null, error } (see codeScorer.ts's
+    // runCodeScorer) — a broken/timed-out scorer never rejects this Promise.all or takes down the
+    // judge rating / similarity scores alongside it.
+    Promise.all(
+      config.codeScorers.map(scorer =>
+        runCodeScorer(scorer, { input: item.input?.query || "", output: actual || "", expected })
+      )
+    ),
   ]);
 
-  return { ...judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore };
+  return { ...judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore, codeScorerResults };
 }
 
 export async function appendResults(
@@ -263,6 +275,7 @@ export async function appendResults(
     let justification: string | null = null;
     let status: "scored" | "failed" | "skipped" = "scored";
     let similarity: SimilarityScores = { vectorSimilarity: null, jaccardSimilarity: null, bleuScore: null, rougeScore: null };
+    let codeScorerResults: CodeScorerResult[] = [];
 
     if (item.error) {
       status = "failed";
@@ -274,6 +287,7 @@ export async function appendResults(
         rating = scored.rating;
         justification = scored.justification;
         similarity = scored;
+        codeScorerResults = scored.codeScorerResults;
       } catch (err) {
         status = "skipped";
         justification = err instanceof Error ? err.message : "Scoring failed";
@@ -306,6 +320,7 @@ export async function appendResults(
       jaccardSimilarity: similarity.jaccardSimilarity,
       bleuScore: similarity.bleuScore,
       rougeScore: similarity.rougeScore,
+      codeScorerResults: codeScorerResults.length > 0 ? codeScorerResults : null,
       rating,
       justification,
       status,
@@ -451,6 +466,7 @@ export type RunResultRow = {
   jaccardSimilarity: number | null;
   bleuScore: number | null;
   rougeScore: number | null;
+  codeScorerResults: CodeScorerResult[] | null;
   rating: number | null;
   justification: string | null;
   createdAt: Date;

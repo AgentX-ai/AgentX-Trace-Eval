@@ -1,7 +1,8 @@
 import { nanoid } from "nanoid";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
-import { listOccurrencesForSignal, type EventRow } from "./events.js";
+import { listOccurrencesForSignal, extractText, type EventRow } from "./events.js";
+import { getTraceRow } from "../trace/ingest.js";
 
 // Matches AgentX-Python's MonitorSignal field aliases (agentx/monitor/models.py).
 export type SignalRow = {
@@ -33,7 +34,16 @@ export type SignalRow = {
 // SignalRow.tsx renders exactly this array as the per-occurrence list under "N occurrences"; a
 // missing/empty array there silently collapses to a single synthesized fallback row, which is the
 // "shows 4 occurrences but only 1 in the list" bug this closes.
-function toWire(row: SignalRow, occurrences: EventRow[] = []) {
+//
+// occurrenceEvidence (keyed by event id) is a separate, optional pass: upsertSignal overwrites the
+// signal's own summary/evidence on every repeat match (last-write-wins, see upsertSignal below), so
+// occurrence #1 and #2's captured text is otherwise gone the moment #3 arrives — only getSignal
+// (one signal, bounded cost) resolves it via resolveOccurrenceEvidence; listSignals (whole table,
+// unbounded) intentionally doesn't, to avoid an N-signals x M-occurrences trace-join on every table
+// load. rating/justification are cheap either way (already columns on the event row).
+type OccurrenceEvidence = { query?: string; responsePreview?: string };
+
+function toWire(row: SignalRow, occurrences: EventRow[] = [], occurrenceEvidence?: Map<string, OccurrenceEvidence>) {
   return {
     _id: row.id,
     workspaceId: "local",
@@ -56,9 +66,14 @@ function toWire(row: SignalRow, occurrences: EventRow[] = []) {
     // conversationId/messageId (native-chat-only concepts), but does have a real traceId/agentId
     // per detection.
     occurrences: occurrences.map(e => ({
+      id: e.id,
       agentId: e.agentId ? { _id: e.agentId, name: e.agentId } : undefined,
       traceId: e.traceId ?? undefined,
       seenAt: e.createdAt.toISOString(),
+      query: occurrenceEvidence?.get(e.id)?.query,
+      responsePreview: occurrenceEvidence?.get(e.id)?.responsePreview,
+      rating: e.rating ?? undefined,
+      justification: e.justification ?? undefined,
     })),
     firstSeenAt: row.firstSeenAt.toISOString(),
     lastSeenAt: row.lastSeenAt.toISOString(),
@@ -180,6 +195,27 @@ export async function listSignals(
   return Promise.all(page.map(async row => toWire(row, await listOccurrencesForSignal(db, row.id))));
 }
 
+// Same trace-join pattern as getOnlineEvaluatorEvents (events.ts) — resolves each occurrence's
+// traceId back to its trace to recover the real captured input/output, since the event row itself
+// only stores the traceId, not the text. One signal's occurrences at a time (bounded), never the
+// whole table — see toWire's OccurrenceEvidence comment for why.
+async function resolveOccurrenceEvidence(db: Db, events: EventRow[]): Promise<Map<string, OccurrenceEvidence>> {
+  const map = new Map<string, OccurrenceEvidence>();
+  await Promise.all(
+    events.map(async e => {
+      if (!e.traceId) {
+        return;
+      }
+      const trace = await getTraceRow(db, e.traceId);
+      if (!trace) {
+        return;
+      }
+      map.set(e.id, { query: extractText(trace.input), responsePreview: extractText(trace.output) });
+    })
+  );
+  return map;
+}
+
 export async function getSignal(db: Db, id: string) {
   let row: SignalRow | undefined;
   if (db.kind === "sqlite") {
@@ -191,7 +227,12 @@ export async function getSignal(db: Db, id: string) {
       | SignalRow
       | undefined;
   }
-  return row ? toWire(row, await listOccurrencesForSignal(db, row.id)) : null;
+  if (!row) {
+    return null;
+  }
+  const occurrences = await listOccurrencesForSignal(db, row.id);
+  const occurrenceEvidence = await resolveOccurrenceEvidence(db, occurrences);
+  return toWire(row, occurrences, occurrenceEvidence);
 }
 
 export async function getSignalRow(db: Db, id: string): Promise<SignalRow | null> {

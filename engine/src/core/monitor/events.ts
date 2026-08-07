@@ -396,7 +396,7 @@ export async function getOnlineEvaluatorRatings(
   return { window, points };
 }
 
-function extractText(value: unknown): string {
+export function extractText(value: unknown): string {
   if (typeof value === "string") return value;
   if (value && typeof value === "object") {
     const obj = value as { query?: string; text?: string };

@@ -96,19 +96,25 @@ export async function initDb(): Promise<Db> {
 // drizzle's own cross-dialect query builder rather than hand-rolled conditional SQL across two
 // dialects, so a user who later deletes some or all of these never sees them silently reappear on
 // the next restart. Prices are approximate/point-in-time — see core/evaluate/models.ts's comment.
+// Current as of Aug 2026 — verified against platform.openai.com/docs/models and
+// platform.claude.com's models overview at the time this list was last updated. Model lineups
+// move fast; re-check both providers' docs before trusting this list again in a few months.
 const DEFAULT_PORTABILITY_MODELS: Array<{
   id: string;
   provider: "openai" | "anthropic";
   label: string;
   pricePerMInputTokens: number;
   pricePerMOutputTokens: number;
+  isDefault?: boolean;
 }> = [
-  { id: "gpt-4.1", provider: "openai", label: "GPT-4.1", pricePerMInputTokens: 2.0, pricePerMOutputTokens: 8.0 },
-  { id: "gpt-4.1-mini", provider: "openai", label: "GPT-4.1 mini", pricePerMInputTokens: 0.4, pricePerMOutputTokens: 1.6 },
-  { id: "gpt-4o", provider: "openai", label: "GPT-4o", pricePerMInputTokens: 2.5, pricePerMOutputTokens: 10.0 },
-  { id: "gpt-4o-mini", provider: "openai", label: "GPT-4o mini", pricePerMInputTokens: 0.15, pricePerMOutputTokens: 0.6 },
-  { id: "claude-opus-4-1", provider: "anthropic", label: "Claude Opus 4.1", pricePerMInputTokens: 15.0, pricePerMOutputTokens: 75.0 },
-  { id: "claude-sonnet-4-5", provider: "anthropic", label: "Claude Sonnet 4.5", pricePerMInputTokens: 3.0, pricePerMOutputTokens: 15.0 },
+  { id: "gpt-5.6-sol", provider: "openai", label: "GPT-5.6 Sol", pricePerMInputTokens: 5.0, pricePerMOutputTokens: 30.0 },
+  { id: "gpt-5.6-terra", provider: "openai", label: "GPT-5.6 Terra", pricePerMInputTokens: 2.0, pricePerMOutputTokens: 12.0 },
+  { id: "gpt-5.6-luna", provider: "openai", label: "GPT-5.6 Luna", pricePerMInputTokens: 0.2, pricePerMOutputTokens: 1.2 },
+  { id: "claude-fable-5", provider: "anthropic", label: "Claude Fable 5", pricePerMInputTokens: 10.0, pricePerMOutputTokens: 50.0 },
+  { id: "claude-opus-5", provider: "anthropic", label: "Claude Opus 5", pricePerMInputTokens: 5.0, pricePerMOutputTokens: 25.0 },
+  // Default judge model: strong quality/cost balance, far cheaper than Fable 5/Opus 5 — good
+  // enough to be everyone's first pick for evaluating another agent's responses.
+  { id: "claude-sonnet-5", provider: "anthropic", label: "Claude Sonnet 5", pricePerMInputTokens: 3.0, pricePerMOutputTokens: 15.0, isDefault: true },
   { id: "claude-haiku-4-5", provider: "anthropic", label: "Claude Haiku 4.5", pricePerMInputTokens: 1.0, pricePerMOutputTokens: 5.0 },
 ];
 
@@ -174,6 +180,9 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       performance_summary TEXT,
       input_tokens INTEGER,
       output_tokens INTEGER,
+      span_id TEXT,
+      parent_span_id TEXT,
+      started_at INTEGER,
       created_at INTEGER NOT NULL
     );
 
@@ -183,6 +192,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       description TEXT,
       number_of_requests INTEGER NOT NULL DEFAULT 1,
       similarity_config TEXT,
+      code_scorers TEXT,
       acceptance_criteria TEXT,
       rejection_criteria TEXT,
       evaluation_criteria TEXT,
@@ -196,6 +206,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       description TEXT,
       number_of_requests INTEGER NOT NULL DEFAULT 1,
       similarity_config TEXT,
+      code_scorers TEXT,
       acceptance_criteria TEXT,
       rejection_criteria TEXT,
       evaluation_criteria TEXT,
@@ -240,6 +251,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       jaccard_similarity REAL,
       bleu_score REAL,
       rouge_score REAL,
+      code_scorer_results TEXT,
       rating REAL,
       justification TEXT,
       status TEXT NOT NULL,
@@ -248,6 +260,22 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
 
     CREATE UNIQUE INDEX IF NOT EXISTS evaluation_run_results_run_id_idempotency_key
       ON evaluation_run_results (run_id, idempotency_key);
+
+    CREATE TABLE IF NOT EXISTS dataset_versions (
+      id TEXT PRIMARY KEY,
+      dataset_id TEXT NOT NULL,
+      snapshot TEXT NOT NULL,
+      change_summary TEXT,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS evaluation_settings_versions (
+      id TEXT PRIMARY KEY,
+      evaluation_settings_id TEXT NOT NULL,
+      snapshot TEXT NOT NULL,
+      change_summary TEXT,
+      created_at INTEGER NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS monitor_patterns (
       id TEXT PRIMARY KEY,
@@ -272,6 +300,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       enabled INTEGER NOT NULL DEFAULT 1,
       failure_detection_enabled INTEGER NOT NULL DEFAULT 1,
       info_detection_enabled INTEGER NOT NULL DEFAULT 1,
+      topics_enabled INTEGER NOT NULL DEFAULT 0,
       coverage_mode TEXT NOT NULL DEFAULT 'all',
       sample_rate REAL NOT NULL DEFAULT 1,
       retention_days INTEGER NOT NULL DEFAULT 30,
@@ -310,6 +339,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     CREATE TABLE IF NOT EXISTS monitor_signal_feedback (
       id TEXT PRIMARY KEY,
       signal_id TEXT NOT NULL,
+      event_id TEXT,
       metric TEXT NOT NULL,
       original_score REAL,
       corrected_score REAL,
@@ -333,6 +363,18 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
 
     CREATE INDEX IF NOT EXISTS monitor_events_agent_id_created_at ON monitor_events (agent_id, created_at);
     CREATE INDEX IF NOT EXISTS monitor_events_created_at ON monitor_events (created_at);
+
+    CREATE TABLE IF NOT EXISTS monitor_classifications (
+      id TEXT PRIMARY KEY,
+      trace_id TEXT,
+      agent_id TEXT,
+      intent TEXT NOT NULL,
+      sentiment TEXT NOT NULL,
+      issue_type TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS monitor_classifications_created_at ON monitor_classifications (created_at);
 
     CREATE TABLE IF NOT EXISTS monitor_online_evaluators (
       id TEXT PRIMARY KEY,
@@ -378,8 +420,21 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       label TEXT NOT NULL,
       price_per_m_input_tokens REAL NOT NULL,
       price_per_m_output_tokens REAL NOT NULL,
+      is_default INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS evaluation_analyses (
+      evaluation_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      judge_model TEXT NOT NULL,
+      judge_models TEXT,
+      analysis TEXT,
+      statistics TEXT,
+      judge_evidence TEXT,
+      error TEXT,
+      created_at INTEGER NOT NULL
     );
   `);
 
@@ -422,6 +477,16 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN latency_ms INTEGER"],
     ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN input_tokens INTEGER"],
     ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN output_tokens INTEGER"],
+    ["portability_models", "ALTER TABLE portability_models ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0"],
+    ["evaluation_analyses", "ALTER TABLE evaluation_analyses ADD COLUMN judge_models TEXT"],
+    ["monitor_signal_feedback", "ALTER TABLE monitor_signal_feedback ADD COLUMN event_id TEXT"],
+    ["monitor_profiles", "ALTER TABLE monitor_profiles ADD COLUMN topics_enabled INTEGER NOT NULL DEFAULT 0"],
+    ["traces", "ALTER TABLE traces ADD COLUMN span_id TEXT"],
+    ["traces", "ALTER TABLE traces ADD COLUMN parent_span_id TEXT"],
+    ["traces", "ALTER TABLE traces ADD COLUMN started_at INTEGER"],
+    ["datasets", "ALTER TABLE datasets ADD COLUMN code_scorers TEXT"],
+    ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN code_scorers TEXT"],
+    ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN code_scorer_results TEXT"],
   ];
   for (const [, statement] of columnMigrations) {
     try {
@@ -524,6 +589,9 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       performance_summary JSONB,
       input_tokens INTEGER,
       output_tokens INTEGER,
+      span_id TEXT,
+      parent_span_id TEXT,
+      started_at TIMESTAMP,
       created_at TIMESTAMP NOT NULL
     );
 
@@ -533,6 +601,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       description TEXT,
       number_of_requests INTEGER NOT NULL DEFAULT 1,
       similarity_config JSONB,
+      code_scorers JSONB,
       acceptance_criteria TEXT,
       rejection_criteria TEXT,
       evaluation_criteria TEXT,
@@ -546,6 +615,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       description TEXT,
       number_of_requests INTEGER NOT NULL DEFAULT 1,
       similarity_config JSONB,
+      code_scorers JSONB,
       acceptance_criteria TEXT,
       rejection_criteria TEXT,
       evaluation_criteria TEXT,
@@ -590,6 +660,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       jaccard_similarity DOUBLE PRECISION,
       bleu_score DOUBLE PRECISION,
       rouge_score DOUBLE PRECISION,
+      code_scorer_results JSONB,
       rating DOUBLE PRECISION,
       justification TEXT,
       status TEXT NOT NULL,
@@ -598,6 +669,22 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
 
     CREATE UNIQUE INDEX IF NOT EXISTS evaluation_run_results_run_id_idempotency_key
       ON evaluation_run_results (run_id, idempotency_key);
+
+    CREATE TABLE IF NOT EXISTS dataset_versions (
+      id TEXT PRIMARY KEY,
+      dataset_id TEXT NOT NULL,
+      snapshot JSONB NOT NULL,
+      change_summary TEXT,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS evaluation_settings_versions (
+      id TEXT PRIMARY KEY,
+      evaluation_settings_id TEXT NOT NULL,
+      snapshot JSONB NOT NULL,
+      change_summary TEXT,
+      created_at TIMESTAMP NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS monitor_patterns (
       id TEXT PRIMARY KEY,
@@ -622,6 +709,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       enabled BOOLEAN NOT NULL DEFAULT true,
       failure_detection_enabled BOOLEAN NOT NULL DEFAULT true,
       info_detection_enabled BOOLEAN NOT NULL DEFAULT true,
+      topics_enabled BOOLEAN NOT NULL DEFAULT false,
       coverage_mode TEXT NOT NULL DEFAULT 'all',
       sample_rate DOUBLE PRECISION NOT NULL DEFAULT 1,
       retention_days INTEGER NOT NULL DEFAULT 30,
@@ -660,6 +748,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     CREATE TABLE IF NOT EXISTS monitor_signal_feedback (
       id TEXT PRIMARY KEY,
       signal_id TEXT NOT NULL,
+      event_id TEXT,
       metric TEXT NOT NULL,
       original_score DOUBLE PRECISION,
       corrected_score DOUBLE PRECISION,
@@ -683,6 +772,18 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS monitor_events_agent_id_created_at ON monitor_events (agent_id, created_at);
     CREATE INDEX IF NOT EXISTS monitor_events_created_at ON monitor_events (created_at);
+
+    CREATE TABLE IF NOT EXISTS monitor_classifications (
+      id TEXT PRIMARY KEY,
+      trace_id TEXT,
+      agent_id TEXT,
+      intent TEXT NOT NULL,
+      sentiment TEXT NOT NULL,
+      issue_type TEXT NOT NULL,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS monitor_classifications_created_at ON monitor_classifications (created_at);
 
     CREATE TABLE IF NOT EXISTS monitor_online_evaluators (
       id TEXT PRIMARY KEY,
@@ -726,8 +827,21 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       label TEXT NOT NULL,
       price_per_m_input_tokens DOUBLE PRECISION NOT NULL,
       price_per_m_output_tokens DOUBLE PRECISION NOT NULL,
+      is_default BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS evaluation_analyses (
+      evaluation_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      judge_model TEXT NOT NULL,
+      judge_models JSONB,
+      analysis JSONB,
+      statistics JSONB,
+      judge_evidence JSONB,
+      error TEXT,
+      created_at TIMESTAMP NOT NULL
     );
 
     -- Postgres supports IF NOT EXISTS on ADD COLUMN natively, unlike SQLite (see
@@ -763,6 +877,16 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS latency_ms INTEGER;
     ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS input_tokens INTEGER;
     ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS output_tokens INTEGER;
+    ALTER TABLE portability_models ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE evaluation_analyses ADD COLUMN IF NOT EXISTS judge_models JSONB;
+    ALTER TABLE monitor_signal_feedback ADD COLUMN IF NOT EXISTS event_id TEXT;
+    ALTER TABLE monitor_profiles ADD COLUMN IF NOT EXISTS topics_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE traces ADD COLUMN IF NOT EXISTS span_id TEXT;
+    ALTER TABLE traces ADD COLUMN IF NOT EXISTS parent_span_id TEXT;
+    ALTER TABLE traces ADD COLUMN IF NOT EXISTS started_at TIMESTAMP;
+    ALTER TABLE datasets ADD COLUMN IF NOT EXISTS code_scorers JSONB;
+    ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS code_scorers JSONB;
+    ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS code_scorer_results JSONB;
   `);
 
   await migrateOnlineEvaluatorsToConfigsPostgres(pool);

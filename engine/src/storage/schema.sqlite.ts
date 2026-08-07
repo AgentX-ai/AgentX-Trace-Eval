@@ -18,6 +18,14 @@ export const traces = sqliteTable("traces", {
   performanceSummary: text("performance_summary", { mode: "json" }),
   inputTokens: integer("input_tokens"),
   outputTokens: integer("output_tokens"),
+  // Real span hierarchy — populated only by the OTel ingestion path (otel/mapping.ts's
+  // otelSpanToIngestInput), always null for SDK-native tracer.trace() calls, which have no span
+  // concept. spanId/parentSpanId let a session's rows (sessionId = the OTel traceId) be assembled
+  // into a tree; startedAt is the absolute span start (otherwise only the derived latencyMs
+  // duration survives ingestion, never enough on its own for a waterfall's relative positioning).
+  spanId: text("span_id"),
+  parentSpanId: text("parent_span_id"),
+  startedAt: integer("started_at", { mode: "timestamp_ms" }),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
 
@@ -33,6 +41,11 @@ export const datasets = sqliteTable("datasets", {
   // rougeScore?: { enabled } } — matches AgentX-Python's DatasetBuilder/EvaluationSettingsBuilder
   // wire payload exactly, so no reshaping is needed on either side of the create/update routes.
   similarityConfig: text("similarity_config", { mode: "json" }),
+  // Array of { id, name, code, enabled } — user-defined JS/TS scoring functions, self-host only
+  // (core/evaluate/codeScorer.ts executes `code` in-process via node:vm). Open-ended and
+  // dataset-defined, unlike the 4 fixed similarity metrics above, hence one JSON column here
+  // rather than a column per scorer.
+  codeScorers: text("code_scorers", { mode: "json" }),
   acceptanceCriteria: text("acceptance_criteria"),
   rejectionCriteria: text("rejection_criteria"),
   evaluationCriteria: text("evaluation_criteria"),
@@ -49,6 +62,8 @@ export const evaluationSettings = sqliteTable("evaluation_settings", {
   numberOfRequests: integer("number_of_requests").notNull().default(1),
   // See datasets.similarityConfig's comment for the exact shape.
   similarityConfig: text("similarity_config", { mode: "json" }),
+  // See datasets.codeScorers's comment for the exact shape.
+  codeScorers: text("code_scorers", { mode: "json" }),
   acceptanceCriteria: text("acceptance_criteria"),
   rejectionCriteria: text("rejection_criteria"),
   evaluationCriteria: text("evaluation_criteria"),
@@ -110,6 +125,10 @@ export const evaluationRunResults = sqliteTable(
     jaccardSimilarity: real("jaccard_similarity"),
     bleuScore: real("bleu_score"),
     rougeScore: real("rouge_score"),
+    // Array of { name, score: number | null, reasoning?, error? } — one entry per enabled code
+    // scorer on the dataset at run time (core/evaluate/codeScorer.ts). Open-ended/named like
+    // datasets.codeScorers, hence one JSON column rather than fixed columns.
+    codeScorerResults: text("code_scorer_results", { mode: "json" }),
     rating: real("rating"),
     justification: text("justification"),
     status: text("status").notNull(),
@@ -124,6 +143,35 @@ export const evaluationRunResults = sqliteTable(
     ),
   })
 );
+
+// Edit history for a dataset's own (questions-only) fields — separate log from
+// evaluationSettingsVersions below even for a dataset+settings twin sharing one id, mirroring the
+// hosted SaaS's DatasetVersion/EvaluationSettingsVersion split (see core/evaluate/versions.ts).
+// One row per save that actually changed a tracked field, newest-first by createdAt; no `creator`
+// column, since self-host has only the one synthetic LOCAL_USER (see routes/evaluateDashboard.ts).
+export const datasetVersions = sqliteTable("dataset_versions", {
+  id: text("id").primaryKey(),
+  datasetId: text("dataset_id").notNull(),
+  // { name, description, questions, status } — see core/evaluate/versions.ts's DATASET_SNAPSHOT_FIELDS.
+  snapshot: text("snapshot", { mode: "json" }).notNull(),
+  // Computed field-diff against the prior version ("Updated acceptance criteria, questions"), or
+  // "Created" for the first version — see core/evaluate/versions.ts's buildChangeSummary. Always
+  // present (unlike the hosted SaaS's async LLM-generated summary this mirrors in shape only).
+  changeSummary: text("change_summary"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+// Edit history for an EvaluationSettings grading config — see datasetVersions' comment above for
+// the general shape/rationale. Applies equally to a dataset's twin config and a standalone
+// Evaluator config (no dataset attached), since both are just rows in evaluationSettings.
+export const evaluationSettingsVersions = sqliteTable("evaluation_settings_versions", {
+  id: text("id").primaryKey(),
+  evaluationSettingsId: text("evaluation_settings_id").notNull(),
+  // See core/evaluate/versions.ts's SETTINGS_SNAPSHOT_FIELDS for the exact field list.
+  snapshot: text("snapshot", { mode: "json" }).notNull(),
+  changeSummary: text("change_summary"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
 
 // Monitor (plan task #110). Built-in checks (empty response, trace error, tool failure, latency
 // regression) aren't stored rows, they're evaluated in code (see core/monitor/detect.ts) against
@@ -161,6 +209,10 @@ export const monitorProfiles = sqliteTable(
     enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
     failureDetectionEnabled: integer("failure_detection_enabled", { mode: "boolean" }).notNull().default(true),
     infoDetectionEnabled: integer("info_detection_enabled", { mode: "boolean" }).notNull().default(true),
+    // Opt-in (default false): a per-trace classification judge call, real LLM spend, so existing
+    // installs shouldn't get it for free on upgrade. Reuses this profile's own sampleRate — no
+    // separate rate knob. See core/monitor/topics.ts's runClassification.
+    topicsEnabled: integer("topics_enabled", { mode: "boolean" }).notNull().default(false),
     coverageMode: text("coverage_mode").notNull().default("all"),
     sampleRate: real("sample_rate").notNull().default(1),
     retentionDays: integer("retention_days").notNull().default(30),
@@ -213,6 +265,9 @@ export const monitorSignals = sqliteTable(
 export const monitorSignalFeedback = sqliteTable("monitor_signal_feedback", {
   id: text("id").primaryKey(),
   signalId: text("signal_id").notNull(),
+  // Which occurrence (monitor_events.id) this note is about — nullable since older rows and some
+  // signal sources predate per-occurrence text ever being resolvable. See core/monitor/feedback.ts.
+  eventId: text("event_id"),
   metric: text("metric").notNull(),
   originalScore: real("original_score"),
   correctedScore: real("corrected_score"),
@@ -247,6 +302,20 @@ export const monitorEvents = sqliteTable("monitor_events", {
   onlineEvaluatorId: text("online_evaluator_id"),
   rating: real("rating"),
   justification: text("justification"),
+});
+
+// One row per classified trace (core/monitor/topics.ts's runClassification, gated by
+// monitor_profiles.topicsEnabled) — a separate table rather than overloading monitor_events, since
+// "top intents this week" wants real GROUP BY-able columns, not a JSON blob stuffed into a column
+// (justification) that's already semantically owned by the online-evaluator flow.
+export const monitorClassifications = sqliteTable("monitor_classifications", {
+  id: text("id").primaryKey(),
+  traceId: text("trace_id"),
+  agentId: text("agent_id"),
+  intent: text("intent").notNull(),
+  sentiment: text("sentiment").notNull(),
+  issueType: text("issue_type").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
 
 // Mirrors monitor_patterns' routing fields (sampleRate/scopeMode/agentIds, see core/monitor/
@@ -319,8 +388,38 @@ export const portabilityModels = sqliteTable("portability_models", {
   label: text("label").notNull(),
   pricePerMInputTokens: real("price_per_m_input_tokens").notNull(),
   pricePerMOutputTokens: real("price_per_m_output_tokens").notNull(),
+  // At most one row is default at a time (enforced in core/evaluate/models.ts, not here) — sorted
+  // first by listPortabilityModels, so it's what judge-model dropdowns preselect. Same isDefault
+  // convention as evaluationSettings above.
+  isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+// One row per evaluation run (evaluationId = evaluationRuns.id), replaced wholesale on
+// re-analyze — see core/evaluate/analysis.ts. Deliberately not the hosted SaaS's job-queue
+// pipeline (no job queue exists in this engine, see routes/evaluations.ts's comment on why that
+// was left for a future pass): up to MAX_JUDGES judges independently re-rate every sampled item in
+// parallel, synchronously within the one HTTP request, no confidence-weighted fusion/tie-break.
+export const evaluationAnalyses = sqliteTable("evaluation_analyses", {
+  evaluationId: text("evaluation_id").primaryKey(),
+  status: text("status").notNull(),
+  // Primary/writer judge (judgeModels[0]) — kept for rows written before judgeModels existed.
+  judgeModel: text("judge_model").notNull(),
+  // All judges used for this analysis (1-3) — see core/evaluate/analysis.ts's MAX_JUDGES. Nullable:
+  // rows written before multi-judge support only have judgeModel.
+  judgeModels: text("judge_models", { mode: "json" }),
+  // AnalysisSchema-shaped (src/types/evaluate.ts on the frontend) minus instructionChanges, which
+  // is always [] — self-host has no native agent config to apply a change to. Null on failure.
+  analysis: text("analysis", { mode: "json" }),
+  // { numberOfRuns, averageRating, minRating, maxRating, ratingVariance } — pure arithmetic over
+  // evaluation_run_results.rating, computed at analysis time, not re-derived per read.
+  statistics: text("statistics", { mode: "json" }),
+  // The worst-N sample rows actually shown to the judge(s), each with every judge's own rating —
+  // for the panel's judgeEvidence display.
+  judgeEvidence: text("judge_evidence", { mode: "json" }),
+  error: text("error"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
 
 export type SqliteSchema = {
@@ -334,8 +433,10 @@ export type SqliteSchema = {
   monitorProfiles: typeof monitorProfiles;
   monitorSignals: typeof monitorSignals;
   monitorEvents: typeof monitorEvents;
+  monitorClassifications: typeof monitorClassifications;
   monitorOnlineEvaluators: typeof monitorOnlineEvaluators;
   prompts: typeof prompts;
   promptVersions: typeof promptVersions;
   portabilityModels: typeof portabilityModels;
+  evaluationAnalyses: typeof evaluationAnalyses;
 };

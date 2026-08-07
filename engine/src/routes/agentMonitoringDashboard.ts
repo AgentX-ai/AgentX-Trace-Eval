@@ -16,6 +16,7 @@ import {
   getOnlineEvaluatorEvents,
   type MonitoringWindow,
 } from "../core/monitor/events.js";
+import { getTopicsTrend, getTopIntents, getIssueBreakdown } from "../core/monitor/topics.js";
 import { listDatasets, createDataset, updateDataset } from "../core/evaluate/datasets.js";
 import {
   createOnlineEvaluator,
@@ -159,6 +160,7 @@ agentMonitoringDashboardRouter.put("/profiles/:agentId", async (req: Request, re
     enabled: body.enabled,
     failureDetectionEnabled: body.failureDetectionEnabled,
     infoDetectionEnabled: body.infoDetectionEnabled,
+    topicsEnabled: body.topicsEnabled,
     coverageMode: body.coverageMode,
     sampleRate: body.sampleRate,
     retentionDays: body.retentionDays,
@@ -203,6 +205,18 @@ agentMonitoringDashboardRouter.get("/trend", async (req: Request, res: Response)
 
 agentMonitoringDashboardRouter.get("/top-failing", async (req: Request, res: Response) => {
   res.status(200).json(await getTopFailing(getDb(), parseWindow(req)));
+});
+
+// Automatic per-trace classification (core/monitor/topics.ts) — opt-in via
+// AgentMonitoringProfile.topicsEnabled, one combined payload since it's all one "Topics" sub-view.
+agentMonitoringDashboardRouter.get("/topics", async (req: Request, res: Response) => {
+  const window = parseWindow(req);
+  const [trend, topIntents, issueBreakdown] = await Promise.all([
+    getTopicsTrend(getDb(), window),
+    getTopIntents(getDb(), window),
+    getIssueBreakdown(getDb(), window),
+  ]);
+  res.status(200).json({ trend, topIntents, issueBreakdown });
 });
 
 // Online evaluators (core/monitor/onlineEvaluators.ts): LangSmith's actual "online evals" —
@@ -336,6 +350,7 @@ agentMonitoringDashboardRouter.post("/signals/:signalId/feedback", async (req: R
   const feedback = await createFeedback(getDb(), req.params.signalId!, {
     metric: body.metric,
     rationale: body.rationale,
+    occurrenceId: typeof body.occurrenceId === "string" ? body.occurrenceId : undefined,
     originalScore: body.originalScore,
     correctedScore: body.correctedScore,
     queuedForAutotune: body.queuedForAutotune,
@@ -344,8 +359,9 @@ agentMonitoringDashboardRouter.post("/signals/:signalId/feedback", async (req: R
 });
 
 agentMonitoringDashboardRouter.post("/signals/:signalId/suggest-human-feedback", async (req: Request, res: Response) => {
+  const occurrenceId = typeof req.body?.occurrenceId === "string" ? req.body.occurrenceId : undefined;
   try {
-    const suggestedFeedback = await suggestHumanFeedback(getDb(), req.params.signalId!);
+    const suggestedFeedback = await suggestHumanFeedback(getDb(), req.params.signalId!, occurrenceId);
     res.status(200).json({ suggestedFeedback });
   } catch (err) {
     const status = err instanceof Error && err.message === "Signal not found" ? 404 : 502;
@@ -354,16 +370,21 @@ agentMonitoringDashboardRouter.post("/signals/:signalId/suggest-human-feedback",
 });
 
 agentMonitoringDashboardRouter.post("/signals/:signalId/suggest-expected-results", async (req: Request, res: Response) => {
+  // humanFeedback may be empty — suggestExpectedResults also accepts operator feedback already
+  // recorded on this occurrence (via the "unify" write path, see feedback.ts) as sufficient input,
+  // and throws its own error if genuinely nothing is available.
   const humanFeedback = typeof req.body?.humanFeedback === "string" ? req.body.humanFeedback.trim() : "";
-  if (!humanFeedback) {
-    res.status(400).json({ error: "humanFeedback is required" });
-    return;
-  }
+  const occurrenceId = typeof req.body?.occurrenceId === "string" ? req.body.occurrenceId : undefined;
   try {
-    const result = await suggestExpectedResults(getDb(), req.params.signalId!, humanFeedback);
+    const result = await suggestExpectedResults(getDb(), req.params.signalId!, humanFeedback, occurrenceId);
     res.status(200).json(result);
   } catch (err) {
-    const status = err instanceof Error && err.message === "Signal not found" ? 404 : 502;
+    const status =
+      err instanceof Error && err.message === "Signal not found"
+        ? 404
+        : err instanceof Error && err.message === "No feedback available for this occurrence yet"
+          ? 400
+          : 502;
     res.status(status).json({ error: err instanceof Error ? err.message : "Failed to draft expected results" });
   }
 });
@@ -411,8 +432,18 @@ agentMonitoringDashboardRouter.post("/signals/:signalId/create-evaluator", async
     return;
   }
 
+  // signal.evidence is last-write-wins (only the latest occurrence — see signals.ts's upsertSignal),
+  // so a reviewer who picked an earlier occurrence in the dialog's picker needs that occurrence's
+  // own captured input, not whatever most recently overwrote the signal's top-level evidence.
+  const occurrenceId = typeof body.occurrenceId === "string" ? body.occurrenceId : undefined;
+  const occurrence = occurrenceId ? signal.occurrences?.find(o => o.id === occurrenceId) : undefined;
   const evidence = signal.evidence as { input?: unknown } | undefined;
-  const query = typeof evidence?.input === "string" ? evidence.input : JSON.stringify(evidence?.input ?? "");
+  const query =
+    occurrence?.query !== undefined
+      ? occurrence.query
+      : typeof evidence?.input === "string"
+        ? evidence.input
+        : JSON.stringify(evidence?.input ?? "");
   const newQuestion = { main_question: { query, expectedResults }, follow_up_questions: [] };
 
   const dataset = await resolveMonitorFindingsDataset(agentId);
@@ -490,6 +521,7 @@ agentMonitoringDashboardRouter.post("/portability/models", async (req: Request, 
     label: body.label,
     pricePerMInputTokens: body.pricePerMInputTokens,
     pricePerMOutputTokens: body.pricePerMOutputTokens,
+    isDefault: body.isDefault === true,
   });
   res.status(201).json({ model });
 });
@@ -513,6 +545,7 @@ agentMonitoringDashboardRouter.put("/portability/models/:id", async (req: Reques
     label: body.label,
     pricePerMInputTokens: body.pricePerMInputTokens,
     pricePerMOutputTokens: body.pricePerMOutputTokens,
+    isDefault: typeof body.isDefault === "boolean" ? body.isDefault : undefined,
   });
   if (!model) {
     res.status(404).json({ error: "Model not found" });

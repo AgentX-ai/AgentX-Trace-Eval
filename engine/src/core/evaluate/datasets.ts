@@ -1,6 +1,8 @@
 import { nanoid } from "nanoid";
 import { eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import type { CodeScorerConfig } from "./codeScorer.js";
+import { recordDatasetVersionIfChanged } from "./versions.js";
 
 // Mirrors the wire payload AgentX-Python's DatasetBuilder.publish() sends (see
 // agentx/evaluations/datasets.py) and the Dataset pydantic model's field aliases it expects back
@@ -37,6 +39,26 @@ export function extractSimilarityConfig(body: Record<string, unknown>): Similari
   return Object.keys(config).length > 0 ? config : undefined;
 }
 
+// Same "one extraction helper, called at every create+update site" convention as
+// extractSimilarityConfig above. Unlike that fixed 4-field shape, code scorers are a
+// dataset-defined, open-ended, named list — validated/normalized here rather than trusted
+// as-is, since `code` is later executed (see codeScorer.ts's runCodeScorer).
+export function extractCodeScorers(body: Record<string, unknown>): CodeScorerConfig[] | undefined {
+  if (!Array.isArray(body.codeScorers)) {
+    return undefined;
+  }
+  const scorers = body.codeScorers
+    .filter((s): s is Record<string, unknown> => !!s && typeof s === "object")
+    .map(s => ({
+      id: typeof s.id === "string" && s.id ? s.id : nanoid(),
+      name: typeof s.name === "string" && s.name.trim() ? s.name : "Untitled scorer",
+      code: typeof s.code === "string" ? s.code : "",
+      enabled: s.enabled !== false,
+    }))
+    .filter(s => s.code.trim().length > 0);
+  return scorers.length > 0 ? scorers : undefined;
+}
+
 export type CreateDatasetInput = {
   // Set by routes/evaluateDashboard.ts to create a dataset+evaluationSettings twin sharing one id
   // (see that file's header comment). Omitted (SDK path via routes/evaluations.ts): a fresh id is
@@ -46,6 +68,7 @@ export type CreateDatasetInput = {
   description?: string;
   numberOfRequests?: number;
   similarityConfig?: SimilarityConfig;
+  codeScorers?: CodeScorerConfig[];
   acceptanceCriteria?: string;
   rejectionCriteria?: string;
   evaluationCriteria?: string;
@@ -60,6 +83,7 @@ export type DatasetRow = {
   description: string | null;
   numberOfRequests: number;
   similarityConfig: unknown;
+  codeScorers: unknown;
   acceptanceCriteria: string | null;
   rejectionCriteria: string | null;
   evaluationCriteria: string | null;
@@ -74,6 +98,7 @@ function toWire(row: DatasetRow) {
     description: row.description ?? undefined,
     numberOfRequests: row.numberOfRequests,
     ...((row.similarityConfig as SimilarityConfig | null) ?? {}),
+    codeScorers: (row.codeScorers as CodeScorerConfig[] | null) ?? undefined,
     acceptanceCriteria: row.acceptanceCriteria ?? undefined,
     rejectionCriteria: row.rejectionCriteria ?? undefined,
     evaluationCriteria: row.evaluationCriteria ?? undefined,
@@ -90,6 +115,7 @@ export async function createDataset(db: Db, input: CreateDatasetInput) {
     description: input.description ?? null,
     numberOfRequests: input.numberOfRequests ?? 1,
     similarityConfig: input.similarityConfig ?? null,
+    codeScorers: input.codeScorers ?? null,
     acceptanceCriteria: input.acceptanceCriteria ?? null,
     rejectionCriteria: input.rejectionCriteria ?? null,
     evaluationCriteria: input.evaluationCriteria ?? null,
@@ -101,7 +127,11 @@ export async function createDataset(db: Db, input: CreateDatasetInput) {
   } else {
     await db.db.insert(db.schema.datasets).values(row);
   }
-  return toWire(row);
+  const wire = toWire(row);
+  // Seeds v0 immediately (before: null -> changeSummary "Created") so the version history panel
+  // isn't left empty until the first edit — see versions.ts's buildChangeSummary.
+  await recordDatasetVersionIfChanged(db, row.id, null, wire);
+  return wire;
 }
 
 // Dashboard edits always submit the full form, so this is a full replace, not a sparse patch
@@ -112,11 +142,13 @@ export async function updateDataset(
   id: string,
   input: UpdateDatasetInput,
 ) {
+  const before = await getDataset(db, id);
   const values = {
     name: input.name,
     description: input.description ?? null,
     numberOfRequests: input.numberOfRequests ?? 1,
     similarityConfig: input.similarityConfig ?? null,
+    codeScorers: input.codeScorers ?? null,
     acceptanceCriteria: input.acceptanceCriteria ?? null,
     rejectionCriteria: input.rejectionCriteria ?? null,
     evaluationCriteria: input.evaluationCriteria ?? null,
@@ -133,7 +165,11 @@ export async function updateDataset(
       .set(values)
       .where(eq(db.schema.datasets.id, id));
   }
-  return getDataset(db, id);
+  const after = await getDataset(db, id);
+  if (after) {
+    await recordDatasetVersionIfChanged(db, id, before, after);
+  }
+  return after;
 }
 
 export async function getDataset(db: Db, id: string) {

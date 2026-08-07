@@ -208,6 +208,125 @@ Consider:
 - Quality: Is the response well-structured and clear?`;
 
 // ---------------------------------------------------------------------------
+// Evaluation-run "analysis" narrative — the structured write-up an LLM judge produces about a
+// whole run (as opposed to callJudgeJson's per-item rating). Shared between AgentX-web-api's
+// evaluationAnalysisService.ts (buildRichFinalAnalysis, its L4 final-reduce step) and
+// AgentX-trace-eval's core/evaluate/analysis.ts (self-host's single-judge equivalent) — both ask
+// a judge model for the exact same seven fields below, so the type and JSON-schema shape were
+// duplicated by hand in three places (those two backends plus the frontend's types/evaluate.ts)
+// before this was extracted.
+//
+// Deliberately excluded: instructionChanges (hosted-only — gets written into a live agent's
+// RobotConfig, which self-host has no equivalent of) and delegationAnalysis (hosted-only —
+// team-evaluation concept). Callers that need them add their own fields/properties alongside
+// AnalysisNarrative / analysisNarrativeSchemaProperties()'s output.
+// ---------------------------------------------------------------------------
+
+export type AnalysisRating = "high" | "medium" | "low";
+
+export type AnalysisNarrative = {
+  summary: string;
+  consistencyScore: number;
+  instructionAdherence: { score: number; analysis: string; deviations: string[]; rating?: AnalysisRating };
+  responsePatterns: { similarities: string[]; differences: string[]; outliers: string[]; rating?: AnalysisRating };
+  reasoningAnalysis: {
+    cotQuality: string;
+    reasoningPatterns: string[];
+    reasoningGaps: string[];
+    rating?: AnalysisRating;
+  };
+  toolUsageAnalysis: { effectiveness: string; patterns: string[]; issues: string[]; rating?: AnalysisRating };
+  recommendations: {
+    category: "instructions" | "tools" | "knowledge" | "reasoning" | "consistency" | "other";
+    priority: AnalysisRating;
+    recommendation: string;
+    reasoning: string;
+  }[];
+  overallAssessment: { strengths: string[]; weaknesses: string[]; rating?: AnalysisRating };
+};
+
+// JSON-schema `properties` for the AnalysisNarrative fields, meant to be spread into a caller's
+// own full object schema alongside caller-specific fields (instructionChanges,
+// delegationAnalysis) and the caller's own top-level `required` array.
+//
+// requireRatings controls whether each nested object's own `required` list includes "rating":
+// self-host (analysis.ts) always required it; hosted's existing schema never has, for any of the
+// four sub-sections. Parameterized rather than picking one, so plugging this in changes neither
+// caller's existing judge-call behavior.
+export function analysisNarrativeSchemaProperties({ requireRatings = false }: { requireRatings?: boolean } = {}) {
+  const ratingIfRequired = requireRatings ? (["rating"] as const) : [];
+  return {
+    summary: { type: "string", description: "A few sentences on how this agent performed overall." },
+    consistencyScore: { type: "number", description: "0-10: how consistent responses were across similar inputs." },
+    instructionAdherence: {
+      type: "object",
+      properties: {
+        score: { type: "number", description: "0-10" },
+        analysis: { type: "string" },
+        deviations: { type: "array", items: { type: "string" } },
+        rating: { type: "string", enum: ["high", "medium", "low"] },
+      },
+      required: ["score", "analysis", "deviations", ...ratingIfRequired],
+    },
+    responsePatterns: {
+      type: "object",
+      properties: {
+        similarities: { type: "array", items: { type: "string" }, description: "What's consistently good." },
+        differences: { type: "array", items: { type: "string" } },
+        outliers: { type: "array", items: { type: "string" } },
+        rating: { type: "string", enum: ["high", "medium", "low"] },
+      },
+      required: ["similarities", "differences", "outliers", ...ratingIfRequired],
+    },
+    reasoningAnalysis: {
+      type: "object",
+      properties: {
+        cotQuality: { type: "string" },
+        reasoningPatterns: { type: "array", items: { type: "string" } },
+        reasoningGaps: { type: "array", items: { type: "string" } },
+        rating: { type: "string", enum: ["high", "medium", "low"] },
+      },
+      required: ["cotQuality", "reasoningPatterns", "reasoningGaps", ...ratingIfRequired],
+    },
+    toolUsageAnalysis: {
+      type: "object",
+      properties: {
+        effectiveness: { type: "string" },
+        patterns: { type: "array", items: { type: "string" } },
+        issues: { type: "array", items: { type: "string" } },
+        rating: { type: "string", enum: ["high", "medium", "low"] },
+      },
+      required: ["effectiveness", "patterns", "issues", ...ratingIfRequired],
+    },
+    recommendations: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          category: {
+            type: "string",
+            enum: ["instructions", "tools", "knowledge", "reasoning", "consistency", "other"],
+          },
+          priority: { type: "string", enum: ["high", "medium", "low"] },
+          recommendation: { type: "string" },
+          reasoning: { type: "string" },
+        },
+        required: ["category", "priority", "recommendation", "reasoning"],
+      },
+    },
+    overallAssessment: {
+      type: "object",
+      properties: {
+        strengths: { type: "array", items: { type: "string" } },
+        weaknesses: { type: "array", items: { type: "string" } },
+        rating: { type: "string", enum: ["high", "medium", "low"] },
+      },
+      required: ["strengths", "weaknesses", "rating"],
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Similarity metrics — ported from AgentX-web-api's src/helpers/vectorSimilarityHelper.ts
 // (verbatim algorithm, same behavior), extracted here so self-host's engine doesn't need a second
 // copy. computeVectorSimilarity takes an injected OpenAI client (same DI pattern as callJudgeJson

@@ -2,6 +2,8 @@ import { nanoid } from "nanoid";
 import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import type { SimilarityConfig } from "./datasets.js";
+import type { CodeScorerConfig } from "./codeScorer.js";
+import { recordEvaluationSettingsVersionIfChanged } from "./versions.js";
 
 export type { SimilarityConfig };
 
@@ -17,6 +19,7 @@ export type CreateEvaluationSettingsInput = {
   description?: string;
   numberOfRequests?: number;
   similarityConfig?: SimilarityConfig;
+  codeScorers?: CodeScorerConfig[];
   acceptanceCriteria?: string;
   rejectionCriteria?: string;
   evaluationCriteria?: string;
@@ -35,6 +38,7 @@ export type EvaluationSettingsRow = {
   description: string | null;
   numberOfRequests: number;
   similarityConfig: unknown;
+  codeScorers: unknown;
   acceptanceCriteria: string | null;
   rejectionCriteria: string | null;
   evaluationCriteria: string | null;
@@ -52,6 +56,7 @@ function toWire(row: EvaluationSettingsRow) {
     description: row.description ?? undefined,
     numberOfRequests: row.numberOfRequests,
     ...((row.similarityConfig as SimilarityConfig | null) ?? {}),
+    codeScorers: (row.codeScorers as CodeScorerConfig[] | null) ?? undefined,
     acceptanceCriteria: row.acceptanceCriteria ?? undefined,
     rejectionCriteria: row.rejectionCriteria ?? undefined,
     evaluationCriteria: row.evaluationCriteria ?? undefined,
@@ -84,6 +89,7 @@ export async function createEvaluationSettings(db: Db, input: CreateEvaluationSe
     description: input.description ?? null,
     numberOfRequests: input.numberOfRequests ?? 1,
     similarityConfig: input.similarityConfig ?? null,
+    codeScorers: input.codeScorers ?? null,
     acceptanceCriteria: input.acceptanceCriteria ?? null,
     rejectionCriteria: input.rejectionCriteria ?? null,
     evaluationCriteria: input.evaluationCriteria ?? null,
@@ -101,7 +107,9 @@ export async function createEvaluationSettings(db: Db, input: CreateEvaluationSe
   } else {
     await db.db.insert(db.schema.evaluationSettings).values(row);
   }
-  return toWire(row);
+  const wire = toWire(row);
+  await recordEvaluationSettingsVersionIfChanged(db, row.id, null, wire);
+  return wire;
 }
 
 // Full replace, same convention as updateDataset. Silently no-ops if the id doesn't exist (a
@@ -109,11 +117,13 @@ export async function createEvaluationSettings(db: Db, input: CreateEvaluationSe
 // happen, but this isn't assumed) — getMergedEvaluationSettings in evaluateDashboard.ts falls back
 // to the dataset's own criteria when the twin is missing, same as resolveRunConfig does at run time.
 export async function updateEvaluationSettings(db: Db, id: string, input: UpdateEvaluationSettingsInput) {
+  const before = await getEvaluationSettings(db, id);
   const values = {
     name: input.name,
     description: input.description ?? null,
     numberOfRequests: input.numberOfRequests ?? 1,
     similarityConfig: input.similarityConfig ?? null,
+    codeScorers: input.codeScorers ?? null,
     acceptanceCriteria: input.acceptanceCriteria ?? null,
     rejectionCriteria: input.rejectionCriteria ?? null,
     evaluationCriteria: input.evaluationCriteria ?? null,
@@ -125,7 +135,11 @@ export async function updateEvaluationSettings(db: Db, id: string, input: Update
   } else {
     await db.db.update(db.schema.evaluationSettings).set(values).where(eq(db.schema.evaluationSettings.id, id));
   }
-  return getEvaluationSettings(db, id);
+  const after = await getEvaluationSettings(db, id);
+  if (after) {
+    await recordEvaluationSettingsVersionIfChanged(db, id, before, after);
+  }
+  return after;
 }
 
 // Sparse patch, unlike updateEvaluationSettings's full replace — used by the standalone-config PUT
@@ -138,6 +152,7 @@ export async function patchEvaluationSettings(db: Db, id: string, patch: Partial
   if (!existing) {
     return null;
   }
+  const before = toWire(existing);
   if (patch.isDefault) {
     await clearDefaultEvaluationSettings(db, id);
   }
@@ -146,6 +161,7 @@ export async function patchEvaluationSettings(db: Db, id: string, patch: Partial
     description: patch.description ?? existing.description,
     numberOfRequests: patch.numberOfRequests ?? existing.numberOfRequests,
     similarityConfig: patch.similarityConfig ?? existing.similarityConfig,
+    codeScorers: patch.codeScorers ?? existing.codeScorers,
     acceptanceCriteria: patch.acceptanceCriteria ?? existing.acceptanceCriteria,
     rejectionCriteria: patch.rejectionCriteria ?? existing.rejectionCriteria,
     evaluationCriteria: patch.evaluationCriteria ?? existing.evaluationCriteria,
@@ -159,7 +175,11 @@ export async function patchEvaluationSettings(db: Db, id: string, patch: Partial
   } else {
     await db.db.update(db.schema.evaluationSettings).set(values).where(eq(db.schema.evaluationSettings.id, id));
   }
-  return getEvaluationSettings(db, id);
+  const after = await getEvaluationSettings(db, id);
+  if (after) {
+    await recordEvaluationSettingsVersionIfChanged(db, id, before, after);
+  }
+  return after;
 }
 
 export async function getEvaluationSettingsRow(db: Db, id: string): Promise<EvaluationSettingsRow | null> {

@@ -7,8 +7,10 @@ import {
   listDatasets,
   updateDataset,
   extractSimilarityConfig,
+  extractCodeScorers,
   type SimilarityConfig,
 } from "../core/evaluate/datasets.js";
+import type { CodeScorerConfig } from "../core/evaluate/codeScorer.js";
 import {
   createEvaluationSettings,
   getEvaluationSettingsRow,
@@ -17,6 +19,14 @@ import {
   listStandaloneEvaluationSettings,
 } from "../core/evaluate/evaluationSettings.js";
 import {
+  listDatasetVersions,
+  getDatasetVersionCounts,
+  deleteDatasetVersion,
+  listEvaluationSettingsVersions,
+  getEvaluationSettingsVersionCounts,
+  deleteEvaluationSettingsVersion,
+} from "../core/evaluate/versions.js";
+import {
   getRunRowFull,
   getRunResults,
   listRunRows,
@@ -24,6 +34,7 @@ import {
   type FullRunRow,
   type RunResultRow,
 } from "../core/evaluate/runs.js";
+import { runPlayground, extractPlaygroundTools } from "../core/evaluate/playground.js";
 import {
   createPrompt,
   listPromptsWire,
@@ -34,6 +45,12 @@ import {
   getFailureThemes,
   deletePrompt,
 } from "../core/evaluate/prompts.js";
+import {
+  runEvaluationAnalysis,
+  getEvaluationAnalysisStatus,
+  getEvaluationAnalysisMetrics,
+  getEvaluationAnalysisRow,
+} from "../core/evaluate/analysis.js";
 import type { MonitoringWindow } from "../core/monitor/events.js";
 
 // Same convention as agentMonitoringDashboard.ts's parseWindow — not shared across route files,
@@ -56,12 +73,14 @@ function parseWindow(req: Request): MonitoringWindow {
 // list/detail. Similarity metrics (vectorSimilarity/jaccard/bleu/rouge) and Sovereignty &
 // Portability model comparison are accepted on both dataset and standalone-config payloads but not
 // acted on, same as core/evaluate/datasets.ts's CreateDatasetInput — out of scope for this pass,
-// see plan task #109. Not built: dataset/config version history (stubbed as empty so the dialogs
-// that unconditionally fetch it don't error, see the /versions routes below), and anything tied to
-// AgentX's native agent-building/config-branching system (agentConfigVersion, robotConfigBranch,
-// evaluationSettingsConfigVersion, datasetConfigVersion, agent/team-scoped run endpoints) — self-
-// host has no agent/team registry or config-branching, so those fields are simply omitted rather
-// than faked. See README's Status section.
+// see plan task #109. Dataset/config edit-history version tracking IS built (core/evaluate/
+// versions.ts, the /versions routes below) — real snapshots, real diffs, real deletes. Still not
+// built: anything tied to AgentX's native agent-building/config-branching system
+// (agentConfigVersion, robotConfigBranch, evaluationSettingsConfigVersion, datasetConfigVersion,
+// agent/team-scoped run endpoints) — self-host has no agent/team registry or config-branching, so
+// those fields are simply omitted rather than faked, and pinning a run to the exact edit-history
+// version it graded against is a separate, not-yet-built feature from the edit history itself. See
+// README's Status section.
 export const evaluateDashboardRouter = Router();
 
 // Matches AgentX-web-front's src/lib/selfHostMode.ts LOCAL_USER exactly (same synthetic
@@ -110,6 +129,7 @@ async function getMergedEvaluationSettings(db: Db, id: string) {
     description: settingsRow!.description ?? undefined,
     numberOfRequests: settingsRow!.numberOfRequests,
     ...((settingsRow!.similarityConfig as SimilarityConfig | null) ?? {}),
+    codeScorers: (settingsRow!.codeScorers as CodeScorerConfig[] | null) ?? undefined,
     acceptanceCriteria: settingsRow!.acceptanceCriteria ?? undefined,
     rejectionCriteria: settingsRow!.rejectionCriteria ?? undefined,
     evaluationCriteria: settingsRow!.evaluationCriteria ?? undefined,
@@ -167,29 +187,83 @@ evaluateDashboardRouter.get("/evaluationSettings", async (req: Request, res: Res
   res.status(200).json({ evaluationSettings, pagination });
 });
 
-// Stub: self-host has no dataset/config version history (see this file's header comment). Must
-// come before the /evaluationSettings/:id GET route below only in the sense that Express matches
-// by full path shape (two segments vs one), not by declaration order, but is kept up top for
-// readability.
-evaluateDashboardRouter.get("/evaluationSettings/batch/versions", async (_req: Request, res: Response) => {
-  res.status(200).json({ versionCounts: {} });
+// Edit history (core/evaluate/versions.ts) — one entry per save that actually changed a tracked
+// field, plus one seeded at creation, so it's never empty right after a dataset/config is first
+// made. /batch/versions must come before the /:id/versions route below: Express matches by full
+// path shape (both are 2 segments after /evaluationSettings), so declaration order decides which
+// one "/evaluationSettings/batch/versions" actually hits — kept first for that reason.
+evaluateDashboardRouter.get("/evaluationSettings/batch/versions", async (req: Request, res: Response) => {
+  const ids = typeof req.query.ids === "string" ? req.query.ids.split(",").filter(Boolean) : [];
+  const versionCounts = await getEvaluationSettingsVersionCounts(getDb(), ids);
+  res.status(200).json({ versionCounts });
 });
 
-evaluateDashboardRouter.get("/evaluationSettings/:id/versions", async (_req: Request, res: Response) => {
-  res.status(200).json([]);
+evaluateDashboardRouter.get("/evaluationSettings/:id/versions", async (req: Request, res: Response) => {
+  const versions = await listEvaluationSettingsVersions(getDb(), req.params.id!);
+  res.status(200).json(versions.map(v => ({ ...v, creator: LOCAL_USER })));
 });
 
-evaluateDashboardRouter.get("/datasets/:id/versions", async (_req: Request, res: Response) => {
-  res.status(200).json([]);
+evaluateDashboardRouter.delete("/evaluationSettings/:id/versions/:versionId", async (req: Request, res: Response) => {
+  const deleted = await deleteEvaluationSettingsVersion(getDb(), req.params.id!, req.params.versionId!);
+  res.status(200).json({ deleted });
 });
 
-// Not the same concept as the /versions stub above (that's dataset *edit* history, not built).
-// This is the external-agent analog to native autotune's baseline-vs-candidate comparison: group
+// Same batch-before-:id ordering as /evaluationSettings/batch/versions above.
+evaluateDashboardRouter.get("/datasets/batch/versions", async (req: Request, res: Response) => {
+  const ids = typeof req.query.ids === "string" ? req.query.ids.split(",").filter(Boolean) : [];
+  const versionCounts = await getDatasetVersionCounts(getDb(), ids);
+  res.status(200).json({ versionCounts });
+});
+
+evaluateDashboardRouter.get("/datasets/:id/versions", async (req: Request, res: Response) => {
+  const versions = await listDatasetVersions(getDb(), req.params.id!);
+  res.status(200).json(versions.map(v => ({ ...v, creator: LOCAL_USER })));
+});
+
+evaluateDashboardRouter.delete("/datasets/:id/versions/:versionId", async (req: Request, res: Response) => {
+  const deleted = await deleteDatasetVersion(getDb(), req.params.id!, req.params.versionId!);
+  res.status(200).json({ deleted });
+});
+
+// Not the same concept as the /versions routes above (that's dataset *edit* history). This is the
+// external-agent analog to native autotune's baseline-vs-candidate comparison: group
 // this dataset's runs by the version label their evaluationSubject was tagged with (see
 // core/evaluate/runs.ts's extractVersion/getVersionComparison), average ratings per version, and
 // report whether the most recent version beat the one before it.
 evaluateDashboardRouter.get("/datasets/:datasetId/run-comparison", async (req: Request, res: Response) => {
   res.status(200).json(await getVersionComparison(getDb(), req.params.datasetId!));
+});
+
+// Interactive Playground (core/evaluate/playground.ts) — run one (prompt, model, dataset
+// question) combination for real and return it, no persistence, same "compute and return"
+// posture as the portability routes below. One call per grid cell; the frontend fans a whole
+// questions × models grid out to this single-cell endpoint itself rather than this route doing
+// its own batch orchestration.
+evaluateDashboardRouter.post("/playground/run", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.model !== "string" || !body.model.trim()) {
+    res.status(400).json({ error: "model is required" });
+    return;
+  }
+  if (typeof body.query !== "string" || !body.query.trim()) {
+    res.status(400).json({ error: "query is required" });
+    return;
+  }
+  if (!Array.isArray(body.messages)) {
+    res.status(400).json({ error: "messages must be an array" });
+    return;
+  }
+  const result = await runPlayground(getDb(), {
+    model: body.model,
+    messages: body.messages,
+    query: body.query,
+    expected: typeof body.expected === "string" ? body.expected : undefined,
+    judgeGuideline: typeof body.judgeGuideline === "string" ? body.judgeGuideline : undefined,
+    judgeCriteria: body.judgeCriteria && typeof body.judgeCriteria === "object" ? body.judgeCriteria : undefined,
+    codeScorers: extractCodeScorers(body),
+    tools: extractPlaygroundTools(body),
+  });
+  res.status(200).json(result);
 });
 
 // Prompt registry dashboard routes (core/evaluate/prompts.ts) — the external-agent analog to
@@ -318,6 +392,51 @@ evaluateDashboardRouter.delete("/prompts/:id", async (req: Request, res: Respons
   res.status(200).json({ success: true });
 });
 
+// Self-host's own "Analyze" — one synchronous judge call, not the hosted SaaS's multi-judge job
+// pipeline. See core/evaluate/analysis.ts's top comment for the full scope explanation. Always
+// "completed" (or "failed") by the time this returns, since there's no background job to poll.
+evaluateDashboardRouter.post("/analyze/:id", async (req: Request, res: Response) => {
+  const { judges, qualityMode } = req.body ?? {};
+  try {
+    const result = await runEvaluationAnalysis(getDb(), req.params.id!, {
+      judges: Array.isArray(judges)
+        ? judges.filter((j: unknown): j is { model: string } => !!j && typeof (j as { model?: unknown }).model === "string")
+        : undefined,
+      qualityMode: qualityMode === "quality_first" ? "quality_first" : "balanced",
+    });
+    if (!result) {
+      res.status(404).json({ error: "Evaluation not found" });
+      return;
+    }
+    res.status(200).json({
+      evaluationId: result.evaluationId,
+      jobId: result.evaluationId,
+      status: result.status,
+      mode: "sync",
+      qualityMode: qualityMode === "quality_first" ? "quality_first" : "balanced",
+    });
+  } catch (err) {
+    // Most commonly a missing OPENAI_API_KEY/ANTHROPIC_API_KEY (core/evaluate/judge.ts's
+    // callJudgeJson throws a clear setup error for that) — surfaced to the panel instead of
+    // hanging or 500ing opaquely.
+    res.status(422).json({ error: err instanceof Error ? err.message : "Unable to analyze the evaluation results" });
+  }
+});
+
+evaluateDashboardRouter.get("/analyze/:id/status", async (req: Request, res: Response) => {
+  const status = await getEvaluationAnalysisStatus(getDb(), req.params.id!);
+  res.status(200).json(status);
+});
+
+evaluateDashboardRouter.get("/analyze/:id/metrics", async (req: Request, res: Response) => {
+  const metrics = await getEvaluationAnalysisMetrics(getDb(), req.params.id!);
+  if (!metrics) {
+    res.status(404).json({ error: "No analysis found for this evaluation" });
+    return;
+  }
+  res.status(200).json(metrics);
+});
+
 evaluateDashboardRouter.get("/evaluationSettings/:id", async (req: Request, res: Response) => {
   const settings = await getMergedEvaluationSettings(getDb(), req.params.id!);
   if (!settings) {
@@ -341,6 +460,7 @@ evaluateDashboardRouter.post("/evaluationSettings/create", async (req: Request, 
     description: body.description as string | undefined,
     numberOfRequests: typeof body.numberOfRequests === "number" ? body.numberOfRequests : undefined,
     similarityConfig: extractSimilarityConfig(body),
+    codeScorers: extractCodeScorers(body),
     acceptanceCriteria: body.acceptanceCriteria as string | undefined,
     rejectionCriteria: body.rejectionCriteria as string | undefined,
     evaluationCriteria: body.evaluationCriteria as string | undefined,
@@ -369,6 +489,7 @@ evaluateDashboardRouter.post("/evaluationSettings/create-standalone", async (req
     description: body.description as string | undefined,
     numberOfRequests: typeof body.numberOfRequests === "number" ? body.numberOfRequests : undefined,
     similarityConfig: extractSimilarityConfig(body),
+    codeScorers: extractCodeScorers(body),
     acceptanceCriteria: body.acceptanceCriteria as string | undefined,
     rejectionCriteria: body.rejectionCriteria as string | undefined,
     evaluationCriteria: body.evaluationCriteria as string | undefined,
@@ -396,6 +517,7 @@ evaluateDashboardRouter.put("/evaluationSettings/:id", async (req: Request, res:
       description: body.description as string | undefined,
       numberOfRequests: typeof body.numberOfRequests === "number" ? body.numberOfRequests : undefined,
       similarityConfig: extractSimilarityConfig(body),
+      codeScorers: extractCodeScorers(body),
       acceptanceCriteria: body.acceptanceCriteria as string | undefined,
       rejectionCriteria: body.rejectionCriteria as string | undefined,
       evaluationCriteria: body.evaluationCriteria as string | undefined,
@@ -418,6 +540,7 @@ evaluateDashboardRouter.put("/evaluationSettings/:id", async (req: Request, res:
     description: body.description as string | undefined,
     numberOfRequests: typeof body.numberOfRequests === "number" ? body.numberOfRequests : undefined,
     similarityConfig: extractSimilarityConfig(body),
+    codeScorers: extractCodeScorers(body),
     acceptanceCriteria: body.acceptanceCriteria as string | undefined,
     rejectionCriteria: body.rejectionCriteria as string | undefined,
     evaluationCriteria: body.evaluationCriteria as string | undefined,
@@ -468,6 +591,7 @@ function toResultWire(r: RunResultRow, evaluationSettingsQuestions: unknown, dat
     jaccardSimilarity: r.jaccardSimilarity ?? undefined,
     bleuScore: r.bleuScore ?? undefined,
     rougeScore: r.rougeScore ?? undefined,
+    codeScorerResults: r.codeScorerResults ?? undefined,
   };
 }
 
@@ -477,10 +601,11 @@ function toResultWire(r: RunResultRow, evaluationSettingsQuestions: unknown, dat
 // liveStatistics.averageRating, not results.length, and a rating of exactly 0 (e.g. an errored
 // result) must not be treated as "no rating yet" (0 !== null).
 async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) {
-  const [dataset, evaluationSettings, results] = await Promise.all([
+  const [dataset, evaluationSettings, results, analysisRow] = await Promise.all([
     getDataset(db, run.datasetId),
     getMergedEvaluationSettings(db, run.evaluationSettingsId ?? run.datasetId),
     getRunResults(db, run.id),
+    getEvaluationAnalysisRow(db, run.id),
   ]);
   const rated = results.filter(r => r.rating != null).map(r => r.rating as number);
   const averageRating = rated.length ? rated.reduce((a, b) => a + b, 0) / rated.length : null;
@@ -499,6 +624,18 @@ async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) 
       maxRating: rated.length ? Math.max(...rated) : null,
       ratedCount: rated.length,
     },
+    // Frontend's AnalysisPanel reads this straight off the evaluation object (evaluation.analysis),
+    // not off the /analyze/:id/status or /metrics endpoints — those only drive polling and the
+    // judge-evidence table. See core/evaluate/analysis.ts's top comment for what's in/out of scope.
+    analysis: analysisRow
+      ? {
+          evaluationId: analysisRow.evaluationId,
+          query: "",
+          statistics: analysisRow.statistics ?? { numberOfRuns: 0, averageRating: 0, minRating: 0, maxRating: 0, ratingVariance: 0 },
+          analysis: analysisRow.analysis ?? undefined,
+          status: analysisRow.status,
+        }
+      : undefined,
     evaluationSubject: run.evaluationSubject ?? undefined,
     runSource: run.runSource ?? "sdk",
     createdAt: run.createdAt,

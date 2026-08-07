@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 
 // Model Portability's candidate models + $/M-token pricing — dashboard-editable
@@ -14,6 +14,7 @@ export type PortabilityModel = {
   label: string;
   pricePerMInputTokens: number;
   pricePerMOutputTokens: number;
+  isDefault: boolean;
 };
 
 export type PortabilityModelRow = PortabilityModel & { createdAt: Date; updatedAt: Date };
@@ -25,16 +26,19 @@ function toWire(row: PortabilityModelRow): PortabilityModel {
     label: row.label,
     pricePerMInputTokens: row.pricePerMInputTokens,
     pricePerMOutputTokens: row.pricePerMOutputTokens,
+    isDefault: row.isDefault,
   };
 }
 
+// Default row first (judge-model dropdowns preselect index 0 — see CreateEvaluationSettingsConfigDialog.tsx's
+// selfHostDefaultJudgeModel and AgentEvaluationAnalysisPanel.tsx's pickDiverseJudgeModel), alphabetical after that.
 export async function listPortabilityModels(db: Db): Promise<PortabilityModel[]> {
   const rows = (
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.portabilityModels).all()
       : await db.db.select().from(db.schema.portabilityModels)
   ) as PortabilityModelRow[];
-  rows.sort((a, b) => a.id.localeCompare(b.id));
+  rows.sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.id.localeCompare(b.id));
   return rows.map(toWire);
 }
 
@@ -56,11 +60,29 @@ export type SavePortabilityModelInput = {
   label: string;
   pricePerMInputTokens: number;
   pricePerMOutputTokens: number;
+  isDefault?: boolean;
 };
+
+// At most one model is "default" at a time (judge-model dropdowns preselect it) — clear any
+// existing default before a create/update sets a new one. Same pattern as
+// evaluationSettings.ts's clearDefaultEvaluationSettings.
+async function clearDefaultPortabilityModel(db: Db, exceptId?: string): Promise<void> {
+  const cond = exceptId
+    ? and(eq(db.schema.portabilityModels.isDefault, true), ne(db.schema.portabilityModels.id, exceptId))
+    : eq(db.schema.portabilityModels.isDefault, true);
+  if (db.kind === "sqlite") {
+    await db.db.update(db.schema.portabilityModels).set({ isDefault: false }).where(cond);
+  } else {
+    await db.db.update(db.schema.portabilityModels).set({ isDefault: false }).where(cond);
+  }
+}
 
 export async function createPortabilityModel(db: Db, input: SavePortabilityModelInput): Promise<PortabilityModel> {
   const now = new Date();
-  const row: PortabilityModelRow = { ...input, createdAt: now, updatedAt: now };
+  const row: PortabilityModelRow = { ...input, isDefault: input.isDefault ?? false, createdAt: now, updatedAt: now };
+  if (row.isDefault) {
+    await clearDefaultPortabilityModel(db);
+  }
   if (db.kind === "sqlite") {
     await db.db.insert(db.schema.portabilityModels).values(row);
   } else {
@@ -74,19 +96,29 @@ export async function createPortabilityModel(db: Db, input: SavePortabilityModel
 export async function updatePortabilityModel(
   db: Db,
   id: string,
-  input: { provider: "openai" | "anthropic"; label: string; pricePerMInputTokens: number; pricePerMOutputTokens: number }
+  input: {
+    provider: "openai" | "anthropic";
+    label: string;
+    pricePerMInputTokens: number;
+    pricePerMOutputTokens: number;
+    isDefault?: boolean;
+  }
 ): Promise<PortabilityModel | null> {
   const existing = await getPortabilityModel(db, id);
   if (!existing) {
     return null;
   }
-  const setValues = { ...input, updatedAt: new Date() };
+  const isDefault = input.isDefault ?? existing.isDefault;
+  if (isDefault) {
+    await clearDefaultPortabilityModel(db, id);
+  }
+  const setValues = { ...input, isDefault, updatedAt: new Date() };
   if (db.kind === "sqlite") {
     await db.db.update(db.schema.portabilityModels).set(setValues).where(eq(db.schema.portabilityModels.id, id));
   } else {
     await db.db.update(db.schema.portabilityModels).set(setValues).where(eq(db.schema.portabilityModels.id, id));
   }
-  return { id, ...input };
+  return { id, ...input, isDefault };
 }
 
 export async function deletePortabilityModel(db: Db, id: string): Promise<boolean> {

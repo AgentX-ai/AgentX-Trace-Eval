@@ -500,13 +500,14 @@ a dataset+evaluationSettings twin sharing one id, same pattern the hosted SaaS's
 a real headless browser against a real SQLite-backed engine, including submitting the real
 create/edit dialogs and opening a run's detail view — not just curl. EvaluateTab's third sub-view,
 "Evaluator" (a standalone grading config with no dataset attached), was out of scope at the time
-this paragraph was first written — a later pass built it for real (see below); what's still
-explicitly out of scope, not deferred: dataset/config version history, and anything tied to
-AgentX's native agent-building/config-branching system (agentConfigVersion, robotConfigBranch,
-evaluationSettingsConfigVersion, datasetConfigVersion, agent/team-scoped run endpoints — self-host
-has no agent/team registry or config-branching at all). The version-history and batch-version-count
-endpoints those dialogs call unconditionally on open are stubbed to return empty rather than left
-to error.
+this paragraph was first written — a later pass built it for real (see below). Dataset/config
+version history was also out of scope at the time (the version-history and batch-version-count
+endpoints those dialogs call unconditionally on open were stubbed to return empty rather than left
+to error) — a later pass built that for real too (see below). What's still
+explicitly out of scope, not deferred: anything tied to AgentX's native agent-building/
+config-branching system (agentConfigVersion, robotConfigBranch, evaluationSettingsConfigVersion,
+datasetConfigVersion, agent/team-scoped run endpoints — self-host has no agent/team registry or
+config-branching at all).
 The self-host build still ships web-front's full ~30-route bundle rather than a build trimmed to
 just Governance; there's no hot-reload loop between an `AgentX-web-front` dev server and this engine
 yet (see "Running from source"). Also not yet done: the install script,
@@ -645,6 +646,86 @@ same bad trace again and confirmed `occurrenceCount` incremented instead of dupl
 round-tripped `alert_threshold=None` (disable) through `client.monitor.online_evaluators.update`
 and back to a real number, confirming the opt-out path works through the SDK, not just the REST
 shape.
+
+A user report ("dataset versioning is broken") led to rebuilding this from the ground up rather
+than patching around it. Investigation found two separate things: a real routing bug (`GET
+/evaluate/datasets/batch/versions` had no dedicated route, so Express matched it against
+`/datasets/:id/versions` instead, treating "batch" as a dataset id and returning `[]` instead of
+the `{versionCounts}` shape the frontend's `useGetDatasetBatchVersionCounts` expects — fixed by
+adding the missing route, mirroring the `evaluationSettings` side's already-correct ordering), and
+the deeper issue: there was no real version-history feature behind the stubs at all, by original
+design (see the now-corrected claim above). Rebuilt for real: two new tables (`dataset_versions`/
+`evaluation_settings_versions`, both dialects), `core/evaluate/versions.ts` recording a new
+version on every create (seeded immediately, `changeSummary: "Created"`, so a fresh dataset's
+history is never empty) and every edit that actually changes a tracked field (a plain synchronous
+field-diff, e.g. `"Updated acceptance criteria, judge model"` — deliberately not an LLM call the
+way the hosted SaaS's async summary generation is; self-host doesn't need that cost/latency for a
+computed diff, and it's available on the very first fetch instead of the frontend's
+poll-until-present logic actually having to wait). A no-op save doesn't create a version. Applies
+uniformly to both a dataset's twin config and a standalone Evaluator config — missing from the
+dashboard entirely before this, `useGetEvaluationSettingsBatchVersionCounts` existed and was fully
+wired but literally unused in any component; wired into `EvaluationConfigsTab.tsx`'s row list to
+match `EvaluationSettingsTab.tsx`'s existing badge. `codeScorers` (see below) is captured in the
+snapshot too, so restoring an old version doesn't silently drop custom scorers. Verified live
+against the running engine: creation seeds v0/"Created" immediately, real edits produce accurate
+diffs newest-first, a no-op save adds nothing, delete removes exactly the targeted version and is
+idempotent (`{deleted: false}` on a second attempt), and the same flow works identically for a
+standalone Evaluator config.
+
+Comparing self-host's scoring options against Braintrust's surfaced a real gap: judge scoring and
+4 fixed similarity metrics (vector/Jaccard/BLEU/ROUGE), but no way to run arbitrary code as a
+scorer, which Braintrust supports for exactly the cases an LLM judge or a similarity metric can't
+express (exact format checks, word-count thresholds, non-linear scoring logic). Added as a 5th
+scorer kind, alongside the existing ones, not replacing them: `codeScorers` (array of `{id, name,
+code, enabled}`) on both `datasets` and `evaluation_settings` (two-dialect migration, same pattern
+`similarityConfig` set), `core/evaluate/codeScorer.ts`'s `runCodeScorer` executes a scorer's
+`code` as a function body via Node's built-in `vm` module — `node:vm`, not a subprocess, since the
+engine ships as a single Bun-compiled binary specifically so end users never need Node/Bun/Python
+installed, and shelling out to an interpreter would break that. Sandboxed context with no
+`require`/`fetch`/`process`/filesystem access and a 3-second timeout (`vm.Script`'s `timeout`
+option only bounds synchronous execution, which is why the scorer contract is synchronous-only —
+an async scorer awaiting a hung `fetch()` would sail past a timeout anyway, so the sandbox simply
+removes the ability to go async in the first place). A lighter security bar than a hardened
+isolate, appropriate for self-host's single-tenant, operator-trusted model — the same trust
+assumption `core/monitor/conditions.ts`'s `callExternalValidator()` already makes for
+user-supplied logic elsewhere in this engine. Each scorer's own failure (throw, timeout, bad
+return shape) isolates to `{score: null, error}` for that one scorer, never blocking the judge
+rating or the dataset's other scorers. Dashboard: a Monaco-editor-backed "Code Scorers" section on
+both the Datasets and Evaluator config dialogs (same `@monaco-editor/react` pattern already used
+for tool code elsewhere in the app), and dynamic per-scorer result columns in the run-comparison
+view. Verified live: a throwing scorer and a `while(true){}` infinite-looping one both resolved to
+`{score: null, error}` within the 3-second timeout (confirmed the wall-clock time, ~3003ms)
+without affecting the item's judge rating or its other scores; confirmed `node:vm` behaves
+identically inside the actual Bun-compiled `agentx-engine` binary, not just under `tsx` dev — the
+one real platform-compatibility risk this design had.
+
+Modeled explicitly on Braintrust's and OpenAI's own playgrounds (the user pointed at both by
+name): a scratchpad for testing a prompt/model against real dataset test cases before committing
+to a full eval run, without needing an SDK-driven agent at all — self-host calls the model
+directly. `core/evaluate/playground.ts`'s `runPlayground` reuses the existing
+`callModelCompletion`/`scoreAgainstCriteria`/`estimateCostUSD` primitives wholesale (the same ones
+Model Portability already established) — no new provider-calling code. One new endpoint, `POST
+/evaluate/playground/run`, deliberately kept single-cell (one model, one question, one prompt, no
+batching): the dashboard's Playground tab is a real questions-×-models grid (Braintrust's own
+layout), but the grid orchestration lives entirely in the frontend, firing one call per cell to
+this same stateless endpoint, so the backend never needed any batch/queue logic of its own.
+Nothing is persisted, same "compute and return" posture as Model Portability's own comparisons.
+Two follow-up passes closed gaps found by re-reading Braintrust's actual docs: code scorers
+(above) are now threaded through Playground's request/response alongside judge scoring, always
+running independent of whether the question has an expected answer (a scorer like "output is
+non-empty" doesn't need one); and the grid gained a client-side concurrency cap
+(`CONCURRENCY_LIMIT = 4`, a bounded worker pool replacing the original "fire every cell
+simultaneously" design) since an unthrottled large grid risks tripping real provider rate limits,
+the same reason Braintrust exposes its own max-concurrency setting. Cells now show a "Waiting…"
+queued state and fill in as earlier ones finish rather than all appearing to hang at once; a
+`runGeneration` guard means clicking "Run grid" again mid-flight can't let a stale, abandoned
+run's late results land on the new one. Lives as its own top-level Governance tab (not nested
+under Improve, per direct user feedback), filtered out of the tab list entirely for hosted rather
+than branching content per-mode the way Improve does — there's no hosted backend for it at all.
+Verified live: multi-turn messages with few-shot examples, both OpenAI and Anthropic models
+routed correctly through the same endpoint, automatic judge scoring only when `expected` is
+present, code scorers running with and without an expected answer, a clean `{error}` response (not
+a 500) for an invalid model id, and confirmed zero rows land in any table for any of it.
 
 ## License
 

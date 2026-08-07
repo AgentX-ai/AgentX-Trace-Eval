@@ -67,6 +67,7 @@ monitorRouter.put("/profiles/:agentId", async (req: Request, res: Response) => {
     enabled: body.enabled,
     failureDetectionEnabled: body.failureDetectionEnabled,
     infoDetectionEnabled: body.infoDetectionEnabled,
+    topicsEnabled: body.topicsEnabled,
     coverageMode: body.coverageMode,
     sampleRate: body.sampleRate,
     retentionDays: body.retentionDays,

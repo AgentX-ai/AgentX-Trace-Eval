@@ -14,6 +14,8 @@ export type ProfileRow = {
   enabled: boolean;
   failureDetectionEnabled: boolean;
   infoDetectionEnabled: boolean;
+  // Opt-in (default false) — see core/monitor/topics.ts's runClassification for what this gates.
+  topicsEnabled: boolean;
   coverageMode: string;
   sampleRate: number;
   retentionDays: number;
@@ -38,6 +40,7 @@ function toWire(row: ProfileRow) {
     enabled: row.enabled,
     failureDetectionEnabled: row.failureDetectionEnabled,
     infoDetectionEnabled: row.infoDetectionEnabled,
+    topicsEnabled: row.topicsEnabled,
     coverageMode: row.coverageMode,
     sampleRate: row.sampleRate,
     channels: row.channels ?? [],
@@ -75,6 +78,7 @@ export type UpdateProfileInput = Partial<{
   enabled: boolean;
   failureDetectionEnabled: boolean;
   infoDetectionEnabled: boolean;
+  topicsEnabled: boolean;
   coverageMode: string;
   sampleRate: number;
   retentionDays: number;
@@ -97,6 +101,7 @@ export async function updateProfile(db: Db, agentId: string, patch: UpdateProfil
       enabled: patch.enabled ?? true,
       failureDetectionEnabled: patch.failureDetectionEnabled ?? true,
       infoDetectionEnabled: patch.infoDetectionEnabled ?? true,
+      topicsEnabled: patch.topicsEnabled ?? false,
       coverageMode: patch.coverageMode ?? "all",
       sampleRate: patch.sampleRate ?? 1,
       retentionDays: patch.retentionDays ?? 30,
@@ -120,6 +125,7 @@ export async function updateProfile(db: Db, agentId: string, patch: UpdateProfil
     enabled: patch.enabled ?? existing.enabled,
     failureDetectionEnabled: patch.failureDetectionEnabled ?? existing.failureDetectionEnabled,
     infoDetectionEnabled: patch.infoDetectionEnabled ?? existing.infoDetectionEnabled,
+    topicsEnabled: patch.topicsEnabled ?? existing.topicsEnabled,
     coverageMode: patch.coverageMode ?? existing.coverageMode,
     sampleRate: patch.sampleRate ?? existing.sampleRate,
     retentionDays: patch.retentionDays ?? existing.retentionDays,
@@ -135,6 +141,7 @@ export async function updateProfile(db: Db, agentId: string, patch: UpdateProfil
     enabled: updated.enabled,
     failureDetectionEnabled: updated.failureDetectionEnabled,
     infoDetectionEnabled: updated.infoDetectionEnabled,
+    topicsEnabled: updated.topicsEnabled,
     coverageMode: updated.coverageMode,
     sampleRate: updated.sampleRate,
     retentionDays: updated.retentionDays,

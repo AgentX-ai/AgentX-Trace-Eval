@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { getDb } from "../storage/db.js";
-import { createDataset, getDataset, listDatasets, extractSimilarityConfig } from "../core/evaluate/datasets.js";
+import { createDataset, getDataset, listDatasets, extractSimilarityConfig, extractCodeScorers } from "../core/evaluate/datasets.js";
 import { createEvaluationSettings, getEvaluationSettings, listEvaluationSettings } from "../core/evaluate/evaluationSettings.js";
 import { initRun, appendResults, finalizeRun, getRun, listRuns, MAX_BATCH_SIZE } from "../core/evaluate/runs.js";
 import { createPrompt, getPromptForSdk, listPromptsForSdk } from "../core/evaluate/prompts.js";
@@ -28,6 +28,7 @@ evaluationsRouter.post("/datasets", async (req: Request, res: Response) => {
     description,
     numberOfRequests: typeof numberOfRequests === "number" ? numberOfRequests : undefined,
     similarityConfig: extractSimilarityConfig(req.body ?? {}),
+    codeScorers: extractCodeScorers(req.body ?? {}),
     acceptanceCriteria,
     rejectionCriteria,
     evaluationCriteria,
@@ -69,6 +70,7 @@ evaluationsRouter.post("/evaluation-settings", async (req: Request, res: Respons
     description,
     numberOfRequests: typeof numberOfRequests === "number" ? numberOfRequests : undefined,
     similarityConfig: extractSimilarityConfig(req.body ?? {}),
+    codeScorers: extractCodeScorers(req.body ?? {}),
     acceptanceCriteria,
     rejectionCriteria,
     evaluationCriteria,
