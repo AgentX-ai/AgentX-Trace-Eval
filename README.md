@@ -124,7 +124,7 @@ export AGENTX_API_KEY=<printed by agentx-server on first run>
 
 Trace also accepts real OTLP/HTTP traces — point any OpenTelemetry SDK/exporter or the Collector's
 `otlphttpexporter` at this engine directly, no AgentX SDK required, the same way you'd point one at
-LangSmith's `/otel` endpoint:
+any OTLP-compatible collector endpoint:
 
 ```bash
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4700/api/v1/otel
@@ -241,7 +241,7 @@ verified with seeded traces against hand-computed expected counts (health rate, 
 tool-failure rate, top-failing agents/patterns/tools). Online evaluators (`monitor_online_evaluators`,
 `core/monitor/onlineEvaluators.ts`) are wired up on the backend: a judge config with its own inline
 criteria (not tied to a dataset/EvaluationSettings row) scored continuously against sampled live
-traffic — LangSmith's actual "online evals," distinct from Monitor's pattern-matching above, and
+traffic, distinct from Monitor's pattern-matching above, and
 reusing the exact same judge-scoring primitive (`core/evaluate/judge.ts`'s `scoreAgainstCriteria`,
 extracted out of `runs.ts`'s offline `scoreOneResult` so both call sites share one implementation).
 CRUD at `/agent-monitoring/online-evaluators`, ratings-over-time at
@@ -387,12 +387,11 @@ versioned runs with deterministic ratings via direct DB inserts (bypassing the j
 a real API key not available here) for a passing case, a failing case, and a single-version
 "nothing to compare yet" case, all three matched hand-computed expectations; the dialog itself
 confirmed against the real running dashboard. A prompt registry now exists too (`core/evaluate/prompts.ts`, `prompts`/`prompt_versions`
-tables), the piece version-comparison above didn't have: LangSmith (Promptim) and Langfuse (its
-Claude-skill prompt-improvement flow) both solve "we don't own the customer's agent code" the same
-way — become the prompt's source of truth (Prompt Hub / Prompt Management) so the agent's own code
-pulls a version at runtime, then treat "optimization" as propose → human-approve → publish a new
-version to that registry, never a direct edit to the customer's deployed code. This engine now does
-the same: `client.evaluations.prompts.get(name_or_id)` (new `PromptClient` in `AgentX-Python`, SDK-facing
+tables), the piece version-comparison above didn't have: since this engine doesn't own the caller's
+agent code, the fix is to become the prompt's source of truth instead, so the agent's own code
+pulls a version at runtime, then treat "optimization" as propose, human-approve, publish a new
+version to that registry, never a direct edit to the caller's deployed code.
+`client.evaluations.prompts.get(name_or_id)` (new `PromptClient` in `AgentX-Python`, SDK-facing
 `POST/GET /prompts`, `GET /prompts/:identifier?version=N` in `routes/evaluations.ts`, accepting either
 the prompt's name or its id, name tried first then id as a fallback, see `getPromptRowByNameOrId` in
 `core/evaluate/prompts.ts`, deliberately read-mostly, no SDK-side publish) pulls a version's text
@@ -421,8 +420,8 @@ above, this session had no real browser automation available, so the dialogs' ac
 behavior (open/submit/close, real toasts) is **not** verified end to end yet, only statically.
 
 There's now a second, judge-key-free way to drive the same propose-improvement loop: a Claude Code
-skill (`skills/improve-prompt/SKILL.md`), the same idea as Langfuse's own Claude-skill prompt
-workflow — read real evidence, let Claude's own reasoning stand in for a separate judge API call
+skill (`skills/improve-prompt/SKILL.md`) that reads real evidence and lets Claude's own reasoning
+stand in for a separate judge API call
 (no `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` needed on the engine at all), show the user a rewrite, only
 publish on explicit approval. Required extracting the "gather this prompt's worst-rated examples"
 half of `proposePromptImprovement` into its own `getWorstRatedExamples` (`core/evaluate/prompts.ts`)
@@ -672,11 +671,10 @@ diffs newest-first, a no-op save adds nothing, delete removes exactly the target
 idempotent (`{deleted: false}` on a second attempt), and the same flow works identically for a
 standalone Evaluator config.
 
-Comparing self-host's scoring options against Braintrust's surfaced a real gap: judge scoring and
-4 fixed similarity metrics (vector/Jaccard/BLEU/ROUGE), but no way to run arbitrary code as a
-scorer, which Braintrust supports for exactly the cases an LLM judge or a similarity metric can't
-express (exact format checks, word-count thresholds, non-linear scoring logic). Added as a 5th
-scorer kind, alongside the existing ones, not replacing them: `codeScorers` (array of `{id, name,
+Judge scoring and 4 fixed similarity metrics (vector/Jaccard/BLEU/ROUGE) don't cover every
+scoring need: exact format checks, word-count thresholds, and non-linear scoring logic are all
+easier to express as a few lines of code than to coax out of a judge prompt or a similarity
+metric. Added as a 5th scorer kind, alongside the existing ones, not replacing them: `codeScorers` (array of `{id, name,
 code, enabled}`) on both `datasets` and `evaluation_settings` (two-dialect migration, same pattern
 `similarityConfig` set), `core/evaluate/codeScorer.ts`'s `runCodeScorer` executes a scorer's
 `code` as a function body via Node's built-in `vm` module — `node:vm`, not a subprocess, since the
@@ -699,24 +697,23 @@ without affecting the item's judge rating or its other scores; confirmed `node:v
 identically inside the actual Bun-compiled `agentx-engine` binary, not just under `tsx` dev — the
 one real platform-compatibility risk this design had.
 
-Modeled explicitly on Braintrust's and OpenAI's own playgrounds (the user pointed at both by
-name): a scratchpad for testing a prompt/model against real dataset test cases before committing
+A scratchpad for testing a prompt/model against real dataset test cases before committing
 to a full eval run, without needing an SDK-driven agent at all — self-host calls the model
 directly. `core/evaluate/playground.ts`'s `runPlayground` reuses the existing
 `callModelCompletion`/`scoreAgainstCriteria`/`estimateCostUSD` primitives wholesale (the same ones
 Model Portability already established) — no new provider-calling code. One new endpoint, `POST
 /evaluate/playground/run`, deliberately kept single-cell (one model, one question, one prompt, no
-batching): the dashboard's Playground tab is a real questions-×-models grid (Braintrust's own
-layout), but the grid orchestration lives entirely in the frontend, firing one call per cell to
+batching): the dashboard's Playground tab is a real questions-×-models grid, but the grid
+orchestration lives entirely in the frontend, firing one call per cell to
 this same stateless endpoint, so the backend never needed any batch/queue logic of its own.
 Nothing is persisted, same "compute and return" posture as Model Portability's own comparisons.
-Two follow-up passes closed gaps found by re-reading Braintrust's actual docs: code scorers
-(above) are now threaded through Playground's request/response alongside judge scoring, always
+Two follow-up passes closed real gaps: code scorers (above) are now threaded through Playground's
+request/response alongside judge scoring, always
 running independent of whether the question has an expected answer (a scorer like "output is
 non-empty" doesn't need one); and the grid gained a client-side concurrency cap
 (`CONCURRENCY_LIMIT = 4`, a bounded worker pool replacing the original "fire every cell
-simultaneously" design) since an unthrottled large grid risks tripping real provider rate limits,
-the same reason Braintrust exposes its own max-concurrency setting. Cells now show a "Waiting…"
+simultaneously" design) since an unthrottled large grid risks tripping real provider rate limits.
+Cells now show a "Waiting…"
 queued state and fill in as earlier ones finish rather than all appearing to hang at once; a
 `runGeneration` guard means clicking "Run grid" again mid-flight can't let a stale, abandoned
 run's late results land on the new one. Lives as its own top-level Governance tab (not nested
@@ -726,6 +723,82 @@ Verified live: multi-turn messages with few-shot examples, both OpenAI and Anthr
 routed correctly through the same endpoint, automatic judge scoring only when `expected` is
 present, code scorers running with and without an expected answer, a clean `{error}` response (not
 a 500) for an invalid model id, and confirmed zero rows land in any table for any of it.
+
+Playground's Results view was a table only, no way to compare latency, judge score, and cost
+across models and cases without eyeballing every cell. Landed as a single
+grouped bar chart (`PlaygroundCaseBreakdownChart.tsx`) with a Latency/Score/Cost toggle, one group
+per case, one bar per model within each group, colored consistently with `colorForModelIndex`
+(extracted to a shared `modelColors.ts` so a model reads as the same color here and in
+`OverviewCostChart`, instead of two independent palettes). The aggregate "which model should I
+use" comparison lives in the same chart rather than a separate one: a pinned "Average" group,
+computed across every case in the run, sits first on the x axis ahead of the individual cases,
+so switching the metric toggle updates both the average and the per-case detail together. Went
+through two earlier shapes before landing here, both reverted on direct feedback: three separate
+always-on bar charts (one per metric, per-model average only, no per-case detail) turned out
+redundant with the grouped chart once it existed, since both were "per-model, per-metric"
+comparisons at different granularities; a cases-by-models heatmap (value-coded cell color, no new
+dependency, considered as a way to read many cases/models at once without horizontal scrolling)
+was tried in its place and rejected in favor of keeping bar charts specifically. Pure aggregation
+functions (`computeCaseSeries`/`computeModelAverages` in `playgroundChartData.ts`) are unit-testable
+independent of rendering; null-safe throughout, since latency/score/cost are each independently
+nullable per cell (an errored cell, or a query-mode case with no `expected` never getting a
+rating). No new charting library: reuses the existing `LazyBarChart`/`useChartOptions` chart.js
+wrappers `OverviewCostChart` already established.
+
+Custom pattern conditions had an `external` detector — POST the trace to a URL you control,
+use its `{matches, reason}` response as the verdict — buried as one row-type choice inside a
+Pattern's AND/OR/NOR condition builder alongside phrase/regex/semantic, with no SDK path that
+ever created one. Promoted to a first-class sibling of Patterns/Online Evaluators/Topics called
+**Custom Evaluators**: its own `custom_evaluators` table, its own CRUD module
+(`core/monitor/customEvaluators.ts`, modeled directly on `onlineEvaluators.ts` — name, url,
+sampleRate, scopeMode/agentIds, enabled, severity, plus an `invertMatch` boolean replacing the
+old per-condition `negate` flag), and its own ingest-time runner (`runCustomEvaluators`, registered
+at both `routes/ingest.ts` and `routes/otlp.ts` fire-and-forget sites, isolated per-evaluator
+try/catch so one dead endpoint never skips the rest). A `matches: true` (or `false`, if inverted)
+verdict raises a Signal (`patternKey: custom-eval:<id>`, deduped like any other); every check —
+hit or not — is also recorded to `monitor_events` via a new `customEvaluatorId`/`matched` column
+pair, excluded from KPI/health-rate classification math the same way `onlineEvaluatorId` rows
+already are. The response contract gained one addition over the old `external` detector's:
+an optional `score: number`, recorded and shown on the resulting signal's summary but never part
+of the hit/no-hit decision itself (`matches` alone still decides that) — a deliberate scope
+choice over a full Online-Evaluator-style numeric threshold, since the point was staying simple
+to onboard. Onboarding was the other explicit goal: the create/edit dialog documents the exact
+request/response JSON contract in place (not just a one-line hint the old Pattern-condition row
+had) and adds a **Dry run** button — a new transient `POST /custom-evaluators/dry-run` route that
+POSTs a synthetic sample payload to the URL and returns the live response (or error) for display,
+nothing persisted, same "never throw, always renderable" posture `testCustomModelConnection`
+already established for Model Portability's "Load model" check. `external` was fully deleted from
+`core/monitor/conditions.ts` (not deprecated — confirmed nothing used it), so `PatternCondition`
+is back down to three detector kinds. Frontend-gated entirely behind `IS_SELF_HOSTED` at
+`governanceTabViews.ts`'s single `MONITOR_VIEWS` source, since — unlike Online Evaluators, which
+`AgentX-web-api` ported — there's no hosted-platform backend for this at all. Verified live end to
+end against a local test HTTP server: dry run returned the live response inline, a real ingested
+trace produced a Signal with the evaluator's name, severity, and `(score: N)` folded into its
+summary, the per-evaluator events endpoint returned the same check with its score, and neither
+polluted the KPI totals.
+
+Cost estimation only ever priced `inputTokens`/`outputTokens` at one flat rate each, silently
+overestimating any traffic using prompt caching (a cache read is the entire point of caching and
+costs a fraction of a regular input token). The Python SDK's Anthropic integration was summing
+`cache_creation_input_tokens`/`cache_read_input_tokens` straight into `input_tokens`, destroying
+the split before it ever left the client; OpenAI/LiteLLM/Google GenAI integrations didn't read
+their own cache fields at all. Fixed at every layer without changing `inputTokens`'s existing
+meaning (still the full total — cache portions are a subset, not an addition): the SDK now reports
+`cache_read_tokens`/`cache_write_tokens` as their own fields end-to-end (`_traced_call.py` →
+`tracer.py`'s span/child-span/`_send` plumbing), each provider integration extracts them from its
+own usage shape (`cache_creation_input_tokens`/`cache_read_input_tokens` for Anthropic,
+`prompt_tokens_details.cached_tokens` for OpenAI/LiteLLM, `cached_content_token_count` for
+Google), `traces` and `portability_models` both gained nullable columns for the counts/rates, and
+`estimateCostUSD` (`core/evaluate/models.ts`) now subtracts the cache portion from regular input
+before applying each rate — falling back to the model's normal input rate whenever a cache rate
+isn't configured, so an unconfigured model prices byte-identical to before this shipped. The trace
+detail view gained a "Cached tokens" stat tile (`N read · M write`) and Platform Settings' model
+pricing panel gained optional `$/M cache-read`/`$/M cache-write` fields. Verified against a real
+Anthropic call (a >2048-token repeated system prompt to clear the provider's cache-eligibility
+floor): the first call reported an 8018-token cache write, the second an 8018-token cache read,
+both landed in the traces row correctly, and a configured-vs-unconfigured cost comparison on the
+same token counts ($0.001665 vs. the unconfigured fallback of $0.00018, matching the pre-existing
+flat-rate formula exactly) confirmed both the discount and the regression guard.
 
 ## License
 

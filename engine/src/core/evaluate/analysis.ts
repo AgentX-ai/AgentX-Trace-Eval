@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { getRunRowFull, getRunResults, type RunResultRow } from "./runs.js";
 import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
@@ -236,7 +236,7 @@ Write a structured analysis: an overall summary, how consistent the agent's beha
 }
 
 export async function getEvaluationAnalysisRow(db: Db, evaluationId: string): Promise<EvaluationAnalysisRow | null> {
-  const cond = eq(db.schema.evaluationAnalyses.evaluationId, evaluationId);
+  const cond = and(eq(db.schema.evaluationAnalyses.evaluationId, evaluationId), eq(db.schema.evaluationAnalyses.projectId, db.projectId));
   const row =
     db.kind === "sqlite"
       ? (db.db.select().from(db.schema.evaluationAnalyses).where(cond).all()[0] as EvaluationAnalysisRow | undefined)
@@ -247,23 +247,22 @@ export async function getEvaluationAnalysisRow(db: Db, evaluationId: string): Pr
 async function upsertEvaluationAnalysisRow(db: Db, row: EvaluationAnalysisRow): Promise<void> {
   const existing = await getEvaluationAnalysisRow(db, row.evaluationId);
   if (existing) {
+    const updateCond = and(
+      eq(db.schema.evaluationAnalyses.evaluationId, row.evaluationId),
+      eq(db.schema.evaluationAnalyses.projectId, db.projectId)
+    );
     if (db.kind === "sqlite") {
-      await db.db
-        .update(db.schema.evaluationAnalyses)
-        .set(row)
-        .where(eq(db.schema.evaluationAnalyses.evaluationId, row.evaluationId));
+      await db.db.update(db.schema.evaluationAnalyses).set(row).where(updateCond);
     } else {
-      await db.db
-        .update(db.schema.evaluationAnalyses)
-        .set(row)
-        .where(eq(db.schema.evaluationAnalyses.evaluationId, row.evaluationId));
+      await db.db.update(db.schema.evaluationAnalyses).set(row).where(updateCond);
     }
     return;
   }
+  const insertRow = { ...row, projectId: db.projectId };
   if (db.kind === "sqlite") {
-    await db.db.insert(db.schema.evaluationAnalyses).values(row);
+    await db.db.insert(db.schema.evaluationAnalyses).values(insertRow);
   } else {
-    await db.db.insert(db.schema.evaluationAnalyses).values(row);
+    await db.db.insert(db.schema.evaluationAnalyses).values(insertRow);
   }
 }
 
@@ -315,7 +314,18 @@ export async function runEvaluationAnalysis(
     userMessage: buildJudgePrompt(judgeEvidence, statistics, judgeModels.length),
     maxTokens: 3000,
   });
-  const payload = judgeResult.payload as Omit<AnalysisSchema, "instructionChanges"> | null;
+  // judgeResult.payload's own type (judge-core's JudgeCallResult) is `unknown` — a parsed JSON
+  // object on success, or null on failure — never actually guaranteed to be the right shape at
+  // runtime (the judge model's raw response only *should* match jsonSchema, an LLM call can always
+  // return something else). A bare `if (!payload)` below would accept a non-null non-object (a
+  // string, a number, an array) as if it were the analysis object; `{ ...payload, ... }` on a
+  // string spreads its characters into a garbage object instead of failing loudly. Guard on the
+  // actual shape, not just truthiness.
+  const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  const payload = isPlainObject(judgeResult.payload)
+    ? (judgeResult.payload as Omit<AnalysisSchema, "instructionChanges">)
+    : null;
 
   if (!payload) {
     const row: EvaluationAnalysisRow = {

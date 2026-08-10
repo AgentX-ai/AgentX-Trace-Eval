@@ -73,10 +73,11 @@ async function getDatasetRow(db: Db, id: string) {
     codeScorers: unknown;
     questions: unknown;
   };
+  const cond = and(eq(db.schema.datasets.id, id), eq(db.schema.datasets.projectId, db.projectId));
   if (db.kind === "sqlite") {
-    return db.db.select().from(db.schema.datasets).where(eq(db.schema.datasets.id, id)).all()[0] as Row | undefined;
+    return db.db.select().from(db.schema.datasets).where(cond).all()[0] as Row | undefined;
   }
-  return (await db.db.select().from(db.schema.datasets).where(eq(db.schema.datasets.id, id)))[0] as Row | undefined;
+  return (await db.db.select().from(db.schema.datasets).where(cond))[0] as Row | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +121,7 @@ export async function initRun(
   const smokeTestVariants = await generateSmokeTestVariantsForDataset(dataset.questions);
   const runRow = {
     id,
+    projectId: db.projectId,
     datasetId: input.datasetId,
     evaluationSettingsId: input.evaluationSettingsId ?? null,
     evaluationSubject: input.evaluationSubject ?? null,
@@ -301,6 +303,7 @@ export async function appendResults(
 
     const resultRow = {
       id: nanoid(),
+      projectId: db.projectId,
       runId,
       batchId,
       idempotencyKey: item.idempotencyKey,
@@ -351,7 +354,8 @@ async function getExistingResult(db: Db, runId: string, idempotencyKey: string) 
   type Row = { rating: number | null; justification: string | null };
   const cond = and(
     eq(db.schema.evaluationRunResults.runId, runId),
-    eq(db.schema.evaluationRunResults.idempotencyKey, idempotencyKey)
+    eq(db.schema.evaluationRunResults.idempotencyKey, idempotencyKey),
+    eq(db.schema.evaluationRunResults.projectId, db.projectId)
   );
   if (db.kind === "sqlite") {
     return db.db.select().from(db.schema.evaluationRunResults).where(cond).all()[0] as Row | undefined;
@@ -365,14 +369,11 @@ async function getExistingResult(db: Db, runId: string, idempotencyKey: string) 
 
 async function getRunRow(db: Db, id: string) {
   type Row = { id: string; datasetId: string; evaluationSettingsId: string | null; status: string };
+  const cond = and(eq(db.schema.evaluationRuns.id, id), eq(db.schema.evaluationRuns.projectId, db.projectId));
   if (db.kind === "sqlite") {
-    return db.db.select().from(db.schema.evaluationRuns).where(eq(db.schema.evaluationRuns.id, id)).all()[0] as
-      | Row
-      | undefined;
+    return db.db.select().from(db.schema.evaluationRuns).where(cond).all()[0] as Row | undefined;
   }
-  return (await db.db.select().from(db.schema.evaluationRuns).where(eq(db.schema.evaluationRuns.id, id)))[0] as
-    | Row
-    | undefined;
+  return (await db.db.select().from(db.schema.evaluationRuns).where(cond))[0] as Row | undefined;
 }
 
 export async function finalizeRun(db: Db, runId: string) {
@@ -380,10 +381,11 @@ export async function finalizeRun(db: Db, runId: string) {
   if (!run) {
     return null;
   }
+  const updateCond = and(eq(db.schema.evaluationRuns.id, runId), eq(db.schema.evaluationRuns.projectId, db.projectId));
   if (db.kind === "sqlite") {
-    await db.db.update(db.schema.evaluationRuns).set({ status: "completed" }).where(eq(db.schema.evaluationRuns.id, runId));
+    await db.db.update(db.schema.evaluationRuns).set({ status: "completed" }).where(updateCond);
   } else {
-    await db.db.update(db.schema.evaluationRuns).set({ status: "completed" }).where(eq(db.schema.evaluationRuns.id, runId));
+    await db.db.update(db.schema.evaluationRuns).set({ status: "completed" }).where(updateCond);
   }
   return { runId, status: "completed" };
 }
@@ -393,7 +395,7 @@ export async function getRun(db: Db, runId: string) {
   if (!run) {
     return null;
   }
-  const cond = eq(db.schema.evaluationRunResults.runId, runId);
+  const cond = and(eq(db.schema.evaluationRunResults.runId, runId), eq(db.schema.evaluationRunResults.projectId, db.projectId));
   const results =
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.evaluationRunResults).where(cond).all()
@@ -431,20 +433,20 @@ export type FullRunRow = {
 };
 
 export async function getRunRowFull(db: Db, id: string): Promise<FullRunRow | null> {
+  const cond = and(eq(db.schema.evaluationRuns.id, id), eq(db.schema.evaluationRuns.projectId, db.projectId));
   const row =
     db.kind === "sqlite"
-      ? (db.db.select().from(db.schema.evaluationRuns).where(eq(db.schema.evaluationRuns.id, id)).all()[0] as
-          | FullRunRow
-          | undefined)
-      : ((await db.db.select().from(db.schema.evaluationRuns).where(eq(db.schema.evaluationRuns.id, id)))[0] as
-          | FullRunRow
-          | undefined);
+      ? (db.db.select().from(db.schema.evaluationRuns).where(cond).all()[0] as FullRunRow | undefined)
+      : ((await db.db.select().from(db.schema.evaluationRuns).where(cond))[0] as FullRunRow | undefined);
   return row ?? null;
 }
 
 export async function listRunRows(db: Db): Promise<FullRunRow[]> {
+  const cond = eq(db.schema.evaluationRuns.projectId, db.projectId);
   const rows = (
-    db.kind === "sqlite" ? db.db.select().from(db.schema.evaluationRuns).all() : await db.db.select().from(db.schema.evaluationRuns)
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.evaluationRuns).where(cond).all()
+      : await db.db.select().from(db.schema.evaluationRuns).where(cond)
   ) as FullRunRow[];
   rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   return rows;
@@ -473,7 +475,7 @@ export type RunResultRow = {
 };
 
 export async function getRunResults(db: Db, runId: string): Promise<RunResultRow[]> {
-  const cond = eq(db.schema.evaluationRunResults.runId, runId);
+  const cond = and(eq(db.schema.evaluationRunResults.runId, runId), eq(db.schema.evaluationRunResults.projectId, db.projectId));
   const rows = (
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.evaluationRunResults).where(cond).all()
@@ -514,7 +516,7 @@ export type VersionComparisonResult = {
 const UNVERSIONED = "(unversioned)";
 
 export async function getVersionComparison(db: Db, datasetId: string): Promise<VersionComparisonResult> {
-  const runsCond = eq(db.schema.evaluationRuns.datasetId, datasetId);
+  const runsCond = and(eq(db.schema.evaluationRuns.datasetId, datasetId), eq(db.schema.evaluationRuns.projectId, db.projectId));
   const runs = (
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.evaluationRuns).where(runsCond).all()
@@ -526,7 +528,10 @@ export async function getVersionComparison(db: Db, datasetId: string): Promise<V
   }
 
   const runIds = runs.map(r => r.id);
-  const resultsCond = inArray(db.schema.evaluationRunResults.runId, runIds);
+  const resultsCond = and(
+    inArray(db.schema.evaluationRunResults.runId, runIds),
+    eq(db.schema.evaluationRunResults.projectId, db.projectId)
+  );
   const results = (
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.evaluationRunResults).where(resultsCond).all()
@@ -596,8 +601,11 @@ export async function getVersionComparison(db: Db, datasetId: string): Promise<V
 // web dashboard's Evaluate tab (plan task #112).
 export async function listRuns(db: Db, limit = 50) {
   type Row = { id: string; datasetId: string; evaluationSettingsId: string | null; status: string; createdAt: Date };
+  const cond = eq(db.schema.evaluationRuns.projectId, db.projectId);
   const rows = (
-    db.kind === "sqlite" ? db.db.select().from(db.schema.evaluationRuns).all() : await db.db.select().from(db.schema.evaluationRuns)
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.evaluationRuns).where(cond).all()
+      : await db.db.select().from(db.schema.evaluationRuns).where(cond)
   ) as Row[];
   rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   return Promise.all(

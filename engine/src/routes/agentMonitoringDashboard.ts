@@ -1,10 +1,19 @@
 import { Router, type Request, type Response } from "express";
-import { getDb } from "../storage/db.js";
+import { getDb, type Db } from "../storage/db.js";
+import { scopedDb } from "../auth/apiKey.js";
 import { createPattern, updatePattern, deletePattern, listPatternsWire, legacyPayloadToConditions } from "../core/monitor/patterns.js";
 import { builtInPatternsWire } from "../core/monitor/detect.js";
 import { listSignals, getSignal, updateSignal } from "../core/monitor/signals.js";
 import { updateProfile, listProfilesWire } from "../core/monitor/profiles.js";
-import { listAgentsWire } from "../core/monitor/agents.js";
+import {
+  listAgentsWire,
+  createAgent,
+  getAgent,
+  getAgentNamesById,
+  resolveAgentId,
+  resolveExistingAgentId,
+  resolveAgentIds,
+} from "../core/monitor/agents.js";
 import { getPerformance } from "../core/monitor/performance.js";
 import { createFeedback, listFeedbackForSignal } from "../core/monitor/feedback.js";
 import { generateRegex, suggestHumanFeedback, suggestExpectedResults } from "../core/monitor/suggestions.js";
@@ -14,9 +23,11 @@ import {
   getTopFailing,
   getOnlineEvaluatorRatings,
   getOnlineEvaluatorEvents,
+  getCustomEvaluatorEvents,
   type MonitoringWindow,
 } from "../core/monitor/events.js";
-import { getTopicsTrend, getTopIntents, getIssueBreakdown } from "../core/monitor/topics.js";
+import { getTopicsTrend, getTopIntents, getIssueBreakdown, getTopicsMap } from "../core/monitor/topics.js";
+import { getCostTrend } from "../core/monitor/cost.js";
 import { listDatasets, createDataset, updateDataset } from "../core/evaluate/datasets.js";
 import {
   createOnlineEvaluator,
@@ -25,13 +36,29 @@ import {
   listOnlineEvaluatorsWire,
   InvalidEvaluationSettingsIdError,
 } from "../core/monitor/onlineEvaluators.js";
+import {
+  createCustomEvaluator,
+  updateCustomEvaluator,
+  deleteCustomEvaluator,
+  listCustomEvaluatorsWire,
+  callCustomEvaluator,
+} from "../core/monitor/customEvaluators.js";
 import { getPortabilityPreview, runModelPortabilityCheck } from "../core/evaluate/portability.js";
 import {
   listPortabilityModels,
   createPortabilityModel,
   updatePortabilityModel,
   deletePortabilityModel,
+  testCustomModelConnection,
 } from "../core/evaluate/models.js";
+import { getAppSettings, updateAppSettings } from "../core/settings/appSettings.js";
+import {
+  getProject,
+  regenerateProjectApiKey,
+  getMonitoringDefaults,
+  updateMonitoringDefaults,
+} from "../core/project/projects.js";
+import { maskSecret } from "../core/shared/maskSecret.js";
 
 // Mounted at /api/v1/agent-monitoring — the paths AgentX-web-front's dashboard actually calls
 // (src/data/apiPaths.ts's getMonitoring*/*MonitoringProfile/*MonitoringPattern), a different
@@ -51,11 +78,11 @@ export const agentMonitoringDashboardRouter = Router();
 agentMonitoringDashboardRouter.get("/signals", async (req: Request, res: Response) => {
   const { severity, status, agentId, polarity, limit } = req.query;
   const signals = await listSignals(
-    getDb(),
+    scopedDb(req),
     {
       severity: typeof severity === "string" ? severity : undefined,
       status: typeof status === "string" ? status : undefined,
-      agentId: typeof agentId === "string" ? agentId : undefined,
+      agentId: typeof agentId === "string" ? await resolveExistingAgentId(scopedDb(req), agentId) : undefined,
       polarity: typeof polarity === "string" ? polarity : undefined,
     },
     limit ? Math.min(Number(limit) || 50, 100) : 50
@@ -63,8 +90,8 @@ agentMonitoringDashboardRouter.get("/signals", async (req: Request, res: Respons
   res.status(200).json({ signals });
 });
 
-agentMonitoringDashboardRouter.get("/patterns", async (_req: Request, res: Response) => {
-  const custom = await listPatternsWire(getDb());
+agentMonitoringDashboardRouter.get("/patterns", async (req: Request, res: Response) => {
+  const custom = await listPatternsWire(scopedDb(req));
   res.status(200).json({ patterns: [...builtInPatternsWire(), ...custom] });
 });
 
@@ -79,7 +106,7 @@ agentMonitoringDashboardRouter.post("/patterns", async (req: Request, res: Respo
     res.status(400).json({ error: "Add at least one condition (includeTerms, regex, or semanticPrompt)" });
     return;
   }
-  const pattern = await createPattern(getDb(), {
+  const pattern = await createPattern(scopedDb(req), {
     name: body.name,
     description: body.description,
     category: body.category,
@@ -90,7 +117,7 @@ agentMonitoringDashboardRouter.post("/patterns", async (req: Request, res: Respo
     enabled: body.enabled,
     sampleRate: body.sampleRate,
     scopeMode: body.scopeMode,
-    agentIds: body.agentIds,
+    agentIds: await resolveAgentIds(scopedDb(req), body.agentIds),
   });
   res.status(201).json({ pattern });
 });
@@ -101,7 +128,7 @@ agentMonitoringDashboardRouter.put("/patterns/:patternId", async (req: Request, 
   // full replace, not a sparse patch), so conditions are re-derived the same way createPattern
   // derives them, from whatever shape (multi-condition builder or legacy fields) was submitted.
   const conditions = legacyPayloadToConditions(body);
-  const pattern = await updatePattern(getDb(), req.params.patternId!, {
+  const pattern = await updatePattern(scopedDb(req), req.params.patternId!, {
     name: body.name,
     description: body.description,
     category: body.category,
@@ -112,7 +139,7 @@ agentMonitoringDashboardRouter.put("/patterns/:patternId", async (req: Request, 
     enabled: body.enabled,
     sampleRate: body.sampleRate,
     scopeMode: body.scopeMode,
-    agentIds: body.agentIds,
+    agentIds: await resolveAgentIds(scopedDb(req), body.agentIds),
   });
   if (!pattern) {
     res.status(404).json({ error: "Pattern not found" });
@@ -136,7 +163,7 @@ agentMonitoringDashboardRouter.post("/patterns/generate-regex", async (req: Requ
 });
 
 agentMonitoringDashboardRouter.delete("/patterns/:patternId", async (req: Request, res: Response) => {
-  const deleted = await deletePattern(getDb(), req.params.patternId!);
+  const deleted = await deletePattern(scopedDb(req), req.params.patternId!);
   if (!deleted) {
     res.status(404).json({ error: "Pattern not found" });
     return;
@@ -144,19 +171,44 @@ agentMonitoringDashboardRouter.delete("/patterns/:patternId", async (req: Reques
   res.status(204).send();
 });
 
-agentMonitoringDashboardRouter.get("/agents", async (_req: Request, res: Response) => {
-  const agents = await listAgentsWire(getDb());
+agentMonitoringDashboardRouter.get("/agents", async (req: Request, res: Response) => {
+  const agents = await listAgentsWire(scopedDb(req));
   res.status(200).json({ agents });
 });
 
-agentMonitoringDashboardRouter.get("/profiles", async (_req: Request, res: Response) => {
-  const profiles = await listProfilesWire(getDb());
+// Explicit registration — always creates a new row, even if an agent with this name already
+// exists. This is the only way to end up with two agents sharing a display name; the implicit
+// path (tracing under a name with no explicit agent_id) keeps resolving to a single, stable agent
+// per distinct name via resolveAgentId (core/monitor/agents.ts), unchanged from before this
+// registry existed.
+agentMonitoringDashboardRouter.post("/agents", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.name !== "string" || !body.name.trim()) {
+    res.status(400).json({ error: "name is required" });
+    return;
+  }
+  const agent = await createAgent(scopedDb(req), body.name.trim());
+  res.status(201).json({ agent });
+});
+
+agentMonitoringDashboardRouter.get("/agents/:id", async (req: Request, res: Response) => {
+  const agent = await getAgent(scopedDb(req), req.params.id!);
+  if (!agent) {
+    res.status(404).json({ error: "Agent not found" });
+    return;
+  }
+  res.status(200).json({ agent });
+});
+
+agentMonitoringDashboardRouter.get("/profiles", async (req: Request, res: Response) => {
+  const profiles = await listProfilesWire(scopedDb(req));
   res.status(200).json({ profiles });
 });
 
 agentMonitoringDashboardRouter.put("/profiles/:agentId", async (req: Request, res: Response) => {
   const body = req.body ?? {};
-  const profile = await updateProfile(getDb(), req.params.agentId!, {
+  const agentId = await resolveAgentId(scopedDb(req), req.params.agentId!);
+  const profile = await updateProfile(scopedDb(req), agentId, {
     enabled: body.enabled,
     failureDetectionEnabled: body.failureDetectionEnabled,
     infoDetectionEnabled: body.infoDetectionEnabled,
@@ -176,12 +228,13 @@ agentMonitoringDashboardRouter.put("/profiles/:agentId", async (req: Request, re
 
 agentMonitoringDashboardRouter.patch("/profiles/:agentId/approval-policy", async (req: Request, res: Response) => {
   const body = req.body ?? {};
-  const profile = await updateProfile(getDb(), req.params.agentId!, { approvalPolicy: body.approvalPolicy });
+  const agentId = await resolveAgentId(scopedDb(req), req.params.agentId!);
+  const profile = await updateProfile(scopedDb(req), agentId, { approvalPolicy: body.approvalPolicy });
   res.status(200).json(profile);
 });
 
-agentMonitoringDashboardRouter.get("/performance", async (_req: Request, res: Response) => {
-  const performance = await getPerformance(getDb());
+agentMonitoringDashboardRouter.get("/performance", async (req: Request, res: Response) => {
+  const performance = await getPerformance(scopedDb(req));
   res.status(200).json(performance);
 });
 
@@ -196,15 +249,21 @@ function parseWindow(req: Request): MonitoringWindow {
 }
 
 agentMonitoringDashboardRouter.get("/kpis", async (req: Request, res: Response) => {
-  res.status(200).json(await getKpis(getDb(), parseWindow(req)));
+  res.status(200).json(await getKpis(scopedDb(req), parseWindow(req)));
 });
 
 agentMonitoringDashboardRouter.get("/trend", async (req: Request, res: Response) => {
-  res.status(200).json(await getTrend(getDb(), parseWindow(req)));
+  res.status(200).json(await getTrend(scopedDb(req), parseWindow(req)));
 });
 
 agentMonitoringDashboardRouter.get("/top-failing", async (req: Request, res: Response) => {
-  res.status(200).json(await getTopFailing(getDb(), parseWindow(req)));
+  res.status(200).json(await getTopFailing(scopedDb(req), parseWindow(req)));
+});
+
+// Overview's "Total LLM cost" chart (core/monitor/cost.ts) — stacked by model, priced from Model
+// Portability's own $/M-token table.
+agentMonitoringDashboardRouter.get("/cost-trend", async (req: Request, res: Response) => {
+  res.status(200).json(await getCostTrend(scopedDb(req), parseWindow(req)));
 });
 
 // Automatic per-trace classification (core/monitor/topics.ts) — opt-in via
@@ -212,18 +271,27 @@ agentMonitoringDashboardRouter.get("/top-failing", async (req: Request, res: Res
 agentMonitoringDashboardRouter.get("/topics", async (req: Request, res: Response) => {
   const window = parseWindow(req);
   const [trend, topIntents, issueBreakdown] = await Promise.all([
-    getTopicsTrend(getDb(), window),
-    getTopIntents(getDb(), window),
-    getIssueBreakdown(getDb(), window),
+    getTopicsTrend(scopedDb(req), window),
+    getTopIntents(scopedDb(req), window),
+    getIssueBreakdown(scopedDb(req), window),
   ]);
   res.status(200).json({ trend, topIntents, issueBreakdown });
+});
+
+// Topics "Map" view — a real UMAP projection of each classified trace's stored embedding, kept as
+// its own route rather than folded into GET /topics above: this is genuinely heavier compute
+// (fitting UMAP over up to 300 points) than the three cheap aggregations that endpoint already
+// combines, so a caller only pays for it when the Map tab is actually open.
+agentMonitoringDashboardRouter.get("/topics/map", async (req: Request, res: Response) => {
+  const window = parseWindow(req);
+  res.status(200).json(await getTopicsMap(scopedDb(req), window));
 });
 
 // Online evaluators (core/monitor/onlineEvaluators.ts): LangSmith's actual "online evals" —
 // a judge scored continuously against sampled live traffic, distinct from pattern-matching above.
 // CRUD mirrors /patterns exactly (same routing/sampling shape, see core/monitor/routing.ts).
-agentMonitoringDashboardRouter.get("/online-evaluators", async (_req: Request, res: Response) => {
-  const evaluators = await listOnlineEvaluatorsWire(getDb());
+agentMonitoringDashboardRouter.get("/online-evaluators", async (req: Request, res: Response) => {
+  const evaluators = await listOnlineEvaluatorsWire(scopedDb(req));
   res.status(200).json({ evaluators });
 });
 
@@ -238,12 +306,12 @@ agentMonitoringDashboardRouter.post("/online-evaluators", async (req: Request, r
     return;
   }
   try {
-    const evaluator = await createOnlineEvaluator(getDb(), {
+    const evaluator = await createOnlineEvaluator(scopedDb(req), {
       name: body.name,
       evaluationSettingsId: body.evaluationSettingsId,
       sampleRate: body.sampleRate,
       scopeMode: body.scopeMode,
-      agentIds: body.agentIds,
+      agentIds: await resolveAgentIds(scopedDb(req), body.agentIds),
       enabled: body.enabled,
       alertThreshold: body.alertThreshold,
       severity: body.severity,
@@ -265,12 +333,12 @@ agentMonitoringDashboardRouter.put("/online-evaluators/:evaluatorId", async (req
     return;
   }
   try {
-    const evaluator = await updateOnlineEvaluator(getDb(), req.params.evaluatorId!, {
+    const evaluator = await updateOnlineEvaluator(scopedDb(req), req.params.evaluatorId!, {
       name: body.name,
       evaluationSettingsId: body.evaluationSettingsId,
       sampleRate: body.sampleRate,
       scopeMode: body.scopeMode,
-      agentIds: body.agentIds,
+      agentIds: await resolveAgentIds(scopedDb(req), body.agentIds),
       enabled: body.enabled,
       alertThreshold: body.alertThreshold,
       severity: body.severity,
@@ -290,7 +358,7 @@ agentMonitoringDashboardRouter.put("/online-evaluators/:evaluatorId", async (req
 });
 
 agentMonitoringDashboardRouter.delete("/online-evaluators/:evaluatorId", async (req: Request, res: Response) => {
-  const deleted = await deleteOnlineEvaluator(getDb(), req.params.evaluatorId!);
+  const deleted = await deleteOnlineEvaluator(scopedDb(req), req.params.evaluatorId!);
   if (!deleted) {
     res.status(404).json({ error: "Online evaluator not found" });
     return;
@@ -299,29 +367,149 @@ agentMonitoringDashboardRouter.delete("/online-evaluators/:evaluatorId", async (
 });
 
 agentMonitoringDashboardRouter.get("/online-evaluators/:evaluatorId/ratings", async (req: Request, res: Response) => {
-  res.status(200).json(await getOnlineEvaluatorRatings(getDb(), req.params.evaluatorId!, parseWindow(req)));
+  res.status(200).json(await getOnlineEvaluatorRatings(scopedDb(req), req.params.evaluatorId!, parseWindow(req)));
 });
 
 // Individual scored traces behind the ratings chart above, worst-rated first — lets a low point
 // on that chart be traced back to exactly which conversation(s) caused it and why.
 agentMonitoringDashboardRouter.get("/online-evaluators/:evaluatorId/events", async (req: Request, res: Response) => {
-  const result = await getOnlineEvaluatorEvents(getDb(), req.params.evaluatorId!, parseWindow(req));
+  const result = await getOnlineEvaluatorEvents(scopedDb(req), req.params.evaluatorId!, parseWindow(req));
   res.status(200).json(result);
 });
 
+// Custom evaluators (core/monitor/customEvaluators.ts): promoted out of Pattern's condition-row
+// "external" detector — a URL the user controls, POSTed the trace, expected to answer
+// {matches, reason}. CRUD mirrors /online-evaluators exactly, minus the evaluationSettingsId
+// reference (there's no judge config here, just the URL itself).
+function isValidHttpUrl(value: unknown): value is string {
+  if (typeof value !== "string" || !value.trim()) {
+    return false;
+  }
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+agentMonitoringDashboardRouter.get("/custom-evaluators", async (req: Request, res: Response) => {
+  const evaluators = await listCustomEvaluatorsWire(scopedDb(req));
+  res.status(200).json({ evaluators });
+});
+
+agentMonitoringDashboardRouter.post("/custom-evaluators", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.name !== "string" || !body.name.trim()) {
+    res.status(400).json({ error: "Custom evaluator name is required" });
+    return;
+  }
+  if (!isValidHttpUrl(body.url)) {
+    res.status(400).json({ error: "A valid http:// or https:// url is required" });
+    return;
+  }
+  const evaluator = await createCustomEvaluator(scopedDb(req), {
+    name: body.name,
+    url: body.url,
+    sampleRate: body.sampleRate,
+    scopeMode: body.scopeMode,
+    agentIds: await resolveAgentIds(scopedDb(req), body.agentIds),
+    enabled: body.enabled,
+    invertMatch: body.invertMatch,
+    severity: body.severity,
+  });
+  res.status(201).json({ evaluator });
+});
+
+agentMonitoringDashboardRouter.put("/custom-evaluators/:evaluatorId", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (body.url !== undefined && !isValidHttpUrl(body.url)) {
+    res.status(400).json({ error: "A valid http:// or https:// url is required" });
+    return;
+  }
+  const evaluator = await updateCustomEvaluator(scopedDb(req), req.params.evaluatorId!, {
+    name: body.name,
+    url: body.url,
+    sampleRate: body.sampleRate,
+    scopeMode: body.scopeMode,
+    agentIds: await resolveAgentIds(scopedDb(req), body.agentIds),
+    enabled: body.enabled,
+    invertMatch: body.invertMatch,
+    severity: body.severity,
+  });
+  if (!evaluator) {
+    res.status(404).json({ error: "Custom evaluator not found" });
+    return;
+  }
+  res.status(200).json({ evaluator });
+});
+
+agentMonitoringDashboardRouter.delete("/custom-evaluators/:evaluatorId", async (req: Request, res: Response) => {
+  const deleted = await deleteCustomEvaluator(scopedDb(req), req.params.evaluatorId!);
+  if (!deleted) {
+    res.status(404).json({ error: "Custom evaluator not found" });
+    return;
+  }
+  res.status(204).send();
+});
+
+// Individual checked traces for one custom evaluator, newest first — the call-history counterpart
+// to /online-evaluators/:id/events.
+agentMonitoringDashboardRouter.get("/custom-evaluators/:evaluatorId/events", async (req: Request, res: Response) => {
+  const result = await getCustomEvaluatorEvents(scopedDb(req), req.params.evaluatorId!, parseWindow(req));
+  res.status(200).json(result);
+});
+
+// Transient, not persisted — tests a URL before the user saves it as a real evaluator, or
+// re-tests an already-saved one's URL from the edit dialog. Always 200: the *content* signals
+// success/failure (same "never throw, always renderable" posture testCustomModelConnection uses
+// in core/evaluate/models.ts for the Model Portability "Load model" check), since a dead/slow
+// endpoint is an expected, common outcome here, not a server error.
+agentMonitoringDashboardRouter.post("/custom-evaluators/dry-run", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (!isValidHttpUrl(body.url)) {
+    res.status(400).json({ error: "A valid http:// or https:// url is required" });
+    return;
+  }
+  const samplePayload = {
+    evaluatorId: null,
+    evaluatorName: typeof body.name === "string" && body.name.trim() ? body.name : "Dry run",
+    agentId: null,
+    traceId: null,
+    trace: {
+      input: "Sample user question: Can you help me reset my password?",
+      output:
+        "Sample assistant response: Sure — I can help with that. Go to Settings > Security and click " +
+        "\"Reset password\". You'll get an email with a reset link that's valid for 24 hours.",
+      error: null,
+      toolCalls: [],
+    },
+  };
+  const startedAt = Date.now();
+  try {
+    // callCustomEvaluator only distinguishes ok/not-ok (any non-2xx throws with the status folded
+    // into the error message) rather than surfacing the exact status code — good enough for this
+    // onboarding check, where "did it work and what did it say" matters more than the literal code.
+    const response = await callCustomEvaluator(body.url, samplePayload);
+    res.status(200).json({ ok: true, latencyMs: Date.now() - startedAt, response });
+  } catch (err) {
+    res.status(200).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 agentMonitoringDashboardRouter.get("/signals/:signalId", async (req: Request, res: Response) => {
-  const signal = await getSignal(getDb(), req.params.signalId!);
+  const signal = await getSignal(scopedDb(req), req.params.signalId!);
   if (!signal) {
     res.status(404).json({ error: "Signal not found" });
     return;
   }
-  const feedback = await listFeedbackForSignal(getDb(), req.params.signalId!);
+  const feedback = await listFeedbackForSignal(scopedDb(req), req.params.signalId!);
   res.status(200).json({ signal, feedback });
 });
 
 agentMonitoringDashboardRouter.patch("/signals/:signalId", async (req: Request, res: Response) => {
   const body = req.body ?? {};
-  const signal = await updateSignal(getDb(), req.params.signalId!, {
+  const signal = await updateSignal(scopedDb(req), req.params.signalId!, {
     status: body.status,
     severity: body.severity,
     reviewStatus: body.reviewStatus,
@@ -342,12 +530,12 @@ agentMonitoringDashboardRouter.post("/signals/:signalId/feedback", async (req: R
     res.status(400).json({ error: "metric and rationale are required" });
     return;
   }
-  const signal = await getSignal(getDb(), req.params.signalId!);
+  const signal = await getSignal(scopedDb(req), req.params.signalId!);
   if (!signal) {
     res.status(404).json({ error: "Signal not found" });
     return;
   }
-  const feedback = await createFeedback(getDb(), req.params.signalId!, {
+  const feedback = await createFeedback(scopedDb(req), req.params.signalId!, {
     metric: body.metric,
     rationale: body.rationale,
     occurrenceId: typeof body.occurrenceId === "string" ? body.occurrenceId : undefined,
@@ -361,7 +549,7 @@ agentMonitoringDashboardRouter.post("/signals/:signalId/feedback", async (req: R
 agentMonitoringDashboardRouter.post("/signals/:signalId/suggest-human-feedback", async (req: Request, res: Response) => {
   const occurrenceId = typeof req.body?.occurrenceId === "string" ? req.body.occurrenceId : undefined;
   try {
-    const suggestedFeedback = await suggestHumanFeedback(getDb(), req.params.signalId!, occurrenceId);
+    const suggestedFeedback = await suggestHumanFeedback(scopedDb(req), req.params.signalId!, occurrenceId);
     res.status(200).json({ suggestedFeedback });
   } catch (err) {
     const status = err instanceof Error && err.message === "Signal not found" ? 404 : 502;
@@ -376,7 +564,7 @@ agentMonitoringDashboardRouter.post("/signals/:signalId/suggest-expected-results
   const humanFeedback = typeof req.body?.humanFeedback === "string" ? req.body.humanFeedback.trim() : "";
   const occurrenceId = typeof req.body?.occurrenceId === "string" ? req.body.occurrenceId : undefined;
   try {
-    const result = await suggestExpectedResults(getDb(), req.params.signalId!, humanFeedback, occurrenceId);
+    const result = await suggestExpectedResults(scopedDb(req), req.params.signalId!, humanFeedback, occurrenceId);
     res.status(200).json(result);
   } catch (err) {
     const status =
@@ -393,16 +581,20 @@ agentMonitoringDashboardRouter.post("/signals/:signalId/suggest-expected-results
 // turns a flagged signal into a new golden test case. The dialog never sends a datasetId (confirmed
 // by reading DraftEvaluatorDialogBody — the hosted SaaS resolves the target dataset server-side),
 // so self-host does the same via a deterministic per-agent convention: one dataset named
-// "Monitor findings: <agentId>", created on first use, appended to on every call after that.
-async function resolveMonitorFindingsDataset(agentId: string) {
-  const name = `Monitor findings: ${agentId}`;
-  const existing = (await listDatasets(getDb())).find(d => d.name === name);
+// "Monitor findings: <agent name>", created on first use, appended to on every call after that.
+// Named by the agent's display name, not its (now opaque, generated) id — two agents sharing a
+// name land in the same findings dataset, an acceptable minor ambiguity for an internal, low-stakes
+// naming convention, not worth a real disambiguator here.
+async function resolveMonitorFindingsDataset(db: Db, agentId: string) {
+  const agentName = (await getAgentNamesById(db, [agentId])).get(agentId) ?? agentId;
+  const name = `Monitor findings: ${agentName}`;
+  const existing = (await listDatasets(db)).find(d => d.name === name);
   if (existing) {
     return existing;
   }
-  return createDataset(getDb(), {
+  return createDataset(db, {
     name,
-    description: `Test cases created from Monitor signals flagged on "${agentId}".`,
+    description: `Test cases created from Monitor signals flagged on "${agentName}".`,
     questions: [],
   });
 }
@@ -415,7 +607,7 @@ agentMonitoringDashboardRouter.post("/signals/:signalId/create-evaluator", async
     return;
   }
 
-  const signal = await getSignal(getDb(), req.params.signalId!);
+  const signal = await getSignal(scopedDb(req), req.params.signalId!);
   if (!signal) {
     res.status(404).json({ error: "Signal not found" });
     return;
@@ -446,9 +638,9 @@ agentMonitoringDashboardRouter.post("/signals/:signalId/create-evaluator", async
         : JSON.stringify(evidence?.input ?? "");
   const newQuestion = { main_question: { query, expectedResults }, follow_up_questions: [] };
 
-  const dataset = await resolveMonitorFindingsDataset(agentId);
+  const dataset = await resolveMonitorFindingsDataset(scopedDb(req), agentId);
   const questions = [...(dataset.questions as unknown[]), newQuestion];
-  const updated = await updateDataset(getDb(), dataset._id, {
+  const updated = await updateDataset(scopedDb(req), dataset._id, {
     name: dataset.name,
     description: dataset.description,
     acceptanceCriteria: dataset.acceptanceCriteria,
@@ -488,9 +680,11 @@ agentMonitoringDashboardRouter.post("/estimate", async (req: Request, res: Respo
 // return, don't write" posture) — but the candidate models + pricing this reads from ARE
 // dashboard-editable (portability_models table, core/evaluate/models.ts), seeded once with a
 // small default set on first boot rather than a hardcoded array a code change was needed to fix.
-agentMonitoringDashboardRouter.get("/portability/models", async (_req: Request, res: Response) => {
-  res.status(200).json({ models: await listPortabilityModels(getDb()) });
+agentMonitoringDashboardRouter.get("/portability/models", async (req: Request, res: Response) => {
+  res.status(200).json({ models: await listPortabilityModels(scopedDb(req)) });
 });
+
+const VALID_PROVIDERS = ["openai", "anthropic", "custom"];
 
 agentMonitoringDashboardRouter.post("/portability/models", async (req: Request, res: Response) => {
   const body = req.body ?? {};
@@ -498,8 +692,8 @@ agentMonitoringDashboardRouter.post("/portability/models", async (req: Request, 
     res.status(400).json({ error: "id is required (the exact model string sent to the provider's API)" });
     return;
   }
-  if (body.provider !== "openai" && body.provider !== "anthropic") {
-    res.status(400).json({ error: 'provider must be "openai" or "anthropic"' });
+  if (!VALID_PROVIDERS.includes(body.provider)) {
+    res.status(400).json({ error: 'provider must be "openai", "anthropic", or "custom"' });
     return;
   }
   if (typeof body.label !== "string" || !body.label.trim()) {
@@ -510,26 +704,34 @@ agentMonitoringDashboardRouter.post("/portability/models", async (req: Request, 
     res.status(400).json({ error: "pricePerMInputTokens and pricePerMOutputTokens must be numbers" });
     return;
   }
-  const existing = await listPortabilityModels(getDb());
+  if (body.provider === "custom" && (typeof body.baseUrl !== "string" || !body.baseUrl.trim())) {
+    res.status(400).json({ error: "baseUrl is required for a custom model" });
+    return;
+  }
+  const existing = await listPortabilityModels(scopedDb(req));
   if (existing.some(m => m.id === body.id)) {
     res.status(409).json({ error: `A model with id "${body.id}" already exists` });
     return;
   }
-  const model = await createPortabilityModel(getDb(), {
+  const model = await createPortabilityModel(scopedDb(req), {
     id: body.id,
     provider: body.provider,
     label: body.label,
     pricePerMInputTokens: body.pricePerMInputTokens,
     pricePerMOutputTokens: body.pricePerMOutputTokens,
+    pricePerMCacheReadTokens: typeof body.pricePerMCacheReadTokens === "number" ? body.pricePerMCacheReadTokens : null,
+    pricePerMCacheWriteTokens: typeof body.pricePerMCacheWriteTokens === "number" ? body.pricePerMCacheWriteTokens : null,
     isDefault: body.isDefault === true,
+    baseUrl: typeof body.baseUrl === "string" ? body.baseUrl : null,
+    apiKey: typeof body.apiKey === "string" ? body.apiKey : null,
   });
   res.status(201).json({ model });
 });
 
 agentMonitoringDashboardRouter.put("/portability/models/:id", async (req: Request, res: Response) => {
   const body = req.body ?? {};
-  if (body.provider !== "openai" && body.provider !== "anthropic") {
-    res.status(400).json({ error: 'provider must be "openai" or "anthropic"' });
+  if (!VALID_PROVIDERS.includes(body.provider)) {
+    res.status(400).json({ error: 'provider must be "openai", "anthropic", or "custom"' });
     return;
   }
   if (typeof body.label !== "string" || !body.label.trim()) {
@@ -540,12 +742,22 @@ agentMonitoringDashboardRouter.put("/portability/models/:id", async (req: Reques
     res.status(400).json({ error: "pricePerMInputTokens and pricePerMOutputTokens must be numbers" });
     return;
   }
-  const model = await updatePortabilityModel(getDb(), req.params.id!, {
+  if (body.provider === "custom" && (typeof body.baseUrl !== "string" || !body.baseUrl.trim())) {
+    res.status(400).json({ error: "baseUrl is required for a custom model" });
+    return;
+  }
+  const model = await updatePortabilityModel(scopedDb(req), req.params.id!, {
     provider: body.provider,
     label: body.label,
     pricePerMInputTokens: body.pricePerMInputTokens,
     pricePerMOutputTokens: body.pricePerMOutputTokens,
+    pricePerMCacheReadTokens: typeof body.pricePerMCacheReadTokens === "number" ? body.pricePerMCacheReadTokens : null,
+    pricePerMCacheWriteTokens: typeof body.pricePerMCacheWriteTokens === "number" ? body.pricePerMCacheWriteTokens : null,
     isDefault: typeof body.isDefault === "boolean" ? body.isDefault : undefined,
+    baseUrl: typeof body.baseUrl === "string" ? body.baseUrl : null,
+    // Only included when the dashboard form actually had a non-empty value typed in — see
+    // UpdatePortabilityModelInput's comment on why "omitted" (vs. an explicit "") matters here.
+    ...(typeof body.apiKey === "string" && body.apiKey.trim() ? { apiKey: body.apiKey } : {}),
   });
   if (!model) {
     res.status(404).json({ error: "Model not found" });
@@ -555,7 +767,7 @@ agentMonitoringDashboardRouter.put("/portability/models/:id", async (req: Reques
 });
 
 agentMonitoringDashboardRouter.delete("/portability/models/:id", async (req: Request, res: Response) => {
-  const deleted = await deletePortabilityModel(getDb(), req.params.id!);
+  const deleted = await deletePortabilityModel(scopedDb(req), req.params.id!);
   if (!deleted) {
     res.status(404).json({ error: "Model not found" });
     return;
@@ -563,10 +775,102 @@ agentMonitoringDashboardRouter.delete("/portability/models/:id", async (req: Req
   res.status(200).json({ success: true });
 });
 
+// "Load model" (PortabilityModelsPanel.tsx) — tests whatever's currently in the add/edit form,
+// before it's saved. Always 200s: testCustomModelConnection itself never throws, so any failure
+// reads as {live: false, error} rather than a scary 500.
+agentMonitoringDashboardRouter.post("/portability/models/test-connection", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.baseUrl !== "string" || !body.baseUrl.trim()) {
+    res.status(400).json({ error: "baseUrl is required" });
+    return;
+  }
+  if (typeof body.modelId !== "string" || !body.modelId.trim()) {
+    res.status(400).json({ error: "modelId is required" });
+    return;
+  }
+  const result = await testCustomModelConnection({
+    baseUrl: body.baseUrl,
+    modelId: body.modelId,
+    apiKey: typeof body.apiKey === "string" ? body.apiKey : null,
+  });
+  res.status(200).json(result);
+});
+
+// Platform Settings (AgentX-web-front's PlatformSettingsPage) — the current project's own
+// dashboard/SDK API key, plus the LLM provider keys judge.ts's getOpenAI()/getAnthropic() now
+// check before falling back to OPENAI_API_KEY/ANTHROPIC_API_KEY (instance-wide, not per-project —
+// see appSettings' own schema comment). Never returns a stored LLM key raw once set — only masked
+// (last 4 chars, see maskSecret) — unlike the requesting project's own key, which it's already
+// authenticated with (showing it back to the same caller isn't a leak; showing a *different*
+// project's key here would be, which is why this reads req.projectId, never another project's row).
+agentMonitoringDashboardRouter.get("/settings", async (req: Request, res: Response) => {
+  const settings = await getAppSettings(getDb());
+  const project = await getProject(getDb(), req.projectId!);
+  const monitoringDefaults = await getMonitoringDefaults(scopedDb(req));
+  res.status(200).json({
+    apiKey: project?.apiKey ?? null,
+    monitoringDefaults,
+    llm: {
+      openai: { configured: !!settings.openaiApiKey, masked: settings.openaiApiKey ? maskSecret(settings.openaiApiKey) : null },
+      anthropic: {
+        configured: !!settings.anthropicApiKey,
+        masked: settings.anthropicApiKey ? maskSecret(settings.anthropicApiKey) : null,
+      },
+    },
+  });
+});
+
+// Project-level monitoring defaults (coverage/sample rate/retention/redaction/latency threshold —
+// see core/project/projects.ts's MonitoringDefaults) — moved here from being per-agent
+// AgentMonitoringProfile fields, see core/monitor/profiles.ts's toWire comment.
+agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  const patch: {
+    coverageMode?: string;
+    sampleRate?: number;
+    retentionDays?: number;
+    redactionMode?: string;
+    latencyThresholdMs?: number;
+  } = {};
+  if (typeof body.coverageMode === "string") patch.coverageMode = body.coverageMode;
+  if (typeof body.sampleRate === "number") patch.sampleRate = body.sampleRate;
+  if (typeof body.retentionDays === "number") patch.retentionDays = body.retentionDays;
+  if (typeof body.redactionMode === "string") patch.redactionMode = body.redactionMode;
+  if (typeof body.latencyThresholdMs === "number") patch.latencyThresholdMs = body.latencyThresholdMs;
+  const monitoringDefaults = await updateMonitoringDefaults(scopedDb(req), patch);
+  res.status(200).json({ monitoringDefaults });
+});
+
+agentMonitoringDashboardRouter.put("/settings/llm-keys", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  const patch: { openaiApiKey?: string | null; anthropicApiKey?: string | null } = {};
+  if ("openaiApiKey" in body) {
+    patch.openaiApiKey = typeof body.openaiApiKey === "string" ? body.openaiApiKey : null;
+  }
+  if ("anthropicApiKey" in body) {
+    patch.anthropicApiKey = typeof body.anthropicApiKey === "string" ? body.anthropicApiKey : null;
+  }
+  const settings = await updateAppSettings(getDb(), patch);
+  res.status(200).json({
+    llm: {
+      openai: { configured: !!settings.openaiApiKey, masked: settings.openaiApiKey ? maskSecret(settings.openaiApiKey) : null },
+      anthropic: {
+        configured: !!settings.anthropicApiKey,
+        masked: settings.anthropicApiKey ? maskSecret(settings.anthropicApiKey) : null,
+      },
+    },
+  });
+});
+
+agentMonitoringDashboardRouter.post("/settings/api-key/regenerate", async (req: Request, res: Response) => {
+  const project = await regenerateProjectApiKey(getDb(), req.projectId!);
+  res.status(200).json({ apiKey: project?.apiKey ?? null });
+});
+
 // Reconstruction only, no model calls, no cost — lets the dashboard show "here's what we'll send"
 // before the user commits to spending money on the real comparison below.
 agentMonitoringDashboardRouter.get("/traces/:traceId/portability-preview", async (req: Request, res: Response) => {
-  const preview = await getPortabilityPreview(getDb(), req.params.traceId!);
+  const preview = await getPortabilityPreview(scopedDb(req), req.params.traceId!);
   if (!preview) {
     res.status(404).json({ error: "Trace not found" });
     return;
@@ -580,7 +884,7 @@ agentMonitoringDashboardRouter.post("/traces/:traceId/portability", async (req: 
     res.status(400).json({ error: "modelIds must be a non-empty array" });
     return;
   }
-  const result = await runModelPortabilityCheck(getDb(), req.params.traceId!, modelIds);
+  const result = await runModelPortabilityCheck(scopedDb(req), req.params.traceId!, modelIds);
   if (!result) {
     res.status(404).json({ error: "Trace not found" });
     return;

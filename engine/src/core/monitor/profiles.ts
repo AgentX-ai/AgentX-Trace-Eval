@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { getMonitoringDefaults, type MonitoringDefaults } from "../project/projects.js";
 
 // Matches AgentX-Python's MonitorProfile field aliases (agentx/monitor/models.py) and the
 // AGENTX_selfhost PUT payload shape client.monitor.profile.update(agent_id, ...) sends (same
@@ -11,6 +12,7 @@ export const DEFAULT_LATENCY_THRESHOLD_MS = 20000;
 export type ProfileRow = {
   id: string;
   agentId: string;
+  projectId: string | null;
   enabled: boolean;
   failureDetectionEnabled: boolean;
   infoDetectionEnabled: boolean;
@@ -32,7 +34,14 @@ export type ProfileRow = {
 // against workspace credits) with no self-host equivalent; always reporting "credits"/false
 // keeps the dashboard's settings dialog rendering sensibly instead of needing a self-host-only
 // branch there.
-function toWire(row: ProfileRow) {
+//
+// coverageMode/sampleRate/retentionDays/redactionMode/thresholdOverrides.latencyMs are no longer
+// read from `row` for any actual behavior (see core/project/projects.ts's MonitoringDefaults) —
+// they moved to project-level Settings. Still returned here, overlaid from `defaults`, so the SDK
+// and any remaining per-agent reader see the *effective* values rather than a stale per-agent copy
+// (and so AgentX-Python's MonitorProfile model, which still expects these fields, keeps working
+// unchanged).
+function toWire(row: ProfileRow, defaults: MonitoringDefaults) {
   return {
     _id: row.id,
     workspaceId: "local",
@@ -41,12 +50,12 @@ function toWire(row: ProfileRow) {
     failureDetectionEnabled: row.failureDetectionEnabled,
     infoDetectionEnabled: row.infoDetectionEnabled,
     topicsEnabled: row.topicsEnabled,
-    coverageMode: row.coverageMode,
-    sampleRate: row.sampleRate,
+    coverageMode: defaults.coverageMode,
+    sampleRate: defaults.sampleRate,
     channels: row.channels ?? [],
-    retentionDays: row.retentionDays,
-    redactionMode: row.redactionMode,
-    thresholdOverrides: row.thresholdOverrides ?? undefined,
+    retentionDays: defaults.retentionDays,
+    redactionMode: defaults.redactionMode,
+    thresholdOverrides: { ...(row.thresholdOverrides ?? {}), latencyMs: defaults.latencyThresholdMs },
     billingMode: "credits" as const,
     pausedForCredits: false,
     approvalPolicy: row.approvalPolicy ?? undefined,
@@ -56,22 +65,22 @@ function toWire(row: ProfileRow) {
 }
 
 export async function getProfileRow(db: Db, agentId: string): Promise<ProfileRow | null> {
+  const cond = and(eq(db.schema.monitorProfiles.agentId, agentId), eq(db.schema.monitorProfiles.projectId, db.projectId));
   let row: ProfileRow | undefined;
   if (db.kind === "sqlite") {
-    row = db.db.select().from(db.schema.monitorProfiles).where(eq(db.schema.monitorProfiles.agentId, agentId)).all()[0] as
-      | ProfileRow
-      | undefined;
+    row = db.db.select().from(db.schema.monitorProfiles).where(cond).all()[0] as ProfileRow | undefined;
   } else {
-    row = (
-      await db.db.select().from(db.schema.monitorProfiles).where(eq(db.schema.monitorProfiles.agentId, agentId))
-    )[0] as ProfileRow | undefined;
+    row = (await db.db.select().from(db.schema.monitorProfiles).where(cond))[0] as ProfileRow | undefined;
   }
   return row ?? null;
 }
 
 export async function getProfile(db: Db, agentId: string) {
   const row = await getProfileRow(db, agentId);
-  return row ? toWire(row) : null;
+  if (!row) {
+    return null;
+  }
+  return toWire(row, await getMonitoringDefaults(db));
 }
 
 export type UpdateProfileInput = Partial<{
@@ -98,6 +107,7 @@ export async function updateProfile(db: Db, agentId: string, patch: UpdateProfil
     const row: ProfileRow = {
       id: nanoid(),
       agentId,
+      projectId: db.projectId,
       enabled: patch.enabled ?? true,
       failureDetectionEnabled: patch.failureDetectionEnabled ?? true,
       infoDetectionEnabled: patch.infoDetectionEnabled ?? true,
@@ -117,7 +127,7 @@ export async function updateProfile(db: Db, agentId: string, patch: UpdateProfil
     } else {
       await db.db.insert(db.schema.monitorProfiles).values(row);
     }
-    return toWire(row);
+    return toWire(row, await getMonitoringDefaults(db));
   }
 
   const updated: ProfileRow = {
@@ -151,29 +161,34 @@ export async function updateProfile(db: Db, agentId: string, patch: UpdateProfil
     channels: updated.channels,
     updatedAt: updated.updatedAt,
   };
+  const updateCond = and(eq(db.schema.monitorProfiles.agentId, agentId), eq(db.schema.monitorProfiles.projectId, db.projectId));
   if (db.kind === "sqlite") {
-    await db.db.update(db.schema.monitorProfiles).set(setValues).where(eq(db.schema.monitorProfiles.agentId, agentId));
+    await db.db.update(db.schema.monitorProfiles).set(setValues).where(updateCond);
   } else {
-    await db.db.update(db.schema.monitorProfiles).set(setValues).where(eq(db.schema.monitorProfiles.agentId, agentId));
+    await db.db.update(db.schema.monitorProfiles).set(setValues).where(updateCond);
   }
-  return toWire(updated);
+  return toWire(updated, await getMonitoringDefaults(db));
 }
 
 export async function listProfileRows(db: Db): Promise<ProfileRow[]> {
+  const cond = eq(db.schema.monitorProfiles.projectId, db.projectId);
   const rows =
-    db.kind === "sqlite" ? db.db.select().from(db.schema.monitorProfiles).all() : await db.db.select().from(db.schema.monitorProfiles);
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.monitorProfiles).where(cond).all()
+      : await db.db.select().from(db.schema.monitorProfiles).where(cond);
   return rows as ProfileRow[];
 }
 
 export async function listProfilesWire(db: Db) {
-  return (await listProfileRows(db)).map(toWire);
+  const [rows, defaults] = await Promise.all([listProfileRows(db), getMonitoringDefaults(db)]);
+  return rows.map(row => toWire(row, defaults));
 }
 
-// Resolves the latency threshold this agent's built-in "Latency regression" check uses: the
-// agent's own override if set, otherwise the platform default. Mirrors
-// AgentX-web-api/src/services/agentMonitoringService.ts's DEFAULT_LATENCY_THRESHOLD_MS fallback.
-export async function resolveLatencyThresholdMs(db: Db, agentId: string): Promise<number> {
-  const row = await getProfileRow(db, agentId);
-  const override = row?.thresholdOverrides?.latencyMs;
-  return typeof override === "number" ? override : DEFAULT_LATENCY_THRESHOLD_MS;
+// Resolves the latency threshold the built-in "Latency regression" check uses. Project-level
+// (see core/project/projects.ts's MonitoringDefaults) — no longer a per-agent override.
+// DEFAULT_LATENCY_THRESHOLD_MS is only reachable pre-migration/as a defensive fallback, the
+// `latency_threshold_ms` column itself already defaults to the same value.
+export async function resolveLatencyThresholdMs(db: Db): Promise<number> {
+  const defaults = await getMonitoringDefaults(db);
+  return defaults.latencyThresholdMs ?? DEFAULT_LATENCY_THRESHOLD_MS;
 }

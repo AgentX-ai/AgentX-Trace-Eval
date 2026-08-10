@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { nanoid } from "nanoid";
-import { getDb, type Db } from "../storage/db.js";
+import type { Db } from "../storage/db.js";
+import { scopedDb } from "../auth/apiKey.js";
 import {
   createDataset,
   getDataset,
@@ -35,6 +36,13 @@ import {
   type RunResultRow,
 } from "../core/evaluate/runs.js";
 import { runPlayground, extractPlaygroundTools } from "../core/evaluate/playground.js";
+import {
+  createPlaygroundRun,
+  updatePlaygroundRunResults,
+  listPlaygroundRuns,
+  getPlaygroundRun,
+  deletePlaygroundRun,
+} from "../core/evaluate/playgroundRuns.js";
 import {
   createPrompt,
   listPromptsWire,
@@ -176,11 +184,11 @@ evaluateDashboardRouter.get("/evaluationSettings", async (req: Request, res: Res
   const kind = req.query.kind;
   let all: unknown[];
   if (kind === "config") {
-    all = await listStandaloneConfigsWire(getDb());
+    all = await listStandaloneConfigsWire(scopedDb(req));
   } else if (kind === "dataset") {
-    all = await listMergedEvaluationSettings(getDb());
+    all = await listMergedEvaluationSettings(scopedDb(req));
   } else {
-    const [datasets, configs] = await Promise.all([listMergedEvaluationSettings(getDb()), listStandaloneConfigsWire(getDb())]);
+    const [datasets, configs] = await Promise.all([listMergedEvaluationSettings(scopedDb(req)), listStandaloneConfigsWire(scopedDb(req))]);
     all = [...datasets, ...configs].sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0));
   }
   const { page: evaluationSettings, pagination } = paginate(all, page, limit);
@@ -194,34 +202,34 @@ evaluateDashboardRouter.get("/evaluationSettings", async (req: Request, res: Res
 // one "/evaluationSettings/batch/versions" actually hits — kept first for that reason.
 evaluateDashboardRouter.get("/evaluationSettings/batch/versions", async (req: Request, res: Response) => {
   const ids = typeof req.query.ids === "string" ? req.query.ids.split(",").filter(Boolean) : [];
-  const versionCounts = await getEvaluationSettingsVersionCounts(getDb(), ids);
+  const versionCounts = await getEvaluationSettingsVersionCounts(scopedDb(req), ids);
   res.status(200).json({ versionCounts });
 });
 
 evaluateDashboardRouter.get("/evaluationSettings/:id/versions", async (req: Request, res: Response) => {
-  const versions = await listEvaluationSettingsVersions(getDb(), req.params.id!);
+  const versions = await listEvaluationSettingsVersions(scopedDb(req), req.params.id!);
   res.status(200).json(versions.map(v => ({ ...v, creator: LOCAL_USER })));
 });
 
 evaluateDashboardRouter.delete("/evaluationSettings/:id/versions/:versionId", async (req: Request, res: Response) => {
-  const deleted = await deleteEvaluationSettingsVersion(getDb(), req.params.id!, req.params.versionId!);
+  const deleted = await deleteEvaluationSettingsVersion(scopedDb(req), req.params.id!, req.params.versionId!);
   res.status(200).json({ deleted });
 });
 
 // Same batch-before-:id ordering as /evaluationSettings/batch/versions above.
 evaluateDashboardRouter.get("/datasets/batch/versions", async (req: Request, res: Response) => {
   const ids = typeof req.query.ids === "string" ? req.query.ids.split(",").filter(Boolean) : [];
-  const versionCounts = await getDatasetVersionCounts(getDb(), ids);
+  const versionCounts = await getDatasetVersionCounts(scopedDb(req), ids);
   res.status(200).json({ versionCounts });
 });
 
 evaluateDashboardRouter.get("/datasets/:id/versions", async (req: Request, res: Response) => {
-  const versions = await listDatasetVersions(getDb(), req.params.id!);
+  const versions = await listDatasetVersions(scopedDb(req), req.params.id!);
   res.status(200).json(versions.map(v => ({ ...v, creator: LOCAL_USER })));
 });
 
 evaluateDashboardRouter.delete("/datasets/:id/versions/:versionId", async (req: Request, res: Response) => {
-  const deleted = await deleteDatasetVersion(getDb(), req.params.id!, req.params.versionId!);
+  const deleted = await deleteDatasetVersion(scopedDb(req), req.params.id!, req.params.versionId!);
   res.status(200).json({ deleted });
 });
 
@@ -231,7 +239,7 @@ evaluateDashboardRouter.delete("/datasets/:id/versions/:versionId", async (req: 
 // core/evaluate/runs.ts's extractVersion/getVersionComparison), average ratings per version, and
 // report whether the most recent version beat the one before it.
 evaluateDashboardRouter.get("/datasets/:datasetId/run-comparison", async (req: Request, res: Response) => {
-  res.status(200).json(await getVersionComparison(getDb(), req.params.datasetId!));
+  res.status(200).json(await getVersionComparison(scopedDb(req), req.params.datasetId!));
 });
 
 // Interactive Playground (core/evaluate/playground.ts) — run one (prompt, model, dataset
@@ -253,7 +261,12 @@ evaluateDashboardRouter.post("/playground/run", async (req: Request, res: Respon
     res.status(400).json({ error: "messages must be an array" });
     return;
   }
-  const result = await runPlayground(getDb(), {
+  const extractIds = (value: unknown): string[] | undefined => {
+    if (!Array.isArray(value)) return undefined;
+    const ids = value.filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+    return ids.length > 0 ? ids : undefined;
+  };
+  const result = await runPlayground(scopedDb(req), {
     model: body.model,
     messages: body.messages,
     query: body.query,
@@ -262,8 +275,60 @@ evaluateDashboardRouter.post("/playground/run", async (req: Request, res: Respon
     judgeCriteria: body.judgeCriteria && typeof body.judgeCriteria === "object" ? body.judgeCriteria : undefined,
     codeScorers: extractCodeScorers(body),
     tools: extractPlaygroundTools(body),
+    patternIds: extractIds(body.patternIds),
+    onlineEvaluatorIds: extractIds(body.onlineEvaluatorIds),
+    maxTokens: typeof body.maxTokens === "number" ? body.maxTokens : undefined,
+    temperature: typeof body.temperature === "number" ? body.temperature : undefined,
   });
   res.status(200).json(result);
+});
+
+// Playground's own run history (core/evaluate/playgroundRuns.ts) — a persistence layer next to,
+// not inside, /playground/run above: lets the dashboard survive a refresh and browse past runs
+// without turning a single model call into a persisted resource. No workspaceId — self-host has
+// no real multi-tenant concept (see playgroundRuns.ts's header comment).
+evaluateDashboardRouter.post("/playground/runs", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (!body.snapshot || typeof body.snapshot !== "object") {
+    res.status(400).json({ error: "snapshot is required" });
+    return;
+  }
+  const promptId = typeof body.promptId === "string" && body.promptId.trim() ? body.promptId : null;
+  const created = await createPlaygroundRun(scopedDb(req), body.snapshot, promptId);
+  res.status(201).json({ _id: created.id, createdAt: created.createdAt });
+});
+
+evaluateDashboardRouter.patch("/playground/runs/:id", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (!body.results || typeof body.results !== "object") {
+    res.status(400).json({ error: "results is required" });
+    return;
+  }
+  await updatePlaygroundRunResults(scopedDb(req), req.params.id!, body.results);
+  res.status(200).json({ ok: true });
+});
+
+evaluateDashboardRouter.get("/playground/runs", async (req: Request, res: Response) => {
+  const runs = await listPlaygroundRuns(scopedDb(req));
+  res.status(200).json({ runs });
+});
+
+evaluateDashboardRouter.get("/playground/runs/:id", async (req: Request, res: Response) => {
+  const run = await getPlaygroundRun(scopedDb(req), req.params.id!);
+  if (!run) {
+    res.status(404).json({ error: "Run not found" });
+    return;
+  }
+  res.status(200).json(run);
+});
+
+evaluateDashboardRouter.delete("/playground/runs/:id", async (req: Request, res: Response) => {
+  const deleted = await deletePlaygroundRun(scopedDb(req), req.params.id!);
+  if (!deleted) {
+    res.status(404).json({ error: "Run not found" });
+    return;
+  }
+  res.status(200).json({ deleted: true });
 });
 
 // Prompt registry dashboard routes (core/evaluate/prompts.ts) — the external-agent analog to
@@ -271,8 +336,8 @@ evaluateDashboardRouter.post("/playground/run", async (req: Request, res: Respon
 // branching/applying a RobotConfig, it becomes the prompt's source of truth (see LangSmith Prompt
 // Hub / Langfuse Prompt Management), and a human approves every write. Registered before the
 // catch-all GET "/:id" route below so "/prompts" (a bare list) isn't swallowed by it.
-evaluateDashboardRouter.get("/prompts", async (_req: Request, res: Response) => {
-  res.status(200).json({ prompts: await listPromptsWire(getDb()) });
+evaluateDashboardRouter.get("/prompts", async (req: Request, res: Response) => {
+  res.status(200).json({ prompts: await listPromptsWire(scopedDb(req)) });
 });
 
 evaluateDashboardRouter.post("/prompts", async (req: Request, res: Response) => {
@@ -285,12 +350,12 @@ evaluateDashboardRouter.post("/prompts", async (req: Request, res: Response) => 
     res.status(400).json({ error: "text is required" });
     return;
   }
-  const prompt = await createPrompt(getDb(), { name, text, description });
+  const prompt = await createPrompt(scopedDb(req), { name, text, description });
   res.status(201).json(prompt);
 });
 
 evaluateDashboardRouter.get("/prompts/:id", async (req: Request, res: Response) => {
-  const prompt = await getPromptWithVersionsWire(getDb(), req.params.id!);
+  const prompt = await getPromptWithVersionsWire(scopedDb(req), req.params.id!);
   if (!prompt) {
     res.status(404).json({ error: "Prompt not found" });
     return;
@@ -306,7 +371,7 @@ evaluateDashboardRouter.post("/prompts/:id/versions", async (req: Request, res: 
     res.status(400).json({ error: "text is required" });
     return;
   }
-  const prompt = await publishPromptVersion(getDb(), req.params.id!, {
+  const prompt = await publishPromptVersion(scopedDb(req), req.params.id!, {
     text,
     source: source === "proposed" ? "proposed" : "manual",
     reasoning,
@@ -324,7 +389,7 @@ evaluateDashboardRouter.post("/prompts/:id/versions", async (req: Request, res: 
 // getWorstRatedExamples for why this is a real evidence feed rather than a second stub.
 evaluateDashboardRouter.get("/prompts/:id/examples", async (req: Request, res: Response) => {
   const datasetId = req.query.datasetId;
-  const gathered = await getWorstRatedExamples(getDb(), req.params.id!, {
+  const gathered = await getWorstRatedExamples(scopedDb(req), req.params.id!, {
     datasetId: typeof datasetId === "string" && datasetId ? datasetId : undefined,
     includeAllVersions: req.query.includeAllVersions === "true",
     window: parseWindow(req),
@@ -344,7 +409,7 @@ evaluateDashboardRouter.get("/prompts/:id/examples", async (req: Request, res: R
 evaluateDashboardRouter.get("/prompts/:id/themes", async (req: Request, res: Response) => {
   const datasetId = req.query.datasetId;
   try {
-    const result = await getFailureThemes(getDb(), req.params.id!, {
+    const result = await getFailureThemes(scopedDb(req), req.params.id!, {
       datasetId: typeof datasetId === "string" && datasetId ? datasetId : undefined,
       includeAllVersions: req.query.includeAllVersions === "true",
       window: parseWindow(req),
@@ -364,7 +429,7 @@ evaluateDashboardRouter.get("/prompts/:id/themes", async (req: Request, res: Res
 evaluateDashboardRouter.post("/prompts/:id/propose", async (req: Request, res: Response) => {
   const { datasetId, includeAllVersions, exampleIds } = req.body ?? {};
   try {
-    const proposal = await proposePromptImprovement(getDb(), req.params.id!, {
+    const proposal = await proposePromptImprovement(scopedDb(req), req.params.id!, {
       datasetId: typeof datasetId === "string" && datasetId ? datasetId : undefined,
       includeAllVersions: includeAllVersions === true,
       window: parseWindow(req),
@@ -384,7 +449,7 @@ evaluateDashboardRouter.post("/prompts/:id/propose", async (req: Request, res: R
 });
 
 evaluateDashboardRouter.delete("/prompts/:id", async (req: Request, res: Response) => {
-  const deleted = await deletePrompt(getDb(), req.params.id!);
+  const deleted = await deletePrompt(scopedDb(req), req.params.id!);
   if (!deleted) {
     res.status(404).json({ error: "Prompt not found" });
     return;
@@ -398,7 +463,7 @@ evaluateDashboardRouter.delete("/prompts/:id", async (req: Request, res: Respons
 evaluateDashboardRouter.post("/analyze/:id", async (req: Request, res: Response) => {
   const { judges, qualityMode } = req.body ?? {};
   try {
-    const result = await runEvaluationAnalysis(getDb(), req.params.id!, {
+    const result = await runEvaluationAnalysis(scopedDb(req), req.params.id!, {
       judges: Array.isArray(judges)
         ? judges.filter((j: unknown): j is { model: string } => !!j && typeof (j as { model?: unknown }).model === "string")
         : undefined,
@@ -424,12 +489,12 @@ evaluateDashboardRouter.post("/analyze/:id", async (req: Request, res: Response)
 });
 
 evaluateDashboardRouter.get("/analyze/:id/status", async (req: Request, res: Response) => {
-  const status = await getEvaluationAnalysisStatus(getDb(), req.params.id!);
+  const status = await getEvaluationAnalysisStatus(scopedDb(req), req.params.id!);
   res.status(200).json(status);
 });
 
 evaluateDashboardRouter.get("/analyze/:id/metrics", async (req: Request, res: Response) => {
-  const metrics = await getEvaluationAnalysisMetrics(getDb(), req.params.id!);
+  const metrics = await getEvaluationAnalysisMetrics(scopedDb(req), req.params.id!);
   if (!metrics) {
     res.status(404).json({ error: "No analysis found for this evaluation" });
     return;
@@ -438,7 +503,7 @@ evaluateDashboardRouter.get("/analyze/:id/metrics", async (req: Request, res: Re
 });
 
 evaluateDashboardRouter.get("/evaluationSettings/:id", async (req: Request, res: Response) => {
-  const settings = await getMergedEvaluationSettings(getDb(), req.params.id!);
+  const settings = await getMergedEvaluationSettings(scopedDb(req), req.params.id!);
   if (!settings) {
     res.status(404).json({ error: "Evaluation settings not found" });
     return;
@@ -466,8 +531,8 @@ evaluateDashboardRouter.post("/evaluationSettings/create", async (req: Request, 
     evaluationCriteria: body.evaluationCriteria as string | undefined,
   };
   const [datasetWire] = await Promise.all([
-    createDataset(getDb(), { ...shared, questions }),
-    createEvaluationSettings(getDb(), shared),
+    createDataset(scopedDb(req), { ...shared, questions }),
+    createEvaluationSettings(scopedDb(req), shared),
   ]);
   res.status(201).json({ ...datasetWire, creator: LOCAL_USER });
 });
@@ -484,7 +549,7 @@ evaluateDashboardRouter.post("/evaluationSettings/create-standalone", async (req
     res.status(400).json({ error: "name is required" });
     return;
   }
-  const settings = await createEvaluationSettings(getDb(), {
+  const settings = await createEvaluationSettings(scopedDb(req), {
     name: body.name as string,
     description: body.description as string | undefined,
     numberOfRequests: typeof body.numberOfRequests === "number" ? body.numberOfRequests : undefined,
@@ -510,9 +575,9 @@ evaluateDashboardRouter.put("/evaluationSettings/:id", async (req: Request, res:
   // payloads like `{ isDefault: true }` from "Make default" — see patchEvaluationSettings's
   // comment for why that needs sparse-merge semantics instead of updateEvaluationSettings's full
   // replace). Branch on whether a dataset row actually exists for this id.
-  const existingDataset = await getDataset(getDb(), id);
+  const existingDataset = await getDataset(scopedDb(req), id);
   if (!existingDataset) {
-    const updated = await patchEvaluationSettings(getDb(), id, {
+    const updated = await patchEvaluationSettings(scopedDb(req), id, {
       name: typeof body.name === "string" ? body.name : undefined,
       description: body.description as string | undefined,
       numberOfRequests: typeof body.numberOfRequests === "number" ? body.numberOfRequests : undefined,
@@ -546,8 +611,8 @@ evaluateDashboardRouter.put("/evaluationSettings/:id", async (req: Request, res:
     evaluationCriteria: body.evaluationCriteria as string | undefined,
   };
   const [datasetWire] = await Promise.all([
-    updateDataset(getDb(), id, { ...shared, questions }),
-    updateEvaluationSettings(getDb(), id, shared),
+    updateDataset(scopedDb(req), id, { ...shared, questions }),
+    updateEvaluationSettings(scopedDb(req), id, shared),
   ]);
   if (!datasetWire) {
     res.status(404).json({ error: "Dataset not found" });
@@ -645,18 +710,18 @@ async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) 
 
 evaluateDashboardRouter.get("/list", async (req: Request, res: Response) => {
   const { page, limit } = parsePageLimit(req);
-  const allRows = await listRunRows(getDb());
+  const allRows = await listRunRows(scopedDb(req));
   const { page: rows, pagination } = paginate(allRows, page, limit);
-  const evaluations = await Promise.all(rows.map(run => toEvaluateWire(getDb(), run, false)));
+  const evaluations = await Promise.all(rows.map(run => toEvaluateWire(scopedDb(req), run, false)));
   res.status(200).json({ evaluations, pagination: { ...pagination, limit } });
 });
 
 evaluateDashboardRouter.get("/:id", async (req: Request, res: Response) => {
-  const run = await getRunRowFull(getDb(), req.params.id!);
+  const run = await getRunRowFull(scopedDb(req), req.params.id!);
   if (!run) {
     res.status(404).json({ error: "Evaluation not found" });
     return;
   }
-  const evaluation = await toEvaluateWire(getDb(), run, true);
+  const evaluation = await toEvaluateWire(scopedDb(req), run, true);
   res.status(200).json(evaluation);
 });

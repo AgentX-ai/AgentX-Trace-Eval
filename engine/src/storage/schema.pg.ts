@@ -1,5 +1,21 @@
 import { pgTable, text, integer, jsonb, timestamp, doublePrecision, boolean, uniqueIndex } from "drizzle-orm/pg-core";
 
+// See schema.sqlite.ts's projects table for the full comment.
+export const projects = pgTable("projects", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  apiKey: text("api_key").notNull(),
+  // See schema.sqlite.ts's projects.isDefault for the full comment.
+  isDefault: boolean("is_default").notNull().default(false),
+  // See schema.sqlite.ts's projects.coverageMode block for the full comment.
+  coverageMode: text("coverage_mode").notNull().default("all"),
+  sampleRate: doublePrecision("sample_rate").notNull().default(1),
+  retentionDays: integer("retention_days").notNull().default(30),
+  redactionMode: text("redaction_mode").notNull().default("standard"),
+  latencyThresholdMs: integer("latency_threshold_ms").notNull().default(20000),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+});
+
 // Same shape as schema.sqlite.ts (see that file's note), pg-core column types instead of
 // sqlite-core, so a self-host deployment can point AGENTX_DB_URL at a real Postgres instead
 // of the default local SQLite file.
@@ -18,11 +34,26 @@ export const traces = pgTable("traces", {
   performanceSummary: jsonb("performance_summary"),
   inputTokens: integer("input_tokens"),
   outputTokens: integer("output_tokens"),
+  // See schema.sqlite.ts's traces.cacheReadTokens/cacheWriteTokens for the full comment.
+  cacheReadTokens: integer("cache_read_tokens"),
+  cacheWriteTokens: integer("cache_write_tokens"),
   // See schema.sqlite.ts's traces.spanId/parentSpanId/startedAt for the full comment.
   spanId: text("span_id"),
   parentSpanId: text("parent_span_id"),
   startedAt: timestamp("started_at", { mode: "date" }),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  // See schema.sqlite.ts's traces.agentId for the full comment.
+  agentId: text("agent_id"),
+  // See schema.sqlite.ts's traces.projectId for the full comment.
+  projectId: text("project_id"),
+});
+
+// See schema.sqlite.ts's agents table for the full comment.
+export const agents = pgTable("agents", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
 });
 
 export const datasets = pgTable("datasets", {
@@ -39,6 +70,7 @@ export const datasets = pgTable("datasets", {
   evaluationCriteria: text("evaluation_criteria"),
   questions: jsonb("questions").notNull(),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
 });
 
 export const evaluationSettings = pgTable("evaluation_settings", {
@@ -56,6 +88,7 @@ export const evaluationSettings = pgTable("evaluation_settings", {
   isDefault: boolean("is_default").notNull().default(false),
   status: text("status").notNull().default("published"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
 });
 
 export const evaluationRuns = pgTable("evaluation_runs", {
@@ -70,6 +103,7 @@ export const evaluationRuns = pgTable("evaluation_runs", {
   smokeTestVariants: jsonb("smoke_test_variants"),
   status: text("status").notNull().default("in_progress"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
 });
 
 export const evaluationRunResults = pgTable(
@@ -101,6 +135,7 @@ export const evaluationRunResults = pgTable(
     justification: text("justification"),
     status: text("status").notNull(),
     createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+    projectId: text("project_id"),
   },
   table => ({
     runIdempotencyUnique: uniqueIndex("evaluation_run_results_run_id_idempotency_key").on(
@@ -117,6 +152,7 @@ export const datasetVersions = pgTable("dataset_versions", {
   snapshot: jsonb("snapshot").notNull(),
   changeSummary: text("change_summary"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
 });
 
 export const evaluationSettingsVersions = pgTable("evaluation_settings_versions", {
@@ -125,6 +161,18 @@ export const evaluationSettingsVersions = pgTable("evaluation_settings_versions"
   snapshot: jsonb("snapshot").notNull(),
   changeSummary: text("change_summary"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
+});
+
+// See schema.sqlite.ts's playgroundRuns for the full comment.
+export const playgroundRuns = pgTable("playground_runs", {
+  id: text("id").primaryKey(),
+  snapshot: jsonb("snapshot").notNull(),
+  results: jsonb("results").notNull(),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
+  promptId: text("prompt_id"),
 });
 
 // Monitor (plan task #110). See schema.sqlite.ts's note for the same tables: built-in checks
@@ -144,6 +192,7 @@ export const monitorPatterns = pgTable("monitor_patterns", {
   scopeMode: text("scope_mode").notNull().default("all"),
   agentIds: jsonb("agent_ids"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
 });
 
 export const monitorProfiles = pgTable(
@@ -165,9 +214,10 @@ export const monitorProfiles = pgTable(
     channels: jsonb("channels"),
     createdAt: timestamp("created_at", { mode: "date" }).notNull(),
     updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
+    projectId: text("project_id"),
   },
   table => ({
-    agentIdUnique: uniqueIndex("monitor_profiles_agent_id").on(table.agentId),
+    agentIdUnique: uniqueIndex("monitor_profiles_agent_id").on(table.projectId, table.agentId),
   })
 );
 
@@ -190,9 +240,14 @@ export const monitorSignals = pgTable(
     occurrenceCount: integer("occurrence_count").notNull().default(1),
     firstSeenAt: timestamp("first_seen_at", { mode: "date" }).notNull(),
     lastSeenAt: timestamp("last_seen_at", { mode: "date" }).notNull(),
+    projectId: text("project_id"),
   },
   table => ({
-    patternAgentUnique: uniqueIndex("monitor_signals_pattern_key_agent_id").on(table.patternKey, table.agentId),
+    patternAgentUnique: uniqueIndex("monitor_signals_pattern_key_agent_id").on(
+      table.projectId,
+      table.patternKey,
+      table.agentId
+    ),
   })
 );
 
@@ -208,6 +263,7 @@ export const monitorSignalFeedback = pgTable("monitor_signal_feedback", {
   queuedForAutotune: boolean("queued_for_autotune").notNull().default(false),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
   updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
 });
 
 // See schema.sqlite.ts's monitorEvents for the full comment.
@@ -224,6 +280,11 @@ export const monitorEvents = pgTable("monitor_events", {
   onlineEvaluatorId: text("online_evaluator_id"),
   rating: doublePrecision("rating"),
   justification: text("justification"),
+  customEvaluatorId: text("custom_evaluator_id"),
+  matched: boolean("matched"),
+  // See schema.sqlite.ts's monitorEvents for the full comment.
+  score: doublePrecision("score"),
+  projectId: text("project_id"),
 });
 
 // See schema.sqlite.ts's monitorClassifications for the full comment.
@@ -235,6 +296,9 @@ export const monitorClassifications = pgTable("monitor_classifications", {
   sentiment: text("sentiment").notNull(),
   issueType: text("issue_type").notNull(),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
+  // See schema.sqlite.ts's embedding column for the full comment.
+  embedding: jsonb("embedding"),
 });
 
 // See schema.sqlite.ts's monitorOnlineEvaluators for the full comment.
@@ -249,6 +313,22 @@ export const monitorOnlineEvaluators = pgTable("monitor_online_evaluators", {
   alertThreshold: doublePrecision("alert_threshold").default(5),
   severity: text("severity").notNull().default("medium"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
+});
+
+// See schema.sqlite.ts's customEvaluators for the full comment.
+export const customEvaluators = pgTable("custom_evaluators", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  url: text("url").notNull(),
+  sampleRate: doublePrecision("sample_rate").notNull().default(0.1),
+  scopeMode: text("scope_mode").notNull().default("all"),
+  agentIds: jsonb("agent_ids"),
+  enabled: boolean("enabled").notNull().default(true),
+  invertMatch: boolean("invert_match").notNull().default(false),
+  severity: text("severity").notNull().default("medium"),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
 });
 
 // See schema.sqlite.ts's prompts/promptVersions for the full comment.
@@ -259,6 +339,7 @@ export const prompts = pgTable("prompts", {
   currentVersion: integer("current_version").notNull().default(1),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
   updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
 });
 
 export const promptVersions = pgTable(
@@ -272,20 +353,32 @@ export const promptVersions = pgTable(
     reasoning: text("reasoning"),
     basedOnVersion: integer("based_on_version"),
     createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+    projectId: text("project_id"),
   },
   table => ({
-    promptVersionUnique: uniqueIndex("prompt_versions_prompt_id_version").on(table.promptId, table.version),
+    promptVersionUnique: uniqueIndex("prompt_versions_prompt_id_version").on(
+      table.projectId,
+      table.promptId,
+      table.version
+    ),
   })
 );
 
-// See schema.sqlite.ts's portabilityModels for the full comment.
+// See schema.sqlite.ts's portabilityModels for the full comment — deliberately instance-wide, not
+// project-scoped.
 export const portabilityModels = pgTable("portability_models", {
   id: text("id").primaryKey(),
   provider: text("provider").notNull(),
   label: text("label").notNull(),
   pricePerMInputTokens: doublePrecision("price_per_m_input_tokens").notNull(),
   pricePerMOutputTokens: doublePrecision("price_per_m_output_tokens").notNull(),
+  // See schema.sqlite.ts's portabilityModels for the full comment on the fallback-to-input-rate
+  // behavior when these are null.
+  pricePerMCacheReadTokens: doublePrecision("price_per_m_cache_read_tokens"),
+  pricePerMCacheWriteTokens: doublePrecision("price_per_m_cache_write_tokens"),
   isDefault: boolean("is_default").notNull().default(false),
+  baseUrl: text("base_url"),
+  apiKey: text("api_key"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
   updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
 });
@@ -301,14 +394,29 @@ export const evaluationAnalyses = pgTable("evaluation_analyses", {
   judgeEvidence: jsonb("judge_evidence"),
   error: text("error"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
+});
+
+// See schema.sqlite.ts's appSettings for the full comment — deliberately instance-wide, not
+// project-scoped.
+export const appSettings = pgTable("app_settings", {
+  id: text("id").primaryKey(),
+  openaiApiKey: text("openai_api_key"),
+  anthropicApiKey: text("anthropic_api_key"),
+  updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
 });
 
 export type PgSchema = {
+  projects: typeof projects;
   traces: typeof traces;
+  agents: typeof agents;
   datasets: typeof datasets;
   evaluationSettings: typeof evaluationSettings;
   evaluationRuns: typeof evaluationRuns;
   evaluationRunResults: typeof evaluationRunResults;
+  datasetVersions: typeof datasetVersions;
+  evaluationSettingsVersions: typeof evaluationSettingsVersions;
+  playgroundRuns: typeof playgroundRuns;
   monitorSignalFeedback: typeof monitorSignalFeedback;
   monitorPatterns: typeof monitorPatterns;
   monitorProfiles: typeof monitorProfiles;
@@ -316,8 +424,10 @@ export type PgSchema = {
   monitorEvents: typeof monitorEvents;
   monitorClassifications: typeof monitorClassifications;
   monitorOnlineEvaluators: typeof monitorOnlineEvaluators;
+  customEvaluators: typeof customEvaluators;
   prompts: typeof prompts;
   promptVersions: typeof promptVersions;
   portabilityModels: typeof portabilityModels;
   evaluationAnalyses: typeof evaluationAnalyses;
+  appSettings: typeof appSettings;
 };

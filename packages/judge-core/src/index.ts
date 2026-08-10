@@ -27,6 +27,14 @@ export function getProviderForModel(model: string): LlmProvider {
   return model.startsWith("claude-") ? "anthropic" : "openai";
 }
 
+// OpenAI's reasoning-model generation (gpt-5.x) rejects some params a normal chat model accepts —
+// temperature (see below) and, per core/evaluate/judge.ts's callModelWithTools, function tools
+// unless reasoning_effort is forced to "none". Ad-hoc string-prefix check since the model catalog
+// (portability_models) carries no such flag itself.
+export function isReasoningModel(model: string): boolean {
+  return model.startsWith("gpt-5");
+}
+
 function stripJsonFences(text: string): string {
   return text
     .replace(/^```json\s*/i, "")
@@ -93,7 +101,15 @@ export async function callJudgeJson({
     return { payload: JSON.parse(stripJsonFences(text)), usage };
   } catch (error) {
     console.error("judge-core: Anthropic judge returned invalid JSON", error);
-    return { payload: text, usage, error, failureReason: "parseError" };
+    // payload must stay null on a parse failure, matching callOpenAIJson below — a caller that
+    // only checks `if (!payload)` (a common, reasonable pattern given the type says JudgeCallResult
+    // returns a parsed object or null) would otherwise silently accept the raw response *string* as
+    // if it were the parsed object. That's exactly what happened here before this fix: `{ ...text }`
+    // spread the string into an object keyed by character index ("0", "1", "2", ...), which then got
+    // persisted and silently broke every downstream field lookup (analysis.overallAssessment,
+    // .instructionAdherence, etc. all reading as undefined). error/failureReason still let a caller
+    // that wants the raw text for logging/debugging get at it via those fields.
+    return { payload: null, usage, error, failureReason: "parseError" };
   }
 }
 
@@ -117,7 +133,7 @@ async function callOpenAIJson({
 
   const response = await client.responses.create({
     model,
-    temperature: model.startsWith("gpt-5") ? undefined : 0,
+    temperature: isReasoningModel(model) ? undefined : 0,
     input: enhancedUserMessage,
     text: { format: { type: "json_object" as const } },
   });

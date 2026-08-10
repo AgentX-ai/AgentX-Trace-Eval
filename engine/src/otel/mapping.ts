@@ -167,6 +167,10 @@ export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
     "otel";
   const inputTokens = numAttr(attrs["gen_ai.usage.input_tokens"]) ?? numAttr(attrs["gen_ai.usage.prompt_tokens"]);
   const outputTokens = numAttr(attrs["gen_ai.usage.output_tokens"]) ?? numAttr(attrs["gen_ai.usage.completion_tokens"]);
+  // Semconv names for prompt-caching usage — subsets of inputTokens above, same posture as the
+  // Python SDK's own per-integration extraction (see core/trace/ingest.ts's ingestTraceSchema).
+  const cacheReadTokens = numAttr(attrs["gen_ai.usage.cache_read_input_tokens"]);
+  const cacheWriteTokens = numAttr(attrs["gen_ai.usage.cache_creation_input_tokens"]);
 
   const latencyNanos = span.endTimeUnixNano - span.startTimeUnixNano;
   const latencyMs = latencyNanos > 0n ? Number(latencyNanos / 1_000_000n) : undefined;

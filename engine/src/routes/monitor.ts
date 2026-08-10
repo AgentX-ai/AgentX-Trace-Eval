@@ -1,8 +1,9 @@
 import { Router, type Request, type Response } from "express";
-import { getDb } from "../storage/db.js";
+import { scopedDb } from "../auth/apiKey.js";
 import { createPattern, getPattern, listPatternsWire, legacyPayloadToConditions } from "../core/monitor/patterns.js";
 import { builtInPatternsWire } from "../core/monitor/detect.js";
 import { getProfile, updateProfile } from "../core/monitor/profiles.js";
+import { resolveAgentId, resolveExistingAgentId, resolveAgentIds } from "../core/monitor/agents.js";
 import { listSignals, getSignal } from "../core/monitor/signals.js";
 import {
   createOnlineEvaluator,
@@ -29,7 +30,7 @@ monitorRouter.post("/patterns", async (req: Request, res: Response) => {
     res.status(400).json({ error: "Add at least one condition (includeTerms, regex, or semanticPrompt)" });
     return;
   }
-  const pattern = await createPattern(getDb(), {
+  const pattern = await createPattern(scopedDb(req), {
     name: body.name,
     description: body.description,
     category: body.category,
@@ -42,13 +43,13 @@ monitorRouter.post("/patterns", async (req: Request, res: Response) => {
   res.status(201).json({ pattern });
 });
 
-monitorRouter.get("/patterns", async (_req: Request, res: Response) => {
-  const custom = await listPatternsWire(getDb());
+monitorRouter.get("/patterns", async (req: Request, res: Response) => {
+  const custom = await listPatternsWire(scopedDb(req));
   res.status(200).json({ patterns: [...builtInPatternsWire(), ...custom] });
 });
 
 monitorRouter.get("/patterns/:id", async (req: Request, res: Response) => {
-  const pattern = await getPattern(getDb(), req.params.id!);
+  const pattern = await getPattern(scopedDb(req), req.params.id!);
   if (!pattern) {
     res.status(404).json({ error: "Pattern not found" });
     return;
@@ -57,13 +58,15 @@ monitorRouter.get("/patterns/:id", async (req: Request, res: Response) => {
 });
 
 monitorRouter.get("/profiles/:agentId", async (req: Request, res: Response) => {
-  const profile = await getProfile(getDb(), req.params.agentId!);
+  const agentId = await resolveAgentId(scopedDb(req), req.params.agentId!);
+  const profile = await getProfile(scopedDb(req), agentId);
   res.status(200).json({ profile: profile ?? null });
 });
 
 monitorRouter.put("/profiles/:agentId", async (req: Request, res: Response) => {
   const body = req.body ?? {};
-  const profile = await updateProfile(getDb(), req.params.agentId!, {
+  const agentId = await resolveAgentId(scopedDb(req), req.params.agentId!);
+  const profile = await updateProfile(scopedDb(req), agentId, {
     enabled: body.enabled,
     failureDetectionEnabled: body.failureDetectionEnabled,
     infoDetectionEnabled: body.infoDetectionEnabled,
@@ -81,11 +84,11 @@ monitorRouter.put("/profiles/:agentId", async (req: Request, res: Response) => {
 monitorRouter.get("/signals", async (req: Request, res: Response) => {
   const { severity, status, agentId, polarity, limit } = req.query;
   const signals = await listSignals(
-    getDb(),
+    scopedDb(req),
     {
       severity: typeof severity === "string" ? severity : undefined,
       status: typeof status === "string" ? status : undefined,
-      agentId: typeof agentId === "string" ? agentId : undefined,
+      agentId: typeof agentId === "string" ? await resolveExistingAgentId(scopedDb(req), agentId) : undefined,
       polarity: typeof polarity === "string" ? polarity : undefined,
     },
     limit ? Math.min(Number(limit) || 50, 100) : 50
@@ -94,7 +97,7 @@ monitorRouter.get("/signals", async (req: Request, res: Response) => {
 });
 
 monitorRouter.get("/signals/:id", async (req: Request, res: Response) => {
-  const signal = await getSignal(getDb(), req.params.id!);
+  const signal = await getSignal(scopedDb(req), req.params.id!);
   if (!signal) {
     res.status(404).json({ error: "Signal not found" });
     return;
@@ -122,12 +125,12 @@ monitorRouter.post("/online-evaluators", async (req: Request, res: Response) => 
     return;
   }
   try {
-    const evaluator = await createOnlineEvaluator(getDb(), {
+    const evaluator = await createOnlineEvaluator(scopedDb(req), {
       name: body.name,
       evaluationSettingsId: body.evaluationSettingsId,
       sampleRate: body.sampleRate,
       scopeMode: body.scopeMode,
-      agentIds: body.agentIds,
+      agentIds: await resolveAgentIds(scopedDb(req), body.agentIds),
       enabled: body.enabled,
       alertThreshold: body.alertThreshold,
       severity: body.severity,
@@ -142,13 +145,13 @@ monitorRouter.post("/online-evaluators", async (req: Request, res: Response) => 
   }
 });
 
-monitorRouter.get("/online-evaluators", async (_req: Request, res: Response) => {
-  const evaluators = await listOnlineEvaluatorsWire(getDb());
+monitorRouter.get("/online-evaluators", async (req: Request, res: Response) => {
+  const evaluators = await listOnlineEvaluatorsWire(scopedDb(req));
   res.status(200).json({ evaluators });
 });
 
 monitorRouter.get("/online-evaluators/:id", async (req: Request, res: Response) => {
-  const evaluator = await getOnlineEvaluator(getDb(), req.params.id!);
+  const evaluator = await getOnlineEvaluator(scopedDb(req), req.params.id!);
   if (!evaluator) {
     res.status(404).json({ error: "Online evaluator not found" });
     return;
@@ -163,12 +166,12 @@ monitorRouter.put("/online-evaluators/:id", async (req: Request, res: Response) 
     return;
   }
   try {
-    const evaluator = await updateOnlineEvaluator(getDb(), req.params.id!, {
+    const evaluator = await updateOnlineEvaluator(scopedDb(req), req.params.id!, {
       name: body.name,
       evaluationSettingsId: body.evaluationSettingsId,
       sampleRate: body.sampleRate,
       scopeMode: body.scopeMode,
-      agentIds: body.agentIds,
+      agentIds: await resolveAgentIds(scopedDb(req), body.agentIds),
       enabled: body.enabled,
       alertThreshold: body.alertThreshold,
       severity: body.severity,
@@ -188,7 +191,7 @@ monitorRouter.put("/online-evaluators/:id", async (req: Request, res: Response) 
 });
 
 monitorRouter.delete("/online-evaluators/:id", async (req: Request, res: Response) => {
-  const deleted = await deleteOnlineEvaluator(getDb(), req.params.id!);
+  const deleted = await deleteOnlineEvaluator(scopedDb(req), req.params.id!);
   if (!deleted) {
     res.status(404).json({ error: "Online evaluator not found" });
     return;
@@ -197,9 +200,9 @@ monitorRouter.delete("/online-evaluators/:id", async (req: Request, res: Respons
 });
 
 monitorRouter.get("/online-evaluators/:id/ratings", async (req: Request, res: Response) => {
-  res.status(200).json(await getOnlineEvaluatorRatings(getDb(), req.params.id!, parseWindow(req)));
+  res.status(200).json(await getOnlineEvaluatorRatings(scopedDb(req), req.params.id!, parseWindow(req)));
 });
 
 monitorRouter.get("/online-evaluators/:id/events", async (req: Request, res: Response) => {
-  res.status(200).json(await getOnlineEvaluatorEvents(getDb(), req.params.id!, parseWindow(req)));
+  res.status(200).json(await getOnlineEvaluatorEvents(scopedDb(req), req.params.id!, parseWindow(req)));
 });

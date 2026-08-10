@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { scoreAgainstCriteria, DEFAULT_JUDGE_PROMPT, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { matchesAgentScope, passesSampleRate } from "./routing.js";
@@ -32,6 +32,7 @@ export type UpdateOnlineEvaluatorInput = Partial<CreateOnlineEvaluatorInput>;
 
 export type OnlineEvaluatorRow = {
   id: string;
+  projectId: string | null;
   name: string;
   evaluationSettingsId: string | null;
   sampleRate: number;
@@ -74,6 +75,7 @@ export async function createOnlineEvaluator(db: Db, input: CreateOnlineEvaluator
   await assertEvaluationSettingsExists(db, input.evaluationSettingsId);
   const row: OnlineEvaluatorRow = {
     id: nanoid(),
+    projectId: db.projectId,
     name: input.name,
     evaluationSettingsId: input.evaluationSettingsId,
     // Every check here is a real LLM call against the user's own API key — default meaningfully
@@ -96,14 +98,11 @@ export async function createOnlineEvaluator(db: Db, input: CreateOnlineEvaluator
 }
 
 export async function getOnlineEvaluatorRow(db: Db, id: string): Promise<OnlineEvaluatorRow | null> {
+  const cond = and(eq(db.schema.monitorOnlineEvaluators.id, id), eq(db.schema.monitorOnlineEvaluators.projectId, db.projectId));
   const row =
     db.kind === "sqlite"
-      ? (db.db.select().from(db.schema.monitorOnlineEvaluators).where(eq(db.schema.monitorOnlineEvaluators.id, id)).all()[0] as
-          | OnlineEvaluatorRow
-          | undefined)
-      : ((
-          await db.db.select().from(db.schema.monitorOnlineEvaluators).where(eq(db.schema.monitorOnlineEvaluators.id, id))
-        )[0] as OnlineEvaluatorRow | undefined);
+      ? (db.db.select().from(db.schema.monitorOnlineEvaluators).where(cond).all()[0] as OnlineEvaluatorRow | undefined)
+      : ((await db.db.select().from(db.schema.monitorOnlineEvaluators).where(cond))[0] as OnlineEvaluatorRow | undefined);
   return row ?? null;
 }
 
@@ -113,10 +112,11 @@ export async function getOnlineEvaluator(db: Db, id: string) {
 }
 
 export async function listOnlineEvaluatorRows(db: Db): Promise<OnlineEvaluatorRow[]> {
+  const cond = eq(db.schema.monitorOnlineEvaluators.projectId, db.projectId);
   const rows =
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.monitorOnlineEvaluators).all()
-      : await db.db.select().from(db.schema.monitorOnlineEvaluators);
+      ? db.db.select().from(db.schema.monitorOnlineEvaluators).where(cond).all()
+      : await db.db.select().from(db.schema.monitorOnlineEvaluators).where(cond);
   return rows as OnlineEvaluatorRow[];
 }
 
@@ -153,10 +153,11 @@ export async function updateOnlineEvaluator(db: Db, id: string, input: UpdateOnl
     alertThreshold: updated.alertThreshold,
     severity: updated.severity,
   };
+  const updateCond = and(eq(db.schema.monitorOnlineEvaluators.id, id), eq(db.schema.monitorOnlineEvaluators.projectId, db.projectId));
   if (db.kind === "sqlite") {
-    await db.db.update(db.schema.monitorOnlineEvaluators).set(setValues).where(eq(db.schema.monitorOnlineEvaluators.id, id));
+    await db.db.update(db.schema.monitorOnlineEvaluators).set(setValues).where(updateCond);
   } else {
-    await db.db.update(db.schema.monitorOnlineEvaluators).set(setValues).where(eq(db.schema.monitorOnlineEvaluators.id, id));
+    await db.db.update(db.schema.monitorOnlineEvaluators).set(setValues).where(updateCond);
   }
   return toWire(updated);
 }
@@ -166,10 +167,11 @@ export async function deleteOnlineEvaluator(db: Db, id: string): Promise<boolean
   if (!existing) {
     return false;
   }
+  const deleteCond = and(eq(db.schema.monitorOnlineEvaluators.id, id), eq(db.schema.monitorOnlineEvaluators.projectId, db.projectId));
   if (db.kind === "sqlite") {
-    await db.db.delete(db.schema.monitorOnlineEvaluators).where(eq(db.schema.monitorOnlineEvaluators.id, id));
+    await db.db.delete(db.schema.monitorOnlineEvaluators).where(deleteCond);
   } else {
-    await db.db.delete(db.schema.monitorOnlineEvaluators).where(eq(db.schema.monitorOnlineEvaluators.id, id));
+    await db.db.delete(db.schema.monitorOnlineEvaluators).where(deleteCond);
   }
   return true;
 }

@@ -2,6 +2,9 @@ import { nanoid } from "nanoid";
 import { z } from "zod";
 import { desc, lt, and, eq, isNull, type SQL } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { resolveAgentId } from "../monitor/agents.js";
+import { listPortabilityModels, estimateCostUSD } from "../evaluate/models.js";
+import { getClassificationForTrace } from "../monitor/topics.js";
 
 // Mirrors the wire payload agentx.tracing.tracer.Tracer._send builds in the Python SDK
 // (agentx/tracing/tracer.py); see AgentX-Python for the exact field list this was checked
@@ -21,6 +24,14 @@ export const ingestTraceSchema = z.object({
   performance_summary: z.record(z.unknown()).optional(),
   input_tokens: z.number().optional(),
   output_tokens: z.number().optional(),
+  // Subsets of input_tokens (not additional tokens) — a prompt-caching write/read, when the
+  // provider reports one (Anthropic's cache_creation/cache_read_input_tokens, OpenAI's
+  // prompt_tokens_details.cached_tokens, Gemini's cached_content_token_count — see AgentX-Python's
+  // per-integration usage extraction). Priced separately by estimateCostUSD (core/evaluate/
+  // models.ts) when the model's catalog row has its own cache rate configured, otherwise falls
+  // back to the regular input rate — same $ as before this field existed.
+  cache_read_tokens: z.number().optional(),
+  cache_write_tokens: z.number().optional(),
   // Real span hierarchy — sent by the OTel ingestion path (routes/otlp.ts via
   // otel/mapping.ts's otelSpanToIngestInput) unconditionally, and by the Python SDK's own
   // tracer.trace() when a caller opts into span_tree=True (see AgentX-Python's tracer.py) so
@@ -37,12 +48,26 @@ export const ingestTraceSchema = z.object({
   workspaceId: z.string().optional(),
   monitor: z.boolean().optional(),
   pattern_ids: z.array(z.string()).optional(),
+  // Optional disambiguator (client.tracer.trace(name, agent_id=...)) for when `name` alone isn't
+  // enough — e.g. two deliberately-registered agents sharing a display name (core/monitor/
+  // agents.ts). Omitted (the default, and every pre-registry caller's only option): resolved from
+  // `name` alone via resolveAgentId, identical to this engine's behavior before agent ids existed.
+  agent_id: z.string().optional(),
 });
 
 export type IngestTraceInput = z.infer<typeof ingestTraceSchema>;
 
-export async function ingestTrace(db: Db, payload: IngestTraceInput): Promise<{ traceId: string }> {
+export async function ingestTrace(db: Db, payload: IngestTraceInput): Promise<{ traceId: string; agentId: string | null }> {
   const id = nanoid();
+  // Root spans only: a span_tree=True SDK trace or a multi-span OTel session sends one row per
+  // LLM call/tool call too (e.g. "LLM Call 1", "policy_lookup", each its own parentSpanId-linked
+  // trace) — resolving/creating a real agent from a *child* span's own name would register each
+  // of those as its own fake agent, flooding the Agents tab with tool/LLM-call names instead of
+  // real agents. Same "child spans are sub-detail, not top-level entities" rule
+  // listTracesPaginated already applies to the Observe tab's trace list (isNull(parentSpanId)) —
+  // applied here too. Root traces are unaffected; the vast majority of ingested traces (anything
+  // not using span_tree=True/OTel multi-span) have no parent_span_id at all.
+  const agentId = payload.parent_span_id ? null : await resolveAgentId(db, payload.agent_id || payload.name);
   const row = {
     id,
     name: payload.name,
@@ -58,10 +83,14 @@ export async function ingestTrace(db: Db, payload: IngestTraceInput): Promise<{ 
     performanceSummary: payload.performance_summary ?? null,
     inputTokens: payload.input_tokens ?? null,
     outputTokens: payload.output_tokens ?? null,
+    cacheReadTokens: payload.cache_read_tokens ?? null,
+    cacheWriteTokens: payload.cache_write_tokens ?? null,
     spanId: payload.span_id ?? null,
     parentSpanId: payload.parent_span_id ?? null,
     startedAt: payload.started_at_unix_nano ? new Date(Number(BigInt(payload.started_at_unix_nano) / 1_000_000n)) : null,
     createdAt: new Date(),
+    agentId,
+    projectId: db.projectId,
   };
 
   if (db.kind === "sqlite") {
@@ -70,7 +99,7 @@ export async function ingestTrace(db: Db, payload: IngestTraceInput): Promise<{ 
     await db.db.insert(db.schema.traces).values(row);
   }
 
-  return { traceId: id };
+  return { traceId: id, agentId };
 }
 
 export type TraceRow = {
@@ -88,10 +117,14 @@ export type TraceRow = {
   performanceSummary: unknown;
   inputTokens: number | null;
   outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
   spanId: string | null;
   parentSpanId: string | null;
   startedAt: Date | null;
   createdAt: Date;
+  agentId: string | null;
+  projectId: string | null;
 };
 
 // Matches AgentX-web-front's ProductionTrace type (src/types/evaluate.ts): _id not id, no
@@ -146,6 +179,35 @@ export function toTraceDetailWire(row: TraceRow) {
     createdAt: row.createdAt.toISOString(),
     inputTokens: row.inputTokens,
     outputTokens: row.outputTokens,
+    cacheReadTokens: row.cacheReadTokens ?? undefined,
+    cacheWriteTokens: row.cacheWriteTokens ?? undefined,
+  };
+}
+
+// Single-trace detail only (GET /traces/:traceId) — not listTracesPaginated's list view (toWire
+// above), which is kept lookup-free to avoid an N-model-lookup cost per page. Reuses the exact
+// same pricing source and estimateCostUSD math as Overview's "Total LLM cost" chart (core/monitor/
+// cost.ts), so a trace's estimated cost here always agrees with what it contributed there.
+// Unpriced (model missing from the catalog) or token-less rows (e.g. a tool-call child span)
+// return null, not 0 — "no cost data," not "free."
+export async function toTraceDetailWireWithCost(db: Db, row: TraceRow) {
+  const wire = toTraceDetailWire(row);
+  // Topics classification (core/monitor/topics.ts) — opt-in per agent and still sampled even when
+  // on, so most traces have none; toWire's own field stays undefined rather than null in that
+  // case, matching every other optional field on this wire object.
+  const classification = await getClassificationForTrace(db, row.id);
+  const topic = classification
+    ? { intent: classification.intent, sentiment: classification.sentiment, issueType: classification.issueType }
+    : undefined;
+  if (!row.model || row.inputTokens == null || row.outputTokens == null) {
+    return { ...wire, estimatedCostUSD: null, topic };
+  }
+  const pricingModels = await listPortabilityModels(db);
+  const pricing = pricingModels.find(m => m.id === row.model) ?? null;
+  return {
+    ...wire,
+    estimatedCostUSD: estimateCostUSD(pricing, row.inputTokens, row.outputTokens, row.cacheReadTokens, row.cacheWriteTokens),
+    topic,
   };
 }
 
@@ -171,7 +233,7 @@ export async function listTracesPaginated(
   // (parentSpanId set) is still fully reachable — opening the root's trace dialog fetches every
   // spanId/parentSpanId-linked row via GET /sessions/:sessionId/spans (TraceSpanTreePanel), this
   // only changes what the top-level list itself enumerates.
-  const conditions: SQL[] = [isNull(db.schema.traces.parentSpanId)];
+  const conditions: SQL[] = [isNull(db.schema.traces.parentSpanId), eq(db.schema.traces.projectId, db.projectId)];
   if (framework) conditions.push(eq(db.schema.traces.framework, framework));
   if (cursorCreatedAt) conditions.push(lt(db.schema.traces.createdAt, cursorCreatedAt));
   const where = and(...conditions);
@@ -206,14 +268,11 @@ export async function listTracesPaginated(
 // input/metadata/model/tokens a single trace actually captured — everything listTracesPaginated's
 // own use of this (cursor resolution) doesn't need.
 export async function getTraceRow(db: Db, id: string): Promise<TraceRow | undefined> {
+  const cond = and(eq(db.schema.traces.id, id), eq(db.schema.traces.projectId, db.projectId));
   if (db.kind === "sqlite") {
-    return db.db.select().from(db.schema.traces).where(eq(db.schema.traces.id, id)).all()[0] as
-      | TraceRow
-      | undefined;
+    return db.db.select().from(db.schema.traces).where(cond).all()[0] as TraceRow | undefined;
   }
-  return (await db.db.select().from(db.schema.traces).where(eq(db.schema.traces.id, id)))[0] as
-    | TraceRow
-    | undefined;
+  return (await db.db.select().from(db.schema.traces).where(cond))[0] as TraceRow | undefined;
 }
 
 // Every span belonging to one OTel trace (sessionId = the OTel traceId, see otel/mapping.ts's
@@ -224,10 +283,11 @@ export async function getTraceRow(db: Db, id: string): Promise<TraceRow | undefi
 // practice since a session only ever contains OTel-ingested rows, but keeps the ordering total
 // rather than undefined for a row with a null startedAt.
 export async function listSessionSpans(db: Db, sessionId: string) {
+  const cond = and(eq(db.schema.traces.sessionId, sessionId), eq(db.schema.traces.projectId, db.projectId));
   const rows = (
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.traces).where(eq(db.schema.traces.sessionId, sessionId)).all()
-      : await db.db.select().from(db.schema.traces).where(eq(db.schema.traces.sessionId, sessionId))
+      ? db.db.select().from(db.schema.traces).where(cond).all()
+      : await db.db.select().from(db.schema.traces).where(cond)
   ) as TraceRow[];
   rows.sort((a, b) => (a.startedAt ?? a.createdAt).getTime() - (b.startedAt ?? b.createdAt).getTime());
   return rows.map(toTraceDetailWire);
@@ -235,8 +295,9 @@ export async function listSessionSpans(db: Db, sessionId: string) {
 
 // Kept for the debug listing used before pagination existed; still handy for quick local checks.
 export async function listTraces(db: Db, limit = 50) {
+  const cond = eq(db.schema.traces.projectId, db.projectId);
   if (db.kind === "sqlite") {
-    return db.db.select().from(db.schema.traces).limit(limit).all();
+    return db.db.select().from(db.schema.traces).where(cond).limit(limit).all();
   }
-  return db.db.select().from(db.schema.traces).limit(limit);
+  return db.db.select().from(db.schema.traces).where(cond).limit(limit);
 }

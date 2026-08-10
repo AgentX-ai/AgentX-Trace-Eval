@@ -1,9 +1,10 @@
 import { Router, type Request, type Response } from "express";
 import express from "express";
-import { getDb } from "../storage/db.js";
+import { scopedDb } from "../auth/apiKey.js";
 import { ingestTraceSchema, ingestTrace, type IngestTraceInput } from "../core/trace/ingest.js";
 import { runMonitorCheck } from "../core/monitor/detect.js";
 import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
+import { runCustomEvaluators } from "../core/monitor/customEvaluators.js";
 import { runClassification } from "../core/monitor/topics.js";
 import { decodeProtobufExportRequest, encodeProtobufResponse } from "../otel/protoTypes.js";
 import { normalizeExportRequest } from "../otel/normalize.js";
@@ -71,7 +72,7 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   }
 
   const spans = normalizeExportRequest(parsed);
-  const db = getDb();
+  const db = scopedDb(req);
   let rejected = 0;
   let lastError = "";
   // Ingested first, fully independent of the (possibly slow) checks below: a batch export can
@@ -80,7 +81,7 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   // an exporter that gives up mid-batch doesn't know the spans it already sent were, in fact,
   // ingested successfully. Collected here so the checks can run in the background after
   // responding, same fix as routes/ingest.ts's POST /traces.
-  const checkTargets: { traceId: string; input: IngestTraceInput }[] = [];
+  const checkTargets: { traceId: string; agentId: string | null; input: IngestTraceInput }[] = [];
 
   for (const span of spans) {
     const candidate = otelSpanToIngestInput(span);
@@ -91,8 +92,8 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
       continue;
     }
     const input = validation.data;
-    const { traceId } = await ingestTrace(db, input);
-    checkTargets.push({ traceId, input });
+    const { traceId, agentId } = await ingestTrace(db, input);
+    checkTargets.push({ traceId, agentId, input });
   }
 
   const partialSuccess = rejected > 0 ? { rejectedSpans: rejected, errorMessage: lastError } : undefined;
@@ -106,7 +107,7 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   // outage) must never break OTLP ingestion, and now that these run detached from the request
   // they're wrapped in .catch() rather than try/catch so a rejection is logged instead of
   // becoming a silent unhandled one.
-  for (const { traceId, input } of checkTargets) {
+  for (const { traceId, agentId, input } of checkTargets) {
     if (input.parent_span_id && !MONITOR_CHILD_SPANS) {
       continue;
     }
@@ -121,17 +122,30 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
           toolCalls: (input.tool_calls as Array<{ name?: string; output?: unknown; input?: unknown; success?: boolean }>) ?? null,
           latencyMs: input.latency_ms ?? null,
         },
-        { agentId: input.name, traceId }
+        { agentId, traceId }
       ).catch(err => {
         console.error("Monitor check failed:", err instanceof Error ? err.message : err);
       });
     }
 
-    runOnlineEvaluators(db, { input: input.input, output: input.output }, { agentId: input.name, traceId }).catch(err => {
+    runOnlineEvaluators(db, { input: input.input, output: input.output }, { agentId, traceId }).catch(err => {
       console.error("Online evaluator scoring failed:", err instanceof Error ? err.message : err);
     });
 
-    runClassification(db, { input: input.input, output: input.output }, { agentId: input.name, traceId }).catch(err => {
+    runCustomEvaluators(
+      db,
+      {
+        input: input.input,
+        output: input.output,
+        error: input.error ?? null,
+        toolCalls: (input.tool_calls as Array<{ name?: string; output?: unknown; input?: unknown; success?: boolean }>) ?? null,
+      },
+      { agentId, traceId }
+    ).catch(err => {
+      console.error("Custom evaluator scoring failed:", err instanceof Error ? err.message : err);
+    });
+
+    runClassification(db, { input: input.input, output: input.output }, { agentId, traceId }).catch(err => {
       console.error("Trace classification failed:", err instanceof Error ? err.message : err);
     });
   }

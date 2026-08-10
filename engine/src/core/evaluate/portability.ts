@@ -127,7 +127,7 @@ export function reconstructMessages(trace: Pick<TraceRow, "input" | "metadata">)
 
 export type PortabilityResult = {
   model: string;
-  provider: "openai" | "anthropic" | null;
+  provider: "openai" | "anthropic" | "custom" | null;
   isBaseline: boolean;
   outputText: string | null;
   rating: number | null;

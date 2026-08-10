@@ -1,15 +1,16 @@
 import { Router, type Request, type Response } from "express";
-import { getDb } from "../storage/db.js";
+import { scopedDb } from "../auth/apiKey.js";
 import {
   ingestTraceSchema,
   ingestTrace,
   listTracesPaginated,
   getTraceRow,
-  toTraceDetailWire,
+  toTraceDetailWireWithCost,
   listSessionSpans,
 } from "../core/trace/ingest.js";
 import { runMonitorCheck } from "../core/monitor/detect.js";
 import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
+import { runCustomEvaluators } from "../core/monitor/customEvaluators.js";
 import { runClassification } from "../core/monitor/topics.js";
 
 // Path matters here: AgentX-Python's IngestClient builds its endpoint as
@@ -29,7 +30,7 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
     res.status(422).json({ error: "Invalid trace payload", details: parsed.error.flatten() });
     return;
   }
-  const { traceId } = await ingestTrace(getDb(), parsed.data);
+  const { traceId, agentId } = await ingestTrace(scopedDb(req), parsed.data);
 
   // trace_id is the one field send_trace_sync() reads (see ingest_client.py); the fire-and-forget
   // enqueue() path used by default doesn't inspect the body at all, so this shape covers both.
@@ -73,11 +74,11 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
     latencyMs: parsed.data.latency_ms ?? null,
   };
   runMonitorCheck(
-    getDb(),
+    scopedDb(req),
     traceForMonitor,
     parsed.data.monitor
-      ? { agentId: parsed.data.name, traceId, patternIds: parsed.data.pattern_ids }
-      : { agentId: parsed.data.name, traceId, requireEnabledProfile: true }
+      ? { agentId, traceId, patternIds: parsed.data.pattern_ids }
+      : { agentId, traceId, requireEnabledProfile: true }
   ).catch(err => {
     console.error("Monitor check failed:", err instanceof Error ? err.message : err);
   });
@@ -85,20 +86,26 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
   // Independent of the `monitor` flag above: online evaluators are a server-side-configured
   // feature (opt in by creating one, not by a per-call flag), see core/monitor/onlineEvaluators.ts.
   runOnlineEvaluators(
-    getDb(),
+    scopedDb(req),
     { input: parsed.data.input, output: parsed.data.output },
-    { agentId: parsed.data.name, traceId }
+    { agentId, traceId }
   ).catch(err => {
     console.error("Online evaluator scoring failed:", err instanceof Error ? err.message : err);
+  });
+
+  // Same independent, opt-in-by-creating-one posture as online evaluators above — see
+  // core/monitor/customEvaluators.ts.
+  runCustomEvaluators(scopedDb(req), traceForMonitor, { agentId, traceId }).catch(err => {
+    console.error("Custom evaluator scoring failed:", err instanceof Error ? err.message : err);
   });
 
   // Third independent pass, same fire-and-forget shape — see core/monitor/topics.ts. Opt-in via
   // AgentMonitoringProfile.topicsEnabled (checked inside runClassification itself), so this is a
   // no-op unless the dashboard's per-agent "Topics" toggle was actually turned on.
   runClassification(
-    getDb(),
+    scopedDb(req),
     { input: parsed.data.input, output: parsed.data.output },
-    { agentId: parsed.data.name, traceId }
+    { agentId, traceId }
   ).catch(err => {
     console.error("Trace classification failed:", err instanceof Error ? err.message : err);
   });
@@ -110,7 +117,7 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
 // response shape exactly, see core/trace/ingest.ts's listTracesPaginated.
 ingestRouter.get("/traces", async (req: Request, res: Response) => {
   const { limit, cursor, framework } = req.query;
-  const result = await listTracesPaginated(getDb(), {
+  const result = await listTracesPaginated(scopedDb(req), {
     limit: limit ? Number(limit) : undefined,
     cursor: typeof cursor === "string" ? cursor : undefined,
     framework: typeof framework === "string" ? framework : undefined,
@@ -131,12 +138,12 @@ ingestRouter.get("/traces/:traceId", async (req: Request, res: Response) => {
     res.status(400).json({ error: "traceId is required" });
     return;
   }
-  const row = await getTraceRow(getDb(), traceId);
+  const row = await getTraceRow(scopedDb(req), traceId);
   if (!row) {
     res.status(404).json({ error: "Trace not found" });
     return;
   }
-  res.status(200).json(toTraceDetailWire(row));
+  res.status(200).json(await toTraceDetailWireWithCost(scopedDb(req), row));
 });
 
 // Every span belonging to one OTel trace (sessionId = the OTel traceId, see otel/mapping.ts's
@@ -150,6 +157,6 @@ ingestRouter.get("/sessions/:sessionId/spans", async (req: Request, res: Respons
     res.status(400).json({ error: "sessionId is required" });
     return;
   }
-  const spans = await listSessionSpans(getDb(), sessionId);
+  const spans = await listSessionSpans(scopedDb(req), sessionId);
   res.status(200).json({ spans });
 });

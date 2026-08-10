@@ -2,10 +2,15 @@ import type { Db } from "../../storage/db.js";
 import { callModelWithTools, scoreAgainstCriteria, DEFAULT_JUDGE_MODEL, DEFAULT_JUDGE_PROMPT, type ToolCallTrace } from "./judge.js";
 import { getPortabilityModel, estimateCostUSD } from "./models.js";
 import { runCodeScorer, type CodeScorerConfig, type CodeScorerResult } from "./codeScorer.js";
+import { evaluatePatternConditions, type PatternCondition, type TraceLike } from "../monitor/conditions.js";
+import { getPatternRow } from "../monitor/patterns.js";
+import { llmSemanticJudge } from "../monitor/detect.js";
+import { getOnlineEvaluatorRow } from "../monitor/onlineEvaluators.js";
+import { getEvaluationSettingsRow } from "./evaluationSettings.js";
 
 // A tool the model can call during a Playground run — self-host calls the real endpoint you run
 // (your actual local/hosted tool or RAG service), the same "call out, don't reimplement" shape
-// core/monitor/conditions.ts's callExternalValidator already established for user-owned logic.
+// core/monitor/customEvaluators.ts's callCustomEvaluator already established for user-owned logic.
 // Request POSTed to `endpointUrl`: { tool: name, arguments }. Expected response: { result: <any> }.
 export type PlaygroundTool = {
   name: string;
@@ -88,6 +93,36 @@ export type PlaygroundRunInput = {
   // `expected` being present (a scorer like "output is non-empty" doesn't need a ground truth).
   codeScorers?: CodeScorerConfig[];
   tools?: PlaygroundTool[];
+  // Monitor's Pattern/Online Evaluator checks, dry-run against this one response — never gated on
+  // `expected` either (they check the response itself, not against a ground truth), and never
+  // write a Signal/Event row the way a real ingested trace would (see runPlaygroundPatternChecks/
+  // runPlaygroundOnlineEvaluatorChecks below) — Playground stays "compute and return" throughout.
+  patternIds?: string[];
+  onlineEvaluatorIds?: string[];
+  // Per-model overrides from Playground's "Model settings" — see callModelWithTools's `options`
+  // param. Both omitted preserves today's exact defaults.
+  maxTokens?: number;
+  temperature?: number;
+};
+
+export type PlaygroundPatternCheckResult = {
+  patternId: string;
+  name: string;
+  severity: string;
+  polarity: "failure" | "proper";
+  matched: boolean;
+  reasons: string[];
+  error?: string;
+};
+
+export type PlaygroundOnlineEvaluatorCheckResult = {
+  evaluatorId: string;
+  name: string;
+  rating: number | null;
+  justification: string | null;
+  alertThreshold: number | null;
+  wouldAlert: boolean;
+  error?: string;
 };
 
 export type PlaygroundRunResult = {
@@ -100,8 +135,113 @@ export type PlaygroundRunResult = {
   justification: string | null;
   codeScorerResults?: CodeScorerResult[];
   toolCalls?: ToolCallTrace[];
+  patternChecks?: PlaygroundPatternCheckResult[];
+  onlineEvaluatorChecks?: PlaygroundOnlineEvaluatorCheckResult[];
   error: string | null;
 };
+
+// Dry-run version of detect.ts's detectCustomPatterns — evaluates every requested pattern
+// independently (not first-match-wins, since Playground wants to show every selected pattern's
+// own result) and never calls upsertSignal/recordEvent. Each pattern's failure (bad judge key,
+// provider outage) is isolated to its own result rather than aborting the sweep, same reasoning
+// detectCustomPatterns already uses.
+async function runPlaygroundPatternChecks(db: Db, patternIds: string[], trace: TraceLike): Promise<PlaygroundPatternCheckResult[]> {
+  const results: PlaygroundPatternCheckResult[] = [];
+  for (const patternId of patternIds) {
+    const pattern = await getPatternRow(db, patternId);
+    if (!pattern) continue; // deleted since the run started
+    const polarity = pattern.polarity === "proper" ? "proper" : "failure";
+    try {
+      // responseText, not just `trace` — buildSourceTexts (conditions.ts) only ever reads the
+      // "response" source from this, never from trace.output directly (same as detectCustomPatterns).
+      const responseText = typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output ?? "");
+      const outcome = await evaluatePatternConditions({
+        conditions: pattern.conditions as PatternCondition[],
+        responseText,
+        trace,
+        semanticJudge: llmSemanticJudge,
+      });
+      results.push({
+        patternId: pattern.id,
+        name: pattern.name,
+        severity: pattern.severity,
+        polarity,
+        matched: outcome.overall,
+        reasons: outcome.reasons,
+      });
+    } catch (err) {
+      results.push({
+        patternId: pattern.id,
+        name: pattern.name,
+        severity: pattern.severity,
+        polarity,
+        matched: false,
+        reasons: [],
+        error: err instanceof Error ? err.message : "Pattern check failed",
+      });
+    }
+  }
+  return results;
+}
+
+// Dry-run version of onlineEvaluators.ts's runOnlineEvaluators — scores against every requested
+// evaluator's referenced Evaluator config the same way (scoreAgainstCriteria), computes the same
+// wouldAlert comparison, but never calls upsertSignal/recordEvent.
+async function runPlaygroundOnlineEvaluatorChecks(
+  db: Db,
+  evaluatorIds: string[],
+  content: { input: string; output: string }
+): Promise<PlaygroundOnlineEvaluatorCheckResult[]> {
+  const results: PlaygroundOnlineEvaluatorCheckResult[] = [];
+  for (const evaluatorId of evaluatorIds) {
+    const evaluator = await getOnlineEvaluatorRow(db, evaluatorId);
+    if (!evaluator) continue; // deleted since the run started
+    const settings = evaluator.evaluationSettingsId ? await getEvaluationSettingsRow(db, evaluator.evaluationSettingsId) : null;
+    if (!settings) {
+      results.push({
+        evaluatorId: evaluator.id,
+        name: evaluator.name,
+        rating: null,
+        justification: null,
+        alertThreshold: evaluator.alertThreshold,
+        wouldAlert: false,
+        error: "This evaluator has no valid evaluator config",
+      });
+      continue;
+    }
+    try {
+      const { rating, justification } = await scoreAgainstCriteria(
+        {
+          acceptanceCriteria: settings.acceptanceCriteria ?? "",
+          rejectionCriteria: settings.rejectionCriteria ?? "",
+          evaluationCriteria: settings.evaluationCriteria ?? "",
+          judgePrompt: (settings.judgePrompt ?? "").trim() || DEFAULT_JUDGE_PROMPT,
+          judgeModel: settings.judgeModel ?? DEFAULT_JUDGE_MODEL,
+        },
+        content
+      );
+      results.push({
+        evaluatorId: evaluator.id,
+        name: evaluator.name,
+        rating,
+        justification,
+        alertThreshold: evaluator.alertThreshold,
+        wouldAlert: evaluator.alertThreshold !== null && rating < evaluator.alertThreshold,
+      });
+    } catch (err) {
+      results.push({
+        evaluatorId: evaluator.id,
+        name: evaluator.name,
+        rating: null,
+        justification: null,
+        alertThreshold: evaluator.alertThreshold,
+        wouldAlert: false,
+        error: err instanceof Error ? err.message : "Scoring failed",
+      });
+    }
+  }
+  return results;
+}
 
 export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<PlaygroundRunResult> {
   const model = await getPortabilityModel(db, input.model);
@@ -125,7 +265,8 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
       input.model,
       { system, messages: [...priorTurns, { role: "user", content: input.query }] },
       tools.map(t => ({ name: t.name, description: t.description, parameters: t.parameters })),
-      (name, args) => callPlaygroundTool(tools, name, args)
+      (name, args) => callPlaygroundTool(tools, name, args),
+      { maxTokens: input.maxTokens, temperature: input.temperature }
     );
     const latencyMs = Date.now() - start;
     const estimatedCostUSD = estimateCostUSD(model, completion.usage?.inputTokens ?? null, completion.usage?.outputTokens ?? null);
@@ -168,6 +309,18 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
       }
     }
 
+    // Same isolation posture as code scorers/judge scoring above — run independent of `expected`,
+    // never thrown out of the function on a single pattern/evaluator failure (each isolates its
+    // own error internally already).
+    const patternChecks =
+      input.patternIds && input.patternIds.length > 0
+        ? await runPlaygroundPatternChecks(db, input.patternIds, { input: input.query, output: completion.text, error: null })
+        : undefined;
+    const onlineEvaluatorChecks =
+      input.onlineEvaluatorIds && input.onlineEvaluatorIds.length > 0
+        ? await runPlaygroundOnlineEvaluatorChecks(db, input.onlineEvaluatorIds, { input: input.query, output: completion.text })
+        : undefined;
+
     return {
       output: completion.text,
       latencyMs,
@@ -178,6 +331,8 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
       justification,
       codeScorerResults,
       toolCalls: completion.toolCalls.length > 0 ? completion.toolCalls : undefined,
+      patternChecks,
+      onlineEvaluatorChecks,
       error: null,
     };
   } catch (err) {

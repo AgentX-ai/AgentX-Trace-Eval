@@ -120,6 +120,7 @@ export async function recordDatasetVersionIfChanged(
   }
   const row = {
     id: nanoid(),
+    projectId: db.projectId,
     datasetId,
     snapshot: pick(after, DATASET_SNAPSHOT_FIELDS),
     changeSummary,
@@ -133,7 +134,7 @@ export async function recordDatasetVersionIfChanged(
 }
 
 export async function listDatasetVersions(db: Db, datasetId: string): Promise<VersionEntryWire[]> {
-  const cond = eq(db.schema.datasetVersions.datasetId, datasetId);
+  const cond = and(eq(db.schema.datasetVersions.datasetId, datasetId), eq(db.schema.datasetVersions.projectId, db.projectId));
   const rows = (
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.datasetVersions).where(cond).all()
@@ -146,7 +147,7 @@ export async function getDatasetVersionCounts(db: Db, ids: string[]): Promise<Re
   if (ids.length === 0) {
     return {};
   }
-  const cond = inArray(db.schema.datasetVersions.datasetId, ids);
+  const cond = and(inArray(db.schema.datasetVersions.datasetId, ids), eq(db.schema.datasetVersions.projectId, db.projectId));
   const rows = (
     db.kind === "sqlite"
       ? db.db
@@ -164,7 +165,11 @@ export async function getDatasetVersionCounts(db: Db, ids: string[]): Promise<Re
 }
 
 export async function deleteDatasetVersion(db: Db, datasetId: string, versionId: string): Promise<boolean> {
-  const cond = and(eq(db.schema.datasetVersions.id, versionId), eq(db.schema.datasetVersions.datasetId, datasetId));
+  const cond = and(
+    eq(db.schema.datasetVersions.id, versionId),
+    eq(db.schema.datasetVersions.datasetId, datasetId),
+    eq(db.schema.datasetVersions.projectId, db.projectId)
+  );
   const existing =
     db.kind === "sqlite"
       ? db.db.select({ id: db.schema.datasetVersions.id }).from(db.schema.datasetVersions).where(cond).all()[0]
@@ -199,6 +204,7 @@ export async function recordEvaluationSettingsVersionIfChanged(
   }
   const row = {
     id: nanoid(),
+    projectId: db.projectId,
     evaluationSettingsId,
     snapshot: pick(after, SETTINGS_SNAPSHOT_FIELDS),
     changeSummary,
@@ -212,7 +218,10 @@ export async function recordEvaluationSettingsVersionIfChanged(
 }
 
 export async function listEvaluationSettingsVersions(db: Db, evaluationSettingsId: string): Promise<VersionEntryWire[]> {
-  const cond = eq(db.schema.evaluationSettingsVersions.evaluationSettingsId, evaluationSettingsId);
+  const cond = and(
+    eq(db.schema.evaluationSettingsVersions.evaluationSettingsId, evaluationSettingsId),
+    eq(db.schema.evaluationSettingsVersions.projectId, db.projectId)
+  );
   const rows = (
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.evaluationSettingsVersions).where(cond).all()
@@ -225,7 +234,10 @@ export async function getEvaluationSettingsVersionCounts(db: Db, ids: string[]):
   if (ids.length === 0) {
     return {};
   }
-  const cond = inArray(db.schema.evaluationSettingsVersions.evaluationSettingsId, ids);
+  const cond = and(
+    inArray(db.schema.evaluationSettingsVersions.evaluationSettingsId, ids),
+    eq(db.schema.evaluationSettingsVersions.projectId, db.projectId)
+  );
   const rows = (
     db.kind === "sqlite"
       ? db.db
@@ -252,7 +264,8 @@ export async function deleteEvaluationSettingsVersion(
 ): Promise<boolean> {
   const cond = and(
     eq(db.schema.evaluationSettingsVersions.id, versionId),
-    eq(db.schema.evaluationSettingsVersions.evaluationSettingsId, evaluationSettingsId)
+    eq(db.schema.evaluationSettingsVersions.evaluationSettingsId, evaluationSettingsId),
+    eq(db.schema.evaluationSettingsVersions.projectId, db.projectId)
   );
   const existing =
     db.kind === "sqlite"

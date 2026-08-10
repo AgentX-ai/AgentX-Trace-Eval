@@ -2,6 +2,7 @@ import { nanoid } from "nanoid";
 import { and, eq, gte, isNull, lt } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { getTraceRow } from "../trace/ingest.js";
+import { getAgentNamesById } from "./agents.js";
 
 // Matches AgentX-web-front's MonitoringWindow (src/types/agentMonitoring.ts).
 export type MonitoringWindow = "24h" | "7d" | "30d";
@@ -20,6 +21,7 @@ function windowConfig(window: MonitoringWindow): { days: number; bucketHours: nu
 
 export type EventRow = {
   id: string;
+  projectId: string | null;
   signalId: string | null;
   patternKey: string;
   type: string;
@@ -35,19 +37,45 @@ export type EventRow = {
   onlineEvaluatorId: string | null;
   rating: number | null;
   justification: string | null;
+  // Set only for custom-evaluator rows (core/monitor/customEvaluators.ts) — a per-check boolean
+  // verdict, recorded whether or not it raised a Signal. Same "skip in classification math" rule
+  // as onlineEvaluatorId above, for the same reason.
+  customEvaluatorId: string | null;
+  matched: boolean | null;
+  // Optional metadata a custom evaluator's endpoint can additionally return alongside `matches`
+  // (CustomEvaluatorResponse's comment) — never drives the matched/hit decision itself, just
+  // recorded for visibility. Null whenever the endpoint didn't report one, or for non-custom-
+  // evaluator rows entirely (this is not reused for onlineEvaluatorId rows, which have their own
+  // `rating` field with different 0-10 semantics).
+  score: number | null;
 };
 
 export async function recordEvent(
   db: Db,
-  input: Omit<EventRow, "id" | "createdAt" | "onlineEvaluatorId" | "rating" | "justification"> &
-    Partial<Pick<EventRow, "onlineEvaluatorId" | "rating" | "justification">>
+  input: Omit<
+    EventRow,
+    | "id"
+    | "projectId"
+    | "createdAt"
+    | "onlineEvaluatorId"
+    | "rating"
+    | "justification"
+    | "customEvaluatorId"
+    | "matched"
+    | "score"
+  > &
+    Partial<Pick<EventRow, "onlineEvaluatorId" | "rating" | "justification" | "customEvaluatorId" | "matched" | "score">>
 ): Promise<void> {
   const row: EventRow = {
     id: nanoid(),
+    projectId: db.projectId,
     createdAt: new Date(),
     onlineEvaluatorId: null,
     rating: null,
     justification: null,
+    customEvaluatorId: null,
+    matched: null,
+    score: null,
     ...input,
   };
   if (db.kind === "sqlite") {
@@ -60,16 +88,64 @@ export async function recordEvent(
 // Called opportunistically after each write for that agent (see detect.ts) rather than on a
 // schedule — self-host has no background job runner (plan task #110's note), and event volume
 // here is low enough that a delete-on-write is cheap rather than a real cron.
-export async function pruneOldEvents(db: Db, agentId: string | null, retentionDays: number): Promise<void> {
+//
+// Prunes raw telemetry older than the window: monitor_events (the per-check log behind trend/KPI
+// charts), traces themselves, and monitor_classifications (Topics). monitor_signals is
+// deliberately exempt — those are curated triage records with their own status/reviewStatus
+// lifecycle, not raw traffic, the same distinction real observability tools draw between trace
+// retention and incident retention. `retentionDays <= 0` means "Forever" (MonitoringUnitSettingsFields.tsx's
+// new option) — skip pruning entirely rather than treating 0 as "a cutoff of right now."
+export async function pruneRetentionData(db: Db, agentId: string | null, retentionDays: number): Promise<void> {
+  if (retentionDays <= 0) {
+    return;
+  }
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
-  const cond =
+
+  const eventsCond =
     agentId === null
-      ? and(lt(db.schema.monitorEvents.createdAt, cutoff), isNull(db.schema.monitorEvents.agentId))
-      : and(lt(db.schema.monitorEvents.createdAt, cutoff), eq(db.schema.monitorEvents.agentId, agentId));
+      ? and(
+          lt(db.schema.monitorEvents.createdAt, cutoff),
+          isNull(db.schema.monitorEvents.agentId),
+          eq(db.schema.monitorEvents.projectId, db.projectId)
+        )
+      : and(
+          lt(db.schema.monitorEvents.createdAt, cutoff),
+          eq(db.schema.monitorEvents.agentId, agentId),
+          eq(db.schema.monitorEvents.projectId, db.projectId)
+        );
+  const tracesCond =
+    agentId === null
+      ? and(
+          lt(db.schema.traces.createdAt, cutoff),
+          isNull(db.schema.traces.agentId),
+          eq(db.schema.traces.projectId, db.projectId)
+        )
+      : and(
+          lt(db.schema.traces.createdAt, cutoff),
+          eq(db.schema.traces.agentId, agentId),
+          eq(db.schema.traces.projectId, db.projectId)
+        );
+  const classificationsCond =
+    agentId === null
+      ? and(
+          lt(db.schema.monitorClassifications.createdAt, cutoff),
+          isNull(db.schema.monitorClassifications.agentId),
+          eq(db.schema.monitorClassifications.projectId, db.projectId)
+        )
+      : and(
+          lt(db.schema.monitorClassifications.createdAt, cutoff),
+          eq(db.schema.monitorClassifications.agentId, agentId),
+          eq(db.schema.monitorClassifications.projectId, db.projectId)
+        );
+
   if (db.kind === "sqlite") {
-    await db.db.delete(db.schema.monitorEvents).where(cond);
+    await db.db.delete(db.schema.monitorEvents).where(eventsCond);
+    await db.db.delete(db.schema.traces).where(tracesCond);
+    await db.db.delete(db.schema.monitorClassifications).where(classificationsCond);
   } else {
-    await db.db.delete(db.schema.monitorEvents).where(cond);
+    await db.db.delete(db.schema.monitorEvents).where(eventsCond);
+    await db.db.delete(db.schema.traces).where(tracesCond);
+    await db.db.delete(db.schema.monitorClassifications).where(classificationsCond);
   }
 }
 
@@ -79,7 +155,7 @@ export async function pruneOldEvents(db: Db, agentId: string | null, retentionDa
 // aggregate occurrenceCount). Newest-last (chronological), matching the frontend's own
 // `[...recorded].reverse()` to display newest-first.
 export async function listOccurrencesForSignal(db: Db, signalId: string): Promise<EventRow[]> {
-  const cond = eq(db.schema.monitorEvents.signalId, signalId);
+  const cond = and(eq(db.schema.monitorEvents.signalId, signalId), eq(db.schema.monitorEvents.projectId, db.projectId));
   const rows =
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.monitorEvents).where(cond).orderBy(db.schema.monitorEvents.createdAt).all()
@@ -88,7 +164,7 @@ export async function listOccurrencesForSignal(db: Db, signalId: string): Promis
 }
 
 async function listEventsSince(db: Db, since: Date): Promise<EventRow[]> {
-  const cond = gte(db.schema.monitorEvents.createdAt, since);
+  const cond = and(gte(db.schema.monitorEvents.createdAt, since), eq(db.schema.monitorEvents.projectId, db.projectId));
   const rows =
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.monitorEvents).where(cond).all()
@@ -97,7 +173,7 @@ async function listEventsSince(db: Db, since: Date): Promise<EventRow[]> {
 }
 
 async function listTraceLatenciesSince(db: Db, since: Date): Promise<number[]> {
-  const cond = gte(db.schema.traces.createdAt, since);
+  const cond = and(gte(db.schema.traces.createdAt, since), eq(db.schema.traces.projectId, db.projectId));
   const rows = (
     db.kind === "sqlite"
       ? db.db.select({ latencyMs: db.schema.traces.latencyMs }).from(db.schema.traces).where(cond).all()
@@ -135,7 +211,7 @@ function emptyCounts(): WindowedCounts {
 }
 
 function tallyEvent(counts: WindowedCounts, row: EventRow): void {
-  if (row.onlineEvaluatorId) {
+  if (row.onlineEvaluatorId || row.customEvaluatorId) {
     return;
   }
   counts.total++;
@@ -311,7 +387,7 @@ export async function getTopFailing(db: Db, window: MonitoringWindow, limit = 10
   const byPattern = new Map<string, { patternKey: string; name: string; count: number }>();
 
   for (const row of rows) {
-    if (row.onlineEvaluatorId) {
+    if (row.onlineEvaluatorId || row.customEvaluatorId) {
       continue;
     }
     if (row.agentId) {
@@ -337,10 +413,12 @@ export async function getTopFailing(db: Db, window: MonitoringWindow, limit = 10
     }
   }
 
+  const agentNamesById = await getAgentNamesById(db, Array.from(byAgent.keys()));
+
   const agents = Array.from(byAgent.entries())
     .map(([agentId, { total, failing }]) => ({
       agentId,
-      name: agentId,
+      name: agentNamesById.get(agentId) ?? agentId,
       failingRuns: failing,
       failureRate: total > 0 ? failing / total : null,
     }))
@@ -457,4 +535,53 @@ export async function getOnlineEvaluatorEvents(
   // expect "worst 20 of totalCount" to add up against, matching what the window's real event count
   // actually is rather than silently under-counting to match resolved.length.
   return { events: resolved.filter((e): e is OnlineEvaluatorEvent => e !== null), totalCount: rows.length };
+}
+
+export type CustomEvaluatorEvent = {
+  id: string;
+  traceId: string;
+  matched: boolean;
+  score: number | null;
+  justification: string | null;
+  createdAt: Date;
+  input: string;
+  output: string;
+};
+
+// Individual checked traces for one custom evaluator within a window, newest first — the
+// per-trace call history a dashboard "events" view shows, same trace-join pattern as
+// getOnlineEvaluatorEvents above.
+export async function getCustomEvaluatorEvents(
+  db: Db,
+  evaluatorId: string,
+  window: MonitoringWindow,
+  limit = 20
+): Promise<{ events: CustomEvaluatorEvent[]; totalCount: number }> {
+  const { days } = windowConfig(window);
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  const rows = (await listEventsSince(db, since)).filter(
+    (r): r is EventRow & { matched: boolean; traceId: string } =>
+      r.customEvaluatorId === evaluatorId && r.matched !== null && r.traceId !== null
+  );
+  rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+  const resolved = await Promise.all(
+    rows.slice(0, limit).map(async row => {
+      const trace = await getTraceRow(db, row.traceId);
+      if (!trace) return null;
+      const event: CustomEvaluatorEvent = {
+        id: row.id,
+        traceId: row.traceId,
+        matched: row.matched,
+        score: row.score,
+        justification: row.justification,
+        createdAt: row.createdAt,
+        input: extractText(trace.input),
+        output: extractText(trace.output),
+      };
+      return event;
+    })
+  );
+  return { events: resolved.filter((e): e is CustomEvaluatorEvent => e !== null), totalCount: rows.length };
 }

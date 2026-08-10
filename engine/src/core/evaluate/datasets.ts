@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import type { CodeScorerConfig } from "./codeScorer.js";
 import { recordDatasetVersionIfChanged } from "./versions.js";
@@ -79,6 +79,7 @@ export type UpdateDatasetInput = Omit<CreateDatasetInput, "id">;
 
 export type DatasetRow = {
   id: string;
+  projectId: string | null;
   name: string;
   description: string | null;
   numberOfRequests: number;
@@ -111,6 +112,7 @@ function toWire(row: DatasetRow) {
 export async function createDataset(db: Db, input: CreateDatasetInput) {
   const row: DatasetRow = {
     id: input.id ?? nanoid(),
+    projectId: db.projectId,
     name: input.name,
     description: input.description ?? null,
     numberOfRequests: input.numberOfRequests ?? 1,
@@ -154,16 +156,17 @@ export async function updateDataset(
     evaluationCriteria: input.evaluationCriteria ?? null,
     questions: input.questions,
   };
+  const updateCond = and(eq(db.schema.datasets.id, id), eq(db.schema.datasets.projectId, db.projectId));
   if (db.kind === "sqlite") {
     await db.db
       .update(db.schema.datasets)
       .set(values)
-      .where(eq(db.schema.datasets.id, id));
+      .where(updateCond);
   } else {
     await db.db
       .update(db.schema.datasets)
       .set(values)
-      .where(eq(db.schema.datasets.id, id));
+      .where(updateCond);
   }
   const after = await getDataset(db, id);
   if (after) {
@@ -173,29 +176,31 @@ export async function updateDataset(
 }
 
 export async function getDataset(db: Db, id: string) {
+  const cond = and(eq(db.schema.datasets.id, id), eq(db.schema.datasets.projectId, db.projectId));
   let row: DatasetRow | undefined;
   if (db.kind === "sqlite") {
     row = db.db
       .select()
       .from(db.schema.datasets)
-      .where(eq(db.schema.datasets.id, id))
+      .where(cond)
       .all()[0] as DatasetRow | undefined;
   } else {
     row = (
       await db.db
         .select()
         .from(db.schema.datasets)
-        .where(eq(db.schema.datasets.id, id))
+        .where(cond)
     )[0] as DatasetRow | undefined;
   }
   return row ? toWire(row) : null;
 }
 
 export async function listDatasets(db: Db) {
+  const cond = eq(db.schema.datasets.projectId, db.projectId);
   const rows =
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.datasets).all()
-      : await db.db.select().from(db.schema.datasets);
+      ? db.db.select().from(db.schema.datasets).where(cond).all()
+      : await db.db.select().from(db.schema.datasets).where(cond);
   return (rows as DatasetRow[])
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
     .map(toWire);

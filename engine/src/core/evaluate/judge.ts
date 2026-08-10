@@ -1,8 +1,12 @@
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
+import { getDb } from "../../storage/db.js";
+import { getAppSettings } from "../settings/appSettings.js";
+import { getPortabilityModelRaw, type PortabilityModelRow } from "./models.js";
 import {
   callJudgeJson as callJudgeJsonShared,
   getProviderForModel,
+  isReasoningModel,
   applyJudgePromptTemplate,
   computeJaccardSimilarity,
   computeBleuScore,
@@ -29,20 +33,64 @@ export const DEFAULT_JUDGE_MODEL = "gpt-5.6-luna";
 // a self-host run with no custom judgePrompt scores the same way.
 export const DEFAULT_JUDGE_PROMPT = SHARED_DEFAULT_JUDGE_PROMPT;
 
-let openaiClient: OpenAI | null | undefined;
-function getOpenAI(): OpenAI | null {
-  if (openaiClient === undefined) {
-    openaiClient = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
+// DB-stored key (Platform Settings, live-editable) wins over the .env var — checked fresh on
+// every call (a local sqlite read, cheap), but the actual SDK client is only reconstructed when
+// the *resolved* key string changes. That's what makes a key update from the settings UI take
+// effect immediately with no server restart, without needing an explicit cache-invalidation call.
+let cachedOpenAIKey: string | null = null;
+let cachedOpenAIClient: OpenAI | null = null;
+async function getOpenAI(): Promise<OpenAI | null> {
+  const settings = await getAppSettings(getDb());
+  const key = settings.openaiApiKey || process.env.OPENAI_API_KEY || null;
+  if (key !== cachedOpenAIKey) {
+    cachedOpenAIKey = key;
+    cachedOpenAIClient = key ? new OpenAI({ apiKey: key }) : null;
   }
-  return openaiClient;
+  return cachedOpenAIClient;
 }
 
-let anthropicClient: Anthropic | null | undefined;
-function getAnthropic(): Anthropic | null {
-  if (anthropicClient === undefined) {
-    anthropicClient = process.env.ANTHROPIC_API_KEY ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
+let cachedAnthropicKey: string | null = null;
+let cachedAnthropicClient: Anthropic | null = null;
+async function getAnthropic(): Promise<Anthropic | null> {
+  const settings = await getAppSettings(getDb());
+  const key = settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY || null;
+  if (key !== cachedAnthropicKey) {
+    cachedAnthropicKey = key;
+    cachedAnthropicClient = key ? new Anthropic({ apiKey: key }) : null;
   }
-  return anthropicClient;
+  return cachedAnthropicClient;
+}
+
+// Custom (bring-your-own-endpoint) portability_models rows — cached by the resolved
+// baseUrl+apiKey pair, same "rebuild only when the actual config changes" idiom as
+// getOpenAI/getAnthropic above, so editing a custom model's key in the dashboard takes effect
+// immediately without needing to clear this cache explicitly.
+const customClientCache = new Map<string, OpenAI>();
+function getCustomClient(row: PortabilityModelRow): OpenAI {
+  const cacheKey = `${row.baseUrl}::${row.apiKey ?? ""}`;
+  let client = customClientCache.get(cacheKey);
+  if (!client) {
+    // Most self-hosted/local model servers don't require a key at all; the SDK still needs a
+    // non-empty string to construct, hence the placeholder.
+    client = new OpenAI({ apiKey: row.apiKey || "not-required", baseURL: row.baseUrl! });
+    customClientCache.set(cacheKey, client);
+  }
+  return client;
+}
+
+// Every mainstream self-hosted/local model server (vLLM, Ollama, LM Studio, text-generation-webui,
+// LocalAI, ...) implements the OpenAI-compatible chat completions API, and the OpenAI SDK accepts
+// any baseURL — so a "custom" catalog row doesn't need a third parallel branch anywhere below, it
+// folds into the existing "openai" branch with a different client. This is the single place that
+// decides which: every caller below (callJudgeJson/callModelCompletion/callModelWithTools) checks
+// here instead of calling getProviderForModel + getOpenAI directly.
+async function resolveModelRouting(model: string): Promise<{ provider: "openai" | "anthropic"; openaiClient: OpenAI | null }> {
+  const custom = await getPortabilityModelRaw(getDb(), model);
+  if (custom?.provider === "custom" && custom.baseUrl) {
+    return { provider: "openai", openaiClient: getCustomClient(custom) };
+  }
+  const provider = getProviderForModel(model);
+  return { provider, openaiClient: provider === "openai" ? await getOpenAI() : null };
 }
 
 export type JudgeCriteria = {
@@ -107,13 +155,13 @@ export async function callJudgeJson({
   jsonSchema: object;
   maxTokens?: number;
 }): Promise<JudgeCallResult> {
-  const provider = getProviderForModel(model);
-  if (provider === "anthropic" && !getAnthropic()) {
+  const { provider, openaiClient } = await resolveModelRouting(model);
+  if (provider === "anthropic" && !(await getAnthropic())) {
     throw new Error(
       `Judge model "${model}" needs an Anthropic API key. Set ANTHROPIC_API_KEY and restart agentx-server.`
     );
   }
-  if (provider === "openai" && !getOpenAI()) {
+  if (provider === "openai" && !openaiClient) {
     throw new Error(`Judge model "${model}" needs an OpenAI API key. Set OPENAI_API_KEY and restart agentx-server.`);
   }
 
@@ -122,8 +170,8 @@ export async function callJudgeJson({
     model,
     jsonSchema,
     maxTokens,
-    openaiClient: getOpenAI(),
-    anthropicClient: getAnthropic(),
+    openaiClient,
+    anthropicClient: await getAnthropic(),
   });
 }
 
@@ -137,7 +185,7 @@ export async function computeVectorSimilarity(
   actual: string | null | undefined,
   model: string = DEFAULT_EMBEDDING_MODEL
 ): Promise<number | null> {
-  const client = getOpenAI();
+  const client = await getOpenAI();
   if (!client) {
     return null;
   }
@@ -145,6 +193,32 @@ export async function computeVectorSimilarity(
     return await computeVectorSimilarityShared(expected, actual, client, model);
   } catch (err) {
     console.error("Vector similarity computation failed:", err);
+    return null;
+  }
+}
+
+// Raw embedding vector for a piece of text — used by Topics' "Map" view (core/monitor/topics.ts's
+// getTopicsMap) to position classified traces by semantic similarity via UMAP. Same
+// graceful-degradation posture as computeVectorSimilarity above (null, not a throw, on a missing
+// key or API failure — Topics classification itself shouldn't fail just because the map's
+// embedding call did). @agentx/judge-core has its own private getEmbedding used internally by
+// computeVectorSimilarityShared, but it's unexported and embeddings are self-host-only here
+// anyway (matching computeVectorSimilarity's own reasoning for staying out of the shared
+// package), so this calls the OpenAI client directly rather than adding a new export there.
+export async function computeEmbedding(text: string, model: string = DEFAULT_EMBEDDING_MODEL): Promise<number[] | null> {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const client = await getOpenAI();
+  if (!client) {
+    return null;
+  }
+  try {
+    const response = await client.embeddings.create({ model, input: trimmed });
+    return response.data?.[0]?.embedding ?? null;
+  } catch (err) {
+    console.error("Embedding computation failed:", err);
     return null;
   }
 }
@@ -165,10 +239,10 @@ export type ReconstructedContext = {
 export type ModelCompletion = { text: string; usage: { inputTokens: number; outputTokens: number } | null };
 
 export async function callModelCompletion(model: string, reconstructed: ReconstructedContext): Promise<ModelCompletion> {
-  const provider = getProviderForModel(model);
+  const { provider, openaiClient } = await resolveModelRouting(model);
 
   if (provider === "anthropic") {
-    const client = getAnthropic();
+    const client = await getAnthropic();
     if (!client) {
       throw new Error(`Model "${model}" needs an Anthropic API key. Set ANTHROPIC_API_KEY and restart agentx-server.`);
     }
@@ -189,7 +263,7 @@ export async function callModelCompletion(model: string, reconstructed: Reconstr
     return { text, usage };
   }
 
-  const client = getOpenAI();
+  const client = openaiClient;
   if (!client) {
     throw new Error(`Model "${model}" needs an OpenAI API key. Set OPENAI_API_KEY and restart agentx-server.`);
   }
@@ -240,15 +314,19 @@ export async function callModelWithTools(
   model: string,
   reconstructed: ReconstructedContext,
   tools: ToolDefinition[],
-  callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>
+  callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>,
+  // Per-model overrides (Playground's "Model settings" — see playground.ts). Both omitted means
+  // today's exact defaults: Anthropic still gets its required max_tokens: 1200, OpenAI stays
+  // uncapped, neither provider gets an explicit temperature.
+  options?: { maxTokens?: number; temperature?: number }
 ): Promise<ModelWithToolsResult> {
-  const provider = getProviderForModel(model);
+  const { provider, openaiClient } = await resolveModelRouting(model);
   const toolCalls: ToolCallTrace[] = [];
   let inputTokens = 0;
   let outputTokens = 0;
 
   if (provider === "anthropic") {
-    const client = getAnthropic();
+    const client = await getAnthropic();
     if (!client) {
       throw new Error(`Model "${model}" needs an Anthropic API key. Set ANTHROPIC_API_KEY and restart agentx-server.`);
     }
@@ -262,7 +340,10 @@ export async function callModelWithTools(
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       const response = await client.messages.create({
         model,
-        max_tokens: 1200,
+        // Required on every Anthropic request, can't be omitted — 1200 is today's unchanged
+        // default when the caller doesn't override it.
+        max_tokens: options?.maxTokens ?? 1200,
+        ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}),
         ...(reconstructed.system ? { system: reconstructed.system } : {}),
         messages,
         ...(anthropicTools.length > 0 ? { tools: anthropicTools } : {}),
@@ -303,7 +384,7 @@ export async function callModelWithTools(
     return { text: "", usage: { inputTokens, outputTokens }, toolCalls };
   }
 
-  const client = getOpenAI();
+  const client = openaiClient;
   if (!client) {
     throw new Error(`Model "${model}" needs an OpenAI API key. Set OPENAI_API_KEY and restart agentx-server.`);
   }
@@ -328,6 +409,13 @@ export async function callModelWithTools(
       // hence the cast; only sent when tools are actually in play, so a tool-less run is
       // completely unaffected.
       ...(openaiTools.length > 0 ? { reasoning_effort: "none" as OpenAI.Chat.ChatCompletionReasoningEffort } : {}),
+      // max_tokens is deprecated on chat completions in favor of max_completion_tokens (the
+      // unified param that also covers reasoning-model completions) — only sent when overridden,
+      // preserving today's "uncapped unless told otherwise" default.
+      ...(options?.maxTokens !== undefined ? { max_completion_tokens: options.maxTokens } : {}),
+      // Reasoning models reject a non-default temperature outright — silently omitted rather than
+      // letting the call 400, same isolation posture as everywhere else a per-model quirk exists.
+      ...(options?.temperature !== undefined && !isReasoningModel(model) ? { temperature: options.temperature } : {}),
     });
     inputTokens += response.usage?.prompt_tokens ?? 0;
     outputTokens += response.usage?.completion_tokens ?? 0;

@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import type { PatternCondition } from "./conditions.js";
 
@@ -62,6 +62,7 @@ export function legacyPayloadToConditions(body: Record<string, unknown>): Patter
 
 export type PatternRow = {
   id: string;
+  projectId: string | null;
   key: string;
   name: string;
   description: string | null;
@@ -126,6 +127,7 @@ function toWire(row: PatternRow) {
 export async function createPattern(db: Db, input: CreatePatternInput) {
   const row: PatternRow = {
     id: nanoid(),
+    projectId: db.projectId,
     key: `custom:${slugify(input.name) || nanoid(6)}`,
     name: input.name,
     description: input.description ?? null,
@@ -186,10 +188,11 @@ export async function updatePattern(db: Db, id: string, input: UpdatePatternInpu
     scopeMode: updated.scopeMode,
     agentIds: updated.agentIds,
   };
+  const updateCond = and(eq(db.schema.monitorPatterns.id, id), eq(db.schema.monitorPatterns.projectId, db.projectId));
   if (db.kind === "sqlite") {
-    await db.db.update(db.schema.monitorPatterns).set(setValues).where(eq(db.schema.monitorPatterns.id, id));
+    await db.db.update(db.schema.monitorPatterns).set(setValues).where(updateCond);
   } else {
-    await db.db.update(db.schema.monitorPatterns).set(setValues).where(eq(db.schema.monitorPatterns.id, id));
+    await db.db.update(db.schema.monitorPatterns).set(setValues).where(updateCond);
   }
   return toWire(updated);
 }
@@ -205,10 +208,11 @@ export async function deletePattern(db: Db, id: string): Promise<boolean> {
   if (!existing) {
     return false;
   }
+  const deleteCond = and(eq(db.schema.monitorPatterns.id, id), eq(db.schema.monitorPatterns.projectId, db.projectId));
   if (db.kind === "sqlite") {
-    await db.db.delete(db.schema.monitorPatterns).where(eq(db.schema.monitorPatterns.id, id));
+    await db.db.delete(db.schema.monitorPatterns).where(deleteCond);
   } else {
-    await db.db.delete(db.schema.monitorPatterns).where(eq(db.schema.monitorPatterns.id, id));
+    await db.db.delete(db.schema.monitorPatterns).where(deleteCond);
   }
   return true;
 }
@@ -219,24 +223,22 @@ export async function getPattern(db: Db, id: string) {
 }
 
 export async function getPatternRow(db: Db, id: string): Promise<PatternRow | null> {
+  const cond = and(eq(db.schema.monitorPatterns.id, id), eq(db.schema.monitorPatterns.projectId, db.projectId));
   let row: PatternRow | undefined;
   if (db.kind === "sqlite") {
-    row = db.db.select().from(db.schema.monitorPatterns).where(eq(db.schema.monitorPatterns.id, id)).all()[0] as
-      | PatternRow
-      | undefined;
+    row = db.db.select().from(db.schema.monitorPatterns).where(cond).all()[0] as PatternRow | undefined;
   } else {
-    row = (await db.db.select().from(db.schema.monitorPatterns).where(eq(db.schema.monitorPatterns.id, id)))[0] as
-      | PatternRow
-      | undefined;
+    row = (await db.db.select().from(db.schema.monitorPatterns).where(cond))[0] as PatternRow | undefined;
   }
   return row ?? null;
 }
 
 export async function listCustomPatterns(db: Db): Promise<PatternRow[]> {
+  const cond = eq(db.schema.monitorPatterns.projectId, db.projectId);
   const rows =
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.monitorPatterns).all()
-      : await db.db.select().from(db.schema.monitorPatterns);
+      ? db.db.select().from(db.schema.monitorPatterns).where(cond).all()
+      : await db.db.select().from(db.schema.monitorPatterns).where(cond);
   return rows as PatternRow[];
 }
 

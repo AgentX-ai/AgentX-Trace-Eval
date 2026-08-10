@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 
 // Matches AgentX-web-front's AgentSignalFeedback (src/types/agentMonitoring.ts). One row per
@@ -7,6 +7,7 @@ import type { Db } from "../../storage/db.js";
 // — SignalFeedbackDialog renders every submission in a "Previous feedback" list.
 export type FeedbackRow = {
   id: string;
+  projectId: string | null;
   signalId: string;
   // Which occurrence (monitor_events.id) this note is about — null for signal-level feedback (no
   // occurrence picked, or an older row from before this existed). See resolveOccurrenceContext in
@@ -52,6 +53,7 @@ export async function createFeedback(db: Db, signalId: string, input: CreateFeed
   const now = new Date();
   const row: FeedbackRow = {
     id: nanoid(),
+    projectId: db.projectId,
     signalId,
     eventId: input.occurrenceId ?? null,
     metric: input.metric,
@@ -71,9 +73,10 @@ export async function createFeedback(db: Db, signalId: string, input: CreateFeed
 }
 
 export async function listFeedbackForSignal(db: Db, signalId: string) {
+  const cond = and(eq(db.schema.monitorSignalFeedback.signalId, signalId), eq(db.schema.monitorSignalFeedback.projectId, db.projectId));
   const rows =
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.monitorSignalFeedback).where(eq(db.schema.monitorSignalFeedback.signalId, signalId)).all()
-      : await db.db.select().from(db.schema.monitorSignalFeedback).where(eq(db.schema.monitorSignalFeedback.signalId, signalId));
+      ? db.db.select().from(db.schema.monitorSignalFeedback).where(cond).all()
+      : await db.db.select().from(db.schema.monitorSignalFeedback).where(cond);
   return (rows as FeedbackRow[]).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).map(toWire);
 }

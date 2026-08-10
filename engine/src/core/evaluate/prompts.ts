@@ -4,17 +4,17 @@ import type { Db } from "../../storage/db.js";
 import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
 import { getDataset } from "./datasets.js";
 import { getTraceRow } from "../trace/ingest.js";
+import { listPlaygroundRunsByPrompt } from "./playgroundRuns.js";
 import type { MonitoringWindow } from "../monitor/events.js";
 
-// The external-agent prompt registry: how LangSmith (Prompt Hub) and Langfuse (Prompt
-// Management) close the "we don't own the agent's code" gap: AgentX becomes the prompt's
-// source of truth, the SDK pulls it at runtime (client.evaluations.prompts.get(name)), and a
-// human-approved "propose improvement" step (proposePromptImprovement below) writes new
-// versions here, never into the caller's own code. See the plan's Context section for the full
-// comparison.
+// The external-agent prompt registry: since this engine doesn't own the caller's agent code,
+// AgentX becomes the prompt's source of truth instead — the SDK pulls it at runtime
+// (client.evaluations.prompts.get(name)), and a human-approved "propose improvement" step
+// (proposePromptImprovement below) writes new versions here, never into the caller's own code.
 
 export type PromptRow = {
   id: string;
+  projectId: string | null;
   name: string;
   description: string | null;
   currentVersion: number;
@@ -24,6 +24,7 @@ export type PromptRow = {
 
 export type PromptVersionRow = {
   id: string;
+  projectId: string | null;
   promptId: string;
   version: number;
   text: string;
@@ -77,6 +78,7 @@ export async function createPrompt(db: Db, input: { name: string; text: string; 
   const now = new Date();
   const promptRow: PromptRow = {
     id: nanoid(),
+    projectId: db.projectId,
     name: input.name,
     description: input.description ?? null,
     currentVersion: 1,
@@ -85,6 +87,7 @@ export async function createPrompt(db: Db, input: { name: string; text: string; 
   };
   const versionRow: PromptVersionRow = {
     id: nanoid(),
+    projectId: db.projectId,
     promptId: promptRow.id,
     version: 1,
     text: input.text,
@@ -104,18 +107,20 @@ export async function createPrompt(db: Db, input: { name: string; text: string; 
 }
 
 export async function getPromptRow(db: Db, id: string): Promise<PromptRow | null> {
+  const cond = and(eq(db.schema.prompts.id, id), eq(db.schema.prompts.projectId, db.projectId));
   const row =
     db.kind === "sqlite"
-      ? (db.db.select().from(db.schema.prompts).where(eq(db.schema.prompts.id, id)).all()[0] as PromptRow | undefined)
-      : ((await db.db.select().from(db.schema.prompts).where(eq(db.schema.prompts.id, id)))[0] as PromptRow | undefined);
+      ? (db.db.select().from(db.schema.prompts).where(cond).all()[0] as PromptRow | undefined)
+      : ((await db.db.select().from(db.schema.prompts).where(cond))[0] as PromptRow | undefined);
   return row ?? null;
 }
 
 async function getPromptRowByName(db: Db, name: string): Promise<PromptRow | null> {
+  const cond = and(eq(db.schema.prompts.name, name), eq(db.schema.prompts.projectId, db.projectId));
   const row =
     db.kind === "sqlite"
-      ? (db.db.select().from(db.schema.prompts).where(eq(db.schema.prompts.name, name)).all()[0] as PromptRow | undefined)
-      : ((await db.db.select().from(db.schema.prompts).where(eq(db.schema.prompts.name, name)))[0] as PromptRow | undefined);
+      ? (db.db.select().from(db.schema.prompts).where(cond).all()[0] as PromptRow | undefined)
+      : ((await db.db.select().from(db.schema.prompts).where(cond))[0] as PromptRow | undefined);
   return row ?? null;
 }
 
@@ -132,7 +137,11 @@ async function getPromptRowByNameOrId(db: Db, identifier: string): Promise<Promp
 }
 
 export async function getPromptVersionRow(db: Db, promptId: string, version: number): Promise<PromptVersionRow | null> {
-  const cond = and(eq(db.schema.promptVersions.promptId, promptId), eq(db.schema.promptVersions.version, version));
+  const cond = and(
+    eq(db.schema.promptVersions.promptId, promptId),
+    eq(db.schema.promptVersions.version, version),
+    eq(db.schema.promptVersions.projectId, db.projectId)
+  );
   const row =
     db.kind === "sqlite"
       ? (db.db.select().from(db.schema.promptVersions).where(cond).all()[0] as PromptVersionRow | undefined)
@@ -141,7 +150,7 @@ export async function getPromptVersionRow(db: Db, promptId: string, version: num
 }
 
 export async function listPromptVersionRows(db: Db, promptId: string): Promise<PromptVersionRow[]> {
-  const cond = eq(db.schema.promptVersions.promptId, promptId);
+  const cond = and(eq(db.schema.promptVersions.promptId, promptId), eq(db.schema.promptVersions.projectId, db.projectId));
   const rows = (
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.promptVersions).where(cond).all()
@@ -152,8 +161,9 @@ export async function listPromptVersionRows(db: Db, promptId: string): Promise<P
 }
 
 export async function listPromptRows(db: Db): Promise<PromptRow[]> {
+  const cond = eq(db.schema.prompts.projectId, db.projectId);
   const rows = (
-    db.kind === "sqlite" ? db.db.select().from(db.schema.prompts).all() : await db.db.select().from(db.schema.prompts)
+    db.kind === "sqlite" ? db.db.select().from(db.schema.prompts).where(cond).all() : await db.db.select().from(db.schema.prompts).where(cond)
   ) as PromptRow[];
   rows.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
   return rows;
@@ -184,8 +194,11 @@ export async function getPromptForSdk(db: Db, nameOrId: string, version?: number
 
 export async function listPromptsForSdk(db: Db) {
   const rows = await listPromptRows(db);
+  const versionsCond = eq(db.schema.promptVersions.projectId, db.projectId);
   const allVersions = (
-    db.kind === "sqlite" ? db.db.select().from(db.schema.promptVersions).all() : await db.db.select().from(db.schema.promptVersions)
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.promptVersions).where(versionsCond).all()
+      : await db.db.select().from(db.schema.promptVersions).where(versionsCond)
   ) as PromptVersionRow[];
   const versionMap = new Map(allVersions.map(v => [`${v.promptId}:${v.version}`, v]));
   return rows.map(row => {
@@ -208,6 +221,7 @@ export async function publishPromptVersion(
   const nextVersion = prompt.currentVersion + 1;
   const versionRow: PromptVersionRow = {
     id: nanoid(),
+    projectId: db.projectId,
     promptId,
     version: nextVersion,
     text: input.text,
@@ -216,12 +230,13 @@ export async function publishPromptVersion(
     basedOnVersion: input.basedOnVersion ?? null,
     createdAt: now,
   };
+  const updateCond = and(eq(db.schema.prompts.id, promptId), eq(db.schema.prompts.projectId, db.projectId));
   if (db.kind === "sqlite") {
     await db.db.insert(db.schema.promptVersions).values(versionRow);
-    await db.db.update(db.schema.prompts).set({ currentVersion: nextVersion, updatedAt: now }).where(eq(db.schema.prompts.id, promptId));
+    await db.db.update(db.schema.prompts).set({ currentVersion: nextVersion, updatedAt: now }).where(updateCond);
   } else {
     await db.db.insert(db.schema.promptVersions).values(versionRow);
-    await db.db.update(db.schema.prompts).set({ currentVersion: nextVersion, updatedAt: now }).where(eq(db.schema.prompts.id, promptId));
+    await db.db.update(db.schema.prompts).set({ currentVersion: nextVersion, updatedAt: now }).where(updateCond);
   }
   return { ...promptToWire({ ...prompt, currentVersion: nextVersion, updatedAt: now }), version: versionRow.version, text: versionRow.text };
 }
@@ -231,12 +246,14 @@ export async function deletePrompt(db: Db, id: string): Promise<boolean> {
   if (!existing) {
     return false;
   }
+  const versionsCond = and(eq(db.schema.promptVersions.promptId, id), eq(db.schema.promptVersions.projectId, db.projectId));
+  const promptCond = and(eq(db.schema.prompts.id, id), eq(db.schema.prompts.projectId, db.projectId));
   if (db.kind === "sqlite") {
-    await db.db.delete(db.schema.promptVersions).where(eq(db.schema.promptVersions.promptId, id));
-    await db.db.delete(db.schema.prompts).where(eq(db.schema.prompts.id, id));
+    await db.db.delete(db.schema.promptVersions).where(versionsCond);
+    await db.db.delete(db.schema.prompts).where(promptCond);
   } else {
-    await db.db.delete(db.schema.promptVersions).where(eq(db.schema.promptVersions.promptId, id));
-    await db.db.delete(db.schema.prompts).where(eq(db.schema.prompts.id, id));
+    await db.db.delete(db.schema.promptVersions).where(versionsCond);
+    await db.db.delete(db.schema.prompts).where(promptCond);
   }
   return true;
 }
@@ -254,8 +271,11 @@ export type WorstRatedExample = {
   id: string;
   // "eval_run": a deliberate, on-demand Evaluate run against a dataset. "online_evaluator": a
   // continuous LLM-judge rating of real production traffic (core/monitor/onlineEvaluators.ts):
-  // no dataset behind it, so never has expectedResults.
-  source: "eval_run" | "online_evaluator";
+  // no dataset behind it, so never has expectedResults. "playground": a human reviewer explicitly
+  // marked a Playground cell's output "bad" while testing this prompt (core/evaluate/
+  // playgroundRuns.ts) — always has a synthetic rating of 0 (see gatherPlaygroundExamples below),
+  // since there's no judge score to carry over, only a human verdict.
+  source: "eval_run" | "online_evaluator" | "playground";
   input: string;
   output: string;
   rating: number;
@@ -314,15 +334,13 @@ export async function getWorstRatedExamples(
 
   // --- Eval-run half: deliberate, on-demand Evaluate runs tagged with this prompt's name --------
   const gatherEvalRunExamples = async (includeAllVersions: boolean): Promise<WorstRatedExample[]> => {
-    const runsCond = opts.datasetId ? eq(db.schema.evaluationRuns.datasetId, opts.datasetId) : undefined;
+    const runsCond = opts.datasetId
+      ? and(eq(db.schema.evaluationRuns.datasetId, opts.datasetId), eq(db.schema.evaluationRuns.projectId, db.projectId))
+      : eq(db.schema.evaluationRuns.projectId, db.projectId);
     const allRuns = (
       db.kind === "sqlite"
-        ? runsCond
-          ? db.db.select().from(db.schema.evaluationRuns).where(runsCond).all()
-          : db.db.select().from(db.schema.evaluationRuns).all()
-        : runsCond
-          ? await db.db.select().from(db.schema.evaluationRuns).where(runsCond)
-          : await db.db.select().from(db.schema.evaluationRuns)
+        ? db.db.select().from(db.schema.evaluationRuns).where(runsCond).all()
+        : await db.db.select().from(db.schema.evaluationRuns).where(runsCond)
     ) as { id: string; datasetId: string; version: string | null; evaluationSubject: unknown }[];
 
     // Matches PromptClient's documented tagging convention (subject.metadata.version =
@@ -340,7 +358,10 @@ export async function getWorstRatedExamples(
       return [];
     }
 
-    const resultsCond = inArray(db.schema.evaluationRunResults.runId, matchingRunIds);
+    const resultsCond = and(
+      inArray(db.schema.evaluationRunResults.runId, matchingRunIds),
+      eq(db.schema.evaluationRunResults.projectId, db.projectId)
+    );
     const results = (
       db.kind === "sqlite"
         ? db.db.select().from(db.schema.evaluationRunResults).where(resultsCond).all()
@@ -405,7 +426,11 @@ export async function getWorstRatedExamples(
   // input/metadata" need). Filtering by the time window first (monitor_events has an index on
   // created_at) keeps the join count bounded without needing a new promptName column anywhere.
   const gatherOnlineEvaluatorExamples = async (): Promise<WorstRatedExample[]> => {
-    const cond = and(gte(db.schema.monitorEvents.createdAt, since), eq(db.schema.monitorEvents.type, "online_eval_score"));
+    const cond = and(
+      gte(db.schema.monitorEvents.createdAt, since),
+      eq(db.schema.monitorEvents.type, "online_eval_score"),
+      eq(db.schema.monitorEvents.projectId, db.projectId)
+    );
     const events = (
       db.kind === "sqlite"
         ? db.db.select().from(db.schema.monitorEvents).where(cond).all()
@@ -448,17 +473,60 @@ export async function getWorstRatedExamples(
 
   const onlineEvaluatorExamples = await gatherOnlineEvaluatorExamples();
 
+  // --- Playground human-review half: a reviewer explicitly marked a cell's output "bad" while ---
+  // testing this prompt in Playground (core/evaluate/playgroundRuns.ts's playground_runs, joined
+  // by its promptId column). Not time-windowed or version-scoped like the other two sources — a
+  // review is tied to one specific reviewed session, not "the last N days of this prompt" — so
+  // every run tagged with this promptId contributes regardless of `window`/`includeAllVersions`.
+  // `results` is opaque JSON as far as playgroundRuns.ts is concerned (shaped by the frontend's
+  // CellState/HumanReview, playgroundChartData.ts); this file has no import path to that package,
+  // so the shape is duplicated structurally, read-only, below.
+  const gatherPlaygroundExamples = async (): Promise<WorstRatedExample[]> => {
+    const runs = await listPlaygroundRunsByPrompt(db, promptId);
+    const examples: WorstRatedExample[] = [];
+    for (const run of runs) {
+      const snapshot = (run.snapshot ?? {}) as { questions?: { index: number; query?: string }[] };
+      const cells = (run.results ?? {}) as Record<
+        string,
+        {
+          result?: { output?: string | null } | null;
+          humanReview?: { verdict: "good" | "bad"; note?: string; correctedOutput?: string; reviewedAt: string } | null;
+        }
+      >;
+      for (const [key, cell] of Object.entries(cells)) {
+        const output = cell.result?.output;
+        if (cell.humanReview?.verdict !== "bad" || !output) {
+          continue; // a "good" verdict, or a "bad" one on a cell with no output (an errored run), isn't usable evidence
+        }
+        const questionIndex = Number(key.split("::")[1]);
+        const question = snapshot.questions?.find(q => q.index === questionIndex);
+        examples.push({
+          id: `${run.id}:${key}`,
+          source: "playground",
+          input: question?.query ?? "",
+          output,
+          rating: 0,
+          justification: cell.humanReview.note ?? null,
+          createdAt: cell.humanReview.reviewedAt,
+          expectedResults: cell.humanReview.correctedOutput,
+        });
+      }
+    }
+    return examples;
+  };
+  const playgroundExamples = await gatherPlaygroundExamples();
+
   // Default to the current published version only; auto-widen to every version if that's too
   // thin to be useful, rather than silently mixing possibly-already-fixed old-version issues in
   // from the start. The caller (dashboard) reads `scope.versionScoped` back to show which
   // actually happened instead of guessing.
   let versionScoped = !opts.includeAllVersions;
   let evalRunExamples = await gatherEvalRunExamples(!versionScoped);
-  let merged = mergeAndCap([...evalRunExamples, ...onlineEvaluatorExamples]);
+  let merged = mergeAndCap([...evalRunExamples, ...onlineEvaluatorExamples, ...playgroundExamples]);
   if (versionScoped && merged.length < 3) {
     versionScoped = false;
     evalRunExamples = await gatherEvalRunExamples(true);
-    merged = mergeAndCap([...evalRunExamples, ...onlineEvaluatorExamples]);
+    merged = mergeAndCap([...evalRunExamples, ...onlineEvaluatorExamples, ...playgroundExamples]);
   }
 
   return {
@@ -483,8 +551,8 @@ export type ProposalResult = {
   hasExamples: boolean;
   exampleCount: number;
   // How many of `exampleCount` came from each source: the dashboard shows this so "based on
-  // real evaluation feedback" isn't just the merged total, both contributions stay visible.
-  sourceBreakdown: { evalRun: number; onlineEvaluator: number };
+  // real evaluation feedback" isn't just the merged total, all three contributions stay visible.
+  sourceBreakdown: { evalRun: number; onlineEvaluator: number; playground: number };
   basedOnVersion: number;
   revisedText: string | null;
   reasoning: string | null;
@@ -500,10 +568,11 @@ export type ProposalResult = {
   examples: WorstRatedExample[];
 };
 
-function countBySource(examples: WorstRatedExample[]): { evalRun: number; onlineEvaluator: number } {
+function countBySource(examples: WorstRatedExample[]): { evalRun: number; onlineEvaluator: number; playground: number } {
   return {
     evalRun: examples.filter(e => e.source === "eval_run").length,
     onlineEvaluator: examples.filter(e => e.source === "online_evaluator").length,
+    playground: examples.filter(e => e.source === "playground").length,
   };
 }
 
@@ -527,7 +596,7 @@ export async function proposePromptImprovement(
   const notEnoughData: ProposalResult = {
     hasExamples: false,
     exampleCount: 0,
-    sourceBreakdown: { evalRun: 0, onlineEvaluator: 0 },
+    sourceBreakdown: { evalRun: 0, onlineEvaluator: 0, playground: 0 },
     basedOnVersion: gathered.currentVersion,
     revisedText: null,
     reasoning: null,

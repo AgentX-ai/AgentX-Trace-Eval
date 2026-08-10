@@ -4,6 +4,10 @@ import { createDataset, listDatasets } from "./evaluate/datasets.js";
 import { createEvaluationSettings, listStandaloneEvaluationSettings } from "./evaluate/evaluationSettings.js";
 import { createPrompt, listPromptRows } from "./evaluate/prompts.js";
 import { createOnlineEvaluator, listOnlineEvaluatorRows } from "./monitor/onlineEvaluators.js";
+import { createAgent, listAgentsWire } from "./monitor/agents.js";
+import { updateProfile } from "./monitor/profiles.js";
+import { ingestTrace } from "./trace/ingest.js";
+import { runMonitorCheck } from "./monitor/detect.js";
 
 // One-time starter content, not a permanent hardcoded fallback — same convention as db.ts's
 // seedPortabilityModelsIfEmpty: each piece only inserts when its own table is genuinely empty, so
@@ -20,6 +24,60 @@ export async function seedExampleDataIfEmpty(db: Db): Promise<void> {
   await seedExampleOnlineEvaluator(db, evaluatorConfigId);
   await seedExampleDataset(db);
   await seedExamplePrompt(db);
+  await seedExampleMonitorDataIfEmpty(db);
+}
+
+// Datasets/Evaluator/Prompts above cover Evaluate; Governance's Agents/Observe/Monitor tabs had
+// nothing seeding them at all — a fresh install landed on an empty Agents tab with no idea what
+// "monitored" even looks like. One example agent, pre-enabled for monitoring (so it shows up as
+// "All traffic" rather than "Not monitored"), with real traces run through the actual detection
+// pipeline (runMonitorCheck) rather than hand-inserted signal rows — this only exercises built-in
+// checks (empty-response), never a judge call, so it works with zero API keys configured, same
+// constraint every other seed here has to respect.
+async function seedExampleMonitorDataIfEmpty(db: Db): Promise<void> {
+  const existingAgents = await listAgentsWire(db);
+  if (existingAgents.length > 0) {
+    return;
+  }
+
+  const agent = await createAgent(db, "example-support-agent");
+  await updateProfile(db, agent._id, { enabled: true, coverageMode: "all", sampleRate: 1 });
+
+  const exampleTraces: Array<{ input: string; output: string; latencyMs: number }> = [
+    {
+      input: "What's your return policy?",
+      output: "You can return any item within 30 days of purchase for a full refund, no questions asked.",
+      latencyMs: 850,
+    },
+    {
+      input: "My order #4471 hasn't arrived in 2 weeks.",
+      output: "I'm sorry to hear that — let me look into your order and get back to you with an update shortly.",
+      latencyMs: 1200,
+    },
+    // Deliberately trips the built-in "Empty agent response" check, so a fresh install's
+    // Agents/Observe/Monitor tabs have one real example signal to look at, not just healthy
+    // traffic and an empty triage queue.
+    {
+      input: "Can I speak to a human agent?",
+      output: "",
+      latencyMs: 400,
+    },
+  ];
+
+  for (const t of exampleTraces) {
+    const { traceId } = await ingestTrace(db, {
+      name: agent.name,
+      agent_id: agent._id,
+      input: t.input,
+      output: t.output,
+      latency_ms: t.latencyMs,
+    });
+    await runMonitorCheck(
+      db,
+      { input: t.input, output: t.output, latencyMs: t.latencyMs },
+      { agentId: agent._id, traceId, requireEnabledProfile: true }
+    );
+  }
 }
 
 async function seedExampleEvaluatorConfig(db: Db): Promise<string | null> {

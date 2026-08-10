@@ -9,57 +9,18 @@ export type PatternCondition = {
   connector: "and" | "or" | "nor";
   negate: boolean;
   sources: PatternMatchTarget[];
-  detector: "phrase" | "regex" | "semantic" | "external";
-  // phrase text / regex body / semantic rubric / external detector's endpoint URL.
+  detector: "phrase" | "regex" | "semantic";
+  // phrase text / regex body / semantic rubric.
   value: string;
   caseSensitive: boolean;
 };
 
 // Returns a reason alongside the boolean so a caller can surface *why* something matched, not
-// just that it did — semantic's LLM judge and the external detector's user-defined endpoint both
-// naturally produce one; phrase/regex don't and simply omit it.
+// just that it did — semantic's LLM judge naturally produces one; phrase/regex don't and simply
+// omit it.
 export type DetectorResult = { matched: boolean; reason?: string };
 
 export type SemanticJudge = (rubric: string, text: string) => Promise<DetectorResult>;
-
-// The standard request/response contract for detector: "external" — POSTed to the condition's
-// `value` (a URL the user controls, running whatever validation logic they want; AgentX never
-// sees or owns that logic, same "call out, don't reimplement" shape as every other self-host
-// integration point). Response is deliberately the exact same {matches, reason} shape the
-// semantic judge already returns — one calling convention for both "AI decides" and "your code
-// decides." Distinct from monitor_profiles.channels' "webhook:<url>" notification targets
-// (core/monitor/webhooks.ts) — that one is fire-and-forget and never consumes a response; this one
-// is awaited and its verdict IS the detection result, so it needs a timeout.
-export type ExternalValidatorRequest = {
-  agentId: string | null;
-  traceId: string | null;
-  condition: { value: string };
-  sources: { response: string; userMessage: string; trace: string };
-  trace: { input: unknown; output: unknown; error: string | null; toolCalls: TraceLike["toolCalls"] };
-};
-
-const EXTERNAL_VALIDATOR_TIMEOUT_MS = 8000;
-
-// Throws on any failure (network error, timeout, non-2xx, unparseable/invalid JSON body) —
-// deliberately not swallowed here. Callers (evaluateDetector below) let it propagate the same way
-// a semantic judge failure already does, up to detectCustomPatterns's per-pattern try/catch: skip
-// *this pattern* for *this trace*, log clearly, never abort the whole sweep or block ingest.
-export async function callExternalValidator(url: string, payload: ExternalValidatorRequest): Promise<DetectorResult> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(EXTERNAL_VALIDATOR_TIMEOUT_MS),
-  });
-  if (!res.ok) {
-    throw new Error(`External validator ${url} responded ${res.status}`);
-  }
-  const body = (await res.json()) as { matches?: unknown; reason?: unknown };
-  if (typeof body.matches !== "boolean") {
-    throw new Error(`External validator ${url} response missing a boolean "matches" field`);
-  }
-  return { matched: body.matches, reason: typeof body.reason === "string" ? body.reason : undefined };
-}
 
 export type TraceLike = {
   input?: unknown;
@@ -106,12 +67,7 @@ export function textForSources(sources: unknown, texts: { response: string; user
   return parts.filter(Boolean).join("\n");
 }
 
-async function evaluateDetector(
-  condition: PatternCondition,
-  text: string,
-  semanticJudge: SemanticJudge,
-  ctx: { agentId: string | null; traceId: string | null; texts: { response: string; userMessage: string; trace: string }; trace?: TraceLike | null }
-): Promise<DetectorResult> {
+async function evaluateDetector(condition: PatternCondition, text: string, semanticJudge: SemanticJudge): Promise<DetectorResult> {
   const value = condition.value?.trim();
   if (!value || !text.trim()) {
     return { matched: false };
@@ -126,20 +82,6 @@ async function evaluateDetector(
   if (condition.detector === "semantic") {
     return semanticJudge(value, text);
   }
-  if (condition.detector === "external") {
-    return callExternalValidator(value, {
-      agentId: ctx.agentId,
-      traceId: ctx.traceId,
-      condition: { value },
-      sources: ctx.texts,
-      trace: {
-        input: ctx.trace?.input ?? null,
-        output: ctx.trace?.output ?? null,
-        error: ctx.trace?.error ?? null,
-        toolCalls: ctx.trace?.toolCalls ?? null,
-      },
-    });
-  }
   const matched = condition.caseSensitive ? text.includes(value) : text.toLowerCase().includes(value.toLowerCase());
   return { matched };
 }
@@ -151,16 +93,11 @@ export async function evaluatePatternConditions({
   responseText,
   trace,
   semanticJudge,
-  agentId = null,
-  traceId = null,
 }: {
   conditions: PatternCondition[];
   responseText?: string | null;
   trace?: TraceLike | null;
   semanticJudge: SemanticJudge;
-  // Only needed by the "external" detector's request payload — every other detector ignores these.
-  agentId?: string | null;
-  traceId?: string | null;
 }): Promise<{ overall: boolean; reasons: string[] }> {
   if (!conditions.length) {
     return { overall: false, reasons: [] };
@@ -170,7 +107,7 @@ export async function evaluatePatternConditions({
   const reasons: string[] = [];
   for (const condition of conditions) {
     const text = textForSources(condition.sources, texts);
-    const result = await evaluateDetector(condition, text, semanticJudge, { agentId, traceId, texts, trace });
+    const result = await evaluateDetector(condition, text, semanticJudge);
     let value = result.matched;
     if (condition.negate) {
       value = !value;

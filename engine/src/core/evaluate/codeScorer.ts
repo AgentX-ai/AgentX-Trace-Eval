@@ -19,8 +19,9 @@ export type CodeScorerResult = {
   error?: string;
 };
 
-// In-process CPU-bound work should be fast; mirrors conditions.ts's EXTERNAL_VALIDATOR_TIMEOUT_MS
-// naming/shape for the codebase's other "run untrusted user logic" boundary.
+// In-process CPU-bound work should be fast; mirrors customEvaluators.ts's
+// CUSTOM_EVALUATOR_TIMEOUT_MS naming/shape for the codebase's other "run untrusted user logic"
+// boundary.
 const CODE_SCORER_TIMEOUT_MS = 3000;
 
 type ScorerArgs = { input: string; output: string; expected?: string };
@@ -34,7 +35,7 @@ type ScorerArgs = { input: string; output: string; expected?: string };
 // reach the network or disk even if it tried to go async. This is a lighter security bar than a
 // hardened isolate (isolated-vm, a subprocess with OS-level limits), reasonable for self-host's
 // single-tenant, operator-trusted deployment model — the same trust assumption
-// core/monitor/conditions.ts's callExternalValidator() already makes for user-supplied logic.
+// core/monitor/customEvaluators.ts's callCustomEvaluator() already makes for user-supplied logic.
 //
 // Every failure (syntax error, thrown error, timeout, bad return shape) is caught here and folded
 // into { score: null, error } rather than propagated — one broken/timed-out scorer must not take

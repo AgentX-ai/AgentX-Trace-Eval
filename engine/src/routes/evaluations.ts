@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { getDb } from "../storage/db.js";
+import { scopedDb } from "../auth/apiKey.js";
 import { createDataset, getDataset, listDatasets, extractSimilarityConfig, extractCodeScorers } from "../core/evaluate/datasets.js";
 import { createEvaluationSettings, getEvaluationSettings, listEvaluationSettings } from "../core/evaluate/evaluationSettings.js";
 import { initRun, appendResults, finalizeRun, getRun, listRuns, MAX_BATCH_SIZE } from "../core/evaluate/runs.js";
@@ -23,7 +23,7 @@ evaluationsRouter.post("/datasets", async (req: Request, res: Response) => {
     res.status(400).json({ error: "name is required" });
     return;
   }
-  const dataset = await createDataset(getDb(), {
+  const dataset = await createDataset(scopedDb(req), {
     name,
     description,
     numberOfRequests: typeof numberOfRequests === "number" ? numberOfRequests : undefined,
@@ -37,12 +37,12 @@ evaluationsRouter.post("/datasets", async (req: Request, res: Response) => {
   res.status(201).json(dataset);
 });
 
-evaluationsRouter.get("/datasets", async (_req: Request, res: Response) => {
-  res.status(200).json({ datasets: await listDatasets(getDb()) });
+evaluationsRouter.get("/datasets", async (req: Request, res: Response) => {
+  res.status(200).json({ datasets: await listDatasets(scopedDb(req)) });
 });
 
 evaluationsRouter.get("/datasets/:id", async (req: Request, res: Response) => {
-  const dataset = await getDataset(getDb(), req.params.id!);
+  const dataset = await getDataset(scopedDb(req), req.params.id!);
   if (!dataset) {
     res.status(404).json({ error: "Dataset not found" });
     return;
@@ -65,7 +65,7 @@ evaluationsRouter.post("/evaluation-settings", async (req: Request, res: Respons
     res.status(400).json({ error: "name is required" });
     return;
   }
-  const settings = await createEvaluationSettings(getDb(), {
+  const settings = await createEvaluationSettings(scopedDb(req), {
     name,
     description,
     numberOfRequests: typeof numberOfRequests === "number" ? numberOfRequests : undefined,
@@ -80,12 +80,12 @@ evaluationsRouter.post("/evaluation-settings", async (req: Request, res: Respons
   res.status(201).json(settings);
 });
 
-evaluationsRouter.get("/evaluation-settings", async (_req: Request, res: Response) => {
-  res.status(200).json({ evaluationSettings: await listEvaluationSettings(getDb()) });
+evaluationsRouter.get("/evaluation-settings", async (req: Request, res: Response) => {
+  res.status(200).json({ evaluationSettings: await listEvaluationSettings(scopedDb(req)) });
 });
 
 evaluationsRouter.get("/evaluation-settings/:id", async (req: Request, res: Response) => {
-  const settings = await getEvaluationSettings(getDb(), req.params.id!);
+  const settings = await getEvaluationSettings(scopedDb(req), req.params.id!);
   if (!settings) {
     res.status(404).json({ error: "Evaluation settings not found" });
     return;
@@ -99,7 +99,7 @@ evaluationsRouter.post("/runs", async (req: Request, res: Response) => {
     res.status(400).json({ error: "datasetId is required" });
     return;
   }
-  const run = await initRun(getDb(), { datasetId, evaluationSettingsId, evaluationSubject, runSource, sdk });
+  const run = await initRun(scopedDb(req), { datasetId, evaluationSettingsId, evaluationSubject, runSource, sdk });
   if (!run) {
     res.status(404).json({ error: "Dataset not found" });
     return;
@@ -123,7 +123,7 @@ evaluationsRouter.post("/runs/:runId/results", async (req: Request, res: Respons
   }
 
   try {
-    const outcome = await appendResults(getDb(), req.params.runId!, batchId, results);
+    const outcome = await appendResults(scopedDb(req), req.params.runId!, batchId, results);
     if (!outcome) {
       res.status(404).json({ error: "Run not found" });
       return;
@@ -135,7 +135,7 @@ evaluationsRouter.post("/runs/:runId/results", async (req: Request, res: Respons
 });
 
 evaluationsRouter.post("/runs/:runId/finalize", async (req: Request, res: Response) => {
-  const result = await finalizeRun(getDb(), req.params.runId!);
+  const result = await finalizeRun(scopedDb(req), req.params.runId!);
   if (!result) {
     res.status(404).json({ error: "Run not found" });
     return;
@@ -143,12 +143,12 @@ evaluationsRouter.post("/runs/:runId/finalize", async (req: Request, res: Respon
   res.status(200).json(result);
 });
 
-evaluationsRouter.get("/runs", async (_req: Request, res: Response) => {
-  res.status(200).json({ runs: await listRuns(getDb()) });
+evaluationsRouter.get("/runs", async (req: Request, res: Response) => {
+  res.status(200).json({ runs: await listRuns(scopedDb(req)) });
 });
 
 evaluationsRouter.get("/runs/:runId", async (req: Request, res: Response) => {
-  const run = await getRun(getDb(), req.params.runId!);
+  const run = await getRun(scopedDb(req), req.params.runId!);
   if (!run) {
     res.status(404).json({ error: "Run not found" });
     return;
@@ -171,12 +171,12 @@ evaluationsRouter.post("/prompts", async (req: Request, res: Response) => {
     res.status(400).json({ error: "text is required" });
     return;
   }
-  const prompt = await createPrompt(getDb(), { name, text, description });
+  const prompt = await createPrompt(scopedDb(req), { name, text, description });
   res.status(201).json(prompt);
 });
 
-evaluationsRouter.get("/prompts", async (_req: Request, res: Response) => {
-  res.status(200).json({ prompts: await listPromptsForSdk(getDb()) });
+evaluationsRouter.get("/prompts", async (req: Request, res: Response) => {
+  res.status(200).json({ prompts: await listPromptsForSdk(scopedDb(req)) });
 });
 
 // Accepts either the prompt's name or its id in the same path segment (see
@@ -189,7 +189,7 @@ evaluationsRouter.get("/prompts/:identifier", async (req: Request, res: Response
     res.status(400).json({ error: "version must be an integer" });
     return;
   }
-  const prompt = await getPromptForSdk(getDb(), req.params.identifier!, version);
+  const prompt = await getPromptForSdk(scopedDb(req), req.params.identifier!, version);
   if (!prompt) {
     res.status(404).json({ error: "Prompt not found" });
     return;

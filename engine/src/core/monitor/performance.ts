@@ -1,5 +1,6 @@
 import type { Db } from "../../storage/db.js";
 import { listSignalRows } from "./signals.js";
+import { getAgentNamesById } from "./agents.js";
 
 // Matches AgentX-web-front's MonitoringHealthRate/MonitoringAgentPerformance/
 // MonitoringPerformanceResponse (src/types/agentMonitoring.ts).
@@ -61,11 +62,13 @@ export async function getPerformance(db: Db) {
     }
   }
 
+  const agentNamesById = await getAgentNamesById(db, Array.from(byAgent.keys()));
+
   return {
     overall: finalize(overall),
     byAgent: Array.from(byAgent.entries()).map(([agentId, rate]) => ({
       agentId,
-      name: agentId,
+      name: agentNamesById.get(agentId) ?? agentId,
       ...finalize(rate),
     })),
   };

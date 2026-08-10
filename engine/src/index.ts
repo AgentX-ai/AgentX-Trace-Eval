@@ -1,14 +1,16 @@
 import path from "node:path";
 import type { Server } from "node:http";
 import express, { type Express } from "express";
-import { ensureLocalApiKey, requireApiKey } from "./auth/apiKey.js";
+import { requireApiKey } from "./auth/apiKey.js";
 import { ingestRouter } from "./routes/ingest.js";
 import { evaluationsRouter } from "./routes/evaluations.js";
 import { monitorRouter } from "./routes/monitor.js";
+import { agentsRouter } from "./routes/agents.js";
 import { agentMonitoringDashboardRouter } from "./routes/agentMonitoringDashboard.js";
 import { evaluateDashboardRouter } from "./routes/evaluateDashboard.js";
 import { otlpRouter } from "./routes/otlp.js";
-import { initDb, closeDb } from "./storage/db.js";
+import { initDb, closeDb, getDb } from "./storage/db.js";
+import { getDefaultProject, createProject, listProjectsWire } from "./core/project/projects.js";
 import { findWebIndexHtml } from "./web.js";
 
 const PORT = Number(process.env.PORT || 4700);
@@ -45,9 +47,12 @@ function listenWithRetry(app: Express, port: number, maxAttempts = 20, delayMs =
 }
 
 async function main() {
-  const apiKey = ensureLocalApiKey();
   // Awaited once here (picks better-sqlite3 vs bun:sqlite depending on runtime, see db.ts) so
-  // every route handler can call the synchronous getDb() without needing to know that.
+  // every route handler can call the synchronous getDb() without needing to know that. Also runs
+  // the one-time migration that creates the "Default" project (reusing config.json's pre-existing
+  // key if this is an upgrade, see db.ts's backfillDefaultProjectSqlite) — no separate
+  // ensureLocalApiKey() step needed anymore, that migration is now self-sufficient for both a
+  // fresh install and an upgrade.
   await initDb();
 
   const app = express();
@@ -70,18 +75,53 @@ async function main() {
   // is actually up without needing the API key.
   app.get("/health", (_req, res) => res.status(200).json({ status: "ok" }));
 
-  app.use("/api/v1/ingest", requireApiKey(apiKey), ingestRouter);
-  app.use("/api/v1/custom-agent-evaluations", requireApiKey(apiKey), evaluationsRouter);
-  app.use("/api/v1/monitor", requireApiKey(apiKey), monitorRouter);
-  app.use("/api/v1/agent-monitoring", requireApiKey(apiKey), agentMonitoringDashboardRouter);
-  app.use("/api/v1/evaluate", requireApiKey(apiKey), evaluateDashboardRouter);
-  app.use("/api/v1/otel", requireApiKey(apiKey), otlpRouter);
+  app.use("/api/v1/ingest", requireApiKey(), ingestRouter);
+  app.use("/api/v1/custom-agent-evaluations", requireApiKey(), evaluationsRouter);
+  app.use("/api/v1/monitor", requireApiKey(), monitorRouter);
+  app.use("/api/v1/agents", requireApiKey(), agentsRouter);
+  app.use("/api/v1/agent-monitoring", requireApiKey(), agentMonitoringDashboardRouter);
+  app.use("/api/v1/evaluate", requireApiKey(), evaluateDashboardRouter);
+  app.use("/api/v1/otel", requireApiKey(), otlpRouter);
 
-  // Unauthenticated on purpose: self-host has no multi-tenant boundary the API key protects
-  // across (one local instance = one implicit tenant, see plan's "Auth" decision), so letting the
-  // dashboard fetch its own key on load isn't exposing anything a browser on this machine
-  // couldn't already reach some other way. Lets the dashboard skip a login step entirely.
-  app.get("/api/v1/dev/bootstrap", (_req, res) => res.status(200).json({ apiKey }));
+  // Unauthenticated on purpose, same "skip a login step entirely" zero-setup UX the single-key
+  // model always had — now specifically hands back the *Default* project's key (whichever project
+  // the one-time migration created first, core/project/projects.ts's getDefaultProject). Any
+  // additional project you register is only reachable via its own key from then on; this endpoint
+  // never lists or exposes every project's key, only the one a fresh/never-configured client
+  // should bootstrap into.
+  app.get("/api/v1/dev/bootstrap", async (_req, res) => {
+    const defaultProject = await getDefaultProject(getDb());
+    if (!defaultProject) {
+      res.status(500).json({ error: "No default project — this shouldn't happen after initDb() has run" });
+      return;
+    }
+    res.status(200).json({ apiKey: defaultProject.apiKey });
+  });
+
+  // Unauthenticated for the same reason /dev/bootstrap is: self-host's whole security model is
+  // "if you can reach this local port, you're trusted" (one machine, one operator) — gatekeeping
+  // *creating* a new project specifically wouldn't protect anything /dev/bootstrap's already-open
+  // key doesn't already expose. No rename/delete routes yet — full project-management UI is still
+  // follow-up work. Returns the new project's key in full since the caller just created it and has
+  // to learn it from somewhere.
+  app.post("/api/v1/projects", async (req, res) => {
+    const body = req.body ?? {};
+    if (typeof body.name !== "string" || !body.name.trim()) {
+      res.status(400).json({ error: "name is required" });
+      return;
+    }
+    const project = await createProject(getDb(), body.name.trim());
+    res.status(201).json({ project });
+  });
+
+  // The frontend's project switcher's list source (AgentX-web-front's ProjectProvider) — same
+  // unauthenticated posture as the two routes above, deliberately includes every project's own
+  // apiKey so the switcher can hold each project's key up front and swap the x-api-key header on
+  // switch, with no separate per-project auth handshake.
+  app.get("/api/v1/projects", async (_req, res) => {
+    const projects = await listProjectsWire(getDb());
+    res.status(200).json({ projects });
+  });
 
   // The dashboard bundle is AgentX's real, full frontend (see README's "Open source scope"), so
   // it still calls a handful of hosted-SaaS-only endpoints this engine doesn't implement
@@ -110,11 +150,12 @@ async function main() {
   }
 
   const server = await listenWithRetry(app, PORT);
+  const defaultProject = await getDefaultProject(getDb());
   console.log(`AgentX self-host engine listening on http://localhost:${PORT}`);
-  console.log(`Local API key: ${apiKey}`);
+  console.log(`Default project API key: ${defaultProject?.apiKey}`);
   console.log(`Point the SDK here with:`);
   console.log(`  AGENTX_API_BASE_URL=http://localhost:${PORT}/api/v1`);
-  console.log(`  AGENTX_API_KEY=${apiKey}`);
+  console.log(`  AGENTX_API_KEY=${defaultProject?.apiKey}`);
   if (isDev && !webIndexHtml) {
     console.log(`Dev mode: web UI not found (expected web/index.html next to this checkout).`);
   }

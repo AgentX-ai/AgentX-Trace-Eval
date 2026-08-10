@@ -2,11 +2,12 @@ import type { Db } from "../../storage/db.js";
 import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { evaluatePatternConditions, type PatternCondition, type SemanticJudge, type TraceLike } from "./conditions.js";
 import { listCustomPatterns, getPatternRow } from "./patterns.js";
-import { resolveLatencyThresholdMs, getProfileRow } from "./profiles.js";
+import { getProfileRow } from "./profiles.js";
 import { upsertSignal, type DetectedSignal } from "./signals.js";
-import { recordEvent, pruneOldEvents } from "./events.js";
+import { recordEvent, pruneRetentionData } from "./events.js";
 import { extractWebhookUrls, notifyWebhooks } from "./webhooks.js";
 import { matchesAgentScope, passesSampleRate } from "./routing.js";
+import { getMonitoringDefaults } from "../project/projects.js";
 
 // Built-in checks, evaluated in code rather than stored as pattern rows (same list as
 // AgentX-web-api's BUILT_IN_AGENT_MONITORING_PATTERNS, minus "negative-feedback": that one is
@@ -104,8 +105,9 @@ const semanticMatchSchema = {
 // Real LLM-based semantic judge for custom patterns' "semantic" detector, reusing the same
 // multi-provider judge-calling helper Evaluate's judge scoring uses (BYO OPENAI_API_KEY /
 // ANTHROPIC_API_KEY). Returns `reason` alongside the boolean (previously discarded here) so
-// callers can surface it on the resulting signal, same as the new "external" detector does.
-const llmSemanticJudge: SemanticJudge = async (rubric, text) => {
+// callers can surface it on the resulting signal, same as Custom Evaluators' own
+// {matches, reason} contract does (core/monitor/customEvaluators.ts).
+export const llmSemanticJudge: SemanticJudge = async (rubric, text) => {
   const result = await callJudgeJson({
     model: DEFAULT_JUDGE_MODEL,
     jsonSchema: semanticMatchSchema,
@@ -133,13 +135,10 @@ async function detectCustomPatterns(db: Db, trace: TraceLike, agentId: string | 
         responseText,
         trace,
         semanticJudge: llmSemanticJudge,
-        agentId,
-        traceId,
       });
     } catch (err) {
-      // One "semantic" or "external" condition failing (missing judge API key, provider outage,
-      // the user's own endpoint being down/timing out/returning garbage) must not silently skip
-      // every other pattern after it, or the entire healthy-tally/failure detection for this
+      // A "semantic" condition failing (missing judge API key, provider outage) must not silently
+      // skip every other pattern after it, or the entire healthy-tally/failure detection for this
       // trace — isolated per-pattern rather than letting the whole sweep abort partway.
       console.error(`Pattern "${pattern.name}" failed to evaluate:`, err instanceof Error ? err.message : err);
       continue;
@@ -176,6 +175,10 @@ export async function runMonitorCheck(
   // monitor=true path: fully on, unsampled — that's the "no dashboard setup required" SDK-first
   // design goal.
   const profile = agentId ? await getProfileRow(db, agentId) : null;
+  // sampleRate/retentionDays/latency threshold are project-level (core/project/projects.ts's
+  // MonitoringDefaults) — a single request-scoped fetch, applied uniformly to every agent in this
+  // project rather than each agent's own (now-inert) profile fields.
+  const defaults = await getMonitoringDefaults(db);
   // The *implicit* path (every trace, not just monitor=true ones) is the opposite: "no profile"
   // must mean "skip", not "fully on" — otherwise every agent would start being monitored (and
   // judge-API-billed) automatically the moment any trace is ingested, before anyone touched the
@@ -186,7 +189,7 @@ export async function runMonitorCheck(
   if (profile && !profile.enabled) {
     return;
   }
-  if (profile && !passesSampleRate(profile.sampleRate)) {
+  if (profile && !passesSampleRate(defaults.sampleRate)) {
     return;
   }
 
@@ -207,8 +210,6 @@ export async function runMonitorCheck(
           responseText,
           trace,
           semanticJudge: llmSemanticJudge,
-          agentId,
-          traceId: ctx.traceId ?? null,
         });
       } catch (err) {
         console.error(`Pattern "${pattern.name}" failed to evaluate:`, err instanceof Error ? err.message : err);
@@ -227,8 +228,7 @@ export async function runMonitorCheck(
       }
     }
   } else {
-    const latencyThresholdMs = await resolveLatencyThresholdMs(db, agentId ?? "default");
-    const builtIn = profile?.failureDetectionEnabled === false ? null : detectBuiltIn(trace, latencyThresholdMs);
+    const builtIn = profile?.failureDetectionEnabled === false ? null : detectBuiltIn(trace, defaults.latencyThresholdMs);
     detected = builtIn ?? (await detectCustomPatterns(db, trace, agentId, ctx.traceId ?? null));
   }
 
@@ -258,7 +258,7 @@ export async function runMonitorCheck(
       traceId: ctx.traceId ?? null,
     });
     if (profile) {
-      await pruneOldEvents(db, agentId, profile.retentionDays);
+      await pruneRetentionData(db, agentId, defaults.retentionDays);
     }
     return;
   }
@@ -289,6 +289,6 @@ export async function runMonitorCheck(
     });
   }
   if (profile) {
-    await pruneOldEvents(db, agentId, profile.retentionDays);
+    await pruneRetentionData(db, agentId, defaults.retentionDays);
   }
 }

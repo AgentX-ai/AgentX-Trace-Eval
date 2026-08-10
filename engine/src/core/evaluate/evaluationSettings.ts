@@ -34,6 +34,7 @@ export type UpdateEvaluationSettingsInput = Omit<CreateEvaluationSettingsInput, 
 
 export type EvaluationSettingsRow = {
   id: string;
+  projectId: string | null;
   name: string;
   description: string | null;
   numberOfRequests: number;
@@ -73,8 +74,12 @@ function toWire(row: EvaluationSettingsRow) {
 // single-default invariant.
 async function clearDefaultEvaluationSettings(db: Db, exceptId?: string): Promise<void> {
   const cond = exceptId
-    ? and(eq(db.schema.evaluationSettings.isDefault, true), ne(db.schema.evaluationSettings.id, exceptId))
-    : eq(db.schema.evaluationSettings.isDefault, true);
+    ? and(
+        eq(db.schema.evaluationSettings.isDefault, true),
+        ne(db.schema.evaluationSettings.id, exceptId),
+        eq(db.schema.evaluationSettings.projectId, db.projectId)
+      )
+    : and(eq(db.schema.evaluationSettings.isDefault, true), eq(db.schema.evaluationSettings.projectId, db.projectId));
   if (db.kind === "sqlite") {
     await db.db.update(db.schema.evaluationSettings).set({ isDefault: false }).where(cond);
   } else {
@@ -85,6 +90,7 @@ async function clearDefaultEvaluationSettings(db: Db, exceptId?: string): Promis
 export async function createEvaluationSettings(db: Db, input: CreateEvaluationSettingsInput) {
   const row: EvaluationSettingsRow = {
     id: input.id ?? nanoid(),
+    projectId: db.projectId,
     name: input.name,
     description: input.description ?? null,
     numberOfRequests: input.numberOfRequests ?? 1,
@@ -130,10 +136,11 @@ export async function updateEvaluationSettings(db: Db, id: string, input: Update
     judgePrompt: input.judgePrompt ?? null,
     judgeModel: input.judgeModel ?? null,
   };
+  const updateCond = and(eq(db.schema.evaluationSettings.id, id), eq(db.schema.evaluationSettings.projectId, db.projectId));
   if (db.kind === "sqlite") {
-    await db.db.update(db.schema.evaluationSettings).set(values).where(eq(db.schema.evaluationSettings.id, id));
+    await db.db.update(db.schema.evaluationSettings).set(values).where(updateCond);
   } else {
-    await db.db.update(db.schema.evaluationSettings).set(values).where(eq(db.schema.evaluationSettings.id, id));
+    await db.db.update(db.schema.evaluationSettings).set(values).where(updateCond);
   }
   const after = await getEvaluationSettings(db, id);
   if (after) {
@@ -170,10 +177,11 @@ export async function patchEvaluationSettings(db: Db, id: string, patch: Partial
     isDefault: patch.isDefault ?? existing.isDefault,
     status: patch.status ?? existing.status,
   };
+  const patchCond = and(eq(db.schema.evaluationSettings.id, id), eq(db.schema.evaluationSettings.projectId, db.projectId));
   if (db.kind === "sqlite") {
-    await db.db.update(db.schema.evaluationSettings).set(values).where(eq(db.schema.evaluationSettings.id, id));
+    await db.db.update(db.schema.evaluationSettings).set(values).where(patchCond);
   } else {
-    await db.db.update(db.schema.evaluationSettings).set(values).where(eq(db.schema.evaluationSettings.id, id));
+    await db.db.update(db.schema.evaluationSettings).set(values).where(patchCond);
   }
   const after = await getEvaluationSettings(db, id);
   if (after) {
@@ -183,15 +191,12 @@ export async function patchEvaluationSettings(db: Db, id: string, patch: Partial
 }
 
 export async function getEvaluationSettingsRow(db: Db, id: string): Promise<EvaluationSettingsRow | null> {
+  const cond = and(eq(db.schema.evaluationSettings.id, id), eq(db.schema.evaluationSettings.projectId, db.projectId));
   let row: EvaluationSettingsRow | undefined;
   if (db.kind === "sqlite") {
-    row = db.db.select().from(db.schema.evaluationSettings).where(eq(db.schema.evaluationSettings.id, id)).all()[0] as
-      | EvaluationSettingsRow
-      | undefined;
+    row = db.db.select().from(db.schema.evaluationSettings).where(cond).all()[0] as EvaluationSettingsRow | undefined;
   } else {
-    row = (
-      await db.db.select().from(db.schema.evaluationSettings).where(eq(db.schema.evaluationSettings.id, id))
-    )[0] as EvaluationSettingsRow | undefined;
+    row = (await db.db.select().from(db.schema.evaluationSettings).where(cond))[0] as EvaluationSettingsRow | undefined;
   }
   return row ?? null;
 }
@@ -202,10 +207,11 @@ export async function getEvaluationSettings(db: Db, id: string) {
 }
 
 export async function listEvaluationSettings(db: Db) {
+  const cond = eq(db.schema.evaluationSettings.projectId, db.projectId);
   const rows =
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.evaluationSettings).all()
-      : await db.db.select().from(db.schema.evaluationSettings);
+      ? db.db.select().from(db.schema.evaluationSettings).where(cond).all()
+      : await db.db.select().from(db.schema.evaluationSettings).where(cond);
   return (rows as EvaluationSettingsRow[]).map(toWire);
 }
 
@@ -215,15 +221,17 @@ export async function listEvaluationSettings(db: Db) {
 // Filtered in JS rather than a NOT IN subquery: self-host's local scale doesn't need it, and it
 // keeps this dialect-agnostic without leaning on drizzle's subquery typing across sqlite/pg.
 export async function listStandaloneEvaluationSettings(db: Db) {
+  const settingsCond = eq(db.schema.evaluationSettings.projectId, db.projectId);
+  const datasetsCond = eq(db.schema.datasets.projectId, db.projectId);
   const [allRows, datasetIdRows] =
     db.kind === "sqlite"
       ? [
-          db.db.select().from(db.schema.evaluationSettings).all() as EvaluationSettingsRow[],
-          db.db.select({ id: db.schema.datasets.id }).from(db.schema.datasets).all(),
+          db.db.select().from(db.schema.evaluationSettings).where(settingsCond).all() as EvaluationSettingsRow[],
+          db.db.select({ id: db.schema.datasets.id }).from(db.schema.datasets).where(datasetsCond).all(),
         ]
       : await Promise.all([
-          db.db.select().from(db.schema.evaluationSettings) as Promise<EvaluationSettingsRow[]>,
-          db.db.select({ id: db.schema.datasets.id }).from(db.schema.datasets),
+          db.db.select().from(db.schema.evaluationSettings).where(settingsCond) as Promise<EvaluationSettingsRow[]>,
+          db.db.select({ id: db.schema.datasets.id }).from(db.schema.datasets).where(datasetsCond),
         ]);
   const datasetIds = new Set(datasetIdRows.map(r => r.id));
   return allRows

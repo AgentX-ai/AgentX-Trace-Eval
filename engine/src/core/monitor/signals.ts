@@ -3,10 +3,12 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { listOccurrencesForSignal, extractText, type EventRow } from "./events.js";
 import { getTraceRow } from "../trace/ingest.js";
+import { getAgentNamesById } from "./agents.js";
 
 // Matches AgentX-Python's MonitorSignal field aliases (agentx/monitor/models.py).
 export type SignalRow = {
   id: string;
+  projectId: string | null;
   patternKey: string;
   type: string;
   severity: string;
@@ -43,7 +45,12 @@ export type SignalRow = {
 // load. rating/justification are cheap either way (already columns on the event row).
 type OccurrenceEvidence = { query?: string; responsePreview?: string };
 
-function toWire(row: SignalRow, occurrences: EventRow[] = [], occurrenceEvidence?: Map<string, OccurrenceEvidence>) {
+function toWire(
+  row: SignalRow,
+  occurrences: EventRow[] = [],
+  occurrenceEvidence?: Map<string, OccurrenceEvidence>,
+  agentNamesById?: Map<string, string>
+) {
   return {
     _id: row.id,
     workspaceId: "local",
@@ -58,8 +65,9 @@ function toWire(row: SignalRow, occurrences: EventRow[] = [], occurrenceEvidence
     rootCause: row.rootCause ?? undefined,
     // AgentX-Python's MonitorSignal.agent_id expects the hosted SaaS's populated shape
     // ({_id, name, avatar}, from Mongoose .populate("agentId", "name avatar")), not a bare
-    // string. Self-host has no agent registry to populate from, so agentId doubles as both.
-    agentId: row.agentId ? { _id: row.agentId, name: row.agentId } : undefined,
+    // string. Self-host now has a real registry (core/monitor/agents.ts) — name resolved via the
+    // batch lookup callers pass in, falling back to the id itself if somehow not found.
+    agentId: row.agentId ? { _id: row.agentId, name: agentNamesById?.get(row.agentId) ?? row.agentId } : undefined,
     evidence: row.evidence ?? undefined,
     occurrenceCount: row.occurrenceCount,
     // Matches AgentMonitoringSignalOccurrence's shape (types/agentMonitoring.ts): self-host has no
@@ -67,7 +75,7 @@ function toWire(row: SignalRow, occurrences: EventRow[] = [], occurrenceEvidence
     // per detection.
     occurrences: occurrences.map(e => ({
       id: e.id,
-      agentId: e.agentId ? { _id: e.agentId, name: e.agentId } : undefined,
+      agentId: e.agentId ? { _id: e.agentId, name: agentNamesById?.get(e.agentId) ?? e.agentId } : undefined,
       traceId: e.traceId ?? undefined,
       seenAt: e.createdAt.toISOString(),
       query: occurrenceEvidence?.get(e.id)?.query,
@@ -105,7 +113,8 @@ export async function upsertSignal(
   // branch is needed here rather than coercing null to "".
   const cond = and(
     eq(db.schema.monitorSignals.patternKey, detected.patternKey),
-    agentId === null ? isNull(db.schema.monitorSignals.agentId) : eq(db.schema.monitorSignals.agentId, agentId)
+    agentId === null ? isNull(db.schema.monitorSignals.agentId) : eq(db.schema.monitorSignals.agentId, agentId),
+    eq(db.schema.monitorSignals.projectId, db.projectId)
   );
 
   const existing =
@@ -118,6 +127,7 @@ export async function upsertSignal(
   if (!existing) {
     const row: SignalRow = {
       id: nanoid(),
+      projectId: db.projectId,
       patternKey: detected.patternKey,
       type: detected.type,
       severity: detected.severity,
@@ -139,7 +149,7 @@ export async function upsertSignal(
     } else {
       await db.db.insert(db.schema.monitorSignals).values(row);
     }
-    return toWire(row);
+    return toWire(row, [], undefined, await getAgentNamesById(db, [row.agentId]));
   }
 
   const updated: SignalRow = {
@@ -164,12 +174,15 @@ export async function upsertSignal(
   } else {
     await db.db.update(db.schema.monitorSignals).set(setValues).where(cond);
   }
-  return toWire(updated);
+  return toWire(updated, [], undefined, await getAgentNamesById(db, [updated.agentId]));
 }
 
 export async function listSignalRows(db: Db): Promise<SignalRow[]> {
+  const cond = eq(db.schema.monitorSignals.projectId, db.projectId);
   const rows =
-    db.kind === "sqlite" ? db.db.select().from(db.schema.monitorSignals).all() : await db.db.select().from(db.schema.monitorSignals);
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.monitorSignals).where(cond).all()
+      : await db.db.select().from(db.schema.monitorSignals).where(cond);
   return rows as SignalRow[];
 }
 
@@ -192,7 +205,12 @@ export async function listSignals(
   if (effectivePolarity !== "all") filtered = filtered.filter(r => r.polarity === effectivePolarity);
   filtered.sort((a, b) => b.lastSeenAt.getTime() - a.lastSeenAt.getTime());
   const page = filtered.slice(0, limit);
-  return Promise.all(page.map(async row => toWire(row, await listOccurrencesForSignal(db, row.id))));
+  const occurrencesByRow = await Promise.all(page.map(row => listOccurrencesForSignal(db, row.id)));
+  const agentNamesById = await getAgentNamesById(db, [
+    ...page.map(row => row.agentId),
+    ...occurrencesByRow.flatMap(occurrences => occurrences.map(e => e.agentId)),
+  ]);
+  return page.map((row, i) => toWire(row, occurrencesByRow[i], undefined, agentNamesById));
 }
 
 // Same trace-join pattern as getOnlineEvaluatorEvents (events.ts) — resolves each occurrence's
@@ -217,34 +235,29 @@ async function resolveOccurrenceEvidence(db: Db, events: EventRow[]): Promise<Ma
 }
 
 export async function getSignal(db: Db, id: string) {
+  const cond = and(eq(db.schema.monitorSignals.id, id), eq(db.schema.monitorSignals.projectId, db.projectId));
   let row: SignalRow | undefined;
   if (db.kind === "sqlite") {
-    row = db.db.select().from(db.schema.monitorSignals).where(eq(db.schema.monitorSignals.id, id)).all()[0] as
-      | SignalRow
-      | undefined;
+    row = db.db.select().from(db.schema.monitorSignals).where(cond).all()[0] as SignalRow | undefined;
   } else {
-    row = (await db.db.select().from(db.schema.monitorSignals).where(eq(db.schema.monitorSignals.id, id)))[0] as
-      | SignalRow
-      | undefined;
+    row = (await db.db.select().from(db.schema.monitorSignals).where(cond))[0] as SignalRow | undefined;
   }
   if (!row) {
     return null;
   }
   const occurrences = await listOccurrencesForSignal(db, row.id);
   const occurrenceEvidence = await resolveOccurrenceEvidence(db, occurrences);
-  return toWire(row, occurrences, occurrenceEvidence);
+  const agentNamesById = await getAgentNamesById(db, [row.agentId, ...occurrences.map(e => e.agentId)]);
+  return toWire(row, occurrences, occurrenceEvidence, agentNamesById);
 }
 
 export async function getSignalRow(db: Db, id: string): Promise<SignalRow | null> {
+  const cond = and(eq(db.schema.monitorSignals.id, id), eq(db.schema.monitorSignals.projectId, db.projectId));
   let row: SignalRow | undefined;
   if (db.kind === "sqlite") {
-    row = db.db.select().from(db.schema.monitorSignals).where(eq(db.schema.monitorSignals.id, id)).all()[0] as
-      | SignalRow
-      | undefined;
+    row = db.db.select().from(db.schema.monitorSignals).where(cond).all()[0] as SignalRow | undefined;
   } else {
-    row = (await db.db.select().from(db.schema.monitorSignals).where(eq(db.schema.monitorSignals.id, id)))[0] as
-      | SignalRow
-      | undefined;
+    row = (await db.db.select().from(db.schema.monitorSignals).where(cond))[0] as SignalRow | undefined;
   }
   return row ?? null;
 }
@@ -278,10 +291,11 @@ export async function updateSignal(db: Db, id: string, patch: UpdateSignalInput)
     reviewStatus: updated.reviewStatus,
     recommendedActions: updated.recommendedActions,
   };
+  const updateCond = and(eq(db.schema.monitorSignals.id, id), eq(db.schema.monitorSignals.projectId, db.projectId));
   if (db.kind === "sqlite") {
-    await db.db.update(db.schema.monitorSignals).set(setValues).where(eq(db.schema.monitorSignals.id, id));
+    await db.db.update(db.schema.monitorSignals).set(setValues).where(updateCond);
   } else {
-    await db.db.update(db.schema.monitorSignals).set(setValues).where(eq(db.schema.monitorSignals.id, id));
+    await db.db.update(db.schema.monitorSignals).set(setValues).where(updateCond);
   }
   return toWire(updated);
 }
