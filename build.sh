@@ -13,15 +13,15 @@ OUT="dist"
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
-# The dashboard is the real AgentX-web-front React app built in self-host mode (see README), not
+# The dashboard is the real AgentX-eval-front React app built in self-host mode (see README), not
 # a separate rebuild. That repo is private, so only people with access to it (i.e. a sibling
-# checkout at ../AgentX-web-front) can build it from source here; everyone else falls back to the
+# checkout at ../AgentX-eval-front) can build it from source here; everyone else falls back to the
 # prebuilt agentx-web.tar.gz that repo's own CI publishes onto this repo's releases (see
 # .github/workflows/publish-selfhost-web.yml over there, and README's "Dashboard release"), so
 # `./build.sh` still works with just this repo checked out. Neither found: fall back to an
 # API-only build rather than failing outright, same as findWebIndexHtml() already tolerates a
 # missing web/index.html at runtime.
-WEB_FRONT_DIR="../AgentX-web-front"
+WEB_FRONT_DIR="../AgentX-eval-front"
 WEB_RELEASE_REPO="AgentX-ai/AgentX-trace-eval"
 rm -rf web
 mkdir -p web
@@ -42,7 +42,7 @@ else
   if curl -fsSL "$web_url" -o "$tmp_web_tar"; then
     tar -xzf "$tmp_web_tar" -C web
   else
-    echo "warning: no prebuilt dashboard found at $web_url (and no local AgentX-web-front" >&2
+    echo "warning: no prebuilt dashboard found at $web_url (and no local AgentX-eval-front" >&2
     echo "checkout to build from) — continuing with an API-only build, no dashboard." >&2
   fi
   rm -f "$tmp_web_tar"

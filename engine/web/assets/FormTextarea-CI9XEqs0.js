@@ -1,0 +1,1 @@
+import{j as n,C as l,T as m}from"./index-Btr-jytv.js";const c=({required:t=!0,formObj:a,...r})=>{const o=a.formState.errors[r.name];return n.jsx(l,{control:a.control,name:r.name,rules:{required:t,...r.rules,validate:e=>e.length?!!e.trim():!0},render:({field:{onChange:e,value:s}})=>n.jsx(m,{value:s,onChange:e,required:t,error:o,...r})})};export{c as F};

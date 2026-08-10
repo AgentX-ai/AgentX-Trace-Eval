@@ -595,6 +595,7 @@ export const appSettings = sqliteTable("app_settings", {
   id: text("id").primaryKey(),
   openaiApiKey: text("openai_api_key"),
   anthropicApiKey: text("anthropic_api_key"),
+  geminiApiKey: text("gemini_api_key"),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
 

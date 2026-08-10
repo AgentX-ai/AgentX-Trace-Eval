@@ -18,7 +18,7 @@ import { maskSecret } from "../shared/maskSecret.js";
 // internal caller that ever reads the real value, via getPortabilityModelRaw.
 export type PortabilityModel = {
   id: string;
-  provider: "openai" | "anthropic" | "custom";
+  provider: "openai" | "anthropic" | "gemini" | "custom";
   label: string;
   pricePerMInputTokens: number;
   pricePerMOutputTokens: number;
@@ -34,7 +34,7 @@ export type PortabilityModel = {
 
 export type PortabilityModelRow = {
   id: string;
-  provider: "openai" | "anthropic" | "custom";
+  provider: "openai" | "anthropic" | "gemini" | "custom";
   label: string;
   pricePerMInputTokens: number;
   pricePerMOutputTokens: number;
@@ -96,7 +96,7 @@ export async function getPortabilityModelRaw(db: Db, id: string): Promise<Portab
 
 export type SavePortabilityModelInput = {
   id: string;
-  provider: "openai" | "anthropic" | "custom";
+  provider: "openai" | "anthropic" | "gemini" | "custom";
   label: string;
   pricePerMInputTokens: number;
   pricePerMOutputTokens: number;
@@ -149,7 +149,7 @@ export async function createPortabilityModel(db: Db, input: SavePortabilityModel
 }
 
 export type UpdatePortabilityModelInput = {
-  provider: "openai" | "anthropic" | "custom";
+  provider: "openai" | "anthropic" | "gemini" | "custom";
   label: string;
   pricePerMInputTokens: number;
   pricePerMOutputTokens: number;

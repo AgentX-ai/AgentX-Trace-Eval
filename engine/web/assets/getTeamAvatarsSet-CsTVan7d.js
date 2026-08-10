@@ -1,0 +1,1 @@
+const o=r=>{var g;if(!r)return[];if(!(r!=null&&r.manager)&&!(r!=null&&r.agents))return[];const i=(g=r==null?void 0:r.manager)==null?void 0:g.avatar,f=((r==null?void 0:r.agents)??[]).filter(n=>{var s;return n._id!==((s=r.manager)==null?void 0:s._id)}).map(n=>n.avatar).filter(n=>!!n);return[i,...f].filter(n=>!!n)};export{o as g};

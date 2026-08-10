@@ -1,0 +1,1 @@
+import{a5 as s,H as a,J as o}from"./index-Btr-jytv.js";const n={all:["singleConversationAgentGuestKeys"],id:e=>[...n.all,e]},r=async e=>{const{data:t}=await a.get(o.getSingleConversationAgentPublic(e));return t},u=({agentId:e})=>s({queryKey:n.id(e),queryFn:()=>r(e)});export{r as g,u};

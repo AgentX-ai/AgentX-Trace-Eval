@@ -123,7 +123,7 @@ export async function initDb(): Promise<Db> {
 // see core/evaluate/models.ts's estimateCostUSD for how these are used.
 const DEFAULT_PORTABILITY_MODELS: Array<{
   id: string;
-  provider: "openai" | "anthropic";
+  provider: "openai" | "anthropic" | "gemini";
   label: string;
   pricePerMInputTokens: number;
   pricePerMOutputTokens: number;
@@ -186,7 +186,7 @@ async function seedPortabilityModelsIfEmpty(db: Db): Promise<void> {
 // already edited or a row they deliberately deleted.
 const REAL_WORLD_MODELS_TO_ENSURE: Array<{
   id: string;
-  provider: "openai" | "anthropic";
+  provider: "openai" | "anthropic" | "gemini";
   label: string;
   pricePerMInputTokens: number;
   pricePerMOutputTokens: number;
@@ -199,6 +199,24 @@ const REAL_WORLD_MODELS_TO_ENSURE: Array<{
     pricePerMInputTokens: 0.15,
     pricePerMOutputTokens: 0.6,
     // Real published OpenAI cached-input rate: ~half the regular input price.
+    pricePerMCacheReadTokens: 0.075,
+  },
+  // Real published Google list pricing (<=200k context tier) as of Gemini support landing here —
+  // same "verify against the provider's current pricing page" caveat as every other row above.
+  {
+    id: "gemini-2.5-pro",
+    provider: "gemini",
+    label: "Gemini 2.5 Pro",
+    pricePerMInputTokens: 1.25,
+    pricePerMOutputTokens: 10.0,
+    pricePerMCacheReadTokens: 0.31,
+  },
+  {
+    id: "gemini-2.5-flash",
+    provider: "gemini",
+    label: "Gemini 2.5 Flash",
+    pricePerMInputTokens: 0.3,
+    pricePerMOutputTokens: 2.5,
     pricePerMCacheReadTokens: 0.075,
   },
 ];
@@ -609,6 +627,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       id TEXT PRIMARY KEY,
       openai_api_key TEXT,
       anthropic_api_key TEXT,
+      gemini_api_key TEXT,
       updated_at INTEGER NOT NULL
     );
   `);
@@ -712,6 +731,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     // configured," falls back to price_per_m_input_tokens for that token type.
     ["portability_models", "ALTER TABLE portability_models ADD COLUMN price_per_m_cache_read_tokens REAL"],
     ["portability_models", "ALTER TABLE portability_models ADD COLUMN price_per_m_cache_write_tokens REAL"],
+    ["app_settings", "ALTER TABLE app_settings ADD COLUMN gemini_api_key TEXT"],
   ];
   for (const [, statement] of columnMigrations) {
     try {
@@ -1245,6 +1265,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       id TEXT PRIMARY KEY,
       openai_api_key TEXT,
       anthropic_api_key TEXT,
+      gemini_api_key TEXT,
       updated_at TIMESTAMP NOT NULL
     );
 
@@ -1328,6 +1349,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE traces ADD COLUMN IF NOT EXISTS cache_write_tokens INTEGER;
     ALTER TABLE portability_models ADD COLUMN IF NOT EXISTS price_per_m_cache_read_tokens DOUBLE PRECISION;
     ALTER TABLE portability_models ADD COLUMN IF NOT EXISTS price_per_m_cache_write_tokens DOUBLE PRECISION;
+    ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS gemini_api_key TEXT;
   `);
 
   await migrateOnlineEvaluatorsToConfigsPostgres(pool);

@@ -61,6 +61,24 @@ async function getAnthropic(): Promise<Anthropic | null> {
   return cachedAnthropicClient;
 }
 
+// Gemini has no separate branch anywhere below: Google publishes an OpenAI-compatible endpoint
+// (https://ai.google.dev/gemini-api/docs/openai) that implements chat completions, tool calling,
+// and structured JSON output against the same OpenAI SDK, so a Gemini call is just an OpenAI SDK
+// client pointed at Google's baseURL — every OpenAI-shaped branch in this file (callJudgeJson,
+// callModelCompletion, callModelWithTools) already handles it with zero new code.
+const GEMINI_OPENAI_COMPAT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/";
+let cachedGeminiKey: string | null = null;
+let cachedGeminiClient: OpenAI | null = null;
+async function getGemini(): Promise<OpenAI | null> {
+  const settings = await getAppSettings(getDb());
+  const key = settings.geminiApiKey || process.env.GEMINI_API_KEY || null;
+  if (key !== cachedGeminiKey) {
+    cachedGeminiKey = key;
+    cachedGeminiClient = key ? new OpenAI({ apiKey: key, baseURL: GEMINI_OPENAI_COMPAT_BASE_URL }) : null;
+  }
+  return cachedGeminiClient;
+}
+
 // Custom (bring-your-own-endpoint) portability_models rows — cached by the resolved
 // baseUrl+apiKey pair, same "rebuild only when the actual config changes" idiom as
 // getOpenAI/getAnthropic above, so editing a custom model's key in the dashboard takes effect
@@ -81,16 +99,45 @@ function getCustomClient(row: PortabilityModelRow): OpenAI {
 // Every mainstream self-hosted/local model server (vLLM, Ollama, LM Studio, text-generation-webui,
 // LocalAI, ...) implements the OpenAI-compatible chat completions API, and the OpenAI SDK accepts
 // any baseURL — so a "custom" catalog row doesn't need a third parallel branch anywhere below, it
-// folds into the existing "openai" branch with a different client. This is the single place that
+// folds into the existing "openai" branch with a different client. Gemini folds in the same way,
+// via Google's own OpenAI-compat endpoint (see getGemini above). This is the single place that
 // decides which: every caller below (callJudgeJson/callModelCompletion/callModelWithTools) checks
 // here instead of calling getProviderForModel + getOpenAI directly.
-async function resolveModelRouting(model: string): Promise<{ provider: "openai" | "anthropic"; openaiClient: OpenAI | null }> {
+//
+// keyLabel/envVar ride along separately from `provider` so a missing-key error can still say
+// "Gemini"/"GEMINI_API_KEY" instead of a misleading "OpenAI" even though Gemini reuses the OpenAI
+// SDK code path. isGemini lets callModelWithTools skip the one OpenAI-reasoning-model-specific
+// param (reasoning_effort) that Google's compat layer doesn't recognize.
+type ModelRouting = {
+  provider: "openai" | "anthropic";
+  openaiClient: OpenAI | null;
+  keyLabel: "OpenAI" | "Anthropic" | "Gemini";
+  envVar: "OPENAI_API_KEY" | "ANTHROPIC_API_KEY" | "GEMINI_API_KEY";
+  isGemini: boolean;
+};
+
+async function resolveModelRouting(model: string): Promise<ModelRouting> {
   const custom = await getPortabilityModelRaw(getDb(), model);
   if (custom?.provider === "custom" && custom.baseUrl) {
-    return { provider: "openai", openaiClient: getCustomClient(custom) };
+    return { provider: "openai", openaiClient: getCustomClient(custom), keyLabel: "OpenAI", envVar: "OPENAI_API_KEY", isGemini: false };
+  }
+  if (custom?.provider === "gemini" || (!custom && model.startsWith("gemini-"))) {
+    return {
+      provider: "openai",
+      openaiClient: await getGemini(),
+      keyLabel: "Gemini",
+      envVar: "GEMINI_API_KEY",
+      isGemini: true,
+    };
   }
   const provider = getProviderForModel(model);
-  return { provider, openaiClient: provider === "openai" ? await getOpenAI() : null };
+  return {
+    provider,
+    openaiClient: provider === "openai" ? await getOpenAI() : null,
+    keyLabel: provider === "openai" ? "OpenAI" : "Anthropic",
+    envVar: provider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY",
+    isGemini: false,
+  };
 }
 
 export type JudgeCriteria = {
@@ -155,14 +202,14 @@ export async function callJudgeJson({
   jsonSchema: object;
   maxTokens?: number;
 }): Promise<JudgeCallResult> {
-  const { provider, openaiClient } = await resolveModelRouting(model);
+  const { provider, openaiClient, keyLabel, envVar } = await resolveModelRouting(model);
   if (provider === "anthropic" && !(await getAnthropic())) {
     throw new Error(
       `Judge model "${model}" needs an Anthropic API key. Set ANTHROPIC_API_KEY and restart agentx-server.`
     );
   }
   if (provider === "openai" && !openaiClient) {
-    throw new Error(`Judge model "${model}" needs an OpenAI API key. Set OPENAI_API_KEY and restart agentx-server.`);
+    throw new Error(`Judge model "${model}" needs a ${keyLabel} API key. Set ${envVar} and restart agentx-server.`);
   }
 
   return callJudgeJsonShared({
@@ -239,7 +286,7 @@ export type ReconstructedContext = {
 export type ModelCompletion = { text: string; usage: { inputTokens: number; outputTokens: number } | null };
 
 export async function callModelCompletion(model: string, reconstructed: ReconstructedContext): Promise<ModelCompletion> {
-  const { provider, openaiClient } = await resolveModelRouting(model);
+  const { provider, openaiClient, keyLabel, envVar } = await resolveModelRouting(model);
 
   if (provider === "anthropic") {
     const client = await getAnthropic();
@@ -265,7 +312,7 @@ export async function callModelCompletion(model: string, reconstructed: Reconstr
 
   const client = openaiClient;
   if (!client) {
-    throw new Error(`Model "${model}" needs an OpenAI API key. Set OPENAI_API_KEY and restart agentx-server.`);
+    throw new Error(`Model "${model}" needs a ${keyLabel} API key. Set ${envVar} and restart agentx-server.`);
   }
   const messages = [
     ...(reconstructed.system ? [{ role: "system" as const, content: reconstructed.system }] : []),
@@ -320,7 +367,7 @@ export async function callModelWithTools(
   // uncapped, neither provider gets an explicit temperature.
   options?: { maxTokens?: number; temperature?: number }
 ): Promise<ModelWithToolsResult> {
-  const { provider, openaiClient } = await resolveModelRouting(model);
+  const { provider, openaiClient, keyLabel, envVar, isGemini } = await resolveModelRouting(model);
   const toolCalls: ToolCallTrace[] = [];
   let inputTokens = 0;
   let outputTokens = 0;
@@ -386,7 +433,7 @@ export async function callModelWithTools(
 
   const client = openaiClient;
   if (!client) {
-    throw new Error(`Model "${model}" needs an OpenAI API key. Set OPENAI_API_KEY and restart agentx-server.`);
+    throw new Error(`Model "${model}" needs a ${keyLabel} API key. Set ${envVar} and restart agentx-server.`);
   }
   const openaiTools: OpenAI.ChatCompletionTool[] = tools.map(t => ({
     type: "function",
@@ -407,8 +454,9 @@ export async function callModelWithTools(
       // to 'none'", confirmed against a real running model) — "none" isn't in the SDK's own
       // ReasoningEffort type yet (a newer model generation than the SDK's typings know about),
       // hence the cast; only sent when tools are actually in play, so a tool-less run is
-      // completely unaffected.
-      ...(openaiTools.length > 0 ? { reasoning_effort: "none" as OpenAI.Chat.ChatCompletionReasoningEffort } : {}),
+      // completely unaffected. Skipped for Gemini: it's an OpenAI reasoning-model-specific param
+      // Google's OpenAI-compat layer doesn't document support for.
+      ...(openaiTools.length > 0 && !isGemini ? { reasoning_effort: "none" as OpenAI.Chat.ChatCompletionReasoningEffort } : {}),
       // max_tokens is deprecated on chat completions in favor of max_completion_tokens (the
       // unified param that also covers reasoning-model completions) — only sent when overridden,
       // preserving today's "uncapped unless told otherwise" default.

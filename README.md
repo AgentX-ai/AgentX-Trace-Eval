@@ -17,7 +17,7 @@ which doesn't exist yet**, see "Running from source" below for what actually wor
 
 Prerequisites: [Go](https://go.dev/), Node.js + [Yarn](https://yarnpkg.com/), and
 [Bun](https://bun.sh/) (only needed for the compiled single-binary path below, not for day-to-day
-dev). The dashboard is the real [AgentX-web-front](https://github.com/AgentX-ai/AgentX-web-front)
+dev). The dashboard is the real [AgentX-eval-front](https://github.com/AgentX-ai/AgentX-eval-front)
 app built in self-host mode; that repo is private, so unless you have access to it, you'll use the
 prebuilt dashboard release instead of a sibling checkout — see "Dashboard release" below, neither
 is required just to build and run the engine/CLI on their own.
@@ -29,11 +29,11 @@ yarn install   # workspace install: engine/ + packages/judge-core together
 
 **Fastest loop while developing**: runs the engine directly via `tsx`, no compile step, restarts
 on file changes. `web/` isn't committed to this repo (see "What's in this repo" below), so build
-the dashboard into it once before your first run. If you have `AgentX-web-front` checked out as a
+the dashboard into it once before your first run. If you have `AgentX-eval-front` checked out as a
 sibling directory (AgentX's own team only, that repo is private, see "Dashboard release"):
 
 ```bash
-(cd ../AgentX-web-front && yarn install && yarn build:selfhost) && rm -rf web && cp -r ../AgentX-web-front/dist web
+(cd ../AgentX-eval-front && yarn install && yarn build:selfhost) && rm -rf web && cp -r ../AgentX-eval-front/dist web
 ```
 
 Otherwise, grab the prebuilt bundle instead (works for anyone, no private-repo access needed):
@@ -54,7 +54,7 @@ between the two repos yet, see "Status").
 
 **Full distribution**: compiles the engine to a real Bun-compiled binary and builds the Go CLI,
 laid out exactly the way a `brew install`/`curl | bash` install would (see `build.sh`). Builds the
-dashboard from `../AgentX-web-front` if that sibling checkout exists, otherwise downloads the
+dashboard from `../AgentX-eval-front` if that sibling checkout exists, otherwise downloads the
 prebuilt `agentx-web.tar.gz` release asset automatically (see "Dashboard release"):
 
 ```bash
@@ -94,11 +94,11 @@ OPENAI_API_KEY=sk-... ./scripts/smoke-test.sh
   (`@agentx/judge-core`) so `engine/` and AgentX's hosted SaaS backend share one implementation
   instead of maintaining separate copies.
 - `web/`: the dashboard, not tracked in this repo. Populated either by building the real
-  [AgentX-web-front](https://github.com/AgentX-ai/AgentX-web-front) app in self-host mode
+  [AgentX-eval-front](https://github.com/AgentX-ai/AgentX-eval-front) app in self-host mode
   (`VITE_SELF_HOSTED=true`, see its `.env.selfhost`/`build:selfhost`) from a sibling checkout, or
-  by downloading that same build prebuilt — see "Dashboard release". Same governance UI
-  (Trace/Evaluate/Monitor) as the hosted SaaS's Governance page, single-sourced instead of a
-  separate rebuild: self-host mode swaps out login/workspace-switching for a synthetic
+  by downloading that same build prebuilt — see "Dashboard release". Forked out of AgentX's hosted
+  SaaS frontend (Trace/Evaluate/Monitor was originally one route there, single-sourced instead of a
+  separate rebuild): self-host mode swaps out login/workspace-switching for a synthetic
   always-logged-in local user/workspace and points `restClient` at this engine's local API key
   instead of session cookies (see `src/lib/selfHostMode.ts`, `AuthProvider`/`WorkspaceProvider`,
   `initAxios.ts` there).
@@ -155,25 +155,31 @@ fields (tolerated) or nested ones (not tolerated).
 
 ## Dashboard release
 
-`AgentX-web-front` (the app that builds into `web/`) is AgentX's private, closed-source SaaS
-frontend — Governance is one page out of ~30 routes in it, most of which don't apply to
-self-host at all. Rather than open-sourcing that whole app or forking its Governance page into a
-second implementation to maintain, only its **build output** is public: a private workflow in
-that repo (`.github/workflows/publish-selfhost-web.yml`) builds it in self-host mode and uploads
-the result as `agentx-web.tar.gz`, a platform-independent asset, onto this repo's own GitHub
-releases. `install.sh`, `build.sh`, and the Homebrew formula all fetch it from there. Nobody
-installing or building this repo — including outside contributors with no access to
-`AgentX-web-front` — ever needs that private repo; only AgentX's own release process does. A
-sibling `../AgentX-web-front` checkout (see "Running from source") is a from-source alternative
-for people who do have access, not a requirement.
+`AgentX-eval-front` (the app that builds into `web/`) is AgentX's private frontend dedicated to
+this Governance dashboard — forked out of AgentX's much larger closed-source hosted SaaS frontend
+(`AgentX-web-front`), where Governance was one page out of ~30 mostly-unrelated routes, so it can
+be iterated on independently instead of navigating an unrelated app for every change. Rather than
+open-sourcing either frontend, only the **build output** is public: a private workflow in that repo
+(`.github/workflows/publish-selfhost-web.yml`) builds it in self-host mode and uploads the result
+as `agentx-web.tar.gz`, a platform-independent asset, onto this repo's own GitHub releases.
+`install.sh`, `build.sh`, and the Homebrew formula all fetch it from there. Nobody installing or
+building this repo — including outside contributors with no access to `AgentX-eval-front` — ever
+needs that private repo; only AgentX's own release process does. A sibling `../AgentX-eval-front`
+checkout (see "Running from source") is a from-source alternative for people who do have access,
+not a requirement.
 
-To cut a new dashboard build: in `AgentX-web-front`'s GitHub Actions tab, run "Publish self-host
+<!-- Transitional note, remove once AgentX-web-front's own publish-selfhost-web.yml is retired:
+AgentX-web-front (the original, much larger app Governance was forked out of) still runs its own
+copy of this same workflow in parallel for now, publishing to the same release asset — the two are
+momentarily redundant on purpose while the migration to AgentX-eval-front is being validated. -->
+
+To cut a new dashboard build: in `AgentX-eval-front`'s GitHub Actions tab, run "Publish self-host
 web bundle" (`workflow_dispatch`), optionally pointing it at a specific `AgentX-trace-eval`
 release tag (defaults to whatever's currently latest here). One-time setup that workflow needs,
-done once in `AgentX-web-front`'s repo settings: a fine-grained PAT scoped to
+done once in `AgentX-eval-front`'s repo settings: a fine-grained PAT scoped to
 `AgentX-ai/AgentX-trace-eval` with release/contents write access, saved as a secret named
 `SELFHOST_RELEASE_TOKEN`. That workflow also needs `.env.selfhost` committed in
-`AgentX-web-front` (it holds no secrets, just public build-time config like
+`AgentX-eval-front` (it holds no secrets, just public build-time config like
 `VITE_BASE_API_URL`), the same way `.env.placeholders` already is for the Docker build.
 
 ## Status
@@ -507,16 +513,16 @@ explicitly out of scope, not deferred: anything tied to AgentX's native agent-bu
 config-branching system (agentConfigVersion, robotConfigBranch, evaluationSettingsConfigVersion,
 datasetConfigVersion, agent/team-scoped run endpoints — self-host has no agent/team registry or
 config-branching at all).
-The self-host build still ships web-front's full ~30-route bundle rather than a build trimmed to
-just Governance; there's no hot-reload loop between an `AgentX-web-front` dev server and this engine
-yet (see "Running from source"). Also not yet done: the install script,
+The self-host build still ships eval-front's full ~30-route bundle rather than a build trimmed to
+just Governance (that pruning is tracked as its own follow-up in that repo); there's no hot-reload
+loop between an `AgentX-eval-front` dev server and this engine yet (see "Running from source"). Also not yet done: the install script,
 Homebrew formula, and `build.sh`'s download fallback are structurally correct and match each
 other's expected asset names/layout (verified: `build.sh`'s fallback path was exercised directly
 against the real, currently-release-less repo and degrades to an API-only build as designed,
 rather than crashing), but none of them have been exercised against a real GitHub release with
 real `agentx-web.tar.gz`/`agentx_<os>_<arch>.tar.gz` assets attached (none published yet, and the
 `publish-selfhost-web.yml` workflow that would produce the former hasn't been run, since it needs
-a one-time `SELFHOST_RELEASE_TOKEN` secret set up in `AgentX-web-front`'s repo settings first, see
+a one-time `SELFHOST_RELEASE_TOKEN` secret set up in `AgentX-eval-front`'s repo settings first, see
 "Dashboard release"); Guardrail isn't started (see the plan, it
 doesn't exist yet even on the hosted SaaS); Evaluate's async whole-run analysis
 (`analyze_run`/`get_report`) is deliberately out of scope for now.

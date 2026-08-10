@@ -9,6 +9,7 @@ const SETTINGS_ROW_ID = "default";
 export type AppSettings = {
   openaiApiKey: string | null;
   anthropicApiKey: string | null;
+  geminiApiKey: string | null;
 };
 
 type AppSettingsRow = AppSettings & { id: string; updatedAt: Date };
@@ -22,19 +23,24 @@ async function getRow(db: Db): Promise<AppSettingsRow | undefined> {
 
 export async function getAppSettings(db: Db): Promise<AppSettings> {
   const row = await getRow(db);
-  return { openaiApiKey: row?.openaiApiKey ?? null, anthropicApiKey: row?.anthropicApiKey ?? null };
+  return {
+    openaiApiKey: row?.openaiApiKey ?? null,
+    anthropicApiKey: row?.anthropicApiKey ?? null,
+    geminiApiKey: row?.geminiApiKey ?? null,
+  };
 }
 
 // Empty string is treated the same as clearing the key (not stored as "", which a later
 // `if (key)` truthiness check would still treat as falsy-but-present — nicer to just store null).
 export async function updateAppSettings(
   db: Db,
-  patch: { openaiApiKey?: string | null; anthropicApiKey?: string | null }
+  patch: { openaiApiKey?: string | null; anthropicApiKey?: string | null; geminiApiKey?: string | null }
 ): Promise<AppSettings> {
   const existing = await getRow(db);
   const next: AppSettings = {
     openaiApiKey: "openaiApiKey" in patch ? patch.openaiApiKey || null : (existing?.openaiApiKey ?? null),
     anthropicApiKey: "anthropicApiKey" in patch ? patch.anthropicApiKey || null : (existing?.anthropicApiKey ?? null),
+    geminiApiKey: "geminiApiKey" in patch ? patch.geminiApiKey || null : (existing?.geminiApiKey ?? null),
   };
   const row = { id: SETTINGS_ROW_ID, ...next, updatedAt: new Date() };
 

@@ -684,7 +684,7 @@ agentMonitoringDashboardRouter.get("/portability/models", async (req: Request, r
   res.status(200).json({ models: await listPortabilityModels(scopedDb(req)) });
 });
 
-const VALID_PROVIDERS = ["openai", "anthropic", "custom"];
+const VALID_PROVIDERS = ["openai", "anthropic", "gemini", "custom"];
 
 agentMonitoringDashboardRouter.post("/portability/models", async (req: Request, res: Response) => {
   const body = req.body ?? {};
@@ -693,7 +693,7 @@ agentMonitoringDashboardRouter.post("/portability/models", async (req: Request, 
     return;
   }
   if (!VALID_PROVIDERS.includes(body.provider)) {
-    res.status(400).json({ error: 'provider must be "openai", "anthropic", or "custom"' });
+    res.status(400).json({ error: 'provider must be "openai", "anthropic", "gemini", or "custom"' });
     return;
   }
   if (typeof body.label !== "string" || !body.label.trim()) {
@@ -731,7 +731,7 @@ agentMonitoringDashboardRouter.post("/portability/models", async (req: Request, 
 agentMonitoringDashboardRouter.put("/portability/models/:id", async (req: Request, res: Response) => {
   const body = req.body ?? {};
   if (!VALID_PROVIDERS.includes(body.provider)) {
-    res.status(400).json({ error: 'provider must be "openai", "anthropic", or "custom"' });
+    res.status(400).json({ error: 'provider must be "openai", "anthropic", "gemini", or "custom"' });
     return;
   }
   if (typeof body.label !== "string" || !body.label.trim()) {
@@ -816,6 +816,7 @@ agentMonitoringDashboardRouter.get("/settings", async (req: Request, res: Respon
         configured: !!settings.anthropicApiKey,
         masked: settings.anthropicApiKey ? maskSecret(settings.anthropicApiKey) : null,
       },
+      gemini: { configured: !!settings.geminiApiKey, masked: settings.geminiApiKey ? maskSecret(settings.geminiApiKey) : null },
     },
   });
 });
@@ -843,12 +844,15 @@ agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: 
 
 agentMonitoringDashboardRouter.put("/settings/llm-keys", async (req: Request, res: Response) => {
   const body = req.body ?? {};
-  const patch: { openaiApiKey?: string | null; anthropicApiKey?: string | null } = {};
+  const patch: { openaiApiKey?: string | null; anthropicApiKey?: string | null; geminiApiKey?: string | null } = {};
   if ("openaiApiKey" in body) {
     patch.openaiApiKey = typeof body.openaiApiKey === "string" ? body.openaiApiKey : null;
   }
   if ("anthropicApiKey" in body) {
     patch.anthropicApiKey = typeof body.anthropicApiKey === "string" ? body.anthropicApiKey : null;
+  }
+  if ("geminiApiKey" in body) {
+    patch.geminiApiKey = typeof body.geminiApiKey === "string" ? body.geminiApiKey : null;
   }
   const settings = await updateAppSettings(getDb(), patch);
   res.status(200).json({
@@ -858,6 +862,7 @@ agentMonitoringDashboardRouter.put("/settings/llm-keys", async (req: Request, re
         configured: !!settings.anthropicApiKey,
         masked: settings.anthropicApiKey ? maskSecret(settings.anthropicApiKey) : null,
       },
+      gemini: { configured: !!settings.geminiApiKey, masked: settings.geminiApiKey ? maskSecret(settings.geminiApiKey) : null },
     },
   });
 });

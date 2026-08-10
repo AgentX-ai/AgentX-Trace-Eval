@@ -1,0 +1,1 @@
+import{a5 as a,H as t,J as o}from"./index-Btr-jytv.js";const n={all:["agent-monitoring","performance"],byWorkspace:e=>[...n.all,e]},s=async e=>{const{data:r}=await t.get(o.getMonitoringPerformance,{params:{workspaceId:e}});return r},c=({workspaceId:e},{enabled:r=!0}={})=>a({queryKey:n.byWorkspace(e),queryFn:()=>s(e),enabled:r&&!!e});export{c as u};
