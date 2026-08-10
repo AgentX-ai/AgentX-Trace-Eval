@@ -11,6 +11,7 @@ import { Pool } from "pg";
 import * as sqliteSchema from "./schema.sqlite.js";
 import * as pgSchema from "./schema.pg.js";
 import { seedExampleDataIfEmpty } from "../core/seed.js";
+import { getDefaultProject } from "../core/project/projects.js";
 
 export const AGENTX_HOME = process.env.AGENTX_HOME || path.join(os.homedir(), ".agentx");
 
@@ -69,7 +70,14 @@ export async function initDb(): Promise<Db> {
     closeHandle = () => pool.end();
     await seedPortabilityModelsIfEmpty(cached);
     await ensureRealWorldPortabilityModels(cached);
-    await seedExampleDataIfEmpty(cached);
+    // seedExampleDataIfEmpty writes project-scoped rows (datasets, agents, traces, ...), so it
+    // needs a real projectId, not `cached`'s never-matches sentinel (see the Db type's own
+    // comment) — backfillDefaultProjectPostgres above already guarantees a default project
+    // exists by this point. The `?? cached` fallback is unreachable in practice, kept only so a
+    // violated invariant here degrades to today's existing (broken) behavior instead of a new,
+    // different crash.
+    const defaultProject = await getDefaultProject(cached);
+    await seedExampleDataIfEmpty(defaultProject ? withProjectId(cached, defaultProject.id) : cached);
     return cached;
   }
 
@@ -104,7 +112,9 @@ export async function initDb(): Promise<Db> {
   }
   await seedPortabilityModelsIfEmpty(cached);
   await ensureRealWorldPortabilityModels(cached);
-  await seedExampleDataIfEmpty(cached);
+  // See the postgres branch above for why this needs a real projectId, not `cached` directly.
+  const defaultProject = await getDefaultProject(cached);
+  await seedExampleDataIfEmpty(defaultProject ? withProjectId(cached, defaultProject.id) : cached);
   return cached;
 }
 

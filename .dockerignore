@@ -1,0 +1,16 @@
+node_modules
+**/node_modules
+dist
+**/dist
+web
+engine/web
+.git
+.github
+*.log
+.env
+.env.local
+.agentx
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

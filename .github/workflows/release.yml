@@ -1,8 +1,8 @@
 name: Release
 # Cross-compiles the CLI (Go) and engine (Bun, `bun build --compile`) for darwin/linux ×
 # arm64/amd64 from a single ubuntu-latest runner (no macOS runners needed, see the "Verified"
-# note below) and publishes them as a GitHub Release, matching exactly what install.sh and the
-# Homebrew formula already expect: an `agentx_<os>_<arch>.tar.gz` per platform containing
+# note below) and publishes them as a GitHub Release, matching exactly what install.sh already
+# expects: an `agentx_<os>_<arch>.tar.gz` per platform containing
 # `agentx`, `agentx-server`, `agentx-engine`. Does NOT build the dashboard (agentx-web.tar.gz) —
 # that's a separate, platform-independent asset published by AgentX-web-front's own
 # publish-selfhost-web.yml workflow onto whatever release this creates, see README's "Dashboard

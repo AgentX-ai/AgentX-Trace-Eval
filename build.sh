@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Builds a local dist/ directory laid out the same way a release tarball or `brew install` would
-# produce it (see install.sh, homebrew-tap/Formula/agentx.rb): agentx, agentx-server,
-# agentx-engine, and web/, all as siblings. Useful for testing the full distribution locally
+# Builds a local dist/ directory laid out the same way a release tarball (see install.sh) would
+# produce it: agentx, agentx-server, agentx-engine, and web/, all as siblings. Useful for testing
+# the full distribution locally
 # without needing a real GitHub release, e.g.:
 #
 #   ./build.sh

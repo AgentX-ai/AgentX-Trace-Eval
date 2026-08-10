@@ -8,16 +8,17 @@ A portable, self-hostable build of AgentX's Governance layer — **Trace**, **Ev
 your own LLM API keys.
 
 ```bash
-brew install AgentX-ai/tap/agentx   # or: curl -sSL https://get.agentx.so | bash
+curl -sSL https://raw.githubusercontent.com/AgentX-ai/AgentX-trace-eval/main/install.sh | bash
 agentx-server --dev
 ```
 
 `--dev` starts the engine (API server) on a local SQLite database, opens the dashboard in your
-browser, and prints a local API key for the SDK.
+browser, and prints a local API key for the SDK. Prefer a container? See [Docker](#docker).
 
 ## Contents
 
 - [Features](#features)
+- [Docker](#docker)
 - [Configuration](#configuration)
 - [SDK & OpenTelemetry](#sdk--opentelemetry)
 - [What's in this repo](#whats-in-this-repo)
@@ -45,6 +46,23 @@ browser, and prints a local API key for the SDK.
   model calls; nothing works without your own key, and nothing is billed through AgentX.
 - **Single binary** — the engine compiles to a native executable (via Bun) and the CLI to a native
   Go binary; end users never need Node, Bun, or Go installed.
+
+## Docker
+
+```bash
+docker build -t agentx-selfhost .
+docker run -d -p 4700:4700 -v agentx-data:/data agentx-selfhost
+```
+
+`/data` is where the default SQLite database and config live (`AGENTX_HOME`, see
+[Configuration](#configuration)) — mount a named volume so state survives a container recreate, or
+point `AGENTX_DB_URL` at your own Postgres instead and skip the volume entirely. Pass provider
+keys with `-e OPENAI_API_KEY=... -e ANTHROPIC_API_KEY=... -e GEMINI_API_KEY=...`, or set them
+later from the dashboard's Platform Settings. The image includes a `/health` `HEALTHCHECK`.
+
+By default the build downloads the latest dashboard release (see
+[Dashboard release process](#dashboard-release-process)); pin an older one with
+`--build-arg AGENTX_WEB_RELEASE_TAG=v0.1.6` if needed.
 
 ## Configuration
 
@@ -100,9 +118,9 @@ isn't attempted (no stable convention for that yet upstream).
 | `packages/judge-core/` | The LLM-as-judge prompt/scoring logic, published as `@agentx/judge-core` so `engine/` and AgentX's hosted SaaS backend share one implementation. |
 | `web/` | The dashboard — **not tracked in this repo**. Populated by building [AgentX-eval-front](https://github.com/AgentX-ai/AgentX-eval-front) in self-host mode, or by downloading its prebuilt release asset (see [Dashboard release process](#dashboard-release-process)). |
 | `skills/` | Claude Code skills for self-host users to copy into their own `.claude/skills/` — e.g. `improve-prompt/`, which drives the Prompt Registry's propose loop using Claude's own reasoning instead of a server-side judge call. |
-| `homebrew-tap/` | The Homebrew formula (`AgentX-ai/tap/agentx`). |
 | `install.sh` | The `curl \| bash` installer — downloads the platform binary from GitHub Releases. |
 | `build.sh` | Builds a local `dist/` laid out the same way a real install would, for testing the full distribution without cutting a release. |
+| `Dockerfile` | Multi-stage build producing a container image — see [Docker](#docker). |
 | `scripts/` | `smoke-test.sh` / `smoke_test.py` — end-to-end verification against a real running engine and the real Python SDK. |
 
 ## Building from source
@@ -139,8 +157,8 @@ loop wired up between the two repos yet.
 
 ### Full distribution build
 
-Compiles the engine to a Bun-compiled binary and builds the Go CLI, laid out exactly the way a
-`brew install`/`curl | bash` install would:
+Compiles the engine to a Bun-compiled binary and builds the Go CLI, laid out exactly the way the
+`curl | bash` install would:
 
 ```bash
 ./build.sh
@@ -172,9 +190,9 @@ Postgres) to verify against Postgres instead — see the script's own header for
 `AgentX-eval-front` (the app that builds into `web/`) is AgentX's private frontend dedicated to
 this Governance dashboard. Rather than open-sourcing it, only its **build output** is public: a
 workflow in that repo builds it in self-host mode and uploads the result as `agentx-web.tar.gz`
-onto this repo's own GitHub releases. `install.sh`, `build.sh`, and the Homebrew formula all fetch
-it from there — nobody installing or building this repo, including outside contributors, ever
-needs access to that private repo.
+onto this repo's own GitHub releases. `install.sh`, `build.sh`, and the `Dockerfile` all fetch it
+from there — nobody installing or building this repo, including outside contributors, ever needs
+access to that private repo.
 
 Maintainers cutting a new dashboard build: in `AgentX-eval-front`'s Actions tab, run "Publish
 self-host web bundle" (optionally targeting a specific release tag here; defaults to whatever's

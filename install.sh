@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# curl -sSL https://get.agentx.so | bash
+# curl -sSL https://raw.githubusercontent.com/AgentX-ai/AgentX-trace-eval/main/install.sh | bash
 #
 # Installs the agentx / agentx-server CLI by downloading the prebuilt binary for this platform
 # from GitHub Releases. Requires no Go, Node, or Bun on the machine running this script: those
