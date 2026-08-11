@@ -12,34 +12,34 @@ import { otelSpanToIngestInput } from "../otel/mapping.js";
 
 // A real OTLP/HTTP trace receiver: point any OpenTelemetry SDK/exporter or the Collector's
 // otlphttpexporter at this base URL (http://localhost:<port>/api/v1/otel) and it works, same as
-// pointing one at LangSmith's `/otel` endpoint — most OTel HTTP exporters append `/v1/traces` to
+// pointing one at LangSmith's `/otel` endpoint - most OTel HTTP exporters append `/v1/traces` to
 // whatever base endpoint is configured, hence mounting POST /v1/traces here rather than at the
 // router root. Auth reuses the existing requireApiKey middleware (see index.ts): set
 // OTEL_EXPORTER_OTLP_HEADERS="x-api-key=<local API key>" on the exporter, no new auth mechanism
 // needed.
 //
 // Both OTLP/HTTP wire formats are supported: protobuf (the default and, for Python's
-// opentelemetry-exporter-otlp-proto-http, the ONLY transport it ships — see otel/protoSchema.ts)
+// opentelemetry-exporter-otlp-proto-http, the ONLY transport it ships - see otel/protoSchema.ts)
 // and JSON (OTEL_EXPORTER_OTLP_PROTOCOL=http/json, common from Node/JS exporters and hand-rolled
 // clients). One incoming span becomes one AgentX trace row (core/trace/ingest.ts's existing
-// ingestTrace, reused unchanged) — see otel/mapping.ts for the GenAI/OpenLLMetry/OpenInference
+// ingestTrace, reused unchanged) - see otel/mapping.ts for the GenAI/OpenLLMetry/OpenInference
 // attribute-to-field mapping and its disclosed limitations.
 export const otlpRouter = Router();
 
 // Scoped to this router (only activates for this content-type) so it can coexist with the
-// app-level express.json() already mounted in index.ts — body-parser middlewares pass through
+// app-level express.json() already mounted in index.ts - body-parser middlewares pass through
 // untouched when the request's Content-Type doesn't match their `type` filter, so JSON requests
 // still reach this route with req.body already parsed, and protobuf requests still have an
 // unconsumed body stream for this to read.
 otlpRouter.use(express.raw({ type: "application/x-protobuf", limit: "10mb" }));
 
 // Traces ingested this way have no explicit per-call `monitor: true` opt-in on the wire (unlike
-// the SDK's tracer.trace(..., monitor=True) call) — defaulted on, since pointing an OTel exporter
+// the SDK's tracer.trace(..., monitor=True) call) - defaulted on, since pointing an OTel exporter
 // at this endpoint at all is itself the opt-in signal, and leaving it off by default would
 // silently leave Observe empty for anyone trying this out. AGENTX_OTEL_MONITOR=false disables it.
 const MONITOR_OTEL_TRACES = process.env.AGENTX_OTEL_MONITOR !== "false";
 
-// Braintrust and Langfuse both default online scoring to the trace/root level, not per-span —
+// Braintrust and Langfuse both default online scoring to the trace/root level, not per-span -
 // scoring a tool call's output as if it were the whole interaction is misleading, and it
 // multiplies judge-API calls by however many spans a trace has. Root spans (no parent_span_id)
 // always get checked; a child span (real hierarchy, from this OTel path or from a span_tree-

@@ -5,10 +5,10 @@ import { matchesAgentScope, passesSampleRate } from "./routing.js";
 import { recordEvent } from "./events.js";
 import { upsertSignal } from "./signals.js";
 
-// Promoted out of core/monitor/conditions.ts's Pattern-condition "external" detector — same
+// Promoted out of core/monitor/conditions.ts's Pattern-condition "external" detector - same
 // call-out-and-await-a-verdict shape as Online Evaluators (onlineEvaluators.ts), just with a URL
 // instead of an evaluationSettingsId as the thing being invoked. One Custom Evaluator = one URL,
-// no AND/OR/NOR composition the way a Pattern's condition list has — that composition only ever
+// no AND/OR/NOR composition the way a Pattern's condition list has - that composition only ever
 // made sense for phrase/regex/semantic rows checked against pattern-specific match targets; a
 // standalone evaluator just gets the whole trace every time.
 export type CreateCustomEvaluatorInput = {
@@ -19,7 +19,7 @@ export type CreateCustomEvaluatorInput = {
   agentIds?: string[];
   enabled?: boolean;
   // The endpoint's verdict is a boolean (`matches`), not a numeric rating like an Online
-  // Evaluator's judge score — this is the analogous "does a hit raise a Signal" knob, mirroring
+  // Evaluator's judge score - this is the analogous "does a hit raise a Signal" knob, mirroring
   // the old per-condition `negate` flag from the Pattern builder it was extracted from.
   invertMatch?: boolean;
   severity?: string;
@@ -158,7 +158,7 @@ export async function deleteCustomEvaluator(db: Db, id: string): Promise<boolean
 }
 
 // ---------------------------------------------------------------------------
-// The HTTP call itself — moved from conditions.ts's callExternalValidator, simplified for a
+// The HTTP call itself - moved from conditions.ts's callExternalValidator, simplified for a
 // standalone evaluator (no more Pattern-condition `sources`/match-target concept to thread
 // through: a Custom Evaluator always sees the whole trace).
 // ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ export type CustomEvaluatorRequest = {
   trace: { input: unknown; output: unknown; error: string | null; toolCalls: unknown };
 };
 
-// `score` is optional metadata, not a second way to decide the verdict — `matches` alone still
+// `score` is optional metadata, not a second way to decide the verdict - `matches` alone still
 // determines whether a Signal is raised (see runCustomEvaluators below). When present, it's
 // recorded alongside the event and surfaced on the resulting Signal's summary, for evaluators that
 // want to report a graded number (e.g. a confidence or severity score) without taking on a
@@ -180,7 +180,7 @@ export type CustomEvaluatorResponse = { matches: boolean; reason?: string; score
 
 const CUSTOM_EVALUATOR_TIMEOUT_MS = 8000;
 
-// Throws on any failure (network error, timeout, non-2xx, missing/non-boolean `matches`) —
+// Throws on any failure (network error, timeout, non-2xx, missing/non-boolean `matches`) -
 // deliberately not swallowed here, same posture as the callExternalValidator this was extracted
 // from. Callers (runCustomEvaluators below, and the dashboard's dry-run route) decide how to
 // present/isolate a failure; this function's only job is the call + response validation.
@@ -217,7 +217,7 @@ type ScorableTrace = {
 };
 
 // Called from both ingest paths (routes/ingest.ts, routes/otlp.ts) after every trace, independent
-// of that trace's own `monitor` flag — same "opt in by creating one" posture as
+// of that trace's own `monitor` flag - same "opt in by creating one" posture as
 // runOnlineEvaluators, which this mirrors closely. Callers MUST wrap this in a try/catch: a dead
 // endpoint must never break trace ingestion.
 export async function runCustomEvaluators(
@@ -247,7 +247,7 @@ export async function runCustomEvaluators(
         },
       });
     } catch (err) {
-      // One dead endpoint must not skip every other evaluator after it for this trace — isolated
+      // One dead endpoint must not skip every other evaluator after it for this trace - isolated
       // per-evaluator, same reasoning as onlineEvaluators.ts / detect.ts's per-pattern isolation.
       // No Signal is raised for the evaluator's own call failure, same posture a broken judge
       // config already has in runOnlineEvaluators.
@@ -256,7 +256,7 @@ export async function runCustomEvaluators(
     }
 
     const hit = evaluator.invertMatch ? !result.matches : result.matches;
-    // score is metadata only — never part of the hit/no-hit decision above, just appended to the
+    // score is metadata only - never part of the hit/no-hit decision above, just appended to the
     // summary/event for visibility (see CustomEvaluatorResponse's comment).
     const scoreSuffix = result.score !== undefined ? ` (score: ${result.score})` : "";
 
@@ -277,7 +277,7 @@ export async function runCustomEvaluators(
       signalId = signal._id;
     }
 
-    // Recorded whether or not it raised a Signal, mirroring runOnlineEvaluators — gives a full
+    // Recorded whether or not it raised a Signal, mirroring runOnlineEvaluators - gives a full
     // call history (getCustomEvaluatorEvents) to review even for a Custom Evaluator that's never
     // actually flagged anything yet.
     await recordEvent(db, {

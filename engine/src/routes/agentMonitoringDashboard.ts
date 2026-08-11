@@ -27,6 +27,11 @@ import {
   type MonitoringWindow,
 } from "../core/monitor/events.js";
 import { getTopicsTrend, getTopIntents, getIssueBreakdown, getTopicsMap } from "../core/monitor/topics.js";
+import { getJudgeCalibration } from "../core/monitor/outcomeCalibration.js";
+import { getModelComparison } from "../core/monitor/modelComparison.js";
+import { runSessionCoherenceCheck, listSessionScores } from "../core/monitor/sessionScores.js";
+import { listSessions } from "../core/monitor/sessions.js";
+import { sweepSessionsOnce } from "../core/monitor/sessionSweep.js";
 import { getCostTrend } from "../core/monitor/cost.js";
 import { listDatasets, createDataset, updateDataset } from "../core/evaluate/datasets.js";
 import {
@@ -60,7 +65,7 @@ import {
 } from "../core/project/projects.js";
 import { maskSecret } from "../core/shared/maskSecret.js";
 
-// Mounted at /api/v1/agent-monitoring — the paths AgentX-web-front's dashboard actually calls
+// Mounted at /api/v1/agent-monitoring - the paths AgentX-web-front's dashboard actually calls
 // (src/data/apiPaths.ts's getMonitoring*/*MonitoringProfile/*MonitoringPattern), a different
 // dialect from the SDK-facing /api/v1/monitor router (routes/monitor.ts): same underlying core
 // logic, different response envelope/query params to match what the dashboard's data hooks
@@ -69,7 +74,7 @@ import { maskSecret } from "../core/shared/maskSecret.js";
 // drafting) + a credit-estimate stub (self-host has no billing, see /estimate below),
 // create-evaluator-from-signal/suggest-expected-results (production-to-dataset, reusing
 // core/evaluate/datasets.ts), kpis/trend/top-failing (core/monitor/events.ts's per-occurrence
-// log), and online-evaluators (continuous judge scoring on sampled live traffic — LangSmith's
+// log), and online-evaluators (continuous judge scoring on sampled live traffic - LangSmith's
 // actual "online evals", distinct from pattern-matching; no dashboard UI for this yet, backend
 // only for now). Still out of scope: the autotune/"Improve" proposal system, tied to AgentX's
 // native agent config-branching, which self-host doesn't have. See README's Status section.
@@ -176,7 +181,7 @@ agentMonitoringDashboardRouter.get("/agents", async (req: Request, res: Response
   res.status(200).json({ agents });
 });
 
-// Explicit registration — always creates a new row, even if an agent with this name already
+// Explicit registration - always creates a new row, even if an agent with this name already
 // exists. This is the only way to end up with two agents sharing a display name; the implicit
 // path (tracing under a name with no explicit agent_id) keeps resolving to a single, stable agent
 // per distinct name via resolveAgentId (core/monitor/agents.ts), unchanged from before this
@@ -222,7 +227,7 @@ agentMonitoringDashboardRouter.put("/profiles/:agentId", async (req: Request, re
   });
   // Bare profile object, not { profile }: matches useUpdateMonitoringProfile.ts's
   // restClient.put<AgentMonitoringProfile>(...) exactly (unlike the SDK-facing /monitor router,
-  // which does wrap — two different dialects, see this file's header comment).
+  // which does wrap - two different dialects, see this file's header comment).
   res.status(200).json(profile);
 });
 
@@ -239,7 +244,7 @@ agentMonitoringDashboardRouter.get("/performance", async (req: Request, res: Res
 });
 
 // OverviewTab's KPI strip/trend chart/top-failing breakdown (src/data/queries/agentMonitoring/
-// useGetMonitoringKpis|Trend|TopFailing.ts) — windowed, unlike /performance above (all-time),
+// useGetMonitoringKpis|Trend|TopFailing.ts) - windowed, unlike /performance above (all-time),
 // backed by core/monitor/events.ts's monitor_events log rather than monitor_signals' deduped
 // aggregates. workspaceId accepted for wire compatibility with the hosted SaaS's payload shape,
 // unused (self-host is single-tenant).
@@ -260,13 +265,63 @@ agentMonitoringDashboardRouter.get("/top-failing", async (req: Request, res: Res
   res.status(200).json(await getTopFailing(scopedDb(req), parseWindow(req)));
 });
 
-// Overview's "Total LLM cost" chart (core/monitor/cost.ts) — stacked by model, priced from Model
+// Judge calibration (core/monitor/outcomeCalibration.ts) - how often AgentX's own verdict agreed
+// with a real-world outcome reported later via POST /api/v1/outcomes. Sits alongside
+// /kpis/trend/top-failing since it's the same "aggregate over a window" shape, just measuring
+// AgentX against ground truth instead of measuring the agent itself.
+agentMonitoringDashboardRouter.get("/calibration", async (req: Request, res: Response) => {
+  res.status(200).json(await getJudgeCalibration(scopedDb(req), parseWindow(req)));
+});
+
+// Per-model production comparison (core/monitor/modelComparison.ts) - quality/latency/cost/volume
+// side by side for every model seen in the window's real traffic.
+agentMonitoringDashboardRouter.get("/model-comparison", async (req: Request, res: Response) => {
+  res.status(200).json(await getModelComparison(scopedDb(req), parseWindow(req)));
+});
+
+// Session-level coherence (core/monitor/sessionScores.ts) - one real judge call over the whole
+// assembled session, on demand from the trace detail's span-tree panel. 502 for a judge failure
+// (missing key, provider outage) with the underlying message, same convention as the
+// suggest-human-feedback route above.
+agentMonitoringDashboardRouter.post("/sessions/:sessionId/coherence-check", async (req: Request, res: Response) => {
+  try {
+    const score = await runSessionCoherenceCheck(scopedDb(req), req.params.sessionId!);
+    if (!score) {
+      res.status(404).json({ error: "Session not found or has no spans" });
+      return;
+    }
+    res.status(201).json({ score });
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : "Coherence check failed" });
+  }
+});
+
+agentMonitoringDashboardRouter.get("/sessions/:sessionId/scores", async (req: Request, res: Response) => {
+  res.status(200).json({ scores: await listSessionScores(scopedDb(req), req.params.sessionId!) });
+});
+
+// The Sessions table under Observe (core/monitor/sessions.ts) - one row per conversation,
+// aggregated from the window's traces, with each session's latest coherence snapshot. Registered
+// after the two parameterized /sessions/:sessionId routes above purely for reading order; Express
+// matches literal "/sessions" before ":sessionId" either way.
+agentMonitoringDashboardRouter.get("/sessions", async (req: Request, res: Response) => {
+  res.status(200).json(await listSessions(scopedDb(req), parseWindow(req)));
+});
+
+// Manual trigger for the idle-session sweep (core/monitor/sessionSweep.ts) - the production path
+// is the 60s interval started at boot; this exists for tests and demos that shouldn't have to
+// wait a tick. Sweeps ALL projects (the sweep is instance-wide by design), auth still required.
+agentMonitoringDashboardRouter.post("/session-sweep/run", async (_req: Request, res: Response) => {
+  res.status(200).json(await sweepSessionsOnce());
+});
+
+// Overview's "Total LLM cost" chart (core/monitor/cost.ts) - stacked by model, priced from Model
 // Portability's own $/M-token table.
 agentMonitoringDashboardRouter.get("/cost-trend", async (req: Request, res: Response) => {
   res.status(200).json(await getCostTrend(scopedDb(req), parseWindow(req)));
 });
 
-// Automatic per-trace classification (core/monitor/topics.ts) — opt-in via
+// Automatic per-trace classification (core/monitor/topics.ts) - opt-in via
 // AgentMonitoringProfile.topicsEnabled, one combined payload since it's all one "Topics" sub-view.
 agentMonitoringDashboardRouter.get("/topics", async (req: Request, res: Response) => {
   const window = parseWindow(req);
@@ -278,7 +333,7 @@ agentMonitoringDashboardRouter.get("/topics", async (req: Request, res: Response
   res.status(200).json({ trend, topIntents, issueBreakdown });
 });
 
-// Topics "Map" view — a real UMAP projection of each classified trace's stored embedding, kept as
+// Topics "Map" view - a real UMAP projection of each classified trace's stored embedding, kept as
 // its own route rather than folded into GET /topics above: this is genuinely heavier compute
 // (fitting UMAP over up to 300 points) than the three cheap aggregations that endpoint already
 // combines, so a caller only pays for it when the Map tab is actually open.
@@ -287,7 +342,7 @@ agentMonitoringDashboardRouter.get("/topics/map", async (req: Request, res: Resp
   res.status(200).json(await getTopicsMap(scopedDb(req), window));
 });
 
-// Online evaluators (core/monitor/onlineEvaluators.ts): LangSmith's actual "online evals" —
+// Online evaluators (core/monitor/onlineEvaluators.ts): LangSmith's actual "online evals" -
 // a judge scored continuously against sampled live traffic, distinct from pattern-matching above.
 // CRUD mirrors /patterns exactly (same routing/sampling shape, see core/monitor/routing.ts).
 agentMonitoringDashboardRouter.get("/online-evaluators", async (req: Request, res: Response) => {
@@ -315,6 +370,8 @@ agentMonitoringDashboardRouter.post("/online-evaluators", async (req: Request, r
       enabled: body.enabled,
       alertThreshold: body.alertThreshold,
       severity: body.severity,
+      scope: typeof body.scope === "string" ? body.scope : undefined,
+      idleSeconds: typeof body.idleSeconds === "number" ? body.idleSeconds : undefined,
     });
     res.status(201).json({ evaluator });
   } catch (err) {
@@ -342,6 +399,8 @@ agentMonitoringDashboardRouter.put("/online-evaluators/:evaluatorId", async (req
       enabled: body.enabled,
       alertThreshold: body.alertThreshold,
       severity: body.severity,
+      scope: typeof body.scope === "string" ? body.scope : undefined,
+      idleSeconds: typeof body.idleSeconds === "number" ? body.idleSeconds : undefined,
     });
     if (!evaluator) {
       res.status(404).json({ error: "Online evaluator not found" });
@@ -370,7 +429,7 @@ agentMonitoringDashboardRouter.get("/online-evaluators/:evaluatorId/ratings", as
   res.status(200).json(await getOnlineEvaluatorRatings(scopedDb(req), req.params.evaluatorId!, parseWindow(req)));
 });
 
-// Individual scored traces behind the ratings chart above, worst-rated first — lets a low point
+// Individual scored traces behind the ratings chart above, worst-rated first - lets a low point
 // on that chart be traced back to exactly which conversation(s) caused it and why.
 agentMonitoringDashboardRouter.get("/online-evaluators/:evaluatorId/events", async (req: Request, res: Response) => {
   const result = await getOnlineEvaluatorEvents(scopedDb(req), req.params.evaluatorId!, parseWindow(req));
@@ -378,7 +437,7 @@ agentMonitoringDashboardRouter.get("/online-evaluators/:evaluatorId/events", asy
 });
 
 // Custom evaluators (core/monitor/customEvaluators.ts): promoted out of Pattern's condition-row
-// "external" detector — a URL the user controls, POSTed the trace, expected to answer
+// "external" detector - a URL the user controls, POSTed the trace, expected to answer
 // {matches, reason}. CRUD mirrors /online-evaluators exactly, minus the evaluationSettingsId
 // reference (there's no judge config here, just the URL itself).
 function isValidHttpUrl(value: unknown): value is string {
@@ -453,14 +512,14 @@ agentMonitoringDashboardRouter.delete("/custom-evaluators/:evaluatorId", async (
   res.status(204).send();
 });
 
-// Individual checked traces for one custom evaluator, newest first — the call-history counterpart
+// Individual checked traces for one custom evaluator, newest first - the call-history counterpart
 // to /online-evaluators/:id/events.
 agentMonitoringDashboardRouter.get("/custom-evaluators/:evaluatorId/events", async (req: Request, res: Response) => {
   const result = await getCustomEvaluatorEvents(scopedDb(req), req.params.evaluatorId!, parseWindow(req));
   res.status(200).json(result);
 });
 
-// Transient, not persisted — tests a URL before the user saves it as a real evaluator, or
+// Transient, not persisted - tests a URL before the user saves it as a real evaluator, or
 // re-tests an already-saved one's URL from the edit dialog. Always 200: the *content* signals
 // success/failure (same "never throw, always renderable" posture testCustomModelConnection uses
 // in core/evaluate/models.ts for the Model Portability "Load model" check), since a dead/slow
@@ -479,7 +538,7 @@ agentMonitoringDashboardRouter.post("/custom-evaluators/dry-run", async (req: Re
     trace: {
       input: "Sample user question: Can you help me reset my password?",
       output:
-        "Sample assistant response: Sure — I can help with that. Go to Settings > Security and click " +
+        "Sample assistant response: Sure - I can help with that. Go to Settings > Security and click " +
         "\"Reset password\". You'll get an email with a reset link that's valid for 24 hours.",
       error: null,
       toolCalls: [],
@@ -488,7 +547,7 @@ agentMonitoringDashboardRouter.post("/custom-evaluators/dry-run", async (req: Re
   const startedAt = Date.now();
   try {
     // callCustomEvaluator only distinguishes ok/not-ok (any non-2xx throws with the status folded
-    // into the error message) rather than surfacing the exact status code — good enough for this
+    // into the error message) rather than surfacing the exact status code - good enough for this
     // onboarding check, where "did it work and what did it say" matters more than the literal code.
     const response = await callCustomEvaluator(body.url, samplePayload);
     res.status(200).json({ ok: true, latencyMs: Date.now() - startedAt, response });
@@ -558,7 +617,7 @@ agentMonitoringDashboardRouter.post("/signals/:signalId/suggest-human-feedback",
 });
 
 agentMonitoringDashboardRouter.post("/signals/:signalId/suggest-expected-results", async (req: Request, res: Response) => {
-  // humanFeedback may be empty — suggestExpectedResults also accepts operator feedback already
+  // humanFeedback may be empty - suggestExpectedResults also accepts operator feedback already
   // recorded on this occurrence (via the "unify" write path, see feedback.ts) as sufficient input,
   // and throws its own error if genuinely nothing is available.
   const humanFeedback = typeof req.body?.humanFeedback === "string" ? req.body.humanFeedback.trim() : "";
@@ -579,10 +638,10 @@ agentMonitoringDashboardRouter.post("/signals/:signalId/suggest-expected-results
 
 // The production-to-dataset action (DraftEvaluatorDialog.tsx / useCreateMonitoringEvaluatorFromSignal.ts):
 // turns a flagged signal into a new golden test case. The dialog never sends a datasetId (confirmed
-// by reading DraftEvaluatorDialogBody — the hosted SaaS resolves the target dataset server-side),
+// by reading DraftEvaluatorDialogBody - the hosted SaaS resolves the target dataset server-side),
 // so self-host does the same via a deterministic per-agent convention: one dataset named
 // "Monitor findings: <agent name>", created on first use, appended to on every call after that.
-// Named by the agent's display name, not its (now opaque, generated) id — two agents sharing a
+// Named by the agent's display name, not its (now opaque, generated) id - two agents sharing a
 // name land in the same findings dataset, an acceptable minor ambiguity for an internal, low-stakes
 // naming convention, not worth a real disambiguator here.
 async function resolveMonitorFindingsDataset(db: Db, agentId: string) {
@@ -624,7 +683,7 @@ agentMonitoringDashboardRouter.post("/signals/:signalId/create-evaluator", async
     return;
   }
 
-  // signal.evidence is last-write-wins (only the latest occurrence — see signals.ts's upsertSignal),
+  // signal.evidence is last-write-wins (only the latest occurrence - see signals.ts's upsertSignal),
   // so a reviewer who picked an earlier occurrence in the dialog's picker needs that occurrence's
   // own captured input, not whatever most recently overwrote the signal's top-level evidence.
   const occurrenceId = typeof body.occurrenceId === "string" ? body.occurrenceId : undefined;
@@ -664,7 +723,7 @@ agentMonitoringDashboardRouter.post("/signals/:signalId/create-evaluator", async
   });
 });
 
-// Self-host has no billing/credits concept at all — this only exists so
+// Self-host has no billing/credits concept at all - this only exists so
 // DraftEvaluatorDialog.tsx's unconditional on-mount estimate call doesn't 404. Confirmed the
 // frontend only reads `estimatedCredits` behind a `typeof === "number"` guard and renders nothing
 // when it's absent, so a flat 0 is enough to keep that dialog's UI correct rather than
@@ -673,11 +732,11 @@ agentMonitoringDashboardRouter.post("/estimate", async (req: Request, res: Respo
   res.status(200).json({ action: req.body?.action, estimatedCredits: 0 });
 });
 
-// Model portability (core/evaluate/portability.ts) — an input-only replay of a captured trace
+// Model portability (core/evaluate/portability.ts) - an input-only replay of a captured trace
 // against alternative models, not a full agent re-run (self-host doesn't own the agent). Explicit,
 // per-trace, user-triggered only: never runs automatically, and nothing about the *comparison
 // itself* is persisted (a disclosed scope cut, matching /prompts/:id/propose's same "compute and
-// return, don't write" posture) — but the candidate models + pricing this reads from ARE
+// return, don't write" posture) - but the candidate models + pricing this reads from ARE
 // dashboard-editable (portability_models table, core/evaluate/models.ts), seeded once with a
 // small default set on first boot rather than a hardcoded array a code change was needed to fix.
 agentMonitoringDashboardRouter.get("/portability/models", async (req: Request, res: Response) => {
@@ -755,7 +814,7 @@ agentMonitoringDashboardRouter.put("/portability/models/:id", async (req: Reques
     pricePerMCacheWriteTokens: typeof body.pricePerMCacheWriteTokens === "number" ? body.pricePerMCacheWriteTokens : null,
     isDefault: typeof body.isDefault === "boolean" ? body.isDefault : undefined,
     baseUrl: typeof body.baseUrl === "string" ? body.baseUrl : null,
-    // Only included when the dashboard form actually had a non-empty value typed in — see
+    // Only included when the dashboard form actually had a non-empty value typed in - see
     // UpdatePortabilityModelInput's comment on why "omitted" (vs. an explicit "") matters here.
     ...(typeof body.apiKey === "string" && body.apiKey.trim() ? { apiKey: body.apiKey } : {}),
   });
@@ -775,7 +834,7 @@ agentMonitoringDashboardRouter.delete("/portability/models/:id", async (req: Req
   res.status(200).json({ success: true });
 });
 
-// "Load model" (PortabilityModelsPanel.tsx) — tests whatever's currently in the add/edit form,
+// "Load model" (PortabilityModelsPanel.tsx) - tests whatever's currently in the add/edit form,
 // before it's saved. Always 200s: testCustomModelConnection itself never throws, so any failure
 // reads as {live: false, error} rather than a scary 500.
 agentMonitoringDashboardRouter.post("/portability/models/test-connection", async (req: Request, res: Response) => {
@@ -796,11 +855,11 @@ agentMonitoringDashboardRouter.post("/portability/models/test-connection", async
   res.status(200).json(result);
 });
 
-// Platform Settings (AgentX-web-front's PlatformSettingsPage) — the current project's own
+// Platform Settings (AgentX-web-front's PlatformSettingsPage) - the current project's own
 // dashboard/SDK API key, plus the LLM provider keys judge.ts's getOpenAI()/getAnthropic() now
-// check before falling back to OPENAI_API_KEY/ANTHROPIC_API_KEY (instance-wide, not per-project —
-// see appSettings' own schema comment). Never returns a stored LLM key raw once set — only masked
-// (last 4 chars, see maskSecret) — unlike the requesting project's own key, which it's already
+// check before falling back to OPENAI_API_KEY/ANTHROPIC_API_KEY (instance-wide, not per-project -
+// see appSettings' own schema comment). Never returns a stored LLM key raw once set - only masked
+// (last 4 chars, see maskSecret) - unlike the requesting project's own key, which it's already
 // authenticated with (showing it back to the same caller isn't a leak; showing a *different*
 // project's key here would be, which is why this reads req.projectId, never another project's row).
 agentMonitoringDashboardRouter.get("/settings", async (req: Request, res: Response) => {
@@ -821,8 +880,8 @@ agentMonitoringDashboardRouter.get("/settings", async (req: Request, res: Respon
   });
 });
 
-// Project-level monitoring defaults (coverage/sample rate/retention/redaction/latency threshold —
-// see core/project/projects.ts's MonitoringDefaults) — moved here from being per-agent
+// Project-level monitoring defaults (coverage/sample rate/retention/redaction/latency threshold -
+// see core/project/projects.ts's MonitoringDefaults) - moved here from being per-agent
 // AgentMonitoringProfile fields, see core/monitor/profiles.ts's toWire comment.
 agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: Request, res: Response) => {
   const body = req.body ?? {};
@@ -832,12 +891,14 @@ agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: 
     retentionDays?: number;
     redactionMode?: string;
     latencyThresholdMs?: number;
+    topicsEnabled?: boolean;
   } = {};
   if (typeof body.coverageMode === "string") patch.coverageMode = body.coverageMode;
   if (typeof body.sampleRate === "number") patch.sampleRate = body.sampleRate;
   if (typeof body.retentionDays === "number") patch.retentionDays = body.retentionDays;
   if (typeof body.redactionMode === "string") patch.redactionMode = body.redactionMode;
   if (typeof body.latencyThresholdMs === "number") patch.latencyThresholdMs = body.latencyThresholdMs;
+  if (typeof body.topicsEnabled === "boolean") patch.topicsEnabled = body.topicsEnabled;
   const monitoringDefaults = await updateMonitoringDefaults(scopedDb(req), patch);
   res.status(200).json({ monitoringDefaults });
 });
@@ -872,7 +933,7 @@ agentMonitoringDashboardRouter.post("/settings/api-key/regenerate", async (req: 
   res.status(200).json({ apiKey: project?.apiKey ?? null });
 });
 
-// Reconstruction only, no model calls, no cost — lets the dashboard show "here's what we'll send"
+// Reconstruction only, no model calls, no cost - lets the dashboard show "here's what we'll send"
 // before the user commits to spending money on the real comparison below.
 agentMonitoringDashboardRouter.get("/traces/:traceId/portability-preview", async (req: Request, res: Response) => {
   const preview = await getPortabilityPreview(scopedDb(req), req.params.traceId!);

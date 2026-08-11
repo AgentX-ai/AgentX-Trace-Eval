@@ -16,7 +16,7 @@ export type CreatePatternInput = {
   severity?: string;
   polarity?: string;
   enabled?: boolean;
-  // Routing/throttling, not detection — see PatternRow.sampleRate's comment below.
+  // Routing/throttling, not detection - see PatternRow.sampleRate's comment below.
   sampleRate?: number;
   scopeMode?: string;
   agentIds?: string[];
@@ -75,7 +75,7 @@ export type PatternRow = {
   // Enforced by core/monitor/detect.ts's detectCustomPatterns via routing.ts's matchesAgentScope/
   // passesSampleRate, on the default (unscoped) sweep every ingest triggers. Not consulted on
   // runMonitorCheck's explicit-pattern_ids path (still checks matchesAgentScope there, but
-  // deliberately skips sampling — routing.ts's own comment: naming a pattern by id is "check this
+  // deliberately skips sampling - routing.ts's own comment: naming a pattern by id is "check this
   // exact one right now", not "sample this trace").
   sampleRate: number;
   scopeMode: string;
@@ -199,7 +199,7 @@ export async function updatePattern(db: Db, id: string, input: UpdatePatternInpu
 
 // Hard delete: AgentMonitoringPattern (src/types/agentMonitoring.ts) has no archived/status field
 // for the dashboard to filter on, and there's no "archived patterns" view anywhere in the
-// frontend to power — see the investigation this was scoped from. The frontend mutation is named
+// frontend to power - see the investigation this was scoped from. The frontend mutation is named
 // "archive" and its success toast says "Pattern archived", but nothing in its actual request/
 // response contract distinguishes a soft archive from a hard delete, so this does the simpler,
 // unambiguous thing. Revisit if an archived-patterns view is ever built.

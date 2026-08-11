@@ -2,17 +2,17 @@ import { nanoid } from "nanoid";
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 
-// Interactive Playground's own run history — a persistence layer that sits next to, not inside,
+// Interactive Playground's own run history - a persistence layer that sits next to, not inside,
 // playground.ts's runPlayground (still pure "compute and return", untouched by this file). Lets
 // the frontend survive a refresh and browse past runs, without turning a single model call into a
 // persisted resource itself. `snapshot`/`results` are opaque JSON as far as this file is
-// concerned — shaped by the frontend (PlaygroundTab.tsx's RunSnapshot/CellState), just stored and
+// concerned - shaped by the frontend (PlaygroundTab.tsx's RunSnapshot/CellState), just stored and
 // returned verbatim, same posture core/monitor/patterns.ts's `conditions: unknown` column has.
 
 export type PlaygroundRunRow = {
   id: string;
   projectId: string | null;
-  // Which prompt (prompts.id) this session was testing, when started from the prompt registry —
+  // Which prompt (prompts.id) this session was testing, when started from the prompt registry -
   // lets gatherPlaygroundExamples (prompts.ts) find every run that reviewed a given prompt. Null
   // for a promptless session.
   promptId: string | null;
@@ -62,14 +62,14 @@ export async function createPlaygroundRun(
   } else {
     await db.db.insert(db.schema.playgroundRuns).values(row);
   }
-  // Keep this a bounded scratch log, not an unbounded persisted resource — same "prune on write"
+  // Keep this a bounded scratch log, not an unbounded persisted resource - same "prune on write"
   // shape as core/monitor/events.ts's pruneOldEvents, count-capped instead of time-capped since
   // there's no natural per-agent partition for Playground runs.
   await prunePlaygroundRuns(db, 50);
   return { id: row.id, createdAt: now };
 }
 
-// A run that's already been pruned out from under an in-progress grid (rare — only possible if
+// A run that's already been pruned out from under an in-progress grid (rare - only possible if
 // someone runs 50+ grids without ever reloading the page in one sitting) no-ops rather than
 // throwing: the in-flight run just stops persisting further, it never breaks the UI mid-run.
 export async function updatePlaygroundRunResults(db: Db, id: string, results: unknown): Promise<void> {
@@ -82,7 +82,7 @@ export async function updatePlaygroundRunResults(db: Db, id: string, results: un
   }
 }
 
-// Every playground_runs row that reviewed a given prompt — the read side of gatherPlaygroundExamples
+// Every playground_runs row that reviewed a given prompt - the read side of gatherPlaygroundExamples
 // (core/evaluate/prompts.ts), which scans each row's opaque `results` JSON for human-reviewed
 // cells. Full rows, not summaries, since the caller needs `results` itself, not just its counts.
 export async function listPlaygroundRunsByPrompt(db: Db, promptId: string): Promise<PlaygroundRunRow[]> {

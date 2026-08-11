@@ -2,8 +2,8 @@ import { sqliteTable, text, integer, real, uniqueIndex } from "drizzle-orm/sqlit
 
 // Self-host's project registry (see core/project/projects.ts): a project's own apiKey IS what
 // selects it on every request (routes resolve `x-api-key` -> project via requireApiKey, see
-// auth/apiKey.ts) — no separate project_id needs to be sent on any call. Every other table below
-// (except portabilityModels/appSettings, which stay instance-wide — see their own comments) carries
+// auth/apiKey.ts) - no separate project_id needs to be sent on any call. Every other table below
+// (except portabilityModels/appSettings, which stay instance-wide - see their own comments) carries
 // a project_id column so one self-host instance can host multiple fully isolated projects, each
 // with its own traces/agents/patterns/datasets/prompts.
 export const projects = sqliteTable("projects", {
@@ -11,20 +11,26 @@ export const projects = sqliteTable("projects", {
   name: text("name").notNull(),
   apiKey: text("api_key").notNull(),
   // The auto-created project an existing single-project install migrates into (see storage/db.ts's
-  // backfillDefaultProjectSqlite) — always exactly one true row. Used by the unauthenticated
+  // backfillDefaultProjectSqlite) - always exactly one true row. Used by the unauthenticated
   // /dev/bootstrap endpoint to know which project's key to hand back for the zero-setup dev
   // experience, same isDefault convention already used by evaluationSettings/portabilityModels.
   isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
-  // Project-level monitoring defaults (formerly per-agent AgentMonitoringProfile fields — see
+  // Project-level monitoring defaults (formerly per-agent AgentMonitoringProfile fields - see
   // core/monitor/profiles.ts's toWire comment): apply uniformly to every agent in this project.
   // monitor_profiles keeps its own coverageMode/sampleRate/retentionDays/redactionMode columns for
-  // SDK wire-compat, but nothing reads them for behavior anymore — these are the real source of
+  // SDK wire-compat, but nothing reads them for behavior anymore - these are the real source of
   // truth as of the project-level Settings screen.
   coverageMode: text("coverage_mode").notNull().default("all"),
   sampleRate: real("sample_rate").notNull().default(1),
   retentionDays: integer("retention_days").notNull().default(30),
   redactionMode: text("redaction_mode").notNull().default("standard"),
   latencyThresholdMs: integer("latency_threshold_ms").notNull().default(20000),
+  // Topics classification opt-in (core/monitor/topics.ts's runClassification) - moved here from
+  // monitor_profiles.topicsEnabled, the last per-agent monitoring setting left behind when the
+  // rest went project-level. The old profile column still exists for wire compat but nothing
+  // reads it for behavior anymore; a one-way boot-time backfill (storage/db.ts) copies any
+  // enabled profile up to its project once, then clears the profile flags.
+  topicsEnabled: integer("topics_enabled", { mode: "boolean" }).notNull().default(false),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
 
@@ -46,13 +52,13 @@ export const traces = sqliteTable("traces", {
   performanceSummary: text("performance_summary", { mode: "json" }),
   inputTokens: integer("input_tokens"),
   outputTokens: integer("output_tokens"),
-  // Subsets of inputTokens (not additional tokens) — a prompt-caching write/read, when the
+  // Subsets of inputTokens (not additional tokens) - a prompt-caching write/read, when the
   // provider reports one. See core/trace/ingest.ts's ingestTraceSchema comment for the full
   // per-provider field mapping, and core/evaluate/models.ts's estimateCostUSD for how these price
   // differently from a regular input token.
   cacheReadTokens: integer("cache_read_tokens"),
   cacheWriteTokens: integer("cache_write_tokens"),
-  // Real span hierarchy — populated only by the OTel ingestion path (otel/mapping.ts's
+  // Real span hierarchy - populated only by the OTel ingestion path (otel/mapping.ts's
   // otelSpanToIngestInput), always null for SDK-native tracer.trace() calls, which have no span
   // concept. spanId/parentSpanId let a session's rows (sessionId = the OTel traceId) be assembled
   // into a tree; startedAt is the absolute span start (otherwise only the derived latencyMs
@@ -66,12 +72,12 @@ export const traces = sqliteTable("traces", {
   // insert time historically. `name` stays the free-text display string traced under; this is the
   // real relation every other monitor_* table's agentId column now points at too.
   agentId: text("agent_id"),
-  // Which project this trace belongs to — resolved from the ingesting request's API key, not sent
+  // Which project this trace belongs to - resolved from the ingesting request's API key, not sent
   // explicitly. Nullable/backfilled the same way agentId was (storage/db.ts's one-time migration).
   projectId: text("project_id"),
 });
 
-// Self-host's agent registry (see core/monitor/agents.ts): `name` is deliberately NOT unique — an
+// Self-host's agent registry (see core/monitor/agents.ts): `name` is deliberately NOT unique - an
 // explicit POST /agents (client.agents.register()) always creates a new row, which is the only way
 // to end up with two agents sharing a display name, disambiguated from then on by `id`. The
 // implicit path (tracing under a name with no explicit agent_id) still resolves to a single,
@@ -92,10 +98,10 @@ export const datasets = sqliteTable("datasets", {
   description: text("description"),
   numberOfRequests: integer("number_of_requests").notNull().default(1),
   // { vectorSimilarity?: { enabled, model? }, jaccardSimilarity?: { enabled }, bleuScore?: { enabled },
-  // rougeScore?: { enabled } } — matches AgentX-Python's DatasetBuilder/EvaluationSettingsBuilder
+  // rougeScore?: { enabled } } - matches AgentX-Python's DatasetBuilder/EvaluationSettingsBuilder
   // wire payload exactly, so no reshaping is needed on either side of the create/update routes.
   similarityConfig: text("similarity_config", { mode: "json" }),
-  // Array of { id, name, code, enabled } — user-defined JS/TS scoring functions, self-host only
+  // Array of { id, name, code, enabled } - user-defined JS/TS scoring functions, self-host only
   // (core/evaluate/codeScorer.ts executes `code` in-process via node:vm). Open-ended and
   // dataset-defined, unlike the 4 fixed similarity metrics above, hence one JSON column here
   // rather than a column per scorer.
@@ -126,7 +132,7 @@ export const evaluationSettings = sqliteTable("evaluation_settings", {
   // hosted SaaS's EvaluationSettings.judgePrompt/judgeModel.
   judgePrompt: text("judge_prompt"),
   judgeModel: text("judge_model"),
-  // Only meaningful for a standalone config (no dataset twin) — used by EvaluationConfigSelector
+  // Only meaningful for a standalone config (no dataset twin) - used by EvaluationConfigSelector
   // to preselect a judge config when starting a run without picking one explicitly. At most one
   // row has isDefault=true at a time (enforced in core/evaluate/evaluationSettings.ts, not here).
   isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
@@ -142,12 +148,12 @@ export const evaluationRuns = sqliteTable("evaluation_runs", {
   evaluationSubject: text("evaluation_subject", { mode: "json" }),
   // Extracted from evaluationSubject.version / evaluationSubject.metadata.version at initRun time
   // (core/evaluate/runs.ts) so it's a queryable/groupable column instead of buried in an opaque
-  // JSON blob — the external-agent analog to autotune: tag two SDK runs of the same dataset with
+  // JSON blob - the external-agent analog to autotune: tag two SDK runs of the same dataset with
   // different version labels, compare their average ratings (getVersionComparison below).
   version: text("version"),
   runSource: text("run_source"),
   sdkInfo: text("sdk_info", { mode: "json" }),
-  // [{ questionIndex, variants: string[] }] — generated once at initRun time (core/evaluate/
+  // [{ questionIndex, variants: string[] }] - generated once at initRun time (core/evaluate/
   // judge.ts's generateSmokeTestVariants) for questions with main_question.smokeTest.enabled,
   // frozen for the lifetime of the run so a later call can't see it change mid-run.
   smokeTestVariants: text("smoke_test_variants", { mode: "json" }),
@@ -173,7 +179,7 @@ export const evaluationRunResults = sqliteTable(
     isSmokeTestVariant: integer("is_smoke_test_variant", { mode: "boolean" }).notNull().default(false),
     smokeTestVariantText: text("smoke_test_variant_text"),
     // From the SDK result's `timings: { latencyMs, inputTokens, outputTokens }` (see
-    // AgentX-Python's normalize_result) — top-level input_tokens/output_tokens on the callable's
+    // AgentX-Python's normalize_result) - top-level input_tokens/output_tokens on the callable's
     // returned dict, or metadata.input_tokens/prompt_tokens as a fallback.
     latencyMs: integer("latency_ms"),
     inputTokens: integer("input_tokens"),
@@ -182,7 +188,7 @@ export const evaluationRunResults = sqliteTable(
     jaccardSimilarity: real("jaccard_similarity"),
     bleuScore: real("bleu_score"),
     rougeScore: real("rouge_score"),
-    // Array of { name, score: number | null, reasoning?, error? } — one entry per enabled code
+    // Array of { name, score: number | null, reasoning?, error? } - one entry per enabled code
     // scorer on the dataset at run time (core/evaluate/codeScorer.ts). Open-ended/named like
     // datasets.codeScorers, hence one JSON column rather than fixed columns.
     codeScorerResults: text("code_scorer_results", { mode: "json" }),
@@ -202,7 +208,7 @@ export const evaluationRunResults = sqliteTable(
   })
 );
 
-// Edit history for a dataset's own (questions-only) fields — separate log from
+// Edit history for a dataset's own (questions-only) fields - separate log from
 // evaluationSettingsVersions below even for a dataset+settings twin sharing one id, mirroring the
 // hosted SaaS's DatasetVersion/EvaluationSettingsVersion split (see core/evaluate/versions.ts).
 // One row per save that actually changed a tracked field, newest-first by createdAt; no `creator`
@@ -210,17 +216,17 @@ export const evaluationRunResults = sqliteTable(
 export const datasetVersions = sqliteTable("dataset_versions", {
   id: text("id").primaryKey(),
   datasetId: text("dataset_id").notNull(),
-  // { name, description, questions, status } — see core/evaluate/versions.ts's DATASET_SNAPSHOT_FIELDS.
+  // { name, description, questions, status } - see core/evaluate/versions.ts's DATASET_SNAPSHOT_FIELDS.
   snapshot: text("snapshot", { mode: "json" }).notNull(),
   // Computed field-diff against the prior version ("Updated acceptance criteria, questions"), or
-  // "Created" for the first version — see core/evaluate/versions.ts's buildChangeSummary. Always
+  // "Created" for the first version - see core/evaluate/versions.ts's buildChangeSummary. Always
   // present (unlike the hosted SaaS's async LLM-generated summary this mirrors in shape only).
   changeSummary: text("change_summary"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   projectId: text("project_id"),
 });
 
-// Edit history for an EvaluationSettings grading config — see datasetVersions' comment above for
+// Edit history for an EvaluationSettings grading config - see datasetVersions' comment above for
 // the general shape/rationale. Applies equally to a dataset's twin config and a standalone
 // Evaluator config (no dataset attached), since both are just rows in evaluationSettings.
 export const evaluationSettingsVersions = sqliteTable("evaluation_settings_versions", {
@@ -233,24 +239,24 @@ export const evaluationSettingsVersions = sqliteTable("evaluation_settings_versi
   projectId: text("project_id"),
 });
 
-// Interactive Playground's own run history (core/evaluate/playgroundRuns.ts) — a persistence
+// Interactive Playground's own run history (core/evaluate/playgroundRuns.ts) - a persistence
 // layer that sits next to, not inside, core/evaluate/playground.ts's runPlayground (still pure
 // "compute and return", untouched). No workspaceId column, same as monitor_patterns/
-// monitor_online_evaluators — self-host has no real multi-tenant concept, the frontend sends one
+// monitor_online_evaluators - self-host has no real multi-tenant concept, the frontend sends one
 // as a no-op query param for API-shape consistency only. Pruned to the most recent N rows on every
 // insert (see prunePlaygroundRuns), so this never grows unbounded like a real persisted resource.
 export const playgroundRuns = sqliteTable("playground_runs", {
   id: text("id").primaryKey(),
-  // { models: PortabilityModel[]; questions: (TestCase & {index})[] } — the frontend's
+  // { models: PortabilityModel[]; questions: (TestCase & {index})[] } - the frontend's
   // RunSnapshot verbatim, no transformation either direction.
   snapshot: text("snapshot", { mode: "json" }).notNull(),
-  // Record<cellKey, CellState> — the full current results map, overwritten wholesale on every
+  // Record<cellKey, CellState> - the full current results map, overwritten wholesale on every
   // incremental update (the frontend always holds the complete up-to-date object already).
   results: text("results", { mode: "json" }).notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
   projectId: text("project_id"),
-  // Which prompt (prompts.id) this session was testing, when started from the prompt registry —
+  // Which prompt (prompts.id) this session was testing, when started from the prompt registry -
   // lets a human review left on a cell here become evidence for that prompt's improvement
   // pipeline (see core/evaluate/prompts.ts's gatherPlaygroundExamples). Null for a promptless
   // session (typed directly into the message editor), same as everywhere else this stays optional.
@@ -274,7 +280,7 @@ export const monitorPatterns = sqliteTable("monitor_patterns", {
   polarity: text("polarity").notNull().default("failure"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   // Routing/throttling metadata, not part of detection itself (see core/monitor/conditions.ts for
-  // that) — not yet enforced in core/monitor/detect.ts's detectCustomPatterns (which still runs
+  // that) - not yet enforced in core/monitor/detect.ts's detectCustomPatterns (which still runs
   // every enabled pattern against every trace, unscoped/unsampled); persisted here so the
   // dashboard's pattern editor round-trips these fields instead of silently dropping them.
   sampleRate: real("sample_rate").notNull().default(1),
@@ -295,7 +301,7 @@ export const monitorProfiles = sqliteTable(
     failureDetectionEnabled: integer("failure_detection_enabled", { mode: "boolean" }).notNull().default(true),
     infoDetectionEnabled: integer("info_detection_enabled", { mode: "boolean" }).notNull().default(true),
     // Opt-in (default false): a per-trace classification judge call, real LLM spend, so existing
-    // installs shouldn't get it for free on upgrade. Reuses this profile's own sampleRate — no
+    // installs shouldn't get it for free on upgrade. Reuses this profile's own sampleRate - no
     // separate rate knob. See core/monitor/topics.ts's runClassification.
     topicsEnabled: integer("topics_enabled", { mode: "boolean" }).notNull().default(false),
     coverageMode: text("coverage_mode").notNull().default("all"),
@@ -305,7 +311,7 @@ export const monitorProfiles = sqliteTable(
     // e.g. { latencyMs: 15000 } to override the built-in "Latency regression" pattern's default.
     thresholdOverrides: text("threshold_overrides", { mode: "json" }),
     approvalPolicy: text("approval_policy", { mode: "json" }),
-    // Notification channel ids, e.g. ["slack:#alerts"] — self-host has no notification delivery
+    // Notification channel ids, e.g. ["slack:#alerts"] - self-host has no notification delivery
     // yet, stored so the dashboard's settings dialog round-trips the field.
     channels: text("channels", { mode: "json" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
@@ -313,7 +319,7 @@ export const monitorProfiles = sqliteTable(
     projectId: text("project_id"),
   },
   table => ({
-    // Unique per project+agent, not globally per agent — two different projects' agents never
+    // Unique per project+agent, not globally per agent - two different projects' agents never
     // collide on this index even if (hypothetically) their ids ever matched.
     agentIdUnique: uniqueIndex("monitor_profiles_agent_id").on(table.projectId, table.agentId),
   })
@@ -354,12 +360,12 @@ export const monitorSignals = sqliteTable(
 );
 
 // One reviewer note per POST /agent-monitoring/signals/:id/feedback call (not deduped/upserted
-// like signals themselves — each submission is its own record, matching
+// like signals themselves - each submission is its own record, matching
 // AgentSignalFeedback/SignalFeedbackDialog's "Previous feedback" list in AgentX-web-front).
 export const monitorSignalFeedback = sqliteTable("monitor_signal_feedback", {
   id: text("id").primaryKey(),
   signalId: text("signal_id").notNull(),
-  // Which occurrence (monitor_events.id) this note is about — nullable since older rows and some
+  // Which occurrence (monitor_events.id) this note is about - nullable since older rows and some
   // signal sources predate per-occurrence text ever being resolvable. See core/monitor/feedback.ts.
   eventId: text("event_id"),
   metric: text("metric").notNull(),
@@ -372,7 +378,7 @@ export const monitorSignalFeedback = sqliteTable("monitor_signal_feedback", {
   projectId: text("project_id"),
 });
 
-// One row per detection *check* (matched or healthy), timestamped — monitor_signals only stores
+// One row per detection *check* (matched or healthy), timestamped - monitor_signals only stores
 // deduped aggregates (occurrenceCount/firstSeenAt/lastSeenAt), which is enough for triage but not
 // for anything windowed (Overview's KPI strip/trend chart/top-failing breakdown all need to know
 // *when* things happened, not just totals-to-date). Written alongside monitor_signals' existing
@@ -380,7 +386,7 @@ export const monitorSignalFeedback = sqliteTable("monitor_signal_feedback", {
 export const monitorEvents = sqliteTable("monitor_events", {
   id: text("id").primaryKey(),
   // Null for a healthy-response event, since upsertSignal still writes a monitor_signals row for
-  // those (the "healthy-response" dedup key) — set to that row's id here too for consistency, kept
+  // those (the "healthy-response" dedup key) - set to that row's id here too for consistency, kept
   // nullable in case a future caller records an event with nowhere to point it.
   signalId: text("signal_id"),
   patternKey: text("pattern_key").notNull(),
@@ -390,19 +396,19 @@ export const monitorEvents = sqliteTable("monitor_events", {
   agentId: text("agent_id"),
   traceId: text("trace_id"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
-  // Set only for type: "online_eval_score" rows (core/monitor/onlineEvaluators.ts) — a continuous
+  // Set only for type: "online_eval_score" rows (core/monitor/onlineEvaluators.ts) - a continuous
   // judge rating on sampled live traffic, distinct from every other row here which is a
   // failure/healthy pattern-match tally. core/monitor/events.ts's KPI/trend classification
   // explicitly skips rows with an onlineEvaluatorId set, so this doesn't corrupt that math.
   onlineEvaluatorId: text("online_evaluator_id"),
   rating: real("rating"),
   justification: text("justification"),
-  // Set only for type: "custom_eval_check" rows (core/monitor/customEvaluators.ts) — a per-check
+  // Set only for type: "custom_eval_check" rows (core/monitor/customEvaluators.ts) - a per-check
   // boolean verdict, recorded whether or not it raised a Signal. Same "skip in KPI/trend
   // classification" treatment as onlineEvaluatorId above.
   customEvaluatorId: text("custom_evaluator_id"),
   matched: integer("matched", { mode: "boolean" }),
-  // Optional metadata a custom evaluator's endpoint can additionally report alongside `matched` —
+  // Optional metadata a custom evaluator's endpoint can additionally report alongside `matched` -
   // never drives the matched/hit decision, just recorded for visibility. Not reused for
   // onlineEvaluatorId rows (see EventRow's own comment in core/monitor/events.ts).
   score: real("score"),
@@ -410,7 +416,7 @@ export const monitorEvents = sqliteTable("monitor_events", {
 });
 
 // One row per classified trace (core/monitor/topics.ts's runClassification, gated by
-// monitor_profiles.topicsEnabled) — a separate table rather than overloading monitor_events, since
+// monitor_profiles.topicsEnabled) - a separate table rather than overloading monitor_events, since
 // "top intents this week" wants real GROUP BY-able columns, not a JSON blob stuffed into a column
 // (justification) that's already semantically owned by the online-evaluator flow.
 export const monitorClassifications = sqliteTable("monitor_classifications", {
@@ -423,7 +429,7 @@ export const monitorClassifications = sqliteTable("monitor_classifications", {
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   projectId: text("project_id"),
   // JSON-encoded number[] (text-embedding-3-small, see core/evaluate/judge.ts's computeEmbedding)
-  // of this classification's input+output text — null when no OPENAI_API_KEY was set or the
+  // of this classification's input+output text - null when no OPENAI_API_KEY was set or the
   // embeddings call failed, same graceful-degradation posture as the rest of this file. Powers
   // the Topics "Map" view's UMAP projection (core/monitor/topics.ts's getTopicsMap); not
   // backfilled for rows classified before this column existed.
@@ -431,9 +437,9 @@ export const monitorClassifications = sqliteTable("monitor_classifications", {
 });
 
 // Mirrors monitor_patterns' routing fields (sampleRate/scopeMode/agentIds, see core/monitor/
-// routing.ts) — the same filter+sample primitive, applied to a judge-scoring config instead of a
+// routing.ts) - the same filter+sample primitive, applied to a judge-scoring config instead of a
 // pattern-matching one. References an evaluationSettings row for its criteria/judge prompt/judge
-// model (evaluationSettingsId) rather than storing its own copy — that used to be inline before
+// model (evaluationSettingsId) rather than storing its own copy - that used to be inline before
 // Evaluate's standalone-config creation UI existed; now that it does, the "Evaluator" config is
 // the single source of truth, reused via EvaluationConfigSelector on the frontend.
 export const monitorOnlineEvaluators = sqliteTable("monitor_online_evaluators", {
@@ -441,7 +447,7 @@ export const monitorOnlineEvaluators = sqliteTable("monitor_online_evaluators", 
   name: text("name").notNull(),
   evaluationSettingsId: text("evaluation_settings_id"),
   // Every check here is a real LLM call against the user's own API key (unlike pattern-matching,
-  // which is usually free string/regex matching) — defaults meaningfully lower than a pattern's.
+  // which is usually free string/regex matching) - defaults meaningfully lower than a pattern's.
   sampleRate: real("sample_rate").notNull().default(0.1),
   scopeMode: text("scope_mode").notNull().default("all"),
   agentIds: text("agent_ids", { mode: "json" }),
@@ -451,11 +457,18 @@ export const monitorOnlineEvaluators = sqliteTable("monitor_online_evaluators", 
   // Pattern match does, see core/monitor/onlineEvaluators.ts's runOnlineEvaluators.
   alertThreshold: real("alert_threshold").default(5),
   severity: text("severity").notNull().default("medium"),
+  // "trace" (default): judge each sampled trace's input/output at ingest, the original behavior.
+  // "session": judge whole idle conversations instead - the sweep (core/monitor/sessionSweep.ts)
+  // assembles the session transcript once it's been quiet for idleSeconds and scores it against
+  // this evaluator's criteria, re-scoring if the session later grows. The two scopes are
+  // mutually exclusive per evaluator: a session-scoped one never runs at ingest.
+  scope: text("scope").notNull().default("trace"),
+  idleSeconds: integer("idle_seconds").notNull().default(120),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   projectId: text("project_id"),
 });
 
-// Promoted out of Pattern's condition-row "external" detector (core/monitor/conditions.ts) — a
+// Promoted out of Pattern's condition-row "external" detector (core/monitor/conditions.ts) - a
 // URL the user controls, POSTed the trace, expected to answer {matches, reason}. See
 // core/monitor/customEvaluators.ts's runCustomEvaluators for the full contract.
 export const customEvaluators = sqliteTable("custom_evaluators", {
@@ -466,8 +479,8 @@ export const customEvaluators = sqliteTable("custom_evaluators", {
   scopeMode: text("scope_mode").notNull().default("all"),
   agentIds: text("agent_ids", { mode: "json" }),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
-  // false: matches===true raises a Signal (the common case — "flag it when my endpoint says so").
-  // true: inverted, matches===false raises a Signal instead — mirrors the old per-condition
+  // false: matches===true raises a Signal (the common case - "flag it when my endpoint says so").
+  // true: inverted, matches===false raises a Signal instead - mirrors the old per-condition
   // `negate` flag from the Pattern builder this was extracted from.
   invertMatch: integer("invert_match", { mode: "boolean" }).notNull().default(false),
   severity: text("severity").notNull().default("medium"),
@@ -475,10 +488,111 @@ export const customEvaluators = sqliteTable("custom_evaluators", {
   projectId: text("project_id"),
 });
 
+// "How to invoke my deployed agent" - a plain POST endpoint the engine calls per dataset question
+// (core/evaluate/agentConnectors.ts's callAgentConnector) to drive an offline eval run without a
+// human manually running the agent and pushing results via the SDK first (see
+// runDatasetAgainstConnector). No sampleRate/scopeMode/agentIds the way customEvaluators has -
+// those are ambient per-trace routing concepts for Monitor; a connector is explicitly picked per
+// run instead, never applied automatically.
+export const agentConnectors = sqliteTable("agent_connectors", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  url: text("url").notNull(),
+  // Extra request headers (e.g. an auth token for the customer's own agent endpoint) - plaintext,
+  // same posture as appSettings' provider keys (self-host is single-user/local-disk).
+  headers: text("headers", { mode: "json" }),
+  timeoutMs: integer("timeout_ms").notNull().default(30000),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  projectId: text("project_id"),
+});
+
+// Ground truth reported back after the fact from a system AgentX doesn't own (e.g. "this incident
+// was reopened 3 days later") - closes the "who evaluates the judge" gap a pure LLM-as-judge
+// verdict can't answer on its own. traceId is the join key back to whatever verdict AgentX already
+// recorded at the time (monitor_events for production/online, evaluation_run_results.trace_id for
+// offline - both already exist on those tables), via core/monitor/outcomeCalibration.ts.
+// evaluationRunResultId is an optional more direct link when reporting against a specific offline
+// result rather than/in addition to a trace. `outcome` is a free string (e.g. "reopened",
+// "confirmed_bad", "confirmed_good"), not a rigid enum - every customer's real-world outcome
+// taxonomy differs, same "typed but extensible string" posture as monitor_profiles.channels.
+export const outcomeReports = sqliteTable("outcome_reports", {
+  id: text("id").primaryKey(),
+  traceId: text("trace_id"),
+  evaluationRunResultId: text("evaluation_run_result_id"),
+  outcome: text("outcome").notNull(),
+  // The actual calibration signal (core/monitor/outcomeCalibration.ts) - `outcome` is a free
+  // human-readable label ("reopened", "escalated to a human", ...) that AgentX has no way to
+  // classify as good/bad on its own (string-matching "reopened" as bad is guessable but wrong for
+  // plenty of real taxonomies), so the reporter states polarity explicitly instead.
+  isNegative: integer("is_negative", { mode: "boolean" }).notNull(),
+  reason: text("reason"),
+  reportedBy: text("reported_by"),
+  reportedAt: integer("reported_at", { mode: "timestamp_ms" }).notNull(),
+  projectId: text("project_id"),
+});
+
+// Session-level scores (core/monitor/sessionScores.ts) - a judge verdict over a whole multi-span
+// session's assembled conversation, not one trace's input/output. Modeled on Langfuse's
+// session-level scores (a score attaches to the sessionId directly) rather than a bespoke
+// per-feature table: `kind` is extensible ("coherence" is the first and so far only evaluator
+// kind), so a future session-level evaluator adds rows here, not a new table. driftSpanId: for
+// coherence, the specific span where the judge saw the conversation lose the thread - null when
+// coherent throughout.
+export const sessionScores = sqliteTable("session_scores", {
+  id: text("id").primaryKey(),
+  sessionId: text("session_id").notNull(),
+  kind: text("kind").notNull(),
+  rating: real("rating"),
+  justification: text("justification"),
+  driftSpanId: text("drift_span_id"),
+  // How many spans the session had when this score was computed - a session has no clean "end"
+  // event, so a score is a point-in-time snapshot; a later check on the same (now longer) session
+  // appends a new row rather than mutating this one.
+  spanCount: integer("span_count").notNull(),
+  judgeModel: text("judge_model").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  projectId: text("project_id"),
+});
+
+// Tool/skill schema registry (core/evaluate/toolSchemas.ts) - the Prompt Registry's pattern
+// applied to tool definitions: register the schema an agent's tool actually uses (name must match
+// the traced tool-call name, that's the evidence join key - see detect.ts's
+// `agent-tool-failure:<name>` patternKey), gather real failures against it, judge-propose a
+// rewrite of the description/parameter docs, human approves, version bumps. Deliberately a
+// structural near-copy of prompts/promptVersions below rather than a shared "registered asset"
+// abstraction - prompts is in production, refactoring it under a generalization wasn't worth the
+// risk for a second consumer. Unlike prompts there's no SDK runtime pull (a tool def lives
+// hardcoded in the customer's own framework, a much bigger integration ask than reading a prompt
+// string) - v1 is registry + suggestions only, applied manually.
+export const toolSchemas = sqliteTable("tool_schemas", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description"),
+  currentVersion: integer("current_version").notNull().default(1),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  projectId: text("project_id"),
+});
+
+export const toolSchemaVersions = sqliteTable("tool_schema_versions", {
+  id: text("id").primaryKey(),
+  toolSchemaId: text("tool_schema_id").notNull(),
+  version: integer("version").notNull(),
+  // The full tool definition as free text (a JSON schema, a LangChain tool docstring, whatever
+  // the customer's framework uses) - same "opaque text, judged not parsed" posture as
+  // promptVersions.text.
+  definition: text("definition").notNull(),
+  source: text("source").notNull().default("manual"),
+  reasoning: text("reasoning"),
+  basedOnVersion: integer("based_on_version"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  projectId: text("project_id"),
+});
+
 // The external-agent prompt registry (see core/evaluate/prompts.ts): AgentX doesn't own the
 // external agent's code, so it can't branch/merge/apply a config the way native autotune does.
 // Instead, like LangSmith's Prompt Hub / Langfuse's Prompt Management, AgentX becomes the
-// prompt's source of truth — the SDK pulls prompts.currentVersion's text at runtime, and a
+// prompt's source of truth - the SDK pulls prompts.currentVersion's text at runtime, and a
 // human-approved "propose improvement" step (core/evaluate/prompts.ts's
 // proposePromptImprovement, reusing core/evaluate/judge.ts's callJudgeJson) writes new rows here,
 // never straight into a caller's code.
@@ -516,20 +630,20 @@ export const promptVersions = sqliteTable(
   })
 );
 
-// Model Portability's candidate models + $/M-token pricing (core/evaluate/models.ts) —
+// Model Portability's candidate models + $/M-token pricing (core/evaluate/models.ts) -
 // dashboard-editable rather than the hardcoded array it started as, so a stale price or a missing
 // model doesn't need a code change/redeploy to fix. `id` is the model string itself (e.g.
-// "gpt-4.1", whatever gets sent to the provider's API), not a separate generated row id — that's
+// "gpt-4.1", whatever gets sent to the provider's API), not a separate generated row id - that's
 // the natural unique key here, no reason to add a second one.
 //
 // Deliberately instance-wide, not project-scoped: this is a shared reference pricing catalog, not
-// data belonging to any one project — no reason to make every new project re-enter the same
+// data belonging to any one project - no reason to make every new project re-enter the same
 // gpt-4o-mini price. (A "custom" row's own baseUrl/apiKey is per-model already, so a bring-your-own
-// endpoint one project adds is still visible to others — acceptable for a local single-operator
+// endpoint one project adds is still visible to others - acceptable for a local single-operator
 // instance; revisit if that turns out wrong in practice.)
 export const portabilityModels = sqliteTable("portability_models", {
   id: text("id").primaryKey(),
-  // "openai" | "anthropic" | "custom" — a custom row is any bring-your-own OpenAI-compatible
+  // "openai" | "anthropic" | "custom" - a custom row is any bring-your-own OpenAI-compatible
   // endpoint (vLLM, Ollama, LM Studio, ...), routed through the same "openai" call path in
   // core/evaluate/judge.ts's resolveModelRouting, just with a per-model client instead of the
   // global one.
@@ -538,16 +652,16 @@ export const portabilityModels = sqliteTable("portability_models", {
   pricePerMInputTokens: real("price_per_m_input_tokens").notNull(),
   pricePerMOutputTokens: real("price_per_m_output_tokens").notNull(),
   // Nullable: null means "not configured," and estimateCostUSD (core/evaluate/models.ts) falls back
-  // to pricePerMInputTokens above for that token type — byte-identical cost to before this feature
+  // to pricePerMInputTokens above for that token type - byte-identical cost to before this feature
   // for any model that hasn't opted in. See traces.cacheReadTokens/cacheWriteTokens's comment for
   // the full per-provider field mapping these get multiplied against.
   pricePerMCacheReadTokens: real("price_per_m_cache_read_tokens"),
   pricePerMCacheWriteTokens: real("price_per_m_cache_write_tokens"),
-  // At most one row is default at a time (enforced in core/evaluate/models.ts, not here) — sorted
+  // At most one row is default at a time (enforced in core/evaluate/models.ts, not here) - sorted
   // first by listPortabilityModels, so it's what judge-model dropdowns preselect. Same isDefault
   // convention as evaluationSettings above.
   isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
-  // Only set for provider "custom" — null for openai/anthropic rows, which use Platform Settings'
+  // Only set for provider "custom" - null for openai/anthropic rows, which use Platform Settings'
   // shared provider keys instead. apiKey is plaintext, same posture as every other secret this
   // engine stores locally (see appSettings' own comment).
   baseUrl: text("base_url"),
@@ -557,25 +671,25 @@ export const portabilityModels = sqliteTable("portability_models", {
 });
 
 // One row per evaluation run (evaluationId = evaluationRuns.id), replaced wholesale on
-// re-analyze — see core/evaluate/analysis.ts. Deliberately not the hosted SaaS's job-queue
+// re-analyze - see core/evaluate/analysis.ts. Deliberately not the hosted SaaS's job-queue
 // pipeline (no job queue exists in this engine, see routes/evaluations.ts's comment on why that
 // was left for a future pass): up to MAX_JUDGES judges independently re-rate every sampled item in
 // parallel, synchronously within the one HTTP request, no confidence-weighted fusion/tie-break.
 export const evaluationAnalyses = sqliteTable("evaluation_analyses", {
   evaluationId: text("evaluation_id").primaryKey(),
   status: text("status").notNull(),
-  // Primary/writer judge (judgeModels[0]) — kept for rows written before judgeModels existed.
+  // Primary/writer judge (judgeModels[0]) - kept for rows written before judgeModels existed.
   judgeModel: text("judge_model").notNull(),
-  // All judges used for this analysis (1-3) — see core/evaluate/analysis.ts's MAX_JUDGES. Nullable:
+  // All judges used for this analysis (1-3) - see core/evaluate/analysis.ts's MAX_JUDGES. Nullable:
   // rows written before multi-judge support only have judgeModel.
   judgeModels: text("judge_models", { mode: "json" }),
   // AnalysisSchema-shaped (src/types/evaluate.ts on the frontend) minus instructionChanges, which
-  // is always [] — self-host has no native agent config to apply a change to. Null on failure.
+  // is always [] - self-host has no native agent config to apply a change to. Null on failure.
   analysis: text("analysis", { mode: "json" }),
-  // { numberOfRuns, averageRating, minRating, maxRating, ratingVariance } — pure arithmetic over
+  // { numberOfRuns, averageRating, minRating, maxRating, ratingVariance } - pure arithmetic over
   // evaluation_run_results.rating, computed at analysis time, not re-derived per read.
   statistics: text("statistics", { mode: "json" }),
-  // The worst-N sample rows actually shown to the judge(s), each with every judge's own rating —
+  // The worst-N sample rows actually shown to the judge(s), each with every judge's own rating -
   // for the panel's judgeEvidence display.
   judgeEvidence: text("judge_evidence", { mode: "json" }),
   error: text("error"),
@@ -583,10 +697,10 @@ export const evaluationAnalyses = sqliteTable("evaluation_analyses", {
   projectId: text("project_id"),
 });
 
-// Singleton row (id is always "default") — self-host has no per-user/per-workspace settings
+// Singleton row (id is always "default") - self-host has no per-user/per-workspace settings
 // concept, so one row for the whole instance is enough. Plaintext, same security posture as the
 // .env file these keys used to live in exclusively (self-host is single-user/local-disk either
-// way) — see Platform Settings' own design note for why this isn't treated as a gap.
+// way) - see Platform Settings' own design note for why this isn't treated as a gap.
 //
 // Deliberately instance-wide, not project-scoped, same reasoning as portabilityModels above: these
 // are the running process's own OpenAI/Anthropic credentials used to actually call out for judging
@@ -618,6 +732,11 @@ export type SqliteSchema = {
   monitorClassifications: typeof monitorClassifications;
   monitorOnlineEvaluators: typeof monitorOnlineEvaluators;
   customEvaluators: typeof customEvaluators;
+  agentConnectors: typeof agentConnectors;
+  outcomeReports: typeof outcomeReports;
+  sessionScores: typeof sessionScores;
+  toolSchemas: typeof toolSchemas;
+  toolSchemaVersions: typeof toolSchemaVersions;
   prompts: typeof prompts;
   promptVersions: typeof promptVersions;
   portabilityModels: typeof portabilityModels;

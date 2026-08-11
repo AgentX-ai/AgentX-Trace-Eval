@@ -22,10 +22,10 @@ export const AGENTX_HOME = process.env.AGENTX_HOME || path.join(os.homedir(), ".
 // plan's "core governance logic uses plain CRUD, no aggregation pipelines" finding) that one
 // query API covers both: table refs differ (sqliteSchema.traces vs pgSchema.traces) but the
 // calling code is otherwise identical.
-// projectId: multi-project support (core/project/projects.ts) — every project-scoped query reads
+// projectId: multi-project support (core/project/projects.ts) - every project-scoped query reads
 // this off the Db it's given rather than taking a separate parameter, so none of core/'s ~150
 // exported functions needed a signature change to become project-aware, only their bodies. getDb()
-// below returns the cached singleton with projectId set to "" (see its own comment — a sentinel
+// below returns the cached singleton with projectId set to "" (see its own comment - a sentinel
 // that can never match a real project_id column value, so any code path that forgets to build a
 // properly-scoped Db fails closed with empty results, never a cross-project leak). Every
 // requireApiKey()-protected route builds a real one via withProjectId(getDb(), req.projectId)
@@ -65,14 +65,14 @@ export async function initDb(): Promise<Db> {
   if (url && url.startsWith("postgres")) {
     const pool = new Pool({ connectionString: url });
     await bootstrapPostgres(pool);
-    // "" is a deliberate never-matches-a-real-project sentinel — see the Db type's own comment.
+    // "" is a deliberate never-matches-a-real-project sentinel - see the Db type's own comment.
     cached = { kind: "postgres", db: drizzlePg(pool, { schema: pgSchema }), schema: pgSchema, projectId: "" };
     closeHandle = () => pool.end();
     await seedPortabilityModelsIfEmpty(cached);
     await ensureRealWorldPortabilityModels(cached);
     // seedExampleDataIfEmpty writes project-scoped rows (datasets, agents, traces, ...), so it
     // needs a real projectId, not `cached`'s never-matches sentinel (see the Db type's own
-    // comment) — backfillDefaultProjectPostgres above already guarantees a default project
+    // comment) - backfillDefaultProjectPostgres above already guarantees a default project
     // exists by this point. The `?? cached` fallback is unreachable in practice, kept only so a
     // violated invariant here degrades to today's existing (broken) behavior instead of a new,
     // different crash.
@@ -119,17 +119,17 @@ export async function initDb(): Promise<Db> {
 }
 
 // One-time seed, not a permanent hardcoded fallback: Model Portability's candidate models used to
-// be a static array (core/evaluate/models.ts) — now a dashboard-editable table
+// be a static array (core/evaluate/models.ts) - now a dashboard-editable table
 // (portability_models). Only inserts when the table is genuinely empty (a real first boot), using
 // drizzle's own cross-dialect query builder rather than hand-rolled conditional SQL across two
 // dialects, so a user who later deletes some or all of these never sees them silently reappear on
-// the next restart. Prices are approximate/point-in-time — see core/evaluate/models.ts's comment.
-// Current as of Aug 2026 — verified against platform.openai.com/docs/models and
+// the next restart. Prices are approximate/point-in-time - see core/evaluate/models.ts's comment.
+// Current as of Aug 2026 - verified against platform.openai.com/docs/models and
 // platform.claude.com's models overview at the time this list was last updated. Model lineups
 // move fast; re-check both providers' docs before trusting this list again in a few months.
 // Cache-rate ratios below follow each provider's actual published prompt-caching discount policy
 // (Anthropic: cache write ≈ 1.25x input, cache read ≈ 0.1x input; OpenAI: cached input ≈ 0.5x
-// input, no separate cache-write concept) applied against each row's own (fictional) input price —
+// input, no separate cache-write concept) applied against each row's own (fictional) input price -
 // see core/evaluate/models.ts's estimateCostUSD for how these are used.
 const DEFAULT_PORTABILITY_MODELS: Array<{
   id: string;
@@ -146,7 +146,7 @@ const DEFAULT_PORTABILITY_MODELS: Array<{
   { id: "gpt-5.6-luna", provider: "openai", label: "GPT-5.6 Luna", pricePerMInputTokens: 0.2, pricePerMOutputTokens: 1.2, pricePerMCacheReadTokens: 0.1 },
   { id: "claude-fable-5", provider: "anthropic", label: "Claude Fable 5", pricePerMInputTokens: 10.0, pricePerMOutputTokens: 50.0, pricePerMCacheReadTokens: 1.0, pricePerMCacheWriteTokens: 12.5 },
   { id: "claude-opus-5", provider: "anthropic", label: "Claude Opus 5", pricePerMInputTokens: 5.0, pricePerMOutputTokens: 25.0, pricePerMCacheReadTokens: 0.5, pricePerMCacheWriteTokens: 6.25 },
-  // Default judge model: strong quality/cost balance, far cheaper than Fable 5/Opus 5 — good
+  // Default judge model: strong quality/cost balance, far cheaper than Fable 5/Opus 5 - good
   // enough to be everyone's first pick for evaluating another agent's responses.
   {
     id: "claude-sonnet-5",
@@ -188,11 +188,11 @@ async function seedPortabilityModelsIfEmpty(db: Db): Promise<void> {
 
 // gpt-4o-mini specifically: the most commonly traced real model in the SDK's own demo scripts
 // (02_trace_your_agent.py and friends) and any bring-your-own-agent usage, so it having no price
-// in the catalog above — Overview's "Total LLM cost" silently showing $0/empty for real traced
-// usage — is a near-guaranteed first impression, not an edge case. Ensured separately from
+// in the catalog above - Overview's "Total LLM cost" silently showing $0/empty for real traced
+// usage - is a near-guaranteed first impression, not an edge case. Ensured separately from
 // seedPortabilityModelsIfEmpty above (which only ever runs once, on a genuinely empty table) so
 // this also retroactively fixes an install that already seeded the fictional catalog before this
-// was added — inserted only if this specific id is missing, never touches a price the user
+// was added - inserted only if this specific id is missing, never touches a price the user
 // already edited or a row they deliberately deleted.
 const REAL_WORLD_MODELS_TO_ENSURE: Array<{
   id: string;
@@ -211,7 +211,7 @@ const REAL_WORLD_MODELS_TO_ENSURE: Array<{
     // Real published OpenAI cached-input rate: ~half the regular input price.
     pricePerMCacheReadTokens: 0.075,
   },
-  // Real published Google list pricing (<=200k context tier) as of Gemini support landing here —
+  // Real published Google list pricing (<=200k context tier) as of Gemini support landing here -
   // same "verify against the provider's current pricing page" caveat as every other row above.
   {
     id: "gemini-2.5-pro",
@@ -279,7 +279,7 @@ type SqliteHandle = {
 // package.json) once the schema stabilizes, see plan task #107. `exec()`/`prepare()` have the same
 // signature on both better-sqlite3's and bun:sqlite's Database, so this one function serves both.
 function bootstrapSqlite(sqlite: SqliteHandle): void {
-  // CREATE UNIQUE INDEX IF NOT EXISTS only checks the index *name* — on a pre-existing install
+  // CREATE UNIQUE INDEX IF NOT EXISTS only checks the index *name* - on a pre-existing install
   // that already created these 3 with their old (pre-multi-project) column sets, the IF NOT
   // EXISTS below would otherwise silently no-op and leave the old, narrower uniqueness constraint
   // in place. Dropping first makes the recreation below actually pick up project_id. Cheap/no-op
@@ -580,6 +580,63 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       project_id TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS agent_connectors (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL,
+      headers TEXT,
+      timeout_ms INTEGER NOT NULL DEFAULT 30000,
+      created_at INTEGER NOT NULL,
+      project_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS outcome_reports (
+      id TEXT PRIMARY KEY,
+      trace_id TEXT,
+      evaluation_run_result_id TEXT,
+      outcome TEXT NOT NULL,
+      is_negative INTEGER NOT NULL,
+      reason TEXT,
+      reported_by TEXT,
+      reported_at INTEGER NOT NULL,
+      project_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS session_scores (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      rating REAL,
+      justification TEXT,
+      drift_span_id TEXT,
+      span_count INTEGER NOT NULL,
+      judge_model TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      project_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS tool_schemas (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      current_version INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      project_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS tool_schema_versions (
+      id TEXT PRIMARY KEY,
+      tool_schema_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      definition TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'manual',
+      reasoning TEXT,
+      based_on_version INTEGER,
+      created_at INTEGER NOT NULL,
+      project_id TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS prompts (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -699,7 +756,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     ["traces", "ALTER TABLE traces ADD COLUMN agent_id TEXT"],
     // Multi-project support (core/project/projects.ts): every project-scoped table gets a
     // project_id column, backfilled to one auto-created "Default" project by
-    // backfillDefaultProjectSqlite below — see that function's comment for why portability_models/
+    // backfillDefaultProjectSqlite below - see that function's comment for why portability_models/
     // app_settings are deliberately excluded from this list (they stay instance-wide).
     ["traces", "ALTER TABLE traces ADD COLUMN project_id TEXT"],
     ["agents", "ALTER TABLE agents ADD COLUMN project_id TEXT"],
@@ -720,7 +777,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     ["monitor_signal_feedback", "ALTER TABLE monitor_signal_feedback ADD COLUMN project_id TEXT"],
     ["monitor_events", "ALTER TABLE monitor_events ADD COLUMN project_id TEXT"],
     ["monitor_classifications", "ALTER TABLE monitor_classifications ADD COLUMN project_id TEXT"],
-    // Topics "Map" view (core/monitor/topics.ts's getTopicsMap) — a JSON-encoded embedding vector
+    // Topics "Map" view (core/monitor/topics.ts's getTopicsMap) - a JSON-encoded embedding vector
     // per classification, used for UMAP projection. Null for rows classified before this existed.
     ["monitor_classifications", "ALTER TABLE monitor_classifications ADD COLUMN embedding TEXT"],
     ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN project_id TEXT"],
@@ -733,15 +790,19 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     ["projects", "ALTER TABLE projects ADD COLUMN retention_days INTEGER NOT NULL DEFAULT 30"],
     ["projects", "ALTER TABLE projects ADD COLUMN redaction_mode TEXT NOT NULL DEFAULT 'standard'"],
     ["projects", "ALTER TABLE projects ADD COLUMN latency_threshold_ms INTEGER NOT NULL DEFAULT 20000"],
-    // Prompt-caching token counts (core/trace/ingest.ts's ingestTraceSchema) — subsets of
+    // Prompt-caching token counts (core/trace/ingest.ts's ingestTraceSchema) - subsets of
     // input_tokens, priced separately by estimateCostUSD when configured.
     ["traces", "ALTER TABLE traces ADD COLUMN cache_read_tokens INTEGER"],
     ["traces", "ALTER TABLE traces ADD COLUMN cache_write_tokens INTEGER"],
-    // Per-model cache-token pricing (core/evaluate/models.ts's estimateCostUSD) — null means "not
+    // Per-model cache-token pricing (core/evaluate/models.ts's estimateCostUSD) - null means "not
     // configured," falls back to price_per_m_input_tokens for that token type.
     ["portability_models", "ALTER TABLE portability_models ADD COLUMN price_per_m_cache_read_tokens REAL"],
     ["portability_models", "ALTER TABLE portability_models ADD COLUMN price_per_m_cache_write_tokens REAL"],
     ["app_settings", "ALTER TABLE app_settings ADD COLUMN gemini_api_key TEXT"],
+    ["outcome_reports", "ALTER TABLE outcome_reports ADD COLUMN is_negative INTEGER NOT NULL DEFAULT 0"],
+    ["projects", "ALTER TABLE projects ADD COLUMN topics_enabled INTEGER NOT NULL DEFAULT 0"],
+    ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN scope TEXT NOT NULL DEFAULT 'trace'"],
+    ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN idle_seconds INTEGER NOT NULL DEFAULT 120"],
   ];
   for (const [, statement] of columnMigrations) {
     try {
@@ -756,6 +817,18 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
   migrateOnlineEvaluatorsToConfigsSqlite(sqlite);
   backfillAgentsSqlite(sqlite);
   backfillDefaultProjectSqlite(sqlite);
+
+  // One-way Topics migration: the toggle moved from per-agent monitor_profiles.topics_enabled to
+  // project-level projects.topics_enabled. Copy "any agent had it on" up to the project, then
+  // clear the profile flags so this can safely run every boot: without the clear, a user turning
+  // the project-level toggle OFF would have it silently re-enabled on the next restart by the
+  // same stale profile rows.
+  sqlite.exec(`
+    UPDATE projects SET topics_enabled = 1 WHERE id IN (
+      SELECT DISTINCT project_id FROM monitor_profiles WHERE topics_enabled = 1 AND project_id IS NOT NULL
+    );
+    UPDATE monitor_profiles SET topics_enabled = 0 WHERE topics_enabled = 1;
+  `);
 }
 
 // One-time backfill: online evaluators used to store their own acceptance_criteria/
@@ -763,7 +836,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
 // evaluation_settings row (see schema.sqlite.ts's monitorOnlineEvaluators comment). Every row
 // created before this migration has evaluation_settings_id NULL but still has its legacy columns
 // physically present (added above via columnMigrations, never dropped until this function drops
-// them at the end) — read them once, materialize a real evaluation_settings row per evaluator (so
+// them at the end) - read them once, materialize a real evaluation_settings row per evaluator (so
 // existing judge criteria aren't lost), point the evaluator at it, then drop the now-unused legacy
 // columns. Safe to re-run: the SELECT only matches rows still missing evaluation_settings_id, and
 // the DROP COLUMNs are individually guarded the same way columnMigrations above are.
@@ -785,7 +858,7 @@ function migrateOnlineEvaluatorsToConfigsSqlite(sqlite: SqliteHandle): void {
       )
       .all() as typeof legacyRows;
   } catch {
-    // Legacy columns already dropped by a previous run of this migration — nothing left to do.
+    // Legacy columns already dropped by a previous run of this migration - nothing left to do.
     legacyRows = [];
   }
 
@@ -826,12 +899,12 @@ function migrateOnlineEvaluatorsToConfigsSqlite(sqlite: SqliteHandle): void {
 
 // One-time backfill for self-host's real agent registry (core/monitor/agents.ts): before this,
 // "agentId" everywhere (monitor_profiles/signals/events/classifications.agent_id,
-// monitor_patterns/monitor_online_evaluators.agent_ids) was literally the trace's `name` string —
+// monitor_patterns/monitor_online_evaluators.agent_ids) was literally the trace's `name` string -
 // there was no agents table. This seeds one `agents` row per distinct historical trace name
 // (skipped if a row with that name already exists, so a second run adds nothing new), backfills
 // the brand-new `traces.agent_id` column (guarded by `agent_id IS NULL`, a clean "not yet
 // migrated" signal since the column didn't exist before), then rewrites every other table's
-// agentId value(s) from the raw name string to that agent's real id — but only when the stored
+// agentId value(s) from the raw name string to that agent's real id - but only when the stored
 // value still matches a known *name*; a value that doesn't match any name is either already a
 // real id from a prior run of this migration or an orphaned reference, left untouched either way.
 // Nanoid-generated ids and human-typed names essentially never collide, so that check is a safe,
@@ -1218,6 +1291,63 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       project_id TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS agent_connectors (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL,
+      headers JSONB,
+      timeout_ms INTEGER NOT NULL DEFAULT 30000,
+      created_at TIMESTAMP NOT NULL,
+      project_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS outcome_reports (
+      id TEXT PRIMARY KEY,
+      trace_id TEXT,
+      evaluation_run_result_id TEXT,
+      outcome TEXT NOT NULL,
+      is_negative BOOLEAN NOT NULL,
+      reason TEXT,
+      reported_by TEXT,
+      reported_at TIMESTAMP NOT NULL,
+      project_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS session_scores (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      rating DOUBLE PRECISION,
+      justification TEXT,
+      drift_span_id TEXT,
+      span_count INTEGER NOT NULL,
+      judge_model TEXT NOT NULL,
+      created_at TIMESTAMP NOT NULL,
+      project_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS tool_schemas (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      current_version INTEGER NOT NULL DEFAULT 1,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL,
+      project_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS tool_schema_versions (
+      id TEXT PRIMARY KEY,
+      tool_schema_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      definition TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'manual',
+      reasoning TEXT,
+      based_on_version INTEGER,
+      created_at TIMESTAMP NOT NULL,
+      project_id TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS prompts (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -1360,6 +1490,18 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE portability_models ADD COLUMN IF NOT EXISTS price_per_m_cache_read_tokens DOUBLE PRECISION;
     ALTER TABLE portability_models ADD COLUMN IF NOT EXISTS price_per_m_cache_write_tokens DOUBLE PRECISION;
     ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS gemini_api_key TEXT;
+    ALTER TABLE outcome_reports ADD COLUMN IF NOT EXISTS is_negative BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS topics_enabled BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'trace';
+    ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS idle_seconds INTEGER NOT NULL DEFAULT 120;
+
+    -- One-way Topics migration, see bootstrapSqlite's equivalent for the full comment (copy any
+    -- enabled per-agent flag up to the project once, then clear the profile flags so a later
+    -- project-level "off" isn't silently re-enabled on the next boot).
+    UPDATE projects SET topics_enabled = true WHERE id IN (
+      SELECT DISTINCT project_id FROM monitor_profiles WHERE topics_enabled = true AND project_id IS NOT NULL
+    );
+    UPDATE monitor_profiles SET topics_enabled = false WHERE topics_enabled = true;
   `);
 
   await migrateOnlineEvaluatorsToConfigsPostgres(pool);
@@ -1367,7 +1509,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
   await backfillDefaultProjectPostgres(pool);
 }
 
-// Postgres mirror of migrateOnlineEvaluatorsToConfigsSqlite above — see that function's comment
+// Postgres mirror of migrateOnlineEvaluatorsToConfigsSqlite above - see that function's comment
 // for the full rationale. information_schema check up front since Postgres (unlike SQLite) errors
 // immediately on SELECTing a column that's already been dropped by a previous run, rather than
 // only erroring on the DROP itself.
@@ -1407,7 +1549,7 @@ async function migrateOnlineEvaluatorsToConfigsPostgres(pool: Pool): Promise<voi
   }
 }
 
-// Postgres mirror of backfillAgentsSqlite above — see that function's comment for the full
+// Postgres mirror of backfillAgentsSqlite above - see that function's comment for the full
 // rationale (name-vs-real-id idempotency check, why traces.agent_id is the one clean NULL-guarded
 // signal). $1/$2 placeholders instead of ? throughout, otherwise identical logic.
 async function backfillAgentsPostgres(pool: Pool): Promise<void> {
@@ -1480,7 +1622,7 @@ async function backfillAgentsPostgres(pool: Pool): Promise<void> {
   }
 }
 
-// Every table below (all except portability_models/app_settings — deliberately instance-wide, see
+// Every table below (all except portability_models/app_settings - deliberately instance-wide, see
 // their own schema.sqlite.ts comments) needs a project_id. Listed once here, shared by both
 // dialects' backfill functions below.
 const PROJECT_SCOPED_TABLES = [
@@ -1506,7 +1648,7 @@ const PROJECT_SCOPED_TABLES = [
 ];
 
 // Read directly (not via auth/apiKey.ts) to avoid a circular import: db.ts already owns
-// AGENTX_HOME and apiKey.ts already depends on db.ts for it, not the reverse — apiKey.ts will
+// AGENTX_HOME and apiKey.ts already depends on db.ts for it, not the reverse - apiKey.ts will
 // additionally depend on db.ts's getDb() once it resolves projects by key (core/project/
 // projects.ts), so db.ts must not depend back on apiKey.ts. ensureLocalApiKey() (index.ts's
 // main(), called before initDb()) guarantees config.json already exists with a real key by the
@@ -1522,8 +1664,8 @@ function readExistingLocalApiKey(): string | null {
 }
 
 // Multi-project support (core/project/projects.ts): every existing self-host install becomes one
-// "Default" project on upgrade, whose apiKey is whatever's *already* in config.json — not a freshly
-// generated one — so every already-configured SDK script and the dashboard itself keep working
+// "Default" project on upgrade, whose apiKey is whatever's *already* in config.json - not a freshly
+// generated one - so every already-configured SDK script and the dashboard itself keep working
 // with the exact key they already have; nothing about the upgrade is visible unless you explicitly
 // register a second project afterward. Safe to re-run: only creates a project if none exist yet
 // (an already-migrated install just reuses the existing Default project's id), and only backfills
@@ -1544,7 +1686,7 @@ function backfillDefaultProjectSqlite(sqlite: SqliteHandle): void {
   }
 
   // Idempotent fixup for a project row created before is_default existed (or any other reason
-  // nothing is currently marked default) — the oldest project becomes it. No-op once one already is.
+  // nothing is currently marked default) - the oldest project becomes it. No-op once one already is.
   const anyDefault = sqlite.prepare(`SELECT id FROM projects WHERE is_default = 1 LIMIT 1`).all() as { id: string }[];
   if (anyDefault.length === 0) {
     sqlite.prepare(`UPDATE projects SET is_default = 1 WHERE id = ?`).run(defaultProjectId);
@@ -1555,7 +1697,7 @@ function backfillDefaultProjectSqlite(sqlite: SqliteHandle): void {
   }
 }
 
-// Postgres mirror of backfillDefaultProjectSqlite above — see that function's comment for the
+// Postgres mirror of backfillDefaultProjectSqlite above - see that function's comment for the
 // full rationale.
 async function backfillDefaultProjectPostgres(pool: Pool): Promise<void> {
   const { rows: existing } = await pool.query<{ id: string }>(`SELECT id FROM projects ORDER BY created_at ASC LIMIT 1`);

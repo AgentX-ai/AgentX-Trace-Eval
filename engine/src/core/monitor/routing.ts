@@ -5,7 +5,7 @@
 
 // "selected", not "specific": matches AgentX-web-front's actual convention exactly
 // (PatternApplyToAgentsDialog.tsx/monitoringUnitSettingsUtils.ts both write scopeMode: "selected"
-// when scoping to specific agents — verified by reading the real dashboard code, not guessed).
+// when scoping to specific agents - verified by reading the real dashboard code, not guessed).
 // Getting this string wrong silently no-ops the entire scoping feature from the real UI: every
 // non-"all" value up to "specific" would incorrectly fall through to "matches everything".
 export function matchesAgentScope(row: { scopeMode: string; agentIds: unknown }, agentId: string | null): boolean {
@@ -16,7 +16,7 @@ export function matchesAgentScope(row: { scopeMode: string; agentIds: unknown },
   return agentId !== null && agentIds.includes(agentId);
 }
 
-// Sampling is meant for automatic sweeps, not an explicit "check this exact one" request — a
+// Sampling is meant for automatic sweeps, not an explicit "check this exact one" request - a
 // caller naming something by id is asking "does this match right now", not "sample this trace".
 export function passesSampleRate(sampleRate: number): boolean {
   if (sampleRate >= 1) {

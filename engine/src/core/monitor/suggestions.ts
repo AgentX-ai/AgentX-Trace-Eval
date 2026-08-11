@@ -5,7 +5,7 @@ import { listFeedbackForSignal } from "./feedback.js";
 
 // Both of these reuse the same BYO OPENAI_API_KEY/ANTHROPIC_API_KEY judge-calling helper Monitor's
 // semantic pattern detector and Evaluate's judge scoring already use (core/evaluate/judge.ts),
-// rather than a separate LLM integration — one place that throws a clear "set OPENAI_API_KEY"
+// rather than a separate LLM integration - one place that throws a clear "set OPENAI_API_KEY"
 // error when no key is configured, instead of three.
 
 const regexSchema = { type: "object", properties: { regex: { type: "string" } }, required: ["regex"] };
@@ -32,7 +32,7 @@ export async function generateRegex(description: string): Promise<string> {
 const feedbackSchema = { type: "object", properties: { feedback: { type: "string" } }, required: ["feedback"] };
 
 // Signal.evidence/summary are last-write-wins (upsertSignal overwrites them on every repeat match,
-// see signals.ts) — always the LATEST occurrence, not necessarily the one the reviewer picked in
+// see signals.ts) - always the LATEST occurrence, not necessarily the one the reviewer picked in
 // DraftEvaluatorDialog's occurrence picker. occurrenceId (an occurrence's event id, from
 // signal.occurrences[].id) lets the caller pin these to a specific occurrence's real captured
 // input/output instead, resolved by getSignal via resolveOccurrenceEvidence. Falls back to the
@@ -57,7 +57,7 @@ function resolveOccurrenceContext(
 }
 
 // AgentX-web-front's DraftEvaluatorDialog shows this verbatim in a "review before accepting" card
-// (see useSuggestMonitoringHumanFeedback.ts) — a starting draft for a human reviewer to edit, not
+// (see useSuggestMonitoringHumanFeedback.ts) - a starting draft for a human reviewer to edit, not
 // a final judgment, so the prompt asks for a short, reviewer-voice note rather than a rating.
 export async function suggestHumanFeedback(db: Db, signalId: string, occurrenceId?: string): Promise<string> {
   const signal = await getSignal(db, signalId);
@@ -96,7 +96,7 @@ const expectedResultsSchema = {
 
 // Enterprise/multi-operator case: several reviewers may each leave a note on the same occurrence
 // (via SignalFeedbackDialog or DraftEvaluatorDialog's own "Human feedback" field, which now writes
-// through to the same table — see feedback.ts) before anyone drafts a test case from it. Pulls
+// through to the same table - see feedback.ts) before anyone drafts a test case from it. Pulls
 // every recorded note for this specific occurrence so drafting can build on accumulated feedback
 // instead of only whatever's typed in the current session.
 async function getOccurrenceFeedback(db: Db, signalId: string, occurrenceId?: string): Promise<string[]> {
@@ -108,10 +108,10 @@ async function getOccurrenceFeedback(db: Db, signalId: string, occurrenceId?: st
 }
 
 // Drafts the "correct" answer field for DraftEvaluatorDialog's create-evaluator flow (routes/
-// agentMonitoringDashboard.ts), given a human reviewer's note on what was actually wrong —
+// agentMonitoringDashboard.ts), given a human reviewer's note on what was actually wrong -
 // the same reviewer-voice framing as suggestHumanFeedback above, but proposing the fix rather
 // than describing the problem. humanFeedback may be empty if operator feedback already recorded on
-// this occurrence is enough to go on — the route only requires that at least one of the two exists.
+// this occurrence is enough to go on - the route only requires that at least one of the two exists.
 export async function suggestExpectedResults(
   db: Db,
   signalId: string,
@@ -131,7 +131,7 @@ export async function suggestExpectedResults(
   const context = resolveOccurrenceContext(signal, occurrenceId);
   const userMessage = [
     "A reviewer flagged this agent response as wrong and explained why. Draft what the agent's ",
-    "response SHOULD have said instead — this becomes the expected answer in a golden test case, ",
+    "response SHOULD have said instead - this becomes the expected answer in a golden test case, ",
     "so write the ideal response itself, not a description of the fix.",
     "",
     `Issue: ${context.summary}`,

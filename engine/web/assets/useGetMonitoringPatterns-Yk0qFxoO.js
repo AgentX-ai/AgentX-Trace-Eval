@@ -1,0 +1,1 @@
+import{a5 as e,H as r,J as s}from"./index-BX7IFddg.js";const a={all:["agent-monitoring","patterns"],byWorkspace:t=>[...a.all,t]},o=async t=>{const{data:n}=await r.get(s.getMonitoringPatterns,{params:{workspaceId:t}});return n.patterns},g=({workspaceId:t},{enabled:n=!0}={})=>e({queryKey:a.byWorkspace(t),queryFn:()=>o(t),enabled:n&&!!t});export{a as m,g as u};

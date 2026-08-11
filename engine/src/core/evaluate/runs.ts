@@ -85,8 +85,8 @@ async function getDatasetRow(db: Db, id: string) {
 // ---------------------------------------------------------------------------
 
 // Extracted from evaluationSubject.version (if the SDK ever adds a first-class field) or
-// evaluationSubject.metadata.version (works today, zero SDK changes needed — see
-// AgentX-Python's EvaluationSubject.metadata, a free-form dict) — the external-agent analog to
+// evaluationSubject.metadata.version (works today, zero SDK changes needed - see
+// AgentX-Python's EvaluationSubject.metadata, a free-form dict) - the external-agent analog to
 // autotune: tag two SDK runs of the same dataset with different labels, compare their average
 // ratings (getVersionComparison below) instead of AgentX branching/merging a config it doesn't own.
 function extractVersion(evaluationSubject: unknown): string | null {
@@ -204,7 +204,20 @@ type SimilarityScores = {
   rougeScore: number | null;
 };
 
+// Minimal local trace read (id + toolCalls only, in effect) rather than importing
+// core/trace/ingest.ts's getTraceRow - keeps core/evaluate free of an import into core/trace,
+// which pulls in the classification/pricing graph this module doesn't need.
+async function getTraceRowForScoring(db: Db, traceId: string): Promise<{ toolCalls: unknown } | null> {
+  const cond = and(eq(db.schema.traces.id, traceId), eq(db.schema.traces.projectId, db.projectId));
+  const row =
+    db.kind === "sqlite"
+      ? (db.db.select().from(db.schema.traces).where(cond).all()[0] as { toolCalls: unknown } | undefined)
+      : ((await db.db.select().from(db.schema.traces).where(cond))[0] as { toolCalls: unknown } | undefined);
+  return row ?? null;
+}
+
 async function scoreOneResult(
+  db: Db,
   config: ResolvedRunConfig,
   item: SubmittedResult
 ): Promise<{ rating: number; justification: string } & SimilarityScores & { codeScorerResults: CodeScorerResult[] }> {
@@ -212,6 +225,17 @@ async function scoreOneResult(
   const mainQ = question?.main_question;
   const expected = mainQ?.expectedResults;
   const actual = item.output?.text;
+
+  // The linked trace's recorded tool calls, when the result carries a traceId and any scorer will
+  // actually run - lets a code scorer assert on tool behavior (see codeScorer.ts's ScorerArgs).
+  // One cheap local row read, skipped entirely for the common no-scorers case.
+  let toolCalls: unknown;
+  if (item.traceId && config.codeScorers.length > 0) {
+    const trace = await getTraceRowForScoring(db, item.traceId);
+    if (trace && Array.isArray(trace.toolCalls) && trace.toolCalls.length > 0) {
+      toolCalls = trace.toolCalls;
+    }
+  }
 
   const [judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore, codeScorerResults] = await Promise.all([
     scoreAgainstCriteria(config, {
@@ -227,11 +251,11 @@ async function scoreOneResult(
     config.similarityConfig.bleuScore?.enabled ? computeBleuScore(expected, actual) : null,
     config.similarityConfig.rougeScore?.enabled ? computeRougeScore(expected, actual) : null,
     // Each code scorer isolates its own failure into { score: null, error } (see codeScorer.ts's
-    // runCodeScorer) — a broken/timed-out scorer never rejects this Promise.all or takes down the
+    // runCodeScorer) - a broken/timed-out scorer never rejects this Promise.all or takes down the
     // judge rating / similarity scores alongside it.
     Promise.all(
       config.codeScorers.map(scorer =>
-        runCodeScorer(scorer, { input: item.input?.query || "", output: actual || "", expected })
+        runCodeScorer(scorer, { input: item.input?.query || "", output: actual || "", expected, toolCalls })
       )
     ),
   ]);
@@ -285,7 +309,7 @@ export async function appendResults(
       justification = `Case failed with error: ${item.error.type}: ${item.error.message}`;
     } else {
       try {
-        const scored = await scoreOneResult(config, item);
+        const scored = await scoreOneResult(db, config, item);
         rating = scored.rating;
         justification = scored.justification;
         similarity = scored;
@@ -390,6 +414,24 @@ export async function finalizeRun(db: Db, runId: string) {
   return { runId, status: "completed" };
 }
 
+// Sibling to finalizeRun above, for a run that never made it that far - used by
+// connectorRun.ts's background driver when the whole run blows up unexpectedly (not a
+// per-question failure, which already isolates into that question's own {error} result via
+// appendResults; this is for something outside that, e.g. the dataset itself vanishing mid-run).
+export async function failRun(db: Db, runId: string) {
+  const run = await getRunRow(db, runId);
+  if (!run) {
+    return null;
+  }
+  const updateCond = and(eq(db.schema.evaluationRuns.id, runId), eq(db.schema.evaluationRuns.projectId, db.projectId));
+  if (db.kind === "sqlite") {
+    await db.db.update(db.schema.evaluationRuns).set({ status: "failed" }).where(updateCond);
+  } else {
+    await db.db.update(db.schema.evaluationRuns).set({ status: "failed" }).where(updateCond);
+  }
+  return { runId, status: "failed" };
+}
+
 export async function getRun(db: Db, runId: string) {
   const run = await getRunRow(db, runId);
   if (!run) {
@@ -488,7 +530,7 @@ export async function getRunResults(db: Db, runId: string): Promise<RunResultRow
 // ---------------------------------------------------------------------------
 // Version comparison (routes/evaluateDashboard.ts): the external-agent analog to AgentX's native
 // autotune. Run the same external agent twice against a dataset, tag each run with a version
-// label (see extractVersion above), see which one scored higher — the same candidateAvg >=
+// label (see extractVersion above), see which one scored higher - the same candidateAvg >=
 // baselineAvg check native autotune's /validate does, just comparing two already-computed run
 // averages instead of two branch-scoped evaluations, since self-host owns no agent config to
 // branch/merge/apply in the first place.
@@ -554,7 +596,7 @@ export async function getVersionComparison(db: Db, datasetId: string): Promise<V
   }
 
   // A true average across every rated result in a version's runs, not an average of per-run
-  // averages — averaging averages would misweight versions whose runs have different result
+  // averages - averaging averages would misweight versions whose runs have different result
   // counts (e.g. one run of 50 questions vs three runs of 5).
   for (const result of results) {
     if (result.rating == null) {

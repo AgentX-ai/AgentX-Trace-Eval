@@ -16,7 +16,7 @@ export type ProfileRow = {
   enabled: boolean;
   failureDetectionEnabled: boolean;
   infoDetectionEnabled: boolean;
-  // Opt-in (default false) — see core/monitor/topics.ts's runClassification for what this gates.
+  // Opt-in (default false) - see core/monitor/topics.ts's runClassification for what this gates.
   topicsEnabled: boolean;
   coverageMode: string;
   sampleRate: number;
@@ -36,7 +36,7 @@ export type ProfileRow = {
 // branch there.
 //
 // coverageMode/sampleRate/retentionDays/redactionMode/thresholdOverrides.latencyMs are no longer
-// read from `row` for any actual behavior (see core/project/projects.ts's MonitoringDefaults) —
+// read from `row` for any actual behavior (see core/project/projects.ts's MonitoringDefaults) -
 // they moved to project-level Settings. Still returned here, overlaid from `defaults`, so the SDK
 // and any remaining per-agent reader see the *effective* values rather than a stale per-agent copy
 // (and so AgentX-Python's MonitorProfile model, which still expects these fields, keeps working
@@ -185,7 +185,7 @@ export async function listProfilesWire(db: Db) {
 }
 
 // Resolves the latency threshold the built-in "Latency regression" check uses. Project-level
-// (see core/project/projects.ts's MonitoringDefaults) — no longer a per-agent override.
+// (see core/project/projects.ts's MonitoringDefaults) - no longer a per-agent override.
 // DEFAULT_LATENCY_THRESHOLD_MS is only reachable pre-migration/as a defensive fallback, the
 // `latency_threshold_ms` column itself already defaults to the same value.
 export async function resolveLatencyThresholdMs(db: Db): Promise<number> {

@@ -18,7 +18,7 @@ export type NormalizedSpan = {
 };
 
 // Bytes fields (trace/span/parent-span id) are base64 in both the protobuf-decoded object
-// (bytes: String, see protoTypes.ts) and a spec-compliant OTLP/JSON body — same conversion either
+// (bytes: String, see protoTypes.ts) and a spec-compliant OTLP/JSON body - same conversion either
 // way. Rendered as hex (32/16 chars) to match how every OTel backend and the W3C tracecontext spec
 // display ids, not how they're transmitted.
 function base64ToHex(b64: string | undefined | null): string | null {
@@ -29,7 +29,7 @@ function base64ToHex(b64: string | undefined | null): string | null {
 }
 
 // A handful of real-world JSON producers emit snake_case (the literal .proto field names) instead
-// of the protobuf-JSON-mapping's canonical lowerCamelCase — cheap to tolerate for the multi-word
+// of the protobuf-JSON-mapping's canonical lowerCamelCase - cheap to tolerate for the multi-word
 // top-level fields, so accept either rather than requiring exact spec compliance from every body.
 function pick<T>(obj: Record<string, unknown> | undefined, camel: string, snake: string): T | undefined {
   if (!obj) {
@@ -39,7 +39,7 @@ function pick<T>(obj: Record<string, unknown> | undefined, camel: string, snake:
 }
 
 // Accepts the same shape whether it came from decodeProtobufExportRequest() or was parsed
-// directly from a JSON request body — both are plain objects with (mostly) camelCase keys by the
+// directly from a JSON request body - both are plain objects with (mostly) camelCase keys by the
 // time they reach here, see protoTypes.ts's toObject options comment.
 export function normalizeExportRequest(parsed: Record<string, unknown>): NormalizedSpan[] {
   const spans: NormalizedSpan[] = [];

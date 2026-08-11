@@ -16,7 +16,7 @@ export type PatternCondition = {
 };
 
 // Returns a reason alongside the boolean so a caller can surface *why* something matched, not
-// just that it did — semantic's LLM judge naturally produces one; phrase/regex don't and simply
+// just that it did - semantic's LLM judge naturally produces one; phrase/regex don't and simply
 // omit it.
 export type DetectorResult = { matched: boolean; reason?: string };
 
@@ -112,7 +112,7 @@ export async function evaluatePatternConditions({
     if (condition.negate) {
       value = !value;
     }
-    // Only worth surfacing when this row actually contributed a "yes" to the final verdict — a
+    // Only worth surfacing when this row actually contributed a "yes" to the final verdict - a
     // reason explaining why a negated-away or otherwise-irrelevant row matched would just be
     // confusing noise on the resulting signal.
     if (value && result.reason) {

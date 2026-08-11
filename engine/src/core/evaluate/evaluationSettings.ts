@@ -25,7 +25,7 @@ export type CreateEvaluationSettingsInput = {
   evaluationCriteria?: string;
   judgePrompt?: string;
   judgeModel?: string;
-  // Only meaningful for a standalone config — see the isDefault comment on the schema column.
+  // Only meaningful for a standalone config - see the isDefault comment on the schema column.
   isDefault?: boolean;
   status?: string;
 };
@@ -69,7 +69,7 @@ function toWire(row: EvaluationSettingsRow) {
   };
 }
 
-// At most one standalone config is "default" at a time (EvaluationConfigSelector preselects it) —
+// At most one standalone config is "default" at a time (EvaluationConfigSelector preselects it) -
 // clear any existing default before a create/update sets a new one, mirroring the hosted SaaS's
 // single-default invariant.
 async function clearDefaultEvaluationSettings(db: Db, exceptId?: string): Promise<void> {
@@ -120,7 +120,7 @@ export async function createEvaluationSettings(db: Db, input: CreateEvaluationSe
 
 // Full replace, same convention as updateDataset. Silently no-ops if the id doesn't exist (a
 // dashboard-created dataset's evaluationSettings twin should always exist by the time an edit can
-// happen, but this isn't assumed) — getMergedEvaluationSettings in evaluateDashboard.ts falls back
+// happen, but this isn't assumed) - getMergedEvaluationSettings in evaluateDashboard.ts falls back
 // to the dataset's own criteria when the twin is missing, same as resolveRunConfig does at run time.
 export async function updateEvaluationSettings(db: Db, id: string, input: UpdateEvaluationSettingsInput) {
   const before = await getEvaluationSettings(db, id);
@@ -149,7 +149,7 @@ export async function updateEvaluationSettings(db: Db, id: string, input: Update
   return after;
 }
 
-// Sparse patch, unlike updateEvaluationSettings's full replace — used by the standalone-config PUT
+// Sparse patch, unlike updateEvaluationSettings's full replace - used by the standalone-config PUT
 // path (routes/evaluateDashboard.ts), whose callers can send a partial payload (e.g.
 // EvaluationConfigsTab.tsx's "Make default" action sends only `{ isDefault: true }`). A full
 // replace would null out every other field on a payload like that; merging onto the existing row
@@ -215,7 +215,7 @@ export async function listEvaluationSettings(db: Db) {
   return (rows as EvaluationSettingsRow[]).map(toWire);
 }
 
-// Rows in evaluation_settings with no matching id in datasets — the standalone "Evaluator" configs
+// Rows in evaluation_settings with no matching id in datasets - the standalone "Evaluator" configs
 // (EvaluationConfigsTab.tsx), as opposed to a dataset+settings twin created via the dashboard's
 // "New dataset" flow (both share one id, see routes/evaluateDashboard.ts's header comment).
 // Filtered in JS rather than a NOT IN subquery: self-host's local scale doesn't need it, and it

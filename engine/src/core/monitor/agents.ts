@@ -4,11 +4,11 @@ import type { Db } from "../../storage/db.js";
 import { getProfile } from "./profiles.js";
 
 // Self-host's real agent registry. Before this, an "agent" was purely derived from
-// `SELECT DISTINCT name FROM traces` — no identity table, no real id, and every monitor_* table
+// `SELECT DISTINCT name FROM traces` - no identity table, no real id, and every monitor_* table
 // that scoped something to an agent stored that same name string directly. Backward compatibility
 // is the whole point here: every existing caller that only ever knew about names (every demo
 // script, every dashboard flow before this shipped) keeps resolving to the same single agent it
-// always implicitly meant — see resolveAgentId below. A real, generated id (from an explicit
+// always implicitly meant - see resolveAgentId below. A real, generated id (from an explicit
 // POST /agents / client.agents.register()) is the only way to end up with two agents sharing a
 // display name, disambiguated from then on by id.
 export type AgentRow = {
@@ -68,7 +68,7 @@ async function findOldestAgentByName(db: Db, name: string): Promise<AgentRow | n
 }
 
 // The crux backward-compat mechanism. `input` is either a real agent id (honored as-is) or a bare
-// name (today's — and every pre-registry caller's — only concept of agent identity): resolved to
+// name (today's - and every pre-registry caller's - only concept of agent identity): resolved to
 // the oldest agent already registered under that name, or a freshly created one on first use.
 // Reused at every write site that accepts an "agentId" as external input (trace ingestion,
 // PUT .../profiles/:agentId, pattern/online-evaluator agentIds scope arrays) so a legacy caller
@@ -87,7 +87,7 @@ export async function resolveAgentId(db: Db, input: string): Promise<string> {
 }
 
 // Array counterpart of resolveAgentId, for pattern/online-evaluator agentIds scope arrays
-// (core/monitor/patterns.ts, core/monitor/onlineEvaluators.ts) — resolves each entry the same way
+// (core/monitor/patterns.ts, core/monitor/onlineEvaluators.ts) - resolves each entry the same way
 // a single agentId would, so a legacy caller passing agent names in that array keeps working.
 // `undefined` passes through unchanged (the "don't touch this field" case every one of these
 // routes' PATCH-like partial updates relies on).
@@ -99,7 +99,7 @@ export async function resolveAgentIds(db: Db, ids: string[] | null | undefined):
 }
 
 // Read-only counterpart to resolveAgentId, for filter/query contexts (e.g. GET /signals?agentId=)
-// where creating an agent as a side effect of a read would be wrong — a filter for a name that
+// where creating an agent as a side effect of a read would be wrong - a filter for a name that
 // doesn't exist should just match nothing, not register a new agent. Falls back to returning
 // `input` unchanged if it's neither a known id nor a known name, which still does the right thing
 // downstream: filtering by a value nothing has ever matches finds nothing, exactly like before
@@ -115,7 +115,7 @@ export async function resolveExistingAgentId(db: Db, input: string): Promise<str
 
 // Batch name lookup for wire responses that need a human-readable label next to a stored agentId
 // (signals.ts's toWire, performance.ts, events.ts's getTopFailing,
-// agentMonitoringDashboard.ts's resolveMonitorFindingsDataset) — one query instead of N. Falls
+// agentMonitoringDashboard.ts's resolveMonitorFindingsDataset) - one query instead of N. Falls
 // back to the id itself for anything genuinely not found, never a hard failure.
 export async function getAgentNamesById(db: Db, ids: (string | null | undefined)[]): Promise<Map<string, string>> {
   const unique = Array.from(new Set(ids.filter((id): id is string => !!id)));
@@ -128,7 +128,7 @@ export async function getAgentNamesById(db: Db, ids: (string | null | undefined)
   return new Map((rows as AgentRow[]).map(row => [row.id, row.name]));
 }
 
-// Dashboard/SDK agent list — one row per registered agent (real rows now, not distinct trace
+// Dashboard/SDK agent list - one row per registered agent (real rows now, not distinct trace
 // names), each joined with its monitoring profile, same shape as before this registry existed.
 export async function listAgentsWire(db: Db) {
   const cond = eq(db.schema.agents.projectId, db.projectId);

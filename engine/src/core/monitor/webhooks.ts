@@ -1,6 +1,6 @@
 // LangSmith-style "webhook automation" equivalent: monitor_profiles.channels was persisted from
 // the start (dashboard's per-agent settings dialog) but self-host never had any notification
-// delivery — nothing interpreted it. No new schema: a channel entry of the form `webhook:<url>`
+// delivery - nothing interpreted it. No new schema: a channel entry of the form `webhook:<url>`
 // is treated as a delivery target, everything else in `channels` (there's no other kind on
 // self-host yet) is left alone.
 
@@ -20,7 +20,7 @@ export type WebhookSignal = {
 };
 
 // Fire-and-forget, non-blocking: a webhook target being slow or down must never delay trace
-// ingest. No retry queue (self-host has none) — a failed delivery is logged and dropped, matching
+// ingest. No retry queue (self-host has none) - a failed delivery is logged and dropped, matching
 // this engine's general shrug-and-log posture toward best-effort side effects (e.g. suggestion
 // endpoints' failure path) rather than introducing durability machinery for a notification.
 export function notifyWebhooks(urls: string[], signal: WebhookSignal): void {

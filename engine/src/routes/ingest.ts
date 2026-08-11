@@ -41,7 +41,7 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
   // succeeded and the real id was about to be sent.
   res.status(200).json({ trace_id: traceId });
 
-  // Root spans only by default (see the MONITOR_CHILD_SPANS constant above) — a child span from a
+  // Root spans only by default (see the MONITOR_CHILD_SPANS constant above) - a child span from a
   // span_tree-enabled trace skips Monitor/online-evaluator/classification entirely rather than
   // being scored as if it were the whole interaction.
   if (parsed.data.parent_span_id && !MONITOR_CHILD_SPANS) {
@@ -93,13 +93,13 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
     console.error("Online evaluator scoring failed:", err instanceof Error ? err.message : err);
   });
 
-  // Same independent, opt-in-by-creating-one posture as online evaluators above — see
+  // Same independent, opt-in-by-creating-one posture as online evaluators above - see
   // core/monitor/customEvaluators.ts.
   runCustomEvaluators(scopedDb(req), traceForMonitor, { agentId, traceId }).catch(err => {
     console.error("Custom evaluator scoring failed:", err instanceof Error ? err.message : err);
   });
 
-  // Third independent pass, same fire-and-forget shape — see core/monitor/topics.ts. Opt-in via
+  // Third independent pass, same fire-and-forget shape - see core/monitor/topics.ts. Opt-in via
   // AgentMonitoringProfile.topicsEnabled (checked inside runClassification itself), so this is a
   // no-op unless the dashboard's per-agent "Topics" toggle was actually turned on.
   runClassification(
@@ -128,7 +128,7 @@ ingestRouter.get("/traces", async (req: Request, res: Response) => {
 // Single-trace detail for AgentX-web-front's self-host trace dialog (src/components/dialogs/
 // TraceDialog/TraceDialog.tsx -> TraceDetails.tsx). The hosted platform's equivalent dialog reads
 // from a different, hosted-only endpoint (chat/conversation/message/traces/:id) tied to its own
-// conversation/message model, which doesn't exist here — this is the self-host-specific
+// conversation/message model, which doesn't exist here - this is the self-host-specific
 // counterpart, powering the same shared TraceDetails component via its own dedicated hook
 // (useGetSelfHostTrace), the same "separate hook per host-mode" split useGetProductionTraces
 // already uses for the list view, rather than branching inside one hook.

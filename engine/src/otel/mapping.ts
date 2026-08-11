@@ -2,13 +2,13 @@ import type { NormalizedSpan } from "./normalize.js";
 import type { IngestTraceInput } from "../core/trace/ingest.js";
 
 // Maps one normalized OTel span onto AgentX's flat trace row (core/trace/ingest.ts's existing
-// IngestTraceInput — the same type the SDK's own tracer.trace() payload fills). One span = one
+// IngestTraceInput - the same type the SDK's own tracer.trace() payload fills). One span = one
 // row: AgentX's schema is already "one row per named call" (mirrors a single tracer.trace(name,
-// ...) call), which is what an OTel span is too — no aggregation across a whole OTel trace needed,
+// ...) call), which is what an OTel span is too - no aggregation across a whole OTel trace needed,
 // unlike products that model traces as a full span tree.
 //
 // Attribute names are a moving target (the GenAI semconv is still "Development" status as of
-// mid-2026, and has already renamed/deprecated fields more than once — gen_ai.system ->
+// mid-2026, and has already renamed/deprecated fields more than once - gen_ai.system ->
 // gen_ai.provider.name, gen_ai.prompt/completion -> gen_ai.input.messages/output.messages), so
 // every lookup below tries the current name first and falls back to older/adjacent conventions
 // (OpenLLMetry's legacy indexed attributes, OpenInference's input.value/output.value) rather than
@@ -34,7 +34,7 @@ function coerceToArray(value: unknown): unknown[] | undefined {
         return parsed;
       }
     } catch {
-      // Not JSON — plenty of instrumentations send a plain string here instead of a structured
+      // Not JSON - plenty of instrumentations send a plain string here instead of a structured
       // messages array; callers fall back to treating it as already-rendered text.
     }
   }
@@ -46,7 +46,7 @@ type Message = { role?: string; parts?: MessagePart[]; content?: unknown };
 
 // Renders the GenAI semconv's "Input/Output/System instructions messages JSON schema" (array of
 // { role, parts: [{ type, content }] }, or a flatter { role, content } some instrumentations use)
-// into readable text — AgentX's schema stores input/output as unstructured JSON/text, not a
+// into readable text - AgentX's schema stores input/output as unstructured JSON/text, not a
 // message-array type, matching what tracer.trace() itself has always accepted from the SDK.
 function renderMessages(messages: unknown[] | undefined): string | undefined {
   if (!messages || messages.length === 0) {
@@ -67,7 +67,7 @@ function renderMessages(messages: unknown[] | undefined): string | undefined {
 }
 
 // OpenLLMetry (pre-v1.38) legacy convention: gen_ai.prompt.{i}.role / .content and
-// gen_ai.completion.{i}.role / .content, indexed attributes rather than one structured value —
+// gen_ai.completion.{i}.role / .content, indexed attributes rather than one structured value -
 // still what a large share of real-world Traceloop-instrumented apps send, deprecated or not.
 function renderIndexedAttrs(attributes: Record<string, unknown>, prefix: "gen_ai.prompt" | "gen_ai.completion") {
   const byIndex = new Map<number, { role?: string; content?: unknown }>();
@@ -139,7 +139,7 @@ function extractError(span: NormalizedSpan): string | undefined {
 
 // Best-effort only: a span that IS a tool call (gen_ai.tool.name set on it directly, e.g.
 // gen_ai.operation.name = "execute_tool") maps to a one-element tool_calls array. Reconstructing a
-// parent LLM span's tool_calls from separate child tool-call spans isn't attempted — the GenAI
+// parent LLM span's tool_calls from separate child tool-call spans isn't attempted - the GenAI
 // semconv doesn't define a stable way to do that yet, see this file's header comment.
 function extractToolCalls(attributes: Record<string, unknown>) {
   const name = strAttr(attributes["gen_ai.tool.name"]);
@@ -167,7 +167,7 @@ export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
     "otel";
   const inputTokens = numAttr(attrs["gen_ai.usage.input_tokens"]) ?? numAttr(attrs["gen_ai.usage.prompt_tokens"]);
   const outputTokens = numAttr(attrs["gen_ai.usage.output_tokens"]) ?? numAttr(attrs["gen_ai.usage.completion_tokens"]);
-  // Semconv names for prompt-caching usage — subsets of inputTokens above, same posture as the
+  // Semconv names for prompt-caching usage - subsets of inputTokens above, same posture as the
   // Python SDK's own per-integration extraction (see core/trace/ingest.ts's ingestTraceSchema).
   const cacheReadTokens = numAttr(attrs["gen_ai.usage.cache_read_input_tokens"]);
   const cacheWriteTokens = numAttr(attrs["gen_ai.usage.cache_creation_input_tokens"]);
@@ -190,7 +190,7 @@ export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
     // ungrouped.
     session_id: span.traceIdHex || undefined,
     // Real span hierarchy, promoted to first-class ingestTraceSchema fields (see core/trace/
-    // ingest.ts) so a session's rows can be assembled into a tree — kept in metadata.otel too
+    // ingest.ts) so a session's rows can be assembled into a tree - kept in metadata.otel too
     // below, harmless redundancy, not worth a second edit to remove now that both exist.
     // normalize.ts's base64ToHex falls back to "" (not null/undefined) for malformed wire ids, so
     // these are guarded to "" -> undefined rather than trusting truthiness alone would already

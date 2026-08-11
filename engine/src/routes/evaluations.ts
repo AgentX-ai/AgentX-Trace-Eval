@@ -156,7 +156,7 @@ evaluationsRouter.get("/runs/:runId", async (req: Request, res: Response) => {
   res.status(200).json(run);
 });
 
-// Prompt registry (client.evaluations.prompts): deliberately read-mostly from the SDK — only
+// Prompt registry (client.evaluations.prompts): deliberately read-mostly from the SDK - only
 // create + pull, no SDK-side publish. A prompt only ever gets a new version through the
 // dashboard's human-approved propose/publish flow (routes/evaluateDashboard.ts), matching how
 // LangSmith/Langfuse both require a human step before a rewritten prompt reaches Prompt Hub /

@@ -24,7 +24,7 @@ function finalize(rate: MonitoringHealthRate): MonitoringHealthRate {
 }
 
 // Sums the "healthy-response" tally detect.ts's runMonitorCheck now records against
-// failure-polarity signals, per agent and overall — the same underlying rows
+// failure-polarity signals, per agent and overall - the same underlying rows
 // GET /agent-monitoring/signals reads, just aggregated instead of listed. "proper"-polarity
 // custom pattern matches (a deliberate positive-signal pattern, distinct from the built-in
 // healthy tally) count toward neither side: they're not a failure, but they're not the "nothing
@@ -51,7 +51,7 @@ export async function getPerformance(db: Db) {
     overall.failingRuns += row.occurrenceCount;
     agentRate.failingRuns += row.occurrenceCount;
     // Built-in checks' pattern keys (agent-trace-error, agent-tool-failure:<name>,
-    // empty-agent-response, latency-regression, ...) never start with "custom:" — see
+    // empty-agent-response, latency-regression, ...) never start with "custom:" - see
     // patterns.ts's createPattern, the only place that prefix is assigned.
     if (row.patternKey.startsWith("custom:")) {
       overall.customFailingRuns += row.occurrenceCount;

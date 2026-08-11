@@ -3,8 +3,8 @@ import { getDb, withProjectId } from "../storage/db.js";
 import { resolveProjectByApiKey } from "../core/project/projects.js";
 
 // Multi-project support (core/project/projects.ts): self-host used to have exactly one API key
-// for the whole instance (no login, no workspace model — deliberately simple). Now each project
-// has its own key, and the key itself is what selects the project — no separate project id is
+// for the whole instance (no login, no workspace model - deliberately simple). Now each project
+// has its own key, and the key itself is what selects the project - no separate project id is
 // ever sent on a call. requireApiKey() resolves the incoming key against the projects table and
 // attaches the matching project's id to the request; every downstream route builds its own scoped
 // Db from it via withProjectId(getDb(), req.projectId) before calling into project-scoped core
@@ -36,11 +36,11 @@ export function requireApiKey() {
 }
 
 // Small helper for route handlers: the scoped Db a project-authenticated request should pass into
-// every project-scoped core function, built fresh per-request (never cached — getDb()'s own
+// every project-scoped core function, built fresh per-request (never cached - getDb()'s own
 // cached singleton always carries the "" sentinel, see its comment).
 export function scopedDb(req: Request) {
   if (!req.projectId) {
-    throw new Error("scopedDb() called on a request with no resolved projectId — is this route behind requireApiKey()?");
+    throw new Error("scopedDb() called on a request with no resolved projectId - is this route behind requireApiKey()?");
   }
   return withProjectId(getDb(), req.projectId);
 }

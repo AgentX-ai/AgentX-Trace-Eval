@@ -2,7 +2,7 @@ import { nanoid } from "nanoid";
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 
-// Wire shape returned to the dashboard — matches AgentX-web-front's VersionEntry<TSnapshot>
+// Wire shape returned to the dashboard - matches AgentX-web-front's VersionEntry<TSnapshot>
 // (EvaluationSettingsVersionHistoryItem.tsx), minus `creator`: self-host has only the one
 // synthetic LOCAL_USER, added at the route layer (routes/evaluateDashboard.ts) rather than stored
 // per-row, same convention every other wire response here already follows.
@@ -22,7 +22,7 @@ const DATASET_FIELD_LABELS: Record<string, string> = {
 };
 
 // Mirrors AgentX-web-front's EvaluationSettingsVersionSnapshot exactly (including codeScorers,
-// which that type didn't previously capture — see this plan's context: dropping custom code
+// which that type didn't previously capture - see this plan's context: dropping custom code
 // scorers on restore would itself be a bug now that restoring is real). thresholds/isDefault are
 // deliberately excluded, same as the frontend type's own documented exclusions.
 const SETTINGS_SNAPSHOT_FIELDS = [
@@ -68,12 +68,12 @@ function pick(obj: Record<string, unknown>, fields: readonly string[]): Record<s
   return out;
 }
 
-// null `before` (nothing to diff against — a fresh create) always yields "Created". Otherwise a
+// null `before` (nothing to diff against - a fresh create) always yields "Created". Otherwise a
 // plain list of which tracked fields changed ("Updated acceptance criteria, judge model"), or null
-// if nothing tracked actually changed — a no-op save (dialog opened and saved untouched) shouldn't
+// if nothing tracked actually changed - a no-op save (dialog opened and saved untouched) shouldn't
 // spam version history. Deliberately a synchronous computed diff, not an LLM call: the hosted SaaS
 // generates this asynchronously (the frontend's version-history panel polls up to 30s waiting for
-// it to appear), but self-host doesn't need that cost/latency for a plain field-level diff — it's
+// it to appear), but self-host doesn't need that cost/latency for a plain field-level diff - it's
 // already present on the very first fetch, so the same poll-until-present logic just resolves
 // immediately instead of waiting.
 function buildChangeSummary(
@@ -104,7 +104,7 @@ function toWireEntry(row: VersionRow): VersionEntryWire {
 }
 
 // ---------------------------------------------------------------------------
-// Dataset (questions-only) version log — before/after are the toWire()-shaped objects
+// Dataset (questions-only) version log - before/after are the toWire()-shaped objects
 // core/evaluate/datasets.ts's getDataset already returns, picked down to DATASET_SNAPSHOT_FIELDS.
 // ---------------------------------------------------------------------------
 
@@ -186,9 +186,9 @@ export async function deleteDatasetVersion(db: Db, datasetId: string, versionId:
 }
 
 // ---------------------------------------------------------------------------
-// EvaluationSettings (grading config) version log — same shape as the dataset log above, separate
+// EvaluationSettings (grading config) version log - same shape as the dataset log above, separate
 // table (see schema.sqlite.ts's evaluationSettingsVersions comment). Applies equally to a
-// dataset's twin config and a standalone Evaluator config (no dataset attached) — both are just
+// dataset's twin config and a standalone Evaluator config (no dataset attached) - both are just
 // rows in evaluationSettings.
 // ---------------------------------------------------------------------------
 

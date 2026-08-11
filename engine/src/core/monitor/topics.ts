@@ -3,24 +3,23 @@ import { UMAP } from "umap-js";
 import { and, desc, eq, gte } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { callJudgeJson, computeEmbedding, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
-import { getProfileRow } from "./profiles.js";
 import { passesSampleRate } from "./routing.js";
 import { getMonitoringDefaults } from "../project/projects.js";
 import type { MonitoringWindow } from "./events.js";
 
 // Third per-trace background pass, alongside detect.ts's runMonitorCheck (pattern matching) and
-// onlineEvaluators.ts's runOnlineEvaluators (sampled judge scoring) — same fire-and-forget shape,
+// onlineEvaluators.ts's runOnlineEvaluators (sampled judge scoring) - same fire-and-forget shape,
 // wired into the same two call sites (routes/ingest.ts, routes/otlp.ts). Unlike those two, this
 // never raises a Signal: it's pure observability, classifying what a trace was *about* rather than
 // whether it was good or bad. Opt-in via monitor_profiles.topicsEnabled (default false, since this
-// is real LLM spend per sampled trace) — sampled against the project-level default sample rate
+// is real LLM spend per sampled trace) - sampled against the project-level default sample rate
 // (core/project/projects.ts's MonitoringDefaults), same as detect.ts's runMonitorCheck; no separate
 // knob, and not the per-agent profile.sampleRate column, which self-host no longer reads for any
-// behavior (see profiles.ts's own comment on that migration — this file used to be the one place
+// behavior (see profiles.ts's own comment on that migration - this file used to be the one place
 // still reading it).
 //
 // Deliberately a fixed taxonomy (intent as free text, sentiment/issueType as small enums), not true
-// unsupervised clustering — that would need persisted embeddings and a clustering step, a
+// unsupervised clustering - that would need persisted embeddings and a clustering step, a
 // materially bigger piece left for a future pass. See the "AI Observability" comparison plan.
 
 export type ClassificationRow = {
@@ -32,7 +31,7 @@ export type ClassificationRow = {
   sentiment: "positive" | "neutral" | "negative";
   issueType: "none" | "refusal" | "hallucination" | "off_topic" | "incomplete" | "other";
   createdAt: Date;
-  // Powers the Topics "Map" view's UMAP projection (getTopicsMap below) — null when no
+  // Powers the Topics "Map" view's UMAP projection (getTopicsMap below) - null when no
   // OPENAI_API_KEY was set or the embeddings call failed (see computeEmbedding), or for rows
   // classified before this column existed.
   embedding: number[] | null;
@@ -48,7 +47,7 @@ const classificationSchema = {
       description:
         "A short (2-5 word) label for what the user was trying to do. If the prompt lists existing labels and one " +
         "already fits this interaction, return that label verbatim (same wording, same casing) instead of coining a " +
-        "new one — only write a new label when none of the existing ones fit.",
+        "new one - only write a new label when none of the existing ones fit.",
     },
     sentiment: { type: "string", enum: ["positive", "neutral", "negative"], description: "The user's apparent sentiment." },
     issueType: {
@@ -62,7 +61,7 @@ const classificationSchema = {
 
 // How many of the most common recent intents to show the judge as reuse candidates, and how far
 // back to look for them. Capped rather than "all distinct intents ever" so the prompt stays small
-// and the candidates stay relevant — an intent that hasn't recurred in 30 days isn't worth biasing
+// and the candidates stay relevant - an intent that hasn't recurred in 30 days isn't worth biasing
 // toward. Deliberately global (not scoped to ctx.agentId), matching getTopIntents' existing
 // cross-agent aggregation used by the Topics view itself.
 const INTENT_CANDIDATE_WINDOW: MonitoringWindow = "30d";
@@ -97,11 +96,11 @@ async function recordClassification(
   }
 }
 
-// The single-trace counterpart to recordClassification's write — for the trace detail view (see
+// The single-trace counterpart to recordClassification's write - for the trace detail view (see
 // core/trace/ingest.ts's toTraceDetailWireWithCost), not the aggregate Topics tab (that's
 // getTopicsTrend/getTopIntents/getIssueBreakdown below). Null whenever nothing was ever
-// classified for this trace — the common case, since Topics is opt-in per agent and even when on,
-// still sampled — so callers treat this as "maybe show a pill," never a required field.
+// classified for this trace - the common case, since Topics is opt-in per agent and even when on,
+// still sampled - so callers treat this as "maybe show a pill," never a required field.
 // order by createdAt desc + limit 1 rather than assuming uniqueness: nothing enforces exactly one
 // classification per traceId (a re-ingested/duplicate trace id could in principle produce more
 // than one), so this deliberately picks the most recent rather than an arbitrary row.
@@ -122,11 +121,16 @@ export async function runClassification(
   trace: ScorableTrace,
   ctx: { agentId: string | null; traceId: string | null }
 ): Promise<void> {
-  const profile = ctx.agentId ? await getProfileRow(db, ctx.agentId) : null;
-  if (!profile || !profile.topicsEnabled) {
+  // Project-level opt-in (Platform Settings > Monitoring Defaults) - moved off
+  // monitor_profiles.topicsEnabled, the last per-agent monitoring setting, see
+  // schema.sqlite.ts's projects.topicsEnabled comment for the migration story. Per-trace by
+  // design: one interaction has one primary intent, while a session routinely mixes several, so
+  // classifying at session level would blur exactly the analytics Topics exists for (the session
+  // view rolls per-trace labels up instead).
+  const defaults = await getMonitoringDefaults(db);
+  if (!defaults.topicsEnabled) {
     return;
   }
-  const defaults = await getMonitoringDefaults(db);
   if (!passesSampleRate(defaults.sampleRate)) {
     return;
   }
@@ -135,16 +139,16 @@ export async function runClassification(
   const outputText = typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output ?? "");
 
   // Steer the judge toward reusing an existing label instead of coining a near-duplicate (e.g.
-  // "requested refund" vs "refund request") — see this file's top comment on why real clustering
+  // "requested refund" vs "refund request") - see this file's top comment on why real clustering
   // isn't done instead. Candidates come from the same aggregation the Topics view itself reads.
   const candidates = await getTopIntents(db, INTENT_CANDIDATE_WINDOW, INTENT_CANDIDATE_LIMIT);
   const existingIntentsBlock = candidates.length
-    ? `\n\nExisting intent labels already in use — if one of these fits this interaction, return it verbatim ` +
+    ? `\n\nExisting intent labels already in use - if one of these fits this interaction, return it verbatim ` +
       `instead of writing a new one:\n${candidates.map(c => `- ${c.intent}`).join("\n")}`
     : "";
 
   try {
-    // Embedding runs alongside the judge call, not after it — same trace text, independent
+    // Embedding runs alongside the judge call, not after it - same trace text, independent
     // failure modes (a missing/bad OPENAI_API_KEY shouldn't block the classification itself, and
     // vice versa; see computeEmbedding's own null-on-failure posture), no reason to serialize them.
     const [result, embedding] = await Promise.all([
@@ -173,7 +177,7 @@ export async function runClassification(
 }
 
 // Same window/bucket idiom as events.ts's getOnlineEvaluatorRatings (windowConfig/listEventsSince
-// there are module-private, shaped for a different accumulator — copied here rather than shared,
+// there are module-private, shaped for a different accumulator - copied here rather than shared,
 // matching how getOnlineEvaluatorRatings itself doesn't reuse events.ts's own bucketize()).
 function windowConfig(window: MonitoringWindow): { days: number; bucketHours: number } {
   switch (window) {
@@ -272,7 +276,7 @@ export async function getIssueBreakdown(db: Db, window: MonitoringWindow): Promi
 
 // "Map" view: each classified trace as one point, positioned by real semantic similarity (UMAP
 // over its stored embedding, see runClassification/computeEmbedding above) rather than any
-// literal metric — x/y carry no independent meaning, only relative distance does. Colored by the
+// literal metric - x/y carry no independent meaning, only relative distance does. Colored by the
 // same intent classification the trend/top-intents views already use; this only adds *where* a
 // point sits, not a new way of deciding what a trace is about.
 export type TopicMapPoint = {
@@ -286,7 +290,7 @@ export type TopicMapPoint = {
 export type TopicMapTopic = { intent: string; count: number; percentage: number };
 export type TopicsMapResult = { insufficientData: boolean; points: TopicMapPoint[]; topics: TopicMapTopic[] };
 
-// Below this many embedded points, UMAP's neighborhood-based projection isn't meaningful — its
+// Below this many embedded points, UMAP's neighborhood-based projection isn't meaningful - its
 // own default nNeighbors is 15, and fitting fewer points than that just draws an arbitrary shape,
 // not a real semantic layout. Below this floor, tell the caller there isn't enough data yet
 // instead of returning noise dressed up as a chart.
@@ -322,7 +326,7 @@ export async function getTopicsMap(db: Db, window: MonitoringWindow): Promise<To
   }));
 
   // Same denominator as the points shown (the capped, embedded set), not every classified row in
-  // the window — so the legend's percentages always agree with what's actually on the scatter.
+  // the window - so the legend's percentages always agree with what's actually on the scatter.
   const byIntent = new Map<string, number>();
   for (const row of rows) {
     byIntent.set(row.intent, (byIntent.get(row.intent) ?? 0) + 1);

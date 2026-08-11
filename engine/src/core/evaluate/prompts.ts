@@ -8,7 +8,7 @@ import { listPlaygroundRunsByPrompt } from "./playgroundRuns.js";
 import type { MonitoringWindow } from "../monitor/events.js";
 
 // The external-agent prompt registry: since this engine doesn't own the caller's agent code,
-// AgentX becomes the prompt's source of truth instead — the SDK pulls it at runtime
+// AgentX becomes the prompt's source of truth instead - the SDK pulls it at runtime
 // (client.evaluations.prompts.get(name)), and a human-approved "propose improvement" step
 // (proposePromptImprovement below) writes new versions here, never into the caller's own code.
 
@@ -273,7 +273,7 @@ export type WorstRatedExample = {
   // continuous LLM-judge rating of real production traffic (core/monitor/onlineEvaluators.ts):
   // no dataset behind it, so never has expectedResults. "playground": a human reviewer explicitly
   // marked a Playground cell's output "bad" while testing this prompt (core/evaluate/
-  // playgroundRuns.ts) — always has a synthetic rating of 0 (see gatherPlaygroundExamples below),
+  // playgroundRuns.ts) - always has a synthetic rating of 0 (see gatherPlaygroundExamples below),
   // since there's no judge score to carry over, only a human verdict.
   source: "eval_run" | "online_evaluator" | "playground";
   input: string;
@@ -300,7 +300,7 @@ export type WorstRatedExamplesResult = {
   scope: { versionScoped: boolean; window: MonitoringWindow };
 };
 
-// The data half of "propose an improvement," with no judge call — reused by
+// The data half of "propose an improvement," with no judge call - reused by
 // proposePromptImprovement (server-side judge path, below) AND the GET /prompts/:id/examples
 // route (routes/evaluateDashboard.ts), which hands the same real evidence to a Claude Code skill
 // instead: the skill's own reasoning stands in for the judge call, so a self-host install with no
@@ -443,40 +443,45 @@ export async function getWorstRatedExamples(
       createdAt: Date;
     }[];
 
+    // Worst-first, but the 20-cap applies to MATCHING examples, not raw events: capping before
+    // the promptName filter (the original behavior) silently starved any prompt whose traffic
+    // wasn't among the instance's 20 worst-rated events overall, so on a busy instance a prompt's
+    // production evidence never surfaced at all. The trace join is resolved lazily inside the
+    // loop, stopping at 20 matches, so the typical join count stays as bounded as before.
     const rated = events
       .filter((e): e is typeof e & { rating: number; traceId: string } => e.rating !== null && e.traceId !== null)
-      .sort((a, b) => a.rating - b.rating)
-      .slice(0, 20);
+      .sort((a, b) => a.rating - b.rating);
 
-    const resolved = await Promise.all(
-      rated.map(async e => {
-        const trace = await getTraceRow(db, e.traceId);
-        const metadata = trace?.metadata as { promptName?: unknown } | null | undefined;
-        if (!trace || metadata?.promptName !== prompt.name) {
-          return null;
-        }
-        const example: WorstRatedExample = {
-          id: e.id,
-          source: "online_evaluator",
-          input: extractText(trace.input),
-          output: extractText(trace.output),
-          rating: e.rating,
-          justification: e.justification,
-          createdAt: e.createdAt.toISOString(),
-          traceId: e.traceId,
-        };
-        return example;
-      })
-    );
-    return resolved.filter((e): e is WorstRatedExample => e !== null);
+    const matched: WorstRatedExample[] = [];
+    for (const e of rated) {
+      if (matched.length >= 20) {
+        break;
+      }
+      const trace = await getTraceRow(db, e.traceId);
+      const metadata = trace?.metadata as { promptName?: unknown } | null | undefined;
+      if (!trace || metadata?.promptName !== prompt.name) {
+        continue;
+      }
+      matched.push({
+        id: e.id,
+        source: "online_evaluator",
+        input: extractText(trace.input),
+        output: extractText(trace.output),
+        rating: e.rating,
+        justification: e.justification,
+        createdAt: e.createdAt.toISOString(),
+        traceId: e.traceId,
+      });
+    }
+    return matched;
   };
 
   const onlineEvaluatorExamples = await gatherOnlineEvaluatorExamples();
 
   // --- Playground human-review half: a reviewer explicitly marked a cell's output "bad" while ---
   // testing this prompt in Playground (core/evaluate/playgroundRuns.ts's playground_runs, joined
-  // by its promptId column). Not time-windowed or version-scoped like the other two sources — a
-  // review is tied to one specific reviewed session, not "the last N days of this prompt" — so
+  // by its promptId column). Not time-windowed or version-scoped like the other two sources - a
+  // review is tied to one specific reviewed session, not "the last N days of this prompt" - so
   // every run tagged with this promptId contributes regardless of `window`/`includeAllVersions`.
   // `results` is opaque JSON as far as playgroundRuns.ts is concerned (shaped by the frontend's
   // CellState/HumanReview, playgroundChartData.ts); this file has no import path to that package,

@@ -8,7 +8,7 @@ import { llmSemanticJudge } from "../monitor/detect.js";
 import { getOnlineEvaluatorRow } from "../monitor/onlineEvaluators.js";
 import { getEvaluationSettingsRow } from "./evaluationSettings.js";
 
-// A tool the model can call during a Playground run — self-host calls the real endpoint you run
+// A tool the model can call during a Playground run - self-host calls the real endpoint you run
 // (your actual local/hosted tool or RAG service), the same "call out, don't reimplement" shape
 // core/monitor/customEvaluators.ts's callCustomEvaluator already established for user-owned logic.
 // Request POSTed to `endpointUrl`: { tool: name, arguments }. Expected response: { result: <any> }.
@@ -20,7 +20,7 @@ export type PlaygroundTool = {
 };
 
 // Same "one extraction helper, called at the route" convention as datasets.ts's
-// extractCodeScorers/extractSimilarityConfig — validated/normalized here rather than trusted
+// extractCodeScorers/extractSimilarityConfig - validated/normalized here rather than trusted
 // as-is, since `endpointUrl` is later fetched.
 export function extractPlaygroundTools(body: Record<string, unknown>): PlaygroundTool[] | undefined {
   if (!Array.isArray(body.tools)) {
@@ -62,7 +62,7 @@ async function callPlaygroundTool(tools: PlaygroundTool[], name: string, args: R
 }
 
 // Interactive Playground: run one (prompt, model, dataset question) combination for real and
-// return the result, no persistence — same "compute and return" posture as
+// return the result, no persistence - same "compute and return" posture as
 // core/evaluate/portability.ts's runModelPortabilityCheck. The frontend fans out one call per grid
 // cell to this same function/route rather than this file doing its own batch orchestration, so a
 // slow model doesn't block the rest of the grid from populating.
@@ -70,17 +70,17 @@ export type PlaygroundMessage = { role: "system" | "user" | "assistant"; content
 
 export type PlaygroundRunInput = {
   model: string;
-  // The fixed prefix (typically one system message, optionally few-shot user/assistant pairs) —
+  // The fixed prefix (typically one system message, optionally few-shot user/assistant pairs) -
   // `query` below is always appended as the final user turn, never part of this list, so callers
   // never need a template-variable substitution convention.
   messages: PlaygroundMessage[];
   query: string;
   expected?: string;
   judgeGuideline?: string;
-  // Which Evaluator config's criteria/judge model/judge prompt to score with — the caller resolves
+  // Which Evaluator config's criteria/judge model/judge prompt to score with - the caller resolves
   // this (its own selected Evaluator config, or the dataset's own criteria as a fallback) and
   // sends the resolved values directly; this file has no dataset/Evaluator lookup of its own.
-  // judgePrompt/judgeModel are optional per-run overrides — omitted falls back to this engine's
+  // judgePrompt/judgeModel are optional per-run overrides - omitted falls back to this engine's
   // usual defaults (DEFAULT_JUDGE_PROMPT/DEFAULT_JUDGE_MODEL), same as everywhere else that scores.
   judgeCriteria?: {
     acceptanceCriteria?: string;
@@ -89,17 +89,17 @@ export type PlaygroundRunInput = {
     judgePrompt?: string;
     judgeModel?: string;
   };
-  // The selected dataset's own code scorers, if any — run alongside judge scoring, not gated on
+  // The selected dataset's own code scorers, if any - run alongside judge scoring, not gated on
   // `expected` being present (a scorer like "output is non-empty" doesn't need a ground truth).
   codeScorers?: CodeScorerConfig[];
   tools?: PlaygroundTool[];
-  // Monitor's Pattern/Online Evaluator checks, dry-run against this one response — never gated on
+  // Monitor's Pattern/Online Evaluator checks, dry-run against this one response - never gated on
   // `expected` either (they check the response itself, not against a ground truth), and never
   // write a Signal/Event row the way a real ingested trace would (see runPlaygroundPatternChecks/
-  // runPlaygroundOnlineEvaluatorChecks below) — Playground stays "compute and return" throughout.
+  // runPlaygroundOnlineEvaluatorChecks below) - Playground stays "compute and return" throughout.
   patternIds?: string[];
   onlineEvaluatorIds?: string[];
-  // Per-model overrides from Playground's "Model settings" — see callModelWithTools's `options`
+  // Per-model overrides from Playground's "Model settings" - see callModelWithTools's `options`
   // param. Both omitted preserves today's exact defaults.
   maxTokens?: number;
   temperature?: number;
@@ -140,7 +140,7 @@ export type PlaygroundRunResult = {
   error: string | null;
 };
 
-// Dry-run version of detect.ts's detectCustomPatterns — evaluates every requested pattern
+// Dry-run version of detect.ts's detectCustomPatterns - evaluates every requested pattern
 // independently (not first-match-wins, since Playground wants to show every selected pattern's
 // own result) and never calls upsertSignal/recordEvent. Each pattern's failure (bad judge key,
 // provider outage) is isolated to its own result rather than aborting the sweep, same reasoning
@@ -152,7 +152,7 @@ async function runPlaygroundPatternChecks(db: Db, patternIds: string[], trace: T
     if (!pattern) continue; // deleted since the run started
     const polarity = pattern.polarity === "proper" ? "proper" : "failure";
     try {
-      // responseText, not just `trace` — buildSourceTexts (conditions.ts) only ever reads the
+      // responseText, not just `trace` - buildSourceTexts (conditions.ts) only ever reads the
       // "response" source from this, never from trace.output directly (same as detectCustomPatterns).
       const responseText = typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output ?? "");
       const outcome = await evaluatePatternConditions({
@@ -184,7 +184,7 @@ async function runPlaygroundPatternChecks(db: Db, patternIds: string[], trace: T
   return results;
 }
 
-// Dry-run version of onlineEvaluators.ts's runOnlineEvaluators — scores against every requested
+// Dry-run version of onlineEvaluators.ts's runOnlineEvaluators - scores against every requested
 // evaluator's referenced Evaluator config the same way (scoreAgainstCriteria), computes the same
 // wouldAlert comparison, but never calls upsertSignal/recordEvent.
 async function runPlaygroundOnlineEvaluatorChecks(
@@ -247,7 +247,7 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
   const model = await getPortabilityModel(db, input.model);
 
   // Split the fixed-prefix messages into callModelCompletion's separate `system` field vs. its
-  // `messages` array (which only ever holds user/assistant turns) — only the first message is
+  // `messages` array (which only ever holds user/assistant turns) - only the first message is
   // treated as system, matching the message editor's own "system message goes first" convention.
   const [first, ...rest] = input.messages;
   const system = first?.role === "system" ? first.content : undefined;
@@ -257,7 +257,7 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
 
   try {
     const start = Date.now();
-    // Always routes through callModelWithTools, even with input.tools empty/absent — that
+    // Always routes through callModelWithTools, even with input.tools empty/absent - that
     // degenerates to exactly one round with no tool_calls, the same behavior callModelCompletion
     // already gave a tool-less run, so there's one code path here rather than two.
     const tools = input.tools ?? [];
@@ -271,7 +271,7 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
     const latencyMs = Date.now() - start;
     const estimatedCostUSD = estimateCostUSD(model, completion.usage?.inputTokens ?? null, completion.usage?.outputTokens ?? null);
 
-    // Runs independent of judge scoring below (not gated on `expected`) — each scorer isolates
+    // Runs independent of judge scoring below (not gated on `expected`) - each scorer isolates
     // its own failure into { score: null, error } (see codeScorer.ts's runCodeScorer), so a
     // broken/timed-out scorer never blanks the real model output that already succeeded.
     const enabledCodeScorers = (input.codeScorers ?? []).filter(s => s.enabled);
@@ -279,14 +279,21 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
       enabledCodeScorers.length > 0
         ? await Promise.all(
             enabledCodeScorers.map(scorer =>
-              runCodeScorer(scorer, { input: input.query, output: completion.text, expected: input.expected })
+              runCodeScorer(scorer, {
+                input: input.query,
+                output: completion.text,
+                expected: input.expected,
+                // The round-trip's real recorded tool calls (callModelWithTools' trace) - lets a
+                // scorer assert on tool behavior, see codeScorer.ts's ScorerArgs.
+                toolCalls: completion.toolCalls.length > 0 ? completion.toolCalls : undefined,
+              })
             )
           )
         : undefined;
 
     let rating: number | null = null;
     let justification: string | null = null;
-    // Only score when there's a ground truth to compare against — a question with no
+    // Only score when there's a ground truth to compare against - a question with no
     // expectedResults still runs and shows output, it just never blocks on a judge call.
     if (input.expected) {
       try {
@@ -304,12 +311,12 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
         justification = scored.justification;
       } catch (err) {
         // A judge failure (bad key, provider outage) shouldn't blank out the real model output
-        // that already succeeded — same isolation posture as runs.ts's scoreOneResult.
+        // that already succeeded - same isolation posture as runs.ts's scoreOneResult.
         justification = `Scoring failed: ${err instanceof Error ? err.message : "unknown error"}`;
       }
     }
 
-    // Same isolation posture as code scorers/judge scoring above — run independent of `expected`,
+    // Same isolation posture as code scorers/judge scoring above - run independent of `expected`,
     // never thrown out of the function on a single pattern/evaluator failure (each isolates its
     // own error internally already).
     const patternChecks =

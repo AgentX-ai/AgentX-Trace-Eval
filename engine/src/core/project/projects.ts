@@ -3,11 +3,11 @@ import { randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 
-// Self-host's project registry. A project's own apiKey IS what selects it on every request — see
+// Self-host's project registry. A project's own apiKey IS what selects it on every request - see
 // auth/apiKey.ts's requireApiKey, which resolves the incoming x-api-key against this table and
 // attaches the matching project's id to the request. No project_id is ever sent explicitly by a
 // caller; the key alone disambiguates. Every function here takes the *unscoped* Db (getDb()'s
-// bare cached singleton, not a withProjectId()-scoped one) — resolving/managing project identity
+// bare cached singleton, not a withProjectId()-scoped one) - resolving/managing project identity
 // itself is deliberately global, it's everything project identity then *scopes* (traces, agents,
 // patterns, ...) that reads db.projectId.
 export type ProjectRow = {
@@ -15,12 +15,13 @@ export type ProjectRow = {
   name: string;
   apiKey: string;
   isDefault: boolean;
-  // Project-level monitoring defaults — see schema.sqlite.ts's projects.coverageMode comment.
+  // Project-level monitoring defaults - see schema.sqlite.ts's projects.coverageMode comment.
   coverageMode: string;
   sampleRate: number;
   retentionDays: number;
   redactionMode: string;
   latencyThresholdMs: number;
+  topicsEnabled: boolean;
   createdAt: Date;
 };
 
@@ -34,6 +35,9 @@ export type MonitoringDefaults = {
   retentionDays: number;
   redactionMode: string;
   latencyThresholdMs: number;
+  // Topics classification opt-in - project-level as of the migration described in
+  // schema.sqlite.ts's projects.topicsEnabled comment (formerly per-agent on monitor_profiles).
+  topicsEnabled: boolean;
 };
 
 function toMonitoringDefaultsWire(row: ProjectRow): MonitoringDefaults {
@@ -43,6 +47,7 @@ function toMonitoringDefaultsWire(row: ProjectRow): MonitoringDefaults {
     retentionDays: row.retentionDays,
     redactionMode: row.redactionMode,
     latencyThresholdMs: row.latencyThresholdMs,
+    topicsEnabled: row.topicsEnabled,
   };
 }
 
@@ -61,6 +66,7 @@ export async function createProject(db: Db, name: string) {
     retentionDays: 30,
     redactionMode: "standard",
     latencyThresholdMs: 20000,
+    topicsEnabled: false,
     createdAt: new Date(),
   };
   if (db.kind === "sqlite") {
@@ -106,7 +112,7 @@ export async function resolveProjectByApiKey(db: Db, apiKey: string): Promise<Pr
 }
 
 // The unauthenticated GET /dev/bootstrap endpoint's key source (same "zero setup, no login step"
-// UX the single-key model always had) — whichever project the one-time migration created first
+// UX the single-key model always had) - whichever project the one-time migration created first
 // (storage/db.ts's backfillDefaultProjectSqlite/Postgres). Any additional project's key is only
 // ever visible via its own (project-scoped) Settings once you've switched to it.
 export async function getDefaultProject(db: Db): Promise<ProjectRow | null> {
@@ -129,7 +135,7 @@ export async function listProjectRows(db: Db): Promise<ProjectRow[]> {
   return rows as ProjectRow[];
 }
 
-// GET /api/v1/projects' source — deliberately includes each project's own apiKey (same
+// GET /api/v1/projects' source - deliberately includes each project's own apiKey (same
 // unauthenticated "if you can reach this port, you're trusted" posture as /dev/bootstrap and
 // POST /api/v1/projects), so a project switcher can populate a dropdown with every project's key
 // already in hand, no separate per-project auth handshake needed.
@@ -138,7 +144,7 @@ export async function listProjectsWire(db: Db) {
 }
 
 // Unlike every other function in this file, these two operate on the *current, already-resolved*
-// project (db.projectId) rather than an explicit id — same "scoped Db" convention every other
+// project (db.projectId) rather than an explicit id - same "scoped Db" convention every other
 // domain's core functions use, since this is genuinely per-project config once a request has
 // already been authenticated, not project-identity resolution itself.
 export async function getMonitoringDefaults(db: Db): Promise<MonitoringDefaults> {
@@ -159,6 +165,7 @@ export async function updateMonitoringDefaults(db: Db, patch: UpdateMonitoringDe
     retentionDays: patch.retentionDays ?? existing.retentionDays,
     redactionMode: patch.redactionMode ?? existing.redactionMode,
     latencyThresholdMs: patch.latencyThresholdMs ?? existing.latencyThresholdMs,
+    topicsEnabled: patch.topicsEnabled ?? existing.topicsEnabled,
   };
   const cond = eq(db.schema.projects.id, db.projectId);
   if (db.kind === "sqlite") {

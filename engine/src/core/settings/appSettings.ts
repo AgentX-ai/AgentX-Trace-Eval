@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 
-// Singleton row (LLM provider keys today) — one instance-wide config, not per-user/per-workspace,
+// Singleton row (LLM provider keys today) - one instance-wide config, not per-user/per-workspace,
 // matching self-host's single-tenant model everywhere else. Plaintext (see schema.sqlite.ts's
 // appSettings comment for why that's not a gap here).
 const SETTINGS_ROW_ID = "default";
@@ -31,7 +31,7 @@ export async function getAppSettings(db: Db): Promise<AppSettings> {
 }
 
 // Empty string is treated the same as clearing the key (not stored as "", which a later
-// `if (key)` truthiness check would still treat as falsy-but-present — nicer to just store null).
+// `if (key)` truthiness check would still treat as falsy-but-present - nicer to just store null).
 export async function updateAppSettings(
   db: Db,
   patch: { openaiApiKey?: string | null; anthropicApiKey?: string | null; geminiApiKey?: string | null }

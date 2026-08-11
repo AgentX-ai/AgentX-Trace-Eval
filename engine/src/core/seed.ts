@@ -9,16 +9,16 @@ import { updateProfile } from "./monitor/profiles.js";
 import { ingestTrace } from "./trace/ingest.js";
 import { runMonitorCheck } from "./monitor/detect.js";
 
-// One-time starter content, not a permanent hardcoded fallback — same convention as db.ts's
+// One-time starter content, not a permanent hardcoded fallback - same convention as db.ts's
 // seedPortabilityModelsIfEmpty: each piece only inserts when its own table is genuinely empty, so
 // a user who deletes an example never sees it silently reappear on the next restart, and a user
 // who already has real data of their own is never touched. Point of this file: a fresh install
-// isn't a blank slate with four empty tabs and no idea what to put in them — Datasets, Evaluator,
+// isn't a blank slate with four empty tabs and no idea what to put in them - Datasets, Evaluator,
 // Online Evaluators, and Prompts each start with one clearly-labeled "Example: ..." entry showing
 // the shape real data takes.
 export async function seedExampleDataIfEmpty(db: Db): Promise<void> {
   const evaluatorConfigId = await seedExampleEvaluatorConfig(db);
-  // Only seeds an online evaluator when the config above was *just* created here — never wired up
+  // Only seeds an online evaluator when the config above was *just* created here - never wired up
   // to reference an arbitrary pre-existing user config just because monitor_online_evaluators
   // happens to be empty (e.g. the user deleted only their online evaluators, not their configs).
   await seedExampleOnlineEvaluator(db, evaluatorConfigId);
@@ -28,10 +28,10 @@ export async function seedExampleDataIfEmpty(db: Db): Promise<void> {
 }
 
 // Datasets/Evaluator/Prompts above cover Evaluate; Governance's Agents/Observe/Monitor tabs had
-// nothing seeding them at all — a fresh install landed on an empty Agents tab with no idea what
+// nothing seeding them at all - a fresh install landed on an empty Agents tab with no idea what
 // "monitored" even looks like. One example agent, pre-enabled for monitoring (so it shows up as
 // "All traffic" rather than "Not monitored"), with real traces run through the actual detection
-// pipeline (runMonitorCheck) rather than hand-inserted signal rows — this only exercises built-in
+// pipeline (runMonitorCheck) rather than hand-inserted signal rows - this only exercises built-in
 // checks (empty-response), never a judge call, so it works with zero API keys configured, same
 // constraint every other seed here has to respect.
 async function seedExampleMonitorDataIfEmpty(db: Db): Promise<void> {
@@ -51,7 +51,7 @@ async function seedExampleMonitorDataIfEmpty(db: Db): Promise<void> {
     },
     {
       input: "My order #4471 hasn't arrived in 2 weeks.",
-      output: "I'm sorry to hear that — let me look into your order and get back to you with an update shortly.",
+      output: "I'm sorry to hear that - let me look into your order and get back to you with an update shortly.",
       latencyMs: 1200,
     },
     // Deliberately trips the built-in "Empty agent response" check, so a fresh install's
@@ -87,7 +87,7 @@ async function seedExampleEvaluatorConfig(db: Db): Promise<string | null> {
   }
   const created = await createEvaluationSettings(db, {
     name: "Example: Helpfulness Judge",
-    description: "A starter grading config — safe to edit or delete once you've made your own.",
+    description: "A starter grading config - safe to edit or delete once you've made your own.",
     acceptanceCriteria:
       "The response directly and correctly addresses what the user asked, without unnecessary hedging or irrelevant information.",
     rejectionCriteria: "The response is off-topic, factually wrong, or ignores part of the user's question.",
@@ -105,7 +105,7 @@ async function seedExampleOnlineEvaluator(db: Db, evaluatorConfigId: string | nu
   if (existing.length > 0) {
     return;
   }
-  // Disabled by default: every check is a real LLM call against the user's own API key — an
+  // Disabled by default: every check is a real LLM call against the user's own API key - an
   // example should be safe to look at, not something that silently starts spending credits the
   // moment traces start flowing in.
   await createOnlineEvaluator(db, {
@@ -127,7 +127,7 @@ async function seedExampleDataset(db: Db): Promise<void> {
   const id = nanoid();
   const shared = {
     name: "Example: Customer Support Agent",
-    description: "A starter dataset — safe to edit or delete once you've added your own test cases.",
+    description: "A starter dataset - safe to edit or delete once you've added your own test cases.",
     acceptanceCriteria: "Response is empathetic, asks clarifying questions when needed, and offers a concrete next step.",
   };
   const questions = [
@@ -153,7 +153,7 @@ async function seedExamplePrompt(db: Db): Promise<void> {
   }
   await createPrompt(db, {
     name: "example-support-agent-system-prompt",
-    description: "A starter prompt — safe to edit or delete once you've registered your own.",
+    description: "A starter prompt - safe to edit or delete once you've registered your own.",
     text: "You are a helpful, empathetic customer support agent. Always acknowledge the customer's concern first, ask clarifying questions when the request is ambiguous, and offer a concrete next step or solution.",
   });
 }

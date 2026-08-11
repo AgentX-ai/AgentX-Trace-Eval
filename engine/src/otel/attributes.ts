@@ -1,8 +1,8 @@
 // Converts a decoded OTLP AnyValue into a plain JS value, and a KeyValue[] list into a Record.
-// Shared by every span/resource/event attribute list, and by both wire formats — but the two
+// Shared by every span/resource/event attribute list, and by both wire formats - but the two
 // don't actually agree on shape: protobufjs's toObject({oneofs:true}) (protoTypes.ts) adds a
 // virtual `value` discriminator field naming which branch is set, but that's a protobufjs
-// convenience, not part of OTLP itself — a genuine OTLP/JSON body from a real exporter has only
+// convenience, not part of OTLP itself - a genuine OTLP/JSON body from a real exporter has only
 // the actual `stringValue`/`intValue`/etc. field set, no discriminator at all. Checking each
 // field's presence directly (rather than switching on the discriminator) works for both.
 

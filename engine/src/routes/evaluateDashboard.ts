@@ -35,6 +35,24 @@ import {
   type FullRunRow,
   type RunResultRow,
 } from "../core/evaluate/runs.js";
+import {
+  createAgentConnector,
+  listAgentConnectorsWire,
+  updateAgentConnector,
+  deleteAgentConnector,
+  getAgentConnectorRow,
+  testAgentConnectorConnection,
+} from "../core/evaluate/agentConnectors.js";
+import { startConnectorRun } from "../core/evaluate/connectorRun.js";
+import {
+  createToolSchema,
+  listToolSchemasWire,
+  getToolSchemaWithVersionsWire,
+  publishToolSchemaVersion,
+  getToolFailureExamples,
+  proposeToolSchemaImprovement,
+  deleteToolSchema,
+} from "../core/evaluate/toolSchemas.js";
 import { runPlayground, extractPlaygroundTools } from "../core/evaluate/playground.js";
 import {
   createPlaygroundRun,
@@ -61,14 +79,14 @@ import {
 } from "../core/evaluate/analysis.js";
 import type { MonitoringWindow } from "../core/monitor/events.js";
 
-// Same convention as agentMonitoringDashboard.ts's parseWindow — not shared across route files,
+// Same convention as agentMonitoringDashboard.ts's parseWindow - not shared across route files,
 // each route file is self-contained.
 function parseWindow(req: Request): MonitoringWindow {
   const raw = req.query.window ?? req.body?.window;
   return raw === "24h" || raw === "30d" ? raw : "7d";
 }
 
-// Mounted at /api/v1/evaluate — the paths AgentX-web-front's Evaluate tab (Governance ->
+// Mounted at /api/v1/evaluate - the paths AgentX-web-front's Evaluate tab (Governance ->
 // EvaluateTab.tsx's "Runs" and "Datasets" sub-views) actually calls (src/data/apiPaths.ts's
 // getAllEvaluations/getEvaluationById/getAllEvaluationSettings/createEvaluationSettings/
 // updateEvaluationSettings), a different dialect from the SDK-facing /api/v1/custom-agent-
@@ -76,16 +94,16 @@ function parseWindow(req: Request): MonitoringWindow {
 // envelope/query params, same convention as agentMonitoringDashboard.ts.
 //
 // Scope for this pass: Datasets CRUD (list/get/create/update), the standalone "Evaluator" sub-tab
-// (a grading config with no dataset attached — POST /evaluationSettings/create-standalone below;
+// (a grading config with no dataset attached - POST /evaluationSettings/create-standalone below;
 // distinct from the dataset+settings twin getMergedEvaluationSettings merges), and a flat Runs
 // list/detail. Similarity metrics (vectorSimilarity/jaccard/bleu/rouge) and Sovereignty &
 // Portability model comparison are accepted on both dataset and standalone-config payloads but not
-// acted on, same as core/evaluate/datasets.ts's CreateDatasetInput — out of scope for this pass,
+// acted on, same as core/evaluate/datasets.ts's CreateDatasetInput - out of scope for this pass,
 // see plan task #109. Dataset/config edit-history version tracking IS built (core/evaluate/
-// versions.ts, the /versions routes below) — real snapshots, real diffs, real deletes. Still not
+// versions.ts, the /versions routes below) - real snapshots, real diffs, real deletes. Still not
 // built: anything tied to AgentX's native agent-building/config-branching system
 // (agentConfigVersion, robotConfigBranch, evaluationSettingsConfigVersion, datasetConfigVersion,
-// agent/team-scoped run endpoints) — self-host has no agent/team registry or config-branching, so
+// agent/team-scoped run endpoints) - self-host has no agent/team registry or config-branching, so
 // those fields are simply omitted rather than faked, and pinning a run to the exact edit-history
 // version it graded against is a separate, not-yet-built feature from the edit history itself. See
 // README's Status section.
@@ -119,7 +137,7 @@ function parsePageLimit(req: Request, defaultLimit = 20) {
 }
 
 // A "dataset" in the dashboard is a datasets row plus its evaluationSettings twin (same id),
-// merged into one EvaluationSettings-shaped wire object — mirrors the hosted SaaS's
+// merged into one EvaluationSettings-shaped wire object - mirrors the hosted SaaS's
 // upsertDatasetTwin/resolveDatasetSettings pattern referenced in core/evaluate/runs.ts. Falls back
 // gracefully in either direction: a dataset with no twin yet (shouldn't happen via the dashboard,
 // which always creates both) still returns with default judgePrompt/judgeModel; a bare
@@ -177,7 +195,7 @@ async function listStandaloneConfigsWire(db: Db) {
 }
 
 // "dataset" restricts to real datasets (questions attached), "config" to standalone grading
-// configs (no dataset twin — see listStandaloneEvaluationSettings), "all" (default) merges both,
+// configs (no dataset twin - see listStandaloneEvaluationSettings), "all" (default) merges both,
 // matching AgentX-web-front's EvaluationSettingsKind contract exactly (useGetAllEvaluationSettings.ts).
 evaluateDashboardRouter.get("/evaluationSettings", async (req: Request, res: Response) => {
   const { page, limit } = parsePageLimit(req);
@@ -195,11 +213,11 @@ evaluateDashboardRouter.get("/evaluationSettings", async (req: Request, res: Res
   res.status(200).json({ evaluationSettings, pagination });
 });
 
-// Edit history (core/evaluate/versions.ts) — one entry per save that actually changed a tracked
+// Edit history (core/evaluate/versions.ts) - one entry per save that actually changed a tracked
 // field, plus one seeded at creation, so it's never empty right after a dataset/config is first
 // made. /batch/versions must come before the /:id/versions route below: Express matches by full
 // path shape (both are 2 segments after /evaluationSettings), so declaration order decides which
-// one "/evaluationSettings/batch/versions" actually hits — kept first for that reason.
+// one "/evaluationSettings/batch/versions" actually hits - kept first for that reason.
 evaluateDashboardRouter.get("/evaluationSettings/batch/versions", async (req: Request, res: Response) => {
   const ids = typeof req.query.ids === "string" ? req.query.ids.split(",").filter(Boolean) : [];
   const versionCounts = await getEvaluationSettingsVersionCounts(scopedDb(req), ids);
@@ -242,7 +260,100 @@ evaluateDashboardRouter.get("/datasets/:datasetId/run-comparison", async (req: R
   res.status(200).json(await getVersionComparison(scopedDb(req), req.params.datasetId!));
 });
 
-// Interactive Playground (core/evaluate/playground.ts) — run one (prompt, model, dataset
+// Agent Connectors (core/evaluate/agentConnectors.ts) - "how to invoke my deployed agent," a
+// plain webhook config, same shape as Monitor's Custom Evaluators (core/monitor/customEvaluators.ts)
+// but returning an answer instead of a verdict. Lets a dataset be run end to end from the
+// dashboard (see run-with-connector below) instead of requiring a human to manually run the agent
+// and push results via the SDK first.
+evaluateDashboardRouter.get("/agent-connectors", async (req: Request, res: Response) => {
+  res.status(200).json({ connectors: await listAgentConnectorsWire(scopedDb(req)) });
+});
+
+evaluateDashboardRouter.post("/agent-connectors", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.name !== "string" || !body.name.trim()) {
+    res.status(400).json({ error: "name is required" });
+    return;
+  }
+  if (typeof body.url !== "string" || !body.url.trim()) {
+    res.status(400).json({ error: "url is required" });
+    return;
+  }
+  const connector = await createAgentConnector(scopedDb(req), {
+    name: body.name,
+    url: body.url,
+    headers: body.headers && typeof body.headers === "object" ? body.headers : undefined,
+    timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : undefined,
+  });
+  res.status(201).json({ connector });
+});
+
+evaluateDashboardRouter.put("/agent-connectors/:id", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  const connector = await updateAgentConnector(scopedDb(req), req.params.id!, {
+    name: typeof body.name === "string" ? body.name : undefined,
+    url: typeof body.url === "string" ? body.url : undefined,
+    headers: body.headers && typeof body.headers === "object" ? body.headers : undefined,
+    timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : undefined,
+  });
+  if (!connector) {
+    res.status(404).json({ error: "Agent connector not found" });
+    return;
+  }
+  res.status(200).json({ connector });
+});
+
+evaluateDashboardRouter.delete("/agent-connectors/:id", async (req: Request, res: Response) => {
+  const deleted = await deleteAgentConnector(scopedDb(req), req.params.id!);
+  if (!deleted) {
+    res.status(404).json({ error: "Agent connector not found" });
+    return;
+  }
+  res.status(200).json({ success: true });
+});
+
+// "Test connection" (the dashboard's connector form) - a synthetic ping before the connector is
+// ever used in a real run. Always 200s: testAgentConnectorConnection itself never throws, same
+// posture as core/evaluate/models.ts's testCustomModelConnection.
+evaluateDashboardRouter.post("/agent-connectors/test-connection", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.url !== "string" || !body.url.trim()) {
+    res.status(400).json({ error: "url is required" });
+    return;
+  }
+  const result = await testAgentConnectorConnection({
+    url: body.url,
+    headers: body.headers && typeof body.headers === "object" ? body.headers : null,
+    timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : 30000,
+  });
+  res.status(200).json(result);
+});
+
+// Drives every question in a dataset through the given connector, scoring each result through the
+// exact same pipeline an SDK-pushed run uses (core/evaluate/connectorRun.ts). Long-running (one
+// real agent call per question) - fires and returns the new runId immediately; the dashboard
+// polls the existing GET /:id route below for progress, same as it already does for an SDK-driven
+// run in progress, no new polling infrastructure needed.
+evaluateDashboardRouter.post("/datasets/:datasetId/run-with-connector", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.connectorId !== "string" || !body.connectorId.trim()) {
+    res.status(400).json({ error: "connectorId is required" });
+    return;
+  }
+  const connector = await getAgentConnectorRow(scopedDb(req), body.connectorId);
+  if (!connector) {
+    res.status(404).json({ error: "Agent connector not found" });
+    return;
+  }
+  const result = await startConnectorRun(scopedDb(req), req.params.datasetId!, body.connectorId);
+  if (!result) {
+    res.status(404).json({ error: "Dataset not found" });
+    return;
+  }
+  res.status(202).json(result);
+});
+
+// Interactive Playground (core/evaluate/playground.ts) - run one (prompt, model, dataset
 // question) combination for real and return it, no persistence, same "compute and return"
 // posture as the portability routes below. One call per grid cell; the frontend fans a whole
 // questions × models grid out to this single-cell endpoint itself rather than this route doing
@@ -283,9 +394,9 @@ evaluateDashboardRouter.post("/playground/run", async (req: Request, res: Respon
   res.status(200).json(result);
 });
 
-// Playground's own run history (core/evaluate/playgroundRuns.ts) — a persistence layer next to,
+// Playground's own run history (core/evaluate/playgroundRuns.ts) - a persistence layer next to,
 // not inside, /playground/run above: lets the dashboard survive a refresh and browse past runs
-// without turning a single model call into a persisted resource. No workspaceId — self-host has
+// without turning a single model call into a persisted resource. No workspaceId - self-host has
 // no real multi-tenant concept (see playgroundRuns.ts's header comment).
 evaluateDashboardRouter.post("/playground/runs", async (req: Request, res: Response) => {
   const body = req.body ?? {};
@@ -331,7 +442,7 @@ evaluateDashboardRouter.delete("/playground/runs/:id", async (req: Request, res:
   res.status(200).json({ deleted: true });
 });
 
-// Prompt registry dashboard routes (core/evaluate/prompts.ts) — the external-agent analog to
+// Prompt registry dashboard routes (core/evaluate/prompts.ts) - the external-agent analog to
 // native autotune's config-mutation step: AgentX doesn't own the agent's code, so instead of
 // branching/applying a RobotConfig, it becomes the prompt's source of truth (see LangSmith Prompt
 // Hub / Langfuse Prompt Management), and a human approves every write. Registered before the
@@ -354,6 +465,100 @@ evaluateDashboardRouter.post("/prompts", async (req: Request, res: Response) => 
   res.status(201).json(prompt);
 });
 
+// Tool/skill schema registry (core/evaluate/toolSchemas.ts) - the Prompt Registry's routes
+// mirrored for tool definitions. Same "the only write path for a new version is the explicit
+// human-triggered versions POST" rule as prompts.
+evaluateDashboardRouter.get("/tool-schemas", async (req: Request, res: Response) => {
+  res.status(200).json({ toolSchemas: await listToolSchemasWire(scopedDb(req)) });
+});
+
+evaluateDashboardRouter.post("/tool-schemas", async (req: Request, res: Response) => {
+  const { name, definition, description } = req.body ?? {};
+  if (typeof name !== "string" || !name.trim()) {
+    res.status(400).json({ error: "name is required (must match the traced tool-call name exactly)" });
+    return;
+  }
+  if (typeof definition !== "string" || !definition.trim()) {
+    res.status(400).json({ error: "definition is required" });
+    return;
+  }
+  const toolSchema = await createToolSchema(scopedDb(req), { name: name.trim(), definition, description });
+  res.status(201).json(toolSchema);
+});
+
+evaluateDashboardRouter.get("/tool-schemas/:id", async (req: Request, res: Response) => {
+  const toolSchema = await getToolSchemaWithVersionsWire(scopedDb(req), req.params.id!);
+  if (!toolSchema) {
+    res.status(404).json({ error: "Tool schema not found" });
+    return;
+  }
+  res.status(200).json(toolSchema);
+});
+
+evaluateDashboardRouter.post("/tool-schemas/:id/versions", async (req: Request, res: Response) => {
+  const { definition, source, reasoning, basedOnVersion } = req.body ?? {};
+  if (typeof definition !== "string" || !definition.trim()) {
+    res.status(400).json({ error: "definition is required" });
+    return;
+  }
+  const toolSchema = await publishToolSchemaVersion(scopedDb(req), req.params.id!, {
+    definition,
+    source: source === "proposed" ? "proposed" : "manual",
+    reasoning: typeof reasoning === "string" ? reasoning : undefined,
+    basedOnVersion: typeof basedOnVersion === "number" ? basedOnVersion : undefined,
+  });
+  if (!toolSchema) {
+    res.status(404).json({ error: "Tool schema not found" });
+    return;
+  }
+  res.status(201).json(toolSchema);
+});
+
+// Same ?window=24h|7d|30d convention as the prompt-examples route - mapped to days here since
+// toolSchemas.ts's evidence gathering takes a day count directly.
+const toolSchemaWindowDays = (req: Request): number => {
+  const raw = req.query.window;
+  return raw === "24h" ? 1 : raw === "30d" ? 30 : 7;
+};
+
+evaluateDashboardRouter.get("/tool-schemas/:id/examples", async (req: Request, res: Response) => {
+  const result = await getToolFailureExamples(scopedDb(req), req.params.id!, toolSchemaWindowDays(req));
+  if (!result) {
+    res.status(404).json({ error: "Tool schema not found" });
+    return;
+  }
+  res.status(200).json(result);
+});
+
+evaluateDashboardRouter.post("/tool-schemas/:id/propose", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  const exampleIds = Array.isArray(body.exampleIds)
+    ? body.exampleIds.filter((id: unknown): id is string => typeof id === "string")
+    : undefined;
+  try {
+    const result = await proposeToolSchemaImprovement(scopedDb(req), req.params.id!, {
+      windowDays: body.window === "24h" ? 1 : body.window === "30d" ? 30 : 7,
+      exampleIds,
+    });
+    if (!result) {
+      res.status(404).json({ error: "Tool schema not found" });
+      return;
+    }
+    res.status(200).json(result);
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : "Proposal failed" });
+  }
+});
+
+evaluateDashboardRouter.delete("/tool-schemas/:id", async (req: Request, res: Response) => {
+  const deleted = await deleteToolSchema(scopedDb(req), req.params.id!);
+  if (!deleted) {
+    res.status(404).json({ error: "Tool schema not found" });
+    return;
+  }
+  res.status(200).json({ success: true });
+});
+
 evaluateDashboardRouter.get("/prompts/:id", async (req: Request, res: Response) => {
   const prompt = await getPromptWithVersionsWire(scopedDb(req), req.params.id!);
   if (!prompt) {
@@ -363,7 +568,7 @@ evaluateDashboardRouter.get("/prompts/:id", async (req: Request, res: Response) 
   res.status(200).json(prompt);
 });
 
-// Manual edit and accept-a-proposal both land here — the only write path for a new version, so
+// Manual edit and accept-a-proposal both land here - the only write path for a new version, so
 // a judge-proposed rewrite never reaches storage without this explicit human-triggered call.
 evaluateDashboardRouter.post("/prompts/:id/versions", async (req: Request, res: Response) => {
   const { text, source, reasoning, basedOnVersion } = req.body ?? {};
@@ -385,7 +590,7 @@ evaluateDashboardRouter.post("/prompts/:id/versions", async (req: Request, res: 
 });
 
 // The data half of /propose with no judge call, for a Claude Code skill (or any other caller) to
-// do its own reasoning instead of this engine's — see core/evaluate/prompts.ts's
+// do its own reasoning instead of this engine's - see core/evaluate/prompts.ts's
 // getWorstRatedExamples for why this is a real evidence feed rather than a second stub.
 evaluateDashboardRouter.get("/prompts/:id/examples", async (req: Request, res: Response) => {
   const datasetId = req.query.datasetId;
@@ -424,7 +629,7 @@ evaluateDashboardRouter.get("/prompts/:id/themes", async (req: Request, res: Res
   }
 });
 
-// Never writes on its own — returns a suggestion for the dashboard to show, which the human then
+// Never writes on its own - returns a suggestion for the dashboard to show, which the human then
 // accepts via POST /prompts/:id/versions (source: "proposed") or discards outright.
 evaluateDashboardRouter.post("/prompts/:id/propose", async (req: Request, res: Response) => {
   const { datasetId, includeAllVersions, exampleIds } = req.body ?? {};
@@ -442,7 +647,7 @@ evaluateDashboardRouter.post("/prompts/:id/propose", async (req: Request, res: R
     res.status(200).json(proposal);
   } catch (err) {
     // Most commonly a missing OPENAI_API_KEY/ANTHROPIC_API_KEY (core/evaluate/judge.ts's
-    // callJudgeJson throws a clear setup error for that) — surfaced to the dialog instead of
+    // callJudgeJson throws a clear setup error for that) - surfaced to the dialog instead of
     // hanging or 500ing opaquely.
     res.status(422).json({ error: err instanceof Error ? err.message : "Unable to generate a proposal" });
   }
@@ -457,7 +662,7 @@ evaluateDashboardRouter.delete("/prompts/:id", async (req: Request, res: Respons
   res.status(200).json({ success: true });
 });
 
-// Self-host's own "Analyze" — one synchronous judge call, not the hosted SaaS's multi-judge job
+// Self-host's own "Analyze" - one synchronous judge call, not the hosted SaaS's multi-judge job
 // pipeline. See core/evaluate/analysis.ts's top comment for the full scope explanation. Always
 // "completed" (or "failed") by the time this returns, since there's no background job to poll.
 evaluateDashboardRouter.post("/analyze/:id", async (req: Request, res: Response) => {
@@ -482,7 +687,7 @@ evaluateDashboardRouter.post("/analyze/:id", async (req: Request, res: Response)
     });
   } catch (err) {
     // Most commonly a missing OPENAI_API_KEY/ANTHROPIC_API_KEY (core/evaluate/judge.ts's
-    // callJudgeJson throws a clear setup error for that) — surfaced to the panel instead of
+    // callJudgeJson throws a clear setup error for that) - surfaced to the panel instead of
     // hanging or 500ing opaquely.
     res.status(422).json({ error: err instanceof Error ? err.message : "Unable to analyze the evaluation results" });
   }
@@ -537,7 +742,7 @@ evaluateDashboardRouter.post("/evaluationSettings/create", async (req: Request, 
   res.status(201).json({ ...datasetWire, creator: LOCAL_USER });
 });
 
-// A standalone, reusable grading config — no dataset/questions attached, no twin (see this file's
+// A standalone, reusable grading config - no dataset/questions attached, no twin (see this file's
 // header comment). EvaluationConfigsTab.tsx / CreateEvaluationSettingsConfigDialog.tsx's create
 // flow (distinct from the "New dataset" flow above, which always pairs one). numberOfRequests and
 // the similarity-metric toggles are both persisted (read back at run-scoring time, see
@@ -572,7 +777,7 @@ evaluateDashboardRouter.put("/evaluationSettings/:id", async (req: Request, res:
 
   // Two shapes share this one route: a dataset+settings twin (dashboard "New dataset" flow, full-
   // form submit every time) vs. a standalone config (Evaluator tab, which also sends partial
-  // payloads like `{ isDefault: true }` from "Make default" — see patchEvaluationSettings's
+  // payloads like `{ isDefault: true }` from "Make default" - see patchEvaluationSettings's
   // comment for why that needs sparse-merge semantics instead of updateEvaluationSettings's full
   // replace). Branch on whether a dataset row actually exists for this id.
   const existingDataset = await getDataset(scopedDb(req), id);
@@ -625,7 +830,7 @@ type QuestionsShape = Array<{ main_question?: { expectedResults?: string } }>;
 
 // expectedResults: prefers the run's own evaluationSettings.questions (matches the hosted SaaS
 // shape, where a dataset and its grading config are the same twin object), falling back to the
-// dataset's questions — needed because a standalone grading config (evaluationSettings/create-
+// dataset's questions - needed because a standalone grading config (evaluationSettings/create-
 // standalone) has no questions of its own by design, so a run scored against one but backed by a
 // real dataset would otherwise show no expected answer at all, even though the dataset has one.
 // Same fallback core/evaluate/prompts.ts's getWorstRatedExamples already uses for this exact gap.
@@ -661,7 +866,7 @@ function toResultWire(r: RunResultRow, evaluationSettingsQuestions: unknown, dat
 }
 
 // includeResults controls only whether the raw per-question array is embedded in the response
-// (the list endpoint omits it, same as the hosted SaaS does for scale reasons) — liveStatistics is
+// (the list endpoint omits it, same as the hosted SaaS does for scale reasons) - liveStatistics is
 // always computed from the real result rows regardless, since the table's rating column reads
 // liveStatistics.averageRating, not results.length, and a rating of exactly 0 (e.g. an errored
 // result) must not be treated as "no rating yet" (0 !== null).
@@ -690,7 +895,7 @@ async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) 
       ratedCount: rated.length,
     },
     // Frontend's AnalysisPanel reads this straight off the evaluation object (evaluation.analysis),
-    // not off the /analyze/:id/status or /metrics endpoints — those only drive polling and the
+    // not off the /analyze/:id/status or /metrics endpoints - those only drive polling and the
     // judge-evidence table. See core/evaluate/analysis.ts's top comment for what's in/out of scope.
     analysis: analysisRow
       ? {

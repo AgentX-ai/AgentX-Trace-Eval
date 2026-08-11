@@ -13,6 +13,7 @@ export const projects = pgTable("projects", {
   retentionDays: integer("retention_days").notNull().default(30),
   redactionMode: text("redaction_mode").notNull().default("standard"),
   latencyThresholdMs: integer("latency_threshold_ms").notNull().default(20000),
+  topicsEnabled: boolean("topics_enabled").notNull().default(false),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
 });
 
@@ -312,6 +313,8 @@ export const monitorOnlineEvaluators = pgTable("monitor_online_evaluators", {
   enabled: boolean("enabled").notNull().default(true),
   alertThreshold: doublePrecision("alert_threshold").default(5),
   severity: text("severity").notNull().default("medium"),
+  scope: text("scope").notNull().default("trace"),
+  idleSeconds: integer("idle_seconds").notNull().default(120),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
   projectId: text("project_id"),
 });
@@ -327,6 +330,67 @@ export const customEvaluators = pgTable("custom_evaluators", {
   enabled: boolean("enabled").notNull().default(true),
   invertMatch: boolean("invert_match").notNull().default(false),
   severity: text("severity").notNull().default("medium"),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
+});
+
+// See schema.sqlite.ts's agentConnectors for the full comment.
+export const agentConnectors = pgTable("agent_connectors", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  url: text("url").notNull(),
+  headers: jsonb("headers"),
+  timeoutMs: integer("timeout_ms").notNull().default(30000),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
+});
+
+// See schema.sqlite.ts's outcomeReports for the full comment.
+export const outcomeReports = pgTable("outcome_reports", {
+  id: text("id").primaryKey(),
+  traceId: text("trace_id"),
+  evaluationRunResultId: text("evaluation_run_result_id"),
+  outcome: text("outcome").notNull(),
+  isNegative: boolean("is_negative").notNull(),
+  reason: text("reason"),
+  reportedBy: text("reported_by"),
+  reportedAt: timestamp("reported_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
+});
+
+// See schema.sqlite.ts's sessionScores for the full comment.
+export const sessionScores = pgTable("session_scores", {
+  id: text("id").primaryKey(),
+  sessionId: text("session_id").notNull(),
+  kind: text("kind").notNull(),
+  rating: doublePrecision("rating"),
+  justification: text("justification"),
+  driftSpanId: text("drift_span_id"),
+  spanCount: integer("span_count").notNull(),
+  judgeModel: text("judge_model").notNull(),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
+});
+
+// See schema.sqlite.ts's toolSchemas/toolSchemaVersions for the full comment.
+export const toolSchemas = pgTable("tool_schemas", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description"),
+  currentVersion: integer("current_version").notNull().default(1),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
+  projectId: text("project_id"),
+});
+
+export const toolSchemaVersions = pgTable("tool_schema_versions", {
+  id: text("id").primaryKey(),
+  toolSchemaId: text("tool_schema_id").notNull(),
+  version: integer("version").notNull(),
+  definition: text("definition").notNull(),
+  source: text("source").notNull().default("manual"),
+  reasoning: text("reasoning"),
+  basedOnVersion: integer("based_on_version"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
   projectId: text("project_id"),
 });
@@ -364,7 +428,7 @@ export const promptVersions = pgTable(
   })
 );
 
-// See schema.sqlite.ts's portabilityModels for the full comment — deliberately instance-wide, not
+// See schema.sqlite.ts's portabilityModels for the full comment - deliberately instance-wide, not
 // project-scoped.
 export const portabilityModels = pgTable("portability_models", {
   id: text("id").primaryKey(),
@@ -397,7 +461,7 @@ export const evaluationAnalyses = pgTable("evaluation_analyses", {
   projectId: text("project_id"),
 });
 
-// See schema.sqlite.ts's appSettings for the full comment — deliberately instance-wide, not
+// See schema.sqlite.ts's appSettings for the full comment - deliberately instance-wide, not
 // project-scoped.
 export const appSettings = pgTable("app_settings", {
   id: text("id").primaryKey(),
@@ -426,6 +490,11 @@ export type PgSchema = {
   monitorClassifications: typeof monitorClassifications;
   monitorOnlineEvaluators: typeof monitorOnlineEvaluators;
   customEvaluators: typeof customEvaluators;
+  agentConnectors: typeof agentConnectors;
+  outcomeReports: typeof outcomeReports;
+  sessionScores: typeof sessionScores;
+  toolSchemas: typeof toolSchemas;
+  toolSchemaVersions: typeof toolSchemaVersions;
   prompts: typeof prompts;
   promptVersions: typeof promptVersions;
   portabilityModels: typeof portabilityModels;

@@ -4,13 +4,13 @@ import { listPortabilityModels, estimateCostUSD } from "../evaluate/models.js";
 import type { MonitoringWindow } from "./events.js";
 
 // Overview's "Total LLM cost" chart (Braintrust-style stacked bar, but stacked by model rather
-// than token type — self-host doesn't track cache-read/cache-write tokens per trace today, and
+// than token type - self-host doesn't track cache-read/cache-write tokens per trace today, and
 // for a multi-agent workspace "which model is costing me money" is the more useful breakdown
 // anyway). Reuses Model Portability's own $/M-token pricing table (core/evaluate/models.ts) as
-// the pricing source — traces whose model isn't in that table contribute $0 (no pricing to go on,
+// the pricing source - traces whose model isn't in that table contribute $0 (no pricing to go on,
 // same "approximate, user-maintained" positioning models.ts already documents).
 //
-// Same window/bucket idiom as topics.ts's getTopicsTrend — copied rather than shared, same reason
+// Same window/bucket idiom as topics.ts's getTopicsTrend - copied rather than shared, same reason
 // topics.ts gives for not reusing events.ts's own bucketize().
 function windowConfig(window: MonitoringWindow): { days: number; bucketHours: number } {
   switch (window) {
@@ -30,7 +30,7 @@ async function listCostTracesSince(db: Db, since: Date): Promise<CostTraceRow[]>
   const cond = and(gte(db.schema.traces.createdAt, since), eq(db.schema.traces.projectId, db.projectId));
   // Every row in the window, not just root spans (unlike listTracesPaginated's trace-list view):
   // an OTel multi-span session's individual LLM-call spans each carry their own tokens, and its
-  // root/session span typically carries none — filtering to roots would undercount real spend.
+  // root/session span typically carries none - filtering to roots would undercount real spend.
   const rows =
     db.kind === "sqlite"
       ? db.db
@@ -64,7 +64,7 @@ export type CostTrendPoint = {
 export type CostTrendResponse = {
   window: MonitoringWindow;
   points: CostTrendPoint[];
-  // Models actually seen with priced spend in the window, sorted by total cost descending — the
+  // Models actually seen with priced spend in the window, sorted by total cost descending - the
   // frontend uses this order both for stack-segment order and the legend rows below the chart.
   models: string[];
   totalsByModel: Record<string, number>;

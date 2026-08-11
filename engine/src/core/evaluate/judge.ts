@@ -33,7 +33,7 @@ export const DEFAULT_JUDGE_MODEL = "gpt-5.6-luna";
 // a self-host run with no custom judgePrompt scores the same way.
 export const DEFAULT_JUDGE_PROMPT = SHARED_DEFAULT_JUDGE_PROMPT;
 
-// DB-stored key (Platform Settings, live-editable) wins over the .env var — checked fresh on
+// DB-stored key (Platform Settings, live-editable) wins over the .env var - checked fresh on
 // every call (a local sqlite read, cheap), but the actual SDK client is only reconstructed when
 // the *resolved* key string changes. That's what makes a key update from the settings UI take
 // effect immediately with no server restart, without needing an explicit cache-invalidation call.
@@ -64,7 +64,7 @@ async function getAnthropic(): Promise<Anthropic | null> {
 // Gemini has no separate branch anywhere below: Google publishes an OpenAI-compatible endpoint
 // (https://ai.google.dev/gemini-api/docs/openai) that implements chat completions, tool calling,
 // and structured JSON output against the same OpenAI SDK, so a Gemini call is just an OpenAI SDK
-// client pointed at Google's baseURL — every OpenAI-shaped branch in this file (callJudgeJson,
+// client pointed at Google's baseURL - every OpenAI-shaped branch in this file (callJudgeJson,
 // callModelCompletion, callModelWithTools) already handles it with zero new code.
 const GEMINI_OPENAI_COMPAT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/";
 let cachedGeminiKey: string | null = null;
@@ -79,7 +79,7 @@ async function getGemini(): Promise<OpenAI | null> {
   return cachedGeminiClient;
 }
 
-// Custom (bring-your-own-endpoint) portability_models rows — cached by the resolved
+// Custom (bring-your-own-endpoint) portability_models rows - cached by the resolved
 // baseUrl+apiKey pair, same "rebuild only when the actual config changes" idiom as
 // getOpenAI/getAnthropic above, so editing a custom model's key in the dashboard takes effect
 // immediately without needing to clear this cache explicitly.
@@ -98,7 +98,7 @@ function getCustomClient(row: PortabilityModelRow): OpenAI {
 
 // Every mainstream self-hosted/local model server (vLLM, Ollama, LM Studio, text-generation-webui,
 // LocalAI, ...) implements the OpenAI-compatible chat completions API, and the OpenAI SDK accepts
-// any baseURL — so a "custom" catalog row doesn't need a third parallel branch anywhere below, it
+// any baseURL - so a "custom" catalog row doesn't need a third parallel branch anywhere below, it
 // folds into the existing "openai" branch with a different client. Gemini folds in the same way,
 // via Google's own OpenAI-compat endpoint (see getGemini above). This is the single place that
 // decides which: every caller below (callJudgeJson/callModelCompletion/callModelWithTools) checks
@@ -157,7 +157,7 @@ const SCORE_SCHEMA = {
   required: ["rating", "justification"],
 };
 
-// The actual "score input/output against criteria" primitive — extracted out of
+// The actual "score input/output against criteria" primitive - extracted out of
 // core/evaluate/runs.ts's scoreOneResult (which additionally resolves a per-question golden
 // answer from a dataset, a concept that doesn't apply here) so both offline batch runs and
 // core/monitor/onlineEvaluators.ts's live-traffic scoring call the exact same judge logic rather
@@ -223,9 +223,9 @@ export async function callJudgeJson({
 }
 
 // Vector similarity needs an OpenAI client for embeddings regardless of which provider judges the
-// rating — self-host's judge model can be Anthropic, but embeddings are OpenAI-only here (matches
+// rating - self-host's judge model can be Anthropic, but embeddings are OpenAI-only here (matches
 // the hosted platform's own vectorSimilarityHelper.ts). Returns null (not a throw) when no
-// OPENAI_API_KEY is set, same graceful-degradation behavior as a missing expected/actual string —
+// OPENAI_API_KEY is set, same graceful-degradation behavior as a missing expected/actual string -
 // this metric is opt-in, so a missing key shouldn't fail the whole result's scoring.
 export async function computeVectorSimilarity(
   expected: string | null | undefined,
@@ -244,10 +244,10 @@ export async function computeVectorSimilarity(
   }
 }
 
-// Raw embedding vector for a piece of text — used by Topics' "Map" view (core/monitor/topics.ts's
+// Raw embedding vector for a piece of text - used by Topics' "Map" view (core/monitor/topics.ts's
 // getTopicsMap) to position classified traces by semantic similarity via UMAP. Same
 // graceful-degradation posture as computeVectorSimilarity above (null, not a throw, on a missing
-// key or API failure — Topics classification itself shouldn't fail just because the map's
+// key or API failure - Topics classification itself shouldn't fail just because the map's
 // embedding call did). @agentx/judge-core has its own private getEmbedding used internally by
 // computeVectorSimilarityShared, but it's unexported and embeddings are self-host-only here
 // anyway (matching computeVectorSimilarity's own reasoning for staying out of the shared
@@ -271,12 +271,12 @@ export async function computeEmbedding(text: string, model: string = DEFAULT_EMB
 }
 
 // ---------------------------------------------------------------------------
-// Model portability (core/evaluate/portability.ts) — a plain, free-text completion, distinct from
+// Model portability (core/evaluate/portability.ts) - a plain, free-text completion, distinct from
 // callJudgeJson above which always forces a JSON-schema-constrained response. Portability needs a
 // candidate model's natural answer (to then judge-score it), not a structured verdict.
 // Deliberately not added to @agentx/judge-core: that package is a genuine hosted+self-host shared
 // extraction today, and there's no visibility here into whether/how AgentX-web-api's own
-// Sovereignty Index already does plain completions — a "shared" primitive only self-host actually
+// Sovereignty Index already does plain completions - a "shared" primitive only self-host actually
 // uses would risk presuming parity that hasn't been verified. Revisit if the hosted side wants to
 // consolidate onto it.
 export type ReconstructedContext = {
@@ -328,7 +328,7 @@ export async function callModelCompletion(model: string, reconstructed: Reconstr
 }
 
 // ---------------------------------------------------------------------------
-// Tool-calling (core/evaluate/playground.ts only) — Model Portability deliberately never
+// Tool-calling (core/evaluate/playground.ts only) - Model Portability deliberately never
 // reproduces tool-calling (README: translating an arbitrary captured schema into each provider's
 // own format is real separate work it doesn't attempt), so this is a genuinely separate primitive
 // from callModelCompletion above rather than an extension of it; that function and its one caller
@@ -343,26 +343,26 @@ export type ModelWithToolsResult = {
   toolCalls: ToolCallTrace[];
 };
 
-// In-process CPU/network-bound loop, not a hard cost cap — just enough to stop a prompt that keeps
+// In-process CPU/network-bound loop, not a hard cost cap - just enough to stop a prompt that keeps
 // asking for more tools (or a tool that keeps telling the model to call it again) from looping
 // forever. Each round is a full model call, so 5 is already a lot of real API calls for one grid
 // cell.
 const MAX_TOOL_ROUNDS = 5;
 
 // Drives a real tool-call round-trip: send the conversation (+ tool schemas) to the model, and for
-// every tool call it asks for, await `callTool(name, arguments)` — Playground supplies that as an
+// every tool call it asks for, await `callTool(name, arguments)` - Playground supplies that as an
 // HTTP POST to the tool's own endpoint (see playground.ts), this function has no concept of
 // "endpoint," just a callback, so it stays a provider-calling primitive, not app-specific business
 // logic. A `callTool` failure isolates to that one call's `{error}`, fed back to the model as the
 // tool result (lets you see how the prompt handles a failing tool) rather than aborting the run.
-// Called with `tools: []` too (Playground always calls this, never callModelCompletion directly) —
+// Called with `tools: []` too (Playground always calls this, never callModelCompletion directly) -
 // degenerates to exactly one round with no tool_calls, same behavior as callModelCompletion.
 export async function callModelWithTools(
   model: string,
   reconstructed: ReconstructedContext,
   tools: ToolDefinition[],
   callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>,
-  // Per-model overrides (Playground's "Model settings" — see playground.ts). Both omitted means
+  // Per-model overrides (Playground's "Model settings" - see playground.ts). Both omitted means
   // today's exact defaults: Anthropic still gets its required max_tokens: 1200, OpenAI stays
   // uncapped, neither provider gets an explicit temperature.
   options?: { maxTokens?: number; temperature?: number }
@@ -387,7 +387,7 @@ export async function callModelWithTools(
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       const response = await client.messages.create({
         model,
-        // Required on every Anthropic request, can't be omitted — 1200 is today's unchanged
+        // Required on every Anthropic request, can't be omitted - 1200 is today's unchanged
         // default when the caller doesn't override it.
         max_tokens: options?.maxTokens ?? 1200,
         ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}),
@@ -451,17 +451,17 @@ export async function callModelWithTools(
       ...(openaiTools.length > 0 ? { tools: openaiTools } : {}),
       // Reasoning models in this catalog reject function tools alongside a nonzero reasoning
       // effort ("Function tools with reasoning_effort are not supported... set reasoning_effort
-      // to 'none'", confirmed against a real running model) — "none" isn't in the SDK's own
+      // to 'none'", confirmed against a real running model) - "none" isn't in the SDK's own
       // ReasoningEffort type yet (a newer model generation than the SDK's typings know about),
       // hence the cast; only sent when tools are actually in play, so a tool-less run is
       // completely unaffected. Skipped for Gemini: it's an OpenAI reasoning-model-specific param
       // Google's OpenAI-compat layer doesn't document support for.
       ...(openaiTools.length > 0 && !isGemini ? { reasoning_effort: "none" as OpenAI.Chat.ChatCompletionReasoningEffort } : {}),
       // max_tokens is deprecated on chat completions in favor of max_completion_tokens (the
-      // unified param that also covers reasoning-model completions) — only sent when overridden,
+      // unified param that also covers reasoning-model completions) - only sent when overridden,
       // preserving today's "uncapped unless told otherwise" default.
       ...(options?.maxTokens !== undefined ? { max_completion_tokens: options.maxTokens } : {}),
-      // Reasoning models reject a non-default temperature outright — silently omitted rather than
+      // Reasoning models reject a non-default temperature outright - silently omitted rather than
       // letting the call 400, same isolation posture as everywhere else a per-model quirk exists.
       ...(options?.temperature !== undefined && !isReasoningModel(model) ? { temperature: options.temperature } : {}),
     });
@@ -480,7 +480,7 @@ export async function callModelWithTools(
       try {
         args = JSON.parse(call.function.arguments || "{}");
       } catch {
-        // Malformed JSON from the model itself — treat as empty args rather than failing the call.
+        // Malformed JSON from the model itself - treat as empty args rather than failing the call.
       }
       const trace: ToolCallTrace = { name: call.function.name, arguments: args };
       try {
@@ -515,7 +515,7 @@ const SMOKE_TEST_VARIANTS_SCHEMA = {
 // Smoke test: paraphrased variants of a question, to catch an agent that's brittle to phrasing
 // rather than genuinely wrong (see AgentX-Python's DatasetBuilder.add_case's smoke_test_count/
 // smoke_test_guidance). Called once at init_run time (core/evaluate/runs.ts) per question that
-// requests it, frozen for the lifetime of that run — never regenerated mid-run.
+// requests it, frozen for the lifetime of that run - never regenerated mid-run.
 //
 // Best-effort: a judge-call failure (missing API key, provider outage) returns an empty array
 // rather than failing the whole run. Smoke tests are additive on top of a run's normal questions;
@@ -527,7 +527,7 @@ export async function generateSmokeTestVariants(
   judgeModel: string = DEFAULT_JUDGE_MODEL
 ): Promise<string[]> {
   const guidanceLine = guidance ? `\nStyle guidance for the variants: ${guidance}` : "";
-  const prompt = `Generate exactly ${count} different paraphrased versions of the question below — each one a realistic way a real user might actually type it. Keep the same underlying intent/meaning as the original; only the phrasing/wording should change.${guidanceLine}
+  const prompt = `Generate exactly ${count} different paraphrased versions of the question below - each one a realistic way a real user might actually type it. Keep the same underlying intent/meaning as the original; only the phrasing/wording should change.${guidanceLine}
 
 Original question: ${query}`;
   try {
@@ -543,11 +543,11 @@ Original question: ${query}`;
   }
 }
 
-// No "expected results" framing at all, unlike DEFAULT_JUDGE_PROMPT above — a live captured trace
+// No "expected results" framing at all, unlike DEFAULT_JUDGE_PROMPT above - a live captured trace
 // has no ground truth to compare against, so this judges each candidate's response purely on its
 // own merits. Every model in a portability comparison (including the originally-captured output)
 // is scored with this exact same rubric, so ratings are directly comparable across models.
-const PORTABILITY_JUDGE_PROMPT = `You are evaluating how well an AI response answers a user's question. There is no "correct" reference answer provided for this comparison — judge the response entirely on its own merits.
+const PORTABILITY_JUDGE_PROMPT = `You are evaluating how well an AI response answers a user's question. There is no "correct" reference answer provided for this comparison - judge the response entirely on its own merits.
 
 **User's input:**
 {input}

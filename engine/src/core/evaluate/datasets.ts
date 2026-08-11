@@ -16,7 +16,7 @@ export type SimilarityConfig = {
 };
 
 // Both routes/evaluations.ts (SDK) and routes/evaluateDashboard.ts (dashboard) accept this same
-// shape on dataset/evaluation-settings create+update bodies — one extraction helper instead of
+// shape on dataset/evaluation-settings create+update bodies - one extraction helper instead of
 // repeating the same four-field pull at every call site (a field missed at one of them is exactly
 // how numberOfRequests went unpersisted on the SDK route for a full session before being caught).
 export function extractSimilarityConfig(body: Record<string, unknown>): SimilarityConfig | undefined {
@@ -41,7 +41,7 @@ export function extractSimilarityConfig(body: Record<string, unknown>): Similari
 
 // Same "one extraction helper, called at every create+update site" convention as
 // extractSimilarityConfig above. Unlike that fixed 4-field shape, code scorers are a
-// dataset-defined, open-ended, named list — validated/normalized here rather than trusted
+// dataset-defined, open-ended, named list - validated/normalized here rather than trusted
 // as-is, since `code` is later executed (see codeScorer.ts's runCodeScorer).
 export function extractCodeScorers(body: Record<string, unknown>): CodeScorerConfig[] | undefined {
   if (!Array.isArray(body.codeScorers)) {
@@ -131,7 +131,7 @@ export async function createDataset(db: Db, input: CreateDatasetInput) {
   }
   const wire = toWire(row);
   // Seeds v0 immediately (before: null -> changeSummary "Created") so the version history panel
-  // isn't left empty until the first edit — see versions.ts's buildChangeSummary.
+  // isn't left empty until the first edit - see versions.ts's buildChangeSummary.
   await recordDatasetVersionIfChanged(db, row.id, null, wire);
   return wire;
 }

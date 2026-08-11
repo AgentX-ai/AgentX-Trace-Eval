@@ -50,16 +50,12 @@ export function builtInPatternsWire() {
 // wire equivalent, self-host traces only ever have `error`, so that check is folded into the
 // trace-error case here instead of kept separate.
 function detectBuiltIn(trace: TraceLike & { latencyMs?: number | null }, latencyThresholdMs: number): DetectedSignal | null {
-  if (trace.error) {
-    return {
-      type: "agent_trace_error",
-      severity: "high",
-      summary: `The agent's execution trace recorded an error: ${trace.error}`,
-      patternKey: "agent-trace-error",
-      rootCause: trace.error,
-    };
-  }
-
+  // Checked BEFORE the generic trace-error case: when a tool call fails and its exception
+  // escapes the agent loop, the SDK records both (success:false on the call AND the span's own
+  // error), and "which tool failed" is the more specific, actionable classification - it names
+  // the root cause and feeds the tool-schema improvement loop's evidence gathering
+  // (core/evaluate/toolSchemas.ts joins on this patternKey). agent-trace-error remains the
+  // classification for errors with no failed tool call recorded.
   const failedCall = (trace.toolCalls ?? []).find(call => call.success === false);
   if (failedCall) {
     return {
@@ -68,6 +64,16 @@ function detectBuiltIn(trace: TraceLike & { latencyMs?: number | null }, latency
       summary: `The agent's "${failedCall.name}" tool call did not complete successfully.`,
       patternKey: `agent-tool-failure:${failedCall.name}`,
       rootCause: failedCall.name,
+    };
+  }
+
+  if (trace.error) {
+    return {
+      type: "agent_trace_error",
+      severity: "high",
+      summary: `The agent's execution trace recorded an error: ${trace.error}`,
+      patternKey: "agent-trace-error",
+      rootCause: trace.error,
     };
   }
 
@@ -139,7 +145,7 @@ async function detectCustomPatterns(db: Db, trace: TraceLike, agentId: string | 
     } catch (err) {
       // A "semantic" condition failing (missing judge API key, provider outage) must not silently
       // skip every other pattern after it, or the entire healthy-tally/failure detection for this
-      // trace — isolated per-pattern rather than letting the whole sweep abort partway.
+      // trace - isolated per-pattern rather than letting the whole sweep abort partway.
       console.error(`Pattern "${pattern.name}" failed to evaluate:`, err instanceof Error ? err.message : err);
       continue;
     }
@@ -172,15 +178,15 @@ export async function runMonitorCheck(
   // Profile-level gates: enabled/sampleRate/failureDetectionEnabled/infoDetectionEnabled are
   // persisted (core/monitor/profiles.ts) and round-trip through the dashboard's per-agent settings
   // dialog. No profile row (agent never configured) behaves exactly like today for the *explicit*
-  // monitor=true path: fully on, unsampled — that's the "no dashboard setup required" SDK-first
+  // monitor=true path: fully on, unsampled - that's the "no dashboard setup required" SDK-first
   // design goal.
   const profile = agentId ? await getProfileRow(db, agentId) : null;
   // sampleRate/retentionDays/latency threshold are project-level (core/project/projects.ts's
-  // MonitoringDefaults) — a single request-scoped fetch, applied uniformly to every agent in this
+  // MonitoringDefaults) - a single request-scoped fetch, applied uniformly to every agent in this
   // project rather than each agent's own (now-inert) profile fields.
   const defaults = await getMonitoringDefaults(db);
   // The *implicit* path (every trace, not just monitor=true ones) is the opposite: "no profile"
-  // must mean "skip", not "fully on" — otherwise every agent would start being monitored (and
+  // must mean "skip", not "fully on" - otherwise every agent would start being monitored (and
   // judge-API-billed) automatically the moment any trace is ingested, before anyone touched the
   // dashboard at all. Only an agent with a real, explicitly-enabled profile gets implicit coverage.
   if (ctx.requireEnabledProfile && !profile?.enabled) {
@@ -235,7 +241,7 @@ export async function runMonitorCheck(
   if (!detected) {
     // infoDetectionEnabled === false: the agent's profile opted out of the healthy/"proper"
     // tally specifically (core/monitor/performance.ts's health-rate still just won't count this
-    // check either way) — failure detection above already ran regardless, this only skips logging
+    // check either way) - failure detection above already ran regardless, this only skips logging
     // the "nothing wrong" case.
     if (profile?.infoDetectionEnabled === false) {
       return;
@@ -277,7 +283,7 @@ export async function runMonitorCheck(
     agentId,
     traceId: ctx.traceId ?? null,
   });
-  // Only failure-polarity detections page anyone — a "proper" custom pattern match is a positive
+  // Only failure-polarity detections page anyone - a "proper" custom pattern match is a positive
   // signal (see performance.ts's comment on that distinction), not something to alert on.
   if ((detected.polarity ?? "failure") === "failure") {
     notifyWebhooks(extractWebhookUrls(profile?.channels), {

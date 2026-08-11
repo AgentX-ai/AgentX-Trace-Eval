@@ -1,0 +1,1 @@
+import{a5 as e,H as n,J as o}from"./index-BX7IFddg.js";const s={all:["agent-monitoring","agent-connectors"]},a=async()=>{const{data:t}=await n.get(o.getAgentConnectors);return t.connectors},c=({enabled:t=!0}={})=>e({queryKey:s.all,queryFn:a,enabled:t});export{s as a,c as u};

@@ -30,20 +30,20 @@ export type EventRow = {
   agentId: string | null;
   traceId: string | null;
   createdAt: Date;
-  // Set only for online-evaluator rows (core/monitor/onlineEvaluators.ts) — a continuous judge
+  // Set only for online-evaluator rows (core/monitor/onlineEvaluators.ts) - a continuous judge
   // rating on sampled live traffic, not a failure/healthy pattern-match tally. Every classification
   // function below must skip these (see tallyEvent/getTopFailing), or they'd silently corrupt the
   // health-rate math those routes already ship.
   onlineEvaluatorId: string | null;
   rating: number | null;
   justification: string | null;
-  // Set only for custom-evaluator rows (core/monitor/customEvaluators.ts) — a per-check boolean
+  // Set only for custom-evaluator rows (core/monitor/customEvaluators.ts) - a per-check boolean
   // verdict, recorded whether or not it raised a Signal. Same "skip in classification math" rule
   // as onlineEvaluatorId above, for the same reason.
   customEvaluatorId: string | null;
   matched: boolean | null;
   // Optional metadata a custom evaluator's endpoint can additionally return alongside `matches`
-  // (CustomEvaluatorResponse's comment) — never drives the matched/hit decision itself, just
+  // (CustomEvaluatorResponse's comment) - never drives the matched/hit decision itself, just
   // recorded for visibility. Null whenever the endpoint didn't report one, or for non-custom-
   // evaluator rows entirely (this is not reused for onlineEvaluatorId rows, which have their own
   // `rating` field with different 0-10 semantics).
@@ -86,15 +86,15 @@ export async function recordEvent(
 }
 
 // Called opportunistically after each write for that agent (see detect.ts) rather than on a
-// schedule — self-host has no background job runner (plan task #110's note), and event volume
+// schedule - self-host has no background job runner (plan task #110's note), and event volume
 // here is low enough that a delete-on-write is cheap rather than a real cron.
 //
 // Prunes raw telemetry older than the window: monitor_events (the per-check log behind trend/KPI
 // charts), traces themselves, and monitor_classifications (Topics). monitor_signals is
-// deliberately exempt — those are curated triage records with their own status/reviewStatus
+// deliberately exempt - those are curated triage records with their own status/reviewStatus
 // lifecycle, not raw traffic, the same distinction real observability tools draw between trace
 // retention and incident retention. `retentionDays <= 0` means "Forever" (MonitoringUnitSettingsFields.tsx's
-// new option) — skip pruning entirely rather than treating 0 as "a cutoff of right now."
+// new option) - skip pruning entirely rather than treating 0 as "a cutoff of right now."
 export async function pruneRetentionData(db: Db, agentId: string | null, retentionDays: number): Promise<void> {
   if (retentionDays <= 0) {
     return;
@@ -150,7 +150,7 @@ export async function pruneRetentionData(db: Db, agentId: string | null, retenti
 }
 
 // One row per detection is already recorded here (recordEvent, called from detect.ts on every
-// match) — this is the real per-occurrence history AgentX-web-front's SignalRow.tsx expects on
+// match) - this is the real per-occurrence history AgentX-web-front's SignalRow.tsx expects on
 // `signal.occurrences[]`, which core/monitor/signals.ts's toWire() never populated (only the
 // aggregate occurrenceCount). Newest-last (chronological), matching the frontend's own
 // `[...recorded].reverse()` to display newest-first.
@@ -160,6 +160,20 @@ export async function listOccurrencesForSignal(db: Db, signalId: string): Promis
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.monitorEvents).where(cond).orderBy(db.schema.monitorEvents.createdAt).all()
       : await db.db.select().from(db.schema.monitorEvents).where(cond).orderBy(db.schema.monitorEvents.createdAt);
+  return rows as EventRow[];
+}
+
+// Every detection check recorded against one trace - the join surface
+// core/monitor/outcomeCalibration.ts uses to compare AgentX's own verdict for a trace against a
+// real-world outcome reported for it later. Unlike listOccurrencesForSignal above (one Signal's
+// deduped occurrence history), this is trace-scoped: a Signal aggregates many traces together
+// (occurrenceCount), so it can't be joined back to one specific trace the way this can.
+export async function listEventsForTrace(db: Db, traceId: string): Promise<EventRow[]> {
+  const cond = and(eq(db.schema.monitorEvents.traceId, traceId), eq(db.schema.monitorEvents.projectId, db.projectId));
+  const rows =
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.monitorEvents).where(cond).all()
+      : await db.db.select().from(db.schema.monitorEvents).where(cond);
   return rows as EventRow[];
 }
 
@@ -191,7 +205,7 @@ function percentile(sorted: number[], p: number): number | null {
 }
 
 // Same "custom:" prefix / "healthy-response" special-case classification
-// core/monitor/performance.ts's getPerformance already uses for the all-time aggregate — kept
+// core/monitor/performance.ts's getPerformance already uses for the all-time aggregate - kept
 // consistent rather than reinvented, just windowed here instead of all-time.
 function isCustomPattern(patternKey: string): boolean {
   return patternKey.startsWith("custom:");
@@ -274,7 +288,7 @@ export async function getKpis(db: Db, window: MonitoringWindow): Promise<Monitor
   const windowMs = days * 24 * 60 * 60 * 1000;
   const now = Date.now();
   // One query covering the current window and the equal-length window immediately before it
-  // (needed for `deltas`), split in JS — same "fetch a set, compute in memory" style already used
+  // (needed for `deltas`), split in JS - same "fetch a set, compute in memory" style already used
   // throughout core/evaluate and core/monitor rather than dialect-specific SQL aggregation.
   const since = new Date(now - windowMs * 2);
   const allEvents = await listEventsSince(db, since);
@@ -302,7 +316,7 @@ export async function getKpis(db: Db, window: MonitoringWindow): Promise<Monitor
     totalRuns: current.total,
     healthRate: currentHealthRate,
     failureRate: currentFailureRate,
-    // No native chat UI on self-host to downvote a response from — always null, same convention
+    // No native chat UI on self-host to downvote a response from - always null, same convention
     // as EvaluateTab's out-of-scope fields elsewhere in this engine (omit rather than fake).
     downvoteRate: null,
     toolFailureRate: currentToolFailureRate,
@@ -362,7 +376,7 @@ export async function getTrend(db: Db, window: MonitoringWindow): Promise<Monito
     window,
     points: bucketize(currentRows, currentStart, bucketCount, bucketMs),
     previous: bucketize(previousRows, previousStart, bucketCount, bucketMs),
-    // "Releases" are agent-config-version deploy markers on the hosted SaaS's trend chart — no
+    // "Releases" are agent-config-version deploy markers on the hosted SaaS's trend chart - no
     // equivalent on self-host, which has no native agent-config-branching system at all (same
     // boundary as Evaluate's agentConfigVersion/robotConfigBranch omission). Always empty rather
     // than faked.
@@ -440,7 +454,7 @@ export async function getTopFailing(db: Db, window: MonitoringWindow, limit = 10
 
 export type OnlineEvaluatorRatingPoint = { label: string; ts: number; averageRating: number | null; count: number };
 
-// Bucketed average rating over time for one online evaluator — the read side of Phase 4's
+// Bucketed average rating over time for one online evaluator - the read side of Phase 4's
 // continuous scoring, same bucketing approach as getTrend above but filtered to one evaluator's
 // rows and averaging `rating` instead of computing a healthy/failing rate.
 export async function getOnlineEvaluatorRatings(
@@ -494,7 +508,7 @@ export type OnlineEvaluatorEvent = {
   output: string;
 };
 
-// Individual scored traces for one online evaluator within a window, worst-rated first — the
+// Individual scored traces for one online evaluator within a window, worst-rated first - the
 // per-trace complement to getOnlineEvaluatorRatings' bucketed aggregate above, so a low point on
 // that chart can be traced back to exactly which conversation(s) pulled the average down and why.
 // Same trace-join pattern as core/evaluate/prompts.ts's gatherOnlineEvaluatorExamples (that one
@@ -531,7 +545,7 @@ export async function getOnlineEvaluatorEvents(
     })
   );
   // totalCount is every scored row in the window, not just the ones with a still-resolvable trace
-  // (a trace could in principle be pruned/missing) — deliberately the denominator a caller would
+  // (a trace could in principle be pruned/missing) - deliberately the denominator a caller would
   // expect "worst 20 of totalCount" to add up against, matching what the window's real event count
   // actually is rather than silently under-counting to match resolved.length.
   return { events: resolved.filter((e): e is OnlineEvaluatorEvent => e !== null), totalCount: rows.length };
@@ -548,7 +562,7 @@ export type CustomEvaluatorEvent = {
   output: string;
 };
 
-// Individual checked traces for one custom evaluator within a window, newest first — the
+// Individual checked traces for one custom evaluator within a window, newest first - the
 // per-trace call history a dashboard "events" view shows, same trace-join pattern as
 // getOnlineEvaluatorEvents above.
 export async function getCustomEvaluatorEvents(

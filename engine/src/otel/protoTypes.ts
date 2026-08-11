@@ -22,7 +22,7 @@ export const ExportTraceServiceResponseType = root.lookupType(
 // keepCase: false (the parse-time default) auto-camelCases every field name (resource_spans ->
 // resourceSpans, trace_id -> traceId, ...), so toObject() output here has the exact same shape as
 // an OTLP/JSON body from a real exporter (which uses the protobuf canonical JSON mapping's
-// lowerCamelCase convention) — normalize.ts/attributes.ts handle both with one code path.
+// lowerCamelCase convention) - normalize.ts/attributes.ts handle both with one code path.
 export const TO_OBJECT_OPTIONS: protobuf.IConversionOptions = {
   longs: String,
   enums: String,

@@ -4,19 +4,19 @@ import { callModelCompletion, scorePortabilityResponse, type ReconstructedContex
 import { getPortabilityModel, estimateCostUSD, type PortabilityModel } from "./models.js";
 
 // Model portability: "would a different model handle this specific captured input about as
-// well?" — an input-only replay, not a full agent re-run. Self-host doesn't own the agent (no
+// well?" - an input-only replay, not a full agent re-run. Self-host doesn't own the agent (no
 // system prompt/tools/history guaranteed the way native autotune's RobotConfig would have them),
 // but traces.input/traces.metadata are opaque JSON, and what's actually in them depends entirely
 // on how the caller instrumented (checked against the real AgentX-Python tracer: the raw
 // Anthropic client patch captures the full `messages` array, the manual tracer.trace() API is
 // fully free-form, the higher-level framework integrations flatten to text). reconstructMessages
-// below makes a best-effort, multi-shape attempt at recovering structure — same defensive posture
-// as routes/otlp.ts's own "try every known convention" OTel attribute parsing — rather than
+// below makes a best-effort, multi-shape attempt at recovering structure - same defensive posture
+// as routes/otlp.ts's own "try every known convention" OTel attribute parsing - rather than
 // assuming one fixed shape or silently only ever doing single-turn-text replay.
 //
 // Deliberately NOT reconstructing tool-calling ability: even when metadata contains tool
 // definitions, replaying them requires translating an arbitrary captured schema into each
-// candidate provider's own tool-call format, which is real, separate work — out of scope here.
+// candidate provider's own tool-call format, which is real, separate work - out of scope here.
 // Tool definitions found in metadata are surfaced for display only (toolsFound below).
 
 const SYSTEM_PROMPT_METADATA_KEYS = ["systemPrompt", "system_prompt", "system", "instructions"];
@@ -26,7 +26,7 @@ function extractContent(value: unknown): string {
   if (typeof value === "string") return value;
   if (value == null) return "";
   if (Array.isArray(value)) {
-    // Multi-modal / block-style content (e.g. [{type: "text", text: "..."}]) — best-effort join
+    // Multi-modal / block-style content (e.g. [{type: "text", text: "..."}]) - best-effort join
     // of any text-bearing parts, since a candidate model call here only ever sends plain text.
     return value
       .map(part => {
@@ -97,7 +97,7 @@ export function reconstructMessages(trace: Pick<TraceRow, "input" | "metadata">)
       const content = extractContent(item.content);
       if (!content) continue;
       if (role === "system" || role === "developer") {
-        // Multiple system entries (rare) are joined — better than silently dropping all but one.
+        // Multiple system entries (rare) are joined - better than silently dropping all but one.
         system = system ? `${system}\n${content}` : content;
       } else {
         messages.push({ role: role === "assistant" ? "assistant" : "user", content });
@@ -158,7 +158,7 @@ export async function runModelPortabilityCheck(
 
   // Baseline: the trace's own already-captured output, re-scored under the portability rubric so
   // its rating is directly comparable to the candidates (it was never judged against this rubric
-  // when first ingested — Monitor's checks are pattern/rating checks, not a quality score).
+  // when first ingested - Monitor's checks are pattern/rating checks, not a quality score).
   const baselineOutputText = extractContent(trace.output);
   const baselineModel = trace.model ? await getPortabilityModel(db, trace.model) : null;
   try {
@@ -195,7 +195,7 @@ export async function runModelPortabilityCheck(
     });
   }
 
-  // Each candidate is isolated — one model failing (bad key, rate limit, not enabled on the
+  // Each candidate is isolated - one model failing (bad key, rate limit, not enabled on the
   // user's account) must not blank out the rest of the comparison, same posture as every other
   // multi-target loop in this engine (detectCustomPatterns, runOnlineEvaluators).
   for (const modelId of candidateModelIds) {

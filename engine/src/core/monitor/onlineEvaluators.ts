@@ -8,10 +8,10 @@ import { upsertSignal } from "./signals.js";
 import { getEvaluationSettingsRow } from "../evaluate/evaluationSettings.js";
 
 // LangSmith's actual "online evals": a real judge scoring sampled live traffic continuously,
-// producing a rating over time — distinct from core/monitor/detect.ts's pattern-matching (a
+// producing a rating over time - distinct from core/monitor/detect.ts's pattern-matching (a
 // binary signal). References an evaluationSettingsId (an "Evaluator" config, core/evaluate/
 // evaluationSettings.ts) for its criteria/judge prompt/judge model rather than storing its own
-// copy — that used to be inline before the standalone-config creation UI existed; it does now, so
+// copy - that used to be inline before the standalone-config creation UI existed; it does now, so
 // the config is the single source of truth, shared with Runs via EvaluationConfigSelector on the
 // frontend.
 export type CreateOnlineEvaluatorInput = {
@@ -26,6 +26,11 @@ export type CreateOnlineEvaluatorInput = {
   // Signal, e.g. an evaluator being run purely to populate the ratings chart.
   alertThreshold?: number | null;
   severity?: string;
+  // "trace" (default): judge each sampled trace at ingest. "session": judge whole idle
+  // conversations via core/monitor/sessionSweep.ts instead - see schema.sqlite.ts's
+  // monitorOnlineEvaluators.scope comment. idleSeconds only applies to session scope.
+  scope?: string;
+  idleSeconds?: number;
 };
 
 export type UpdateOnlineEvaluatorInput = Partial<CreateOnlineEvaluatorInput>;
@@ -41,6 +46,8 @@ export type OnlineEvaluatorRow = {
   enabled: boolean;
   alertThreshold: number | null;
   severity: string;
+  scope: string;
+  idleSeconds: number;
   createdAt: Date;
 };
 
@@ -55,11 +62,13 @@ function toWire(row: OnlineEvaluatorRow) {
     enabled: row.enabled,
     alertThreshold: row.alertThreshold,
     severity: row.severity,
+    scope: row.scope,
+    idleSeconds: row.idleSeconds,
     createdAt: row.createdAt.toISOString(),
   };
 }
 
-// Thrown by create/update when evaluationSettingsId doesn't resolve to a real config — the route
+// Thrown by create/update when evaluationSettingsId doesn't resolve to a real config - the route
 // layer (routes/agentMonitoringDashboard.ts) turns this into a 400, same shape as the existing
 // "name is required" validation error.
 export class InvalidEvaluationSettingsIdError extends Error {}
@@ -78,7 +87,7 @@ export async function createOnlineEvaluator(db: Db, input: CreateOnlineEvaluator
     projectId: db.projectId,
     name: input.name,
     evaluationSettingsId: input.evaluationSettingsId,
-    // Every check here is a real LLM call against the user's own API key — default meaningfully
+    // Every check here is a real LLM call against the user's own API key - default meaningfully
     // lower than a pattern's (1), sampling isn't optional the way it arguably is for pattern-
     // matching (usually free string/regex work).
     sampleRate: input.sampleRate ?? 0.1,
@@ -87,6 +96,8 @@ export async function createOnlineEvaluator(db: Db, input: CreateOnlineEvaluator
     enabled: input.enabled ?? true,
     alertThreshold: input.alertThreshold !== undefined ? input.alertThreshold : 5,
     severity: input.severity ?? "medium",
+    scope: input.scope === "session" ? "session" : "trace",
+    idleSeconds: input.idleSeconds ?? 120,
     createdAt: new Date(),
   };
   if (db.kind === "sqlite") {
@@ -142,6 +153,8 @@ export async function updateOnlineEvaluator(db: Db, id: string, input: UpdateOnl
     enabled: input.enabled ?? existing.enabled,
     alertThreshold: input.alertThreshold !== undefined ? input.alertThreshold : existing.alertThreshold,
     severity: input.severity ?? existing.severity,
+    scope: input.scope !== undefined ? (input.scope === "session" ? "session" : "trace") : existing.scope,
+    idleSeconds: input.idleSeconds ?? existing.idleSeconds,
   };
   const setValues = {
     name: updated.name,
@@ -152,6 +165,8 @@ export async function updateOnlineEvaluator(db: Db, id: string, input: UpdateOnl
     enabled: updated.enabled,
     alertThreshold: updated.alertThreshold,
     severity: updated.severity,
+    scope: updated.scope,
+    idleSeconds: updated.idleSeconds,
   };
   const updateCond = and(eq(db.schema.monitorOnlineEvaluators.id, id), eq(db.schema.monitorOnlineEvaluators.projectId, db.projectId));
   if (db.kind === "sqlite") {
@@ -183,7 +198,7 @@ export async function deleteOnlineEvaluator(db: Db, id: string): Promise<boolean
 type ScorableTrace = { input?: unknown; output?: unknown };
 
 // Called from both ingest paths (routes/ingest.ts, routes/otlp.ts) after every trace, independent
-// of that trace's own `monitor` flag — online evaluators are a server-side-configured feature (you
+// of that trace's own `monitor` flag - online evaluators are a server-side-configured feature (you
 // opt in by creating one, not per SDK call), same as a LangSmith Rule fires from server config,
 // not a client-side flag. Callers MUST wrap this in a try/catch: a judge failure (missing API key,
 // provider outage) must never break trace ingestion, which is the endpoint's actual job.
@@ -198,10 +213,14 @@ export async function runOnlineEvaluators(
 
   for (const evaluator of evaluators) {
     if (!evaluator.enabled) continue;
+    // Session-scoped evaluators never run at ingest - the idle-session sweep
+    // (core/monitor/sessionSweep.ts) is their only trigger, judging whole conversations instead
+    // of individual traces.
+    if (evaluator.scope === "session") continue;
     if (!matchesAgentScope(evaluator, ctx.agentId)) continue;
     if (!passesSampleRate(evaluator.sampleRate)) continue;
 
-    // Resolve the referenced Evaluator config for its criteria/judge prompt/judge model — the
+    // Resolve the referenced Evaluator config for its criteria/judge prompt/judge model - the
     // evaluator itself only stores the reference (see this file's header comment). A missing
     // reference shouldn't happen given create/update validation (assertEvaluationSettingsExists),
     // but is handled defensively the same isolated-skip way a judge failure below is.
@@ -226,7 +245,7 @@ export async function runOnlineEvaluators(
       ));
     } catch (err) {
       // One evaluator failing (missing API key, provider outage) must not skip every other
-      // evaluator after it for this trace — isolated per-evaluator, same reasoning as
+      // evaluator after it for this trace - isolated per-evaluator, same reasoning as
       // detect.ts's per-pattern isolation.
       console.error(`Online evaluator "${evaluator.name}" failed to score:`, err instanceof Error ? err.message : err);
       continue;

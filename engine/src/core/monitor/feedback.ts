@@ -4,12 +4,12 @@ import type { Db } from "../../storage/db.js";
 
 // Matches AgentX-web-front's AgentSignalFeedback (src/types/agentMonitoring.ts). One row per
 // POST /agent-monitoring/signals/:id/feedback call, not deduped/upserted like signals themselves
-// — SignalFeedbackDialog renders every submission in a "Previous feedback" list.
+// - SignalFeedbackDialog renders every submission in a "Previous feedback" list.
 export type FeedbackRow = {
   id: string;
   projectId: string | null;
   signalId: string;
-  // Which occurrence (monitor_events.id) this note is about — null for signal-level feedback (no
+  // Which occurrence (monitor_events.id) this note is about - null for signal-level feedback (no
   // occurrence picked, or an older row from before this existed). See resolveOccurrenceContext in
   // suggestions.ts for the read side.
   eventId: string | null;

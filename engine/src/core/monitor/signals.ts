@@ -27,19 +27,19 @@ export type SignalRow = {
 };
 
 // Serves both AgentX-Python's MonitorSignal (agentx/monitor/models.py) and AgentX-web-front's
-// AgentMonitoringSignal (src/types/agentMonitoring.ts) — workspaceId/createdAt/updatedAt are
+// AgentMonitoringSignal (src/types/agentMonitoring.ts) - workspaceId/createdAt/updatedAt are
 // required by the latter but not the former; self-host has no separate created-vs-first-seen
 // timestamp to report, so createdAt/updatedAt alias firstSeenAt/lastSeenAt.
 //
 // `occurrences` is optional here (populated by the two callers below via listOccurrencesForSignal
-// — a DB round-trip toWire() itself can't do since it's a sync function) — AgentX-web-front's
+// - a DB round-trip toWire() itself can't do since it's a sync function) - AgentX-web-front's
 // SignalRow.tsx renders exactly this array as the per-occurrence list under "N occurrences"; a
 // missing/empty array there silently collapses to a single synthesized fallback row, which is the
 // "shows 4 occurrences but only 1 in the list" bug this closes.
 //
 // occurrenceEvidence (keyed by event id) is a separate, optional pass: upsertSignal overwrites the
 // signal's own summary/evidence on every repeat match (last-write-wins, see upsertSignal below), so
-// occurrence #1 and #2's captured text is otherwise gone the moment #3 arrives — only getSignal
+// occurrence #1 and #2's captured text is otherwise gone the moment #3 arrives - only getSignal
 // (one signal, bounded cost) resolves it via resolveOccurrenceEvidence; listSignals (whole table,
 // unbounded) intentionally doesn't, to avoid an N-signals x M-occurrences trace-join on every table
 // load. rating/justification are cheap either way (already columns on the event row).
@@ -65,7 +65,7 @@ function toWire(
     rootCause: row.rootCause ?? undefined,
     // AgentX-Python's MonitorSignal.agent_id expects the hosted SaaS's populated shape
     // ({_id, name, avatar}, from Mongoose .populate("agentId", "name avatar")), not a bare
-    // string. Self-host now has a real registry (core/monitor/agents.ts) — name resolved via the
+    // string. Self-host now has a real registry (core/monitor/agents.ts) - name resolved via the
     // batch lookup callers pass in, falling back to the id itself if somehow not found.
     agentId: row.agentId ? { _id: row.agentId, name: agentNamesById?.get(row.agentId) ?? row.agentId } : undefined,
     evidence: row.evidence ?? undefined,
@@ -213,10 +213,10 @@ export async function listSignals(
   return page.map((row, i) => toWire(row, occurrencesByRow[i], undefined, agentNamesById));
 }
 
-// Same trace-join pattern as getOnlineEvaluatorEvents (events.ts) — resolves each occurrence's
+// Same trace-join pattern as getOnlineEvaluatorEvents (events.ts) - resolves each occurrence's
 // traceId back to its trace to recover the real captured input/output, since the event row itself
 // only stores the traceId, not the text. One signal's occurrences at a time (bounded), never the
-// whole table — see toWire's OccurrenceEvidence comment for why.
+// whole table - see toWire's OccurrenceEvidence comment for why.
 async function resolveOccurrenceEvidence(db: Db, events: EventRow[]): Promise<Map<string, OccurrenceEvidence>> {
   const map = new Map<string, OccurrenceEvidence>();
   await Promise.all(
@@ -270,7 +270,7 @@ export type UpdateSignalInput = Partial<{
 }>;
 
 // Every current caller (SignalRow.tsx in AgentX-web-front) only ever sends `status`
-// (triaged/resolved) — severity/reviewStatus/recommendedActions are part of the frontend's type
+// (triaged/resolved) - severity/reviewStatus/recommendedActions are part of the frontend's type
 // contract but have no live caller yet, see the investigation this was scoped from. Accepted here
 // anyway since it costs nothing extra to support the full contract.
 export async function updateSignal(db: Db, id: string, patch: UpdateSignalInput) {
