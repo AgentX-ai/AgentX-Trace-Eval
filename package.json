@@ -4,5 +4,8 @@
   "workspaces": [
     "packages/*",
     "engine"
-  ]
+  ],
+  "resolutions": {
+    "**/tsup/esbuild": "^0.28.1"
+  }
 }

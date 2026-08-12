@@ -84,7 +84,7 @@ describe("callJudgeJson", () => {
     expect(result).toEqual({ payload: null, usage: null });
   });
 
-  it("returns the raw text as payload when the model's response isn't valid JSON", async () => {
+  it("returns a null payload with parseError when the model's response isn't valid JSON", async () => {
     const client = {
       messages: {
         create: vi.fn().mockResolvedValue({
@@ -102,7 +102,11 @@ describe("callJudgeJson", () => {
       anthropicClient: client as any,
     });
 
-    expect(result.payload).toBe("not json at all");
+    // payload must stay null on a parse failure (see callAnthropicJson's own comment: returning
+    // the raw string used to leak a char-indexed object into persisted analysis fields). The raw
+    // text stays reachable for logging via error/failureReason.
+    expect(result.payload).toBeNull();
+    expect(result.failureReason).toBe("parseError");
     expect(result.usage).toBeNull();
   });
 });
