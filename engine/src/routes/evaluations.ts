@@ -2,8 +2,9 @@ import { Router, type Request, type Response } from "express";
 import { scopedDb } from "../auth/apiKey.js";
 import { createDataset, getDataset, listDatasets, extractSimilarityConfig, extractCodeScorers } from "../core/evaluate/datasets.js";
 import { createEvaluationSettings, getEvaluationSettings, listEvaluationSettings } from "../core/evaluate/evaluationSettings.js";
-import { initRun, appendResults, finalizeRun, getRun, listRuns, MAX_BATCH_SIZE } from "../core/evaluate/runs.js";
+import { initRun, appendResults, finalizeRun, getRun, listRuns, computeRunGate, recordGateResult, MAX_BATCH_SIZE } from "../core/evaluate/runs.js";
 import { createPrompt, getPromptForSdk, listPromptsForSdk } from "../core/evaluate/prompts.js";
+import { handleCasePreview, handleSuggestExpected, handleAddCase } from "./curationHandlers.js";
 
 // Mounted at /api/v1/custom-agent-evaluations, matching AgentX-Python's
 // EvaluationsClient._DEFAULT_BASE_URL (agentx/evaluations/client.py) so pointing the SDK at a
@@ -40,6 +41,14 @@ evaluationsRouter.post("/datasets", async (req: Request, res: Response) => {
 evaluationsRouter.get("/datasets", async (req: Request, res: Response) => {
   res.status(200).json({ datasets: await listDatasets(scopedDb(req)) });
 });
+
+// Curation: production -> golden dataset. Three-step contract (preview builds the case from a
+// trace/session, suggest-expected drafts a reference answer on demand, POST :id/cases appends the
+// human-edited result with dedupe) - handlers shared with the dashboard router, see
+// curationHandlers.ts and core/evaluate/curation.ts.
+evaluationsRouter.post("/datasets/case-preview", handleCasePreview);
+evaluationsRouter.post("/datasets/suggest-expected", handleSuggestExpected);
+evaluationsRouter.post("/datasets/:id/cases", handleAddCase);
 
 evaluationsRouter.get("/datasets/:id", async (req: Request, res: Response) => {
   const dataset = await getDataset(scopedDb(req), req.params.id!);
@@ -154,6 +163,42 @@ evaluationsRouter.get("/runs/:runId", async (req: Request, res: Response) => {
     return;
   }
   res.status(200).json(run);
+});
+
+// CI gate: pass/fail a finalized run for use in a CI job (see core/evaluate/runs.ts's
+// computeRunGate). The verdict is computed fresh from the run's stored ratings on every call, so
+// re-running a failed CI job re-evaluates against current state; record=true additionally
+// appends the verdict to gate history (the dashboard's CI page).
+evaluationsRouter.get("/runs/:runId/gate", async (req: Request, res: Response) => {
+  const failUnderRaw = req.query.failUnder;
+  const failUnder = typeof failUnderRaw === "string" && failUnderRaw !== "" ? Number(failUnderRaw) : null;
+  const noRegression = req.query.noRegression === "true" || req.query.noRegression === "1";
+  const toleranceRaw = req.query.tolerance;
+  const tolerance = typeof toleranceRaw === "string" && toleranceRaw !== "" ? Number(toleranceRaw) : undefined;
+  if (failUnder != null && !Number.isFinite(failUnder)) {
+    res.status(400).json({ error: "failUnder must be a number" });
+    return;
+  }
+  if (tolerance !== undefined && !Number.isFinite(tolerance)) {
+    res.status(400).json({ error: "tolerance must be a number" });
+    return;
+  }
+  if (failUnder == null && !noRegression) {
+    res.status(400).json({ error: "At least one check is required: failUnder=<0-10> and/or noRegression=true" });
+    return;
+  }
+  const gate = await computeRunGate(scopedDb(req), req.params.runId!, { failUnder, noRegression, tolerance });
+  if (!gate) {
+    res.status(404).json({ error: "Run not found" });
+    return;
+  }
+  // record=true (the SDK's default) persists this evaluation into gate history - what the
+  // dashboard's CI page lists. Ad hoc/preview calls omit it and stay compute-only.
+  if (req.query.record === "true" || req.query.record === "1") {
+    const caller = typeof req.query.caller === "string" && req.query.caller.trim() ? req.query.caller.trim().slice(0, 60) : null;
+    await recordGateResult(scopedDb(req), gate, caller);
+  }
+  res.status(200).json(gate);
 });
 
 // Prompt registry (client.evaluations.prompts): deliberately read-mostly from the SDK - only

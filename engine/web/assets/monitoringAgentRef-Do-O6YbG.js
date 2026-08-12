@@ -1,1 +1,0 @@
-const i={id:o=>typeof o=="string"?o:o==null?void 0:o._id,name:(o,r="Workspace agent")=>typeof o=="string"?r:(o==null?void 0:o.name)||r,avatar:o=>typeof o=="string"||o==null?void 0:o.avatar};export{i as A};

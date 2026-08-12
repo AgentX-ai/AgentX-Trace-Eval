@@ -1,1 +1,0 @@
-import{y as a,z as t,av as o,H as r,J as i}from"./index-BX7IFddg.js";import{w as n}from"./useGetAllWorkflows-CIOH0NRN.js";const u=async e=>{const{data:s}=await r.post(i.createWorkflow,e);return s},y=()=>{const e=a();return t({mutationFn:u,onSuccess:()=>{e.invalidateQueries({queryKey:n.all}),e.invalidateQueries({queryKey:o.all})}})};export{y as u};

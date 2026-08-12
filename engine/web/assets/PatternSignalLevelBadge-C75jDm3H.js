@@ -1,1 +1,0 @@
-import{j as s,b4 as t,b7 as o,bn as a}from"./index-BX7IFddg.js";const i=({pattern:e})=>e.polarity==="proper"?s.jsx(t,{tone:"success",label:"Info"}):s.jsx(t,{tone:a(e.severity),label:o(e.severity)});export{i as P};

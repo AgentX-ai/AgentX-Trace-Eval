@@ -1,1 +1,0 @@
-import{a5 as s,H as n,J as o}from"./index-BX7IFddg.js";const t={all:["agent-monitoring","online-evaluators"],byWorkspace:a=>[...t.all,a]},r=async a=>{const{data:e}=await n.get(o.getOnlineEvaluators,{params:{workspaceId:a}});return e.evaluators},u=({workspaceId:a,enabled:e=!0}={})=>s({queryKey:t.byWorkspace(a),queryFn:()=>r(a),enabled:e});export{t as o,u};

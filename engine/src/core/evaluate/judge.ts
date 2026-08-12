@@ -454,9 +454,12 @@ export async function callModelWithTools(
       // to 'none'", confirmed against a real running model) - "none" isn't in the SDK's own
       // ReasoningEffort type yet (a newer model generation than the SDK's typings know about),
       // hence the cast; only sent when tools are actually in play, so a tool-less run is
-      // completely unaffected. Skipped for Gemini: it's an OpenAI reasoning-model-specific param
-      // Google's OpenAI-compat layer doesn't document support for.
-      ...(openaiTools.length > 0 && !isGemini ? { reasoning_effort: "none" as OpenAI.Chat.ChatCompletionReasoningEffort } : {}),
+      // completely unaffected. Gated to reasoning models only: non-reasoning OpenAI models
+      // (gpt-4o-mini) reject the parameter outright with "Unrecognized request argument"
+      // (confirmed live), and Gemini's OpenAI-compat layer doesn't document it either.
+      ...(openaiTools.length > 0 && !isGemini && isReasoningModel(model)
+        ? { reasoning_effort: "none" as OpenAI.Chat.ChatCompletionReasoningEffort }
+        : {}),
       // max_tokens is deprecated on chat completions in favor of max_completion_tokens (the
       // unified param that also covers reasoning-model completions) - only sent when overridden,
       // preserving today's "uncapped unless told otherwise" default.

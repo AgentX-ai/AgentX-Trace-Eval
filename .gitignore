@@ -19,3 +19,6 @@ cli/agentx
 # not source in this repo. See README's "What's in this repo".
 web/*
 !web/.gitkeep
+# engine/web/: same prebuilt dashboard bundle as web/ above, staged next to the engine for the
+# tsx dev loop - a release asset, never repo content.
+engine/web/

@@ -538,6 +538,67 @@ export const outcomeReports = sqliteTable("outcome_reports", {
 // kind), so a future session-level evaluator adds rows here, not a new table. driftSpanId: for
 // coherence, the specific span where the judge saw the conversation lose the thread - null when
 // coherent throughout.
+// End-user thumbs on a traced response, reported via POST /feedback (usually forwarded by the
+// customer's own app when their user clicks a vote button). The cheapest ground truth there is:
+// a "down" raises a "negative-feedback" signal directly (no detection pass - the user IS the
+// detector) and dual-writes an outcome report so Judge Calibration measures the judges against
+// real human reactions. Deliberately NOT recorded as a monitor event: calibration counts events
+// as "AgentX flagged it in advance", and feedback arriving after the fact is the report side of
+// that comparison, not the prediction side.
+export const userFeedback = sqliteTable("user_feedback", {
+  id: text("id").primaryKey(),
+  traceId: text("trace_id").notNull(),
+  // "up" | "down"
+  rating: text("rating").notNull(),
+  comment: text("comment"),
+  endUserId: text("end_user_id"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  projectId: text("project_id"),
+});
+
+// One row per RECORDED CI-gate evaluation (GET /runs/:id/gate with record=true - the SDK's
+// report.gate() records by default; the dashboard's live preview never does). This is what the
+// dashboard's CI page lists: actual gate history ("PR #142's gate failed on no-regression"),
+// not recomputed previews. `checks` stores the full per-check verdict array verbatim.
+// The Improvement Inbox: proposals the background sweep (core/evaluate/improvementSweep.ts)
+// generated AND validated on its own when failure evidence crossed a threshold, queued for a
+// human to review. status: "pending" (awaiting review) -> "published" | "dismissed". Nothing
+// here ever publishes itself - the sweep does the expensive thinking (judge proposal +
+// baseline-vs-candidate validation), the human keeps the only pen.
+export const improvementProposals = sqliteTable("improvement_proposals", {
+  id: text("id").primaryKey(),
+  // "prompt" | "tool-schema"
+  kind: text("kind").notNull(),
+  targetId: text("target_id").notNull(),
+  targetName: text("target_name").notNull(),
+  status: text("status").notNull(),
+  // Human-readable "why did this appear" ("6 tool failures in the last 24h")
+  triggerReason: text("trigger_reason").notNull(),
+  // Snapshot of the published text/definition the proposal was diffed against - kept so the
+  // inbox renders a stable diff even if the target moves on before review.
+  currentText: text("current_text").notNull(),
+  proposal: text("proposal", { mode: "json" }).notNull(),
+  validation: text("validation", { mode: "json" }),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  resolvedAt: integer("resolved_at", { mode: "timestamp_ms" }),
+  projectId: text("project_id"),
+});
+
+export const gateResults = sqliteTable("gate_results", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull(),
+  datasetId: text("dataset_id").notNull(),
+  passed: integer("passed", { mode: "boolean" }).notNull(),
+  averageRating: real("average_rating"),
+  baselineRunId: text("baseline_run_id"),
+  baselineAverage: real("baseline_average"),
+  checks: text("checks", { mode: "json" }),
+  // Free label from the caller ("sdk", "github-actions", ...) so history shows who gated.
+  caller: text("caller"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  projectId: text("project_id"),
+});
+
 export const sessionScores = sqliteTable("session_scores", {
   id: text("id").primaryKey(),
   sessionId: text("session_id").notNull(),

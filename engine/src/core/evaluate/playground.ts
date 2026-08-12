@@ -21,7 +21,10 @@ export type PlaygroundTool = {
 
 // Same "one extraction helper, called at the route" convention as datasets.ts's
 // extractCodeScorers/extractSimilarityConfig - validated/normalized here rather than trusted
-// as-is, since `endpointUrl` is later fetched.
+// as-is, since `endpointUrl` is later fetched. endpointUrl is OPTIONAL: a schema-only tool (the
+// "From Tool Schemas" picker adds these) is still sent to the model, and its calls get a
+// simulated result (see callPlaygroundTool) - requiring an endpoint here used to silently drop
+// registry tools before the model ever saw them, which read as "the tool isn't in the context".
 export function extractPlaygroundTools(body: Record<string, unknown>): PlaygroundTool[] | undefined {
   if (!Array.isArray(body.tools)) {
     return undefined;
@@ -34,7 +37,7 @@ export function extractPlaygroundTools(body: Record<string, unknown>): Playgroun
       parameters: t.parameters && typeof t.parameters === "object" ? (t.parameters as Record<string, unknown>) : {},
       endpointUrl: typeof t.endpointUrl === "string" ? t.endpointUrl.trim() : "",
     }))
-    .filter(t => t.name.length > 0 && t.endpointUrl.length > 0);
+    .filter(t => t.name.length > 0);
   return tools.length > 0 ? tools : undefined;
 }
 
@@ -44,6 +47,16 @@ async function callPlaygroundTool(tools: PlaygroundTool[], name: string, args: R
   const tool = tools.find(t => t.name === name);
   if (!tool) {
     throw new Error(`No endpoint configured for tool "${name}"`);
+  }
+  // Schema-only tool: simulate instead of executing, same honest posture as proposal
+  // validation's runToolCaseVariant - what a Playground run of a schema-only tool tests is
+  // whether the prompt/model CHOOSE the tool and form valid arguments, and the simulated result
+  // is visible in the cell's tool-call trace so nobody mistakes it for a real lookup.
+  if (!tool.endpointUrl) {
+    // Deliberately terse: this object is fed back to the MODEL as the tool result, and a verbose
+    // explanation leaks into the final answer ("due to a simulated environment..."). The cell's
+    // tool-call trace still shows `simulated: true` so the human knows nothing real ran.
+    return { simulated: true, status: "ok", arguments: args };
   }
   const res = await fetch(tool.endpointUrl, {
     method: "POST",

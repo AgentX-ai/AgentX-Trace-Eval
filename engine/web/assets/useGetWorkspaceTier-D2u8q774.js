@@ -1,1 +1,0 @@
-import{a5 as s,H as t,J as o}from"./index-BX7IFddg.js";const r={all:["workspaceTier"],id:e=>[...r.all,e]},c=async e=>{const{data:a}=await t.get(o.getWorkspaceTier(e));return a},i=e=>s({queryKey:r.id(e),queryFn:()=>c(e),enabled:!!e});export{i as u};

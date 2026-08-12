@@ -137,20 +137,26 @@ function extractError(span: NormalizedSpan): string | undefined {
   return undefined;
 }
 
-// Best-effort only: a span that IS a tool call (gen_ai.tool.name set on it directly, e.g.
-// gen_ai.operation.name = "execute_tool") maps to a one-element tool_calls array. Reconstructing a
-// parent LLM span's tool_calls from separate child tool-call spans isn't attempted - the GenAI
-// semconv doesn't define a stable way to do that yet, see this file's header comment.
-function extractToolCalls(attributes: Record<string, unknown>) {
+// A span that IS a tool call (gen_ai.tool.name set on it directly, e.g. gen_ai.operation.name =
+// "execute_tool") maps to a one-element tool_calls array, with success/error derived from the
+// span's own error status so the engine's "Tool failure" check (which keys on success === false,
+// same contract as the SDK's trace_tool_call) works on OTel traffic too. Folding these child
+// spans up into the parent interaction's tool_calls happens as a second, batch-level pass - see
+// reconstructParentToolCalls below.
+function extractToolCalls(span: NormalizedSpan) {
+  const attributes = span.attributes;
   const name = strAttr(attributes["gen_ai.tool.name"]);
   if (!name) {
     return undefined;
   }
+  const error = extractError(span);
   return [
     {
       name,
       input: attributes["gen_ai.tool.call.arguments"] ?? null,
       output: attributes["gen_ai.tool.call.result"] ?? null,
+      success: !error,
+      ...(error ? { error } : {}),
     },
   ];
 }
@@ -183,12 +189,18 @@ export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
     latency_ms: latencyMs,
     framework,
     model,
-    tool_calls: extractToolCalls(attrs),
-    // Groups every span from the same OTel trace together in the dashboard's trace list. Not a
-    // perfect match for AgentX's own multi-request "conversation session" concept, but the closest
-    // free grouping available on the wire, and better than leaving every OTel-ingested trace
-    // ungrouped.
-    session_id: span.traceIdHex || undefined,
+    tool_calls: extractToolCalls(span),
+    // Conversation grouping, in priority order: an explicit session attribute (the OTel semconv's
+    // session.id, GenAI's gen_ai.conversation.id, or the documented agentx.session_id escape
+    // hatch) makes OTel traffic a first-class citizen of the Sessions surface - multi-request
+    // conversations group exactly like SDK traces, so session coherence and session-scoped online
+    // evaluators apply. Without one, the OTel trace id still groups the single interaction's own
+    // spans together, the closest free grouping available on the wire.
+    session_id:
+      strAttr(attrs["agentx.session_id"]) ??
+      strAttr(attrs["session.id"]) ??
+      strAttr(attrs["gen_ai.conversation.id"]) ??
+      (span.traceIdHex || undefined),
     // Real span hierarchy, promoted to first-class ingestTraceSchema fields (see core/trace/
     // ingest.ts) so a session's rows can be assembled into a tree - kept in metadata.otel too
     // below, harmless redundancy, not worth a second edit to remove now that both exist.
@@ -199,6 +211,12 @@ export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
     parent_span_id: span.parentSpanIdHex || undefined,
     started_at_unix_nano: span.startTimeUnixNano > 0n ? span.startTimeUnixNano.toString() : undefined,
     metadata: {
+      // Prompt identity, the documented convention for OTel traffic: set agentx.prompt_name (and
+      // optionally agentx.version) as span attributes and the whole Improve loop lights up -
+      // prompt-registry evidence gathering matches on metadata.promptName, version comparison on
+      // metadata.version, exactly as if the SDK's metadata={"promptName": ...} had been passed.
+      ...(strAttr(attrs["agentx.prompt_name"]) ? { promptName: strAttr(attrs["agentx.prompt_name"]) } : {}),
+      ...(strAttr(attrs["agentx.version"]) ? { version: strAttr(attrs["agentx.version"]) } : {}),
       otel: {
         traceId: span.traceIdHex,
         spanId: span.spanIdHex,
@@ -210,4 +228,43 @@ export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
     input_tokens: inputTokens,
     output_tokens: outputTokens,
   };
+}
+
+// Second pass over a mapped batch: fold each tool-call span's one-element tool_calls summary up
+// into its ROOT ancestor within the batch - the root, specifically, because that's the one span
+// Monitor checks (child spans are skipped by default, see routes/otlp.ts) and the one the
+// dashboard's Tool quality column and Tool Schema evidence gathering read, the same place the
+// SDK's trace_tool_call dual-writes its flat summary. This is what makes all three work for OTel
+// traffic, whose GenAI semconv scatters tool calls across child spans instead. The tool span
+// itself is left unchanged (the timeline still shows it as its own step). In-batch only: a parent
+// exported in an earlier OTLP batch can't be updated retroactively, which in practice is rare
+// (exporters batch a trace's spans together).
+export function reconstructParentToolCalls(candidates: IngestTraceInput[]): void {
+  const bySpanId = new Map<string, IngestTraceInput>();
+  // Tool-span identity is fixed BEFORE any folding: pre-fold, a non-empty tool_calls can only
+  // have come from extractToolCalls (gen_ai.tool.name on the span itself). Testing tool_calls
+  // during the fold instead would misclassify a parent as a tool span as soon as its first child
+  // folded in, hiding it from its remaining children.
+  const toolSpanIds = new Set<string>();
+  for (const candidate of candidates) {
+    if (!candidate.span_id) continue;
+    bySpanId.set(candidate.span_id, candidate);
+    if (candidate.tool_calls && candidate.tool_calls.length > 0) toolSpanIds.add(candidate.span_id);
+  }
+  for (const candidate of candidates) {
+    if (!candidate.span_id || !toolSpanIds.has(candidate.span_id) || !candidate.parent_span_id) continue;
+    // Walk to the topmost ancestor reachable within the batch, cycle-guarded; a missing parent
+    // ends the walk at the highest span that did arrive.
+    let top = bySpanId.get(candidate.parent_span_id);
+    const visited = new Set<string>([candidate.span_id]);
+    while (top?.parent_span_id && top.span_id && !visited.has(top.span_id)) {
+      visited.add(top.span_id);
+      const next = bySpanId.get(top.parent_span_id);
+      if (!next) break;
+      top = next;
+    }
+    if (!top || top === candidate) continue;
+    if (top.span_id && toolSpanIds.has(top.span_id)) continue;
+    top.tool_calls = [...(top.tool_calls ?? []), ...candidate.tool_calls!.map(call => ({ ...call }))];
+  }
 }

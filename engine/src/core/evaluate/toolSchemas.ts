@@ -113,6 +113,17 @@ async function listToolSchemaVersionRows(db: Db, toolSchemaId: string): Promise<
   return rows;
 }
 
+// One specific version's row - proposalValidation.ts needs the current published definition to
+// compare a candidate against, same accessor shape as prompts.ts's getPromptVersionRow.
+export async function getToolSchemaVersionRow(
+  db: Db,
+  toolSchemaId: string,
+  version: number
+): Promise<ToolSchemaVersionRow | null> {
+  const rows = await listToolSchemaVersionRows(db, toolSchemaId);
+  return rows.find(r => r.version === version) ?? null;
+}
+
 export async function listToolSchemasWire(db: Db) {
   const cond = eq(db.schema.toolSchemas.projectId, db.projectId);
   const rows = (
@@ -224,6 +235,143 @@ type EvidenceEventRow = {
   createdAt: Date;
 };
 
+// The bridge from "a tool is failing in traffic" to "that tool is in the registry where the
+// improvement loop can reach it": tool names observed in recent traces' tool_calls, minus the
+// registered ones, each with a DRAFTED definition ready to register - verbatim from the trace's
+// own metadata.tools when the SDK sent it (the same tools/toolDefinitions/tool_definitions
+// convention Model Portability reads), else inferred from the arguments the model actually sent
+// (parameter names + JS types), marked as inferred so nobody mistakes a guess for the real
+// schema. Detection was never registry-gated (agent-tool-failure:<name> fires regardless), so
+// the moment a name is registered, its accumulated failure history becomes proposal evidence.
+export type UnregisteredTool = {
+  name: string;
+  callCount: number;
+  failureCount: number;
+  lastSeenAt: string;
+  definitionSource: "metadata" | "inferred";
+  draftDefinition: string;
+};
+
+const UNREGISTERED_SCAN_CAP = 500;
+
+type ObservedCall = { input?: unknown; success?: unknown };
+
+function draftFromMetadata(metadata: unknown, toolName: string): string | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  for (const key of ["tools", "toolDefinitions", "tool_definitions"]) {
+    const list = (metadata as Record<string, unknown>)[key];
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      if (!entry || typeof entry !== "object") continue;
+      const fn =
+        (entry as { type?: unknown; function?: unknown }).type === "function" &&
+        typeof (entry as { function?: unknown }).function === "object"
+          ? ((entry as { function: Record<string, unknown> }).function)
+          : (entry as Record<string, unknown>);
+      if (fn.name === toolName) {
+        return JSON.stringify(fn, null, 2);
+      }
+    }
+  }
+  return null;
+}
+
+function draftFromObservedArgs(name: string, calls: ObservedCall[]): string {
+  const properties: Record<string, { type: string }> = {};
+  for (const call of calls) {
+    let args: unknown = call.input;
+    if (typeof args === "string") {
+      try {
+        args = JSON.parse(args);
+      } catch {
+        continue;
+      }
+    }
+    if (!args || typeof args !== "object" || Array.isArray(args)) continue;
+    for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
+      if (properties[key]) continue;
+      const jsType = Array.isArray(value) ? "array" : value === null ? "string" : typeof value;
+      properties[key] = { type: jsType === "number" && Number.isInteger(value as number) ? "integer" : jsType === "object" ? "object" : jsType === "boolean" ? "boolean" : jsType === "array" ? "array" : jsType === "number" ? "number" : "string" };
+    }
+  }
+  return JSON.stringify(
+    {
+      name,
+      description: "TODO: describe when the agent should call this tool (drafted from observed calls - parameter names and types were inferred, verify before relying on them)",
+      parameters: { type: "object", properties },
+    },
+    null,
+    2
+  );
+}
+
+export async function listUnregisteredTools(db: Db, windowDays = 7): Promise<UnregisteredTool[]> {
+  const registered = new Set((await listToolSchemasWire(db)).map(s => s.name));
+
+  const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
+  const cond = and(gte(db.schema.traces.createdAt, since), eq(db.schema.traces.projectId, db.projectId));
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.traces).where(cond).all()
+      : await db.db.select().from(db.schema.traces).where(cond)
+  ) as { toolCalls: unknown; metadata: unknown; createdAt: Date }[];
+
+  type Acc = { callCount: number; failureCount: number; lastSeenAt: Date; calls: ObservedCall[]; metadataDraft: string | null };
+  const byName = new Map<string, Acc>();
+  // Newest-first so the per-tool observed-call sample (and any metadata definition) reflects
+  // current behavior, and capped so one busy instance doesn't turn this read into a full scan.
+  rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  for (const row of rows.slice(0, UNREGISTERED_SCAN_CAP)) {
+    if (!Array.isArray(row.toolCalls)) continue;
+    for (const raw of row.toolCalls) {
+      if (!raw || typeof raw !== "object") continue;
+      const call = raw as { name?: unknown } & ObservedCall;
+      if (typeof call.name !== "string" || !call.name.trim() || registered.has(call.name)) continue;
+      const acc = byName.get(call.name) ?? { callCount: 0, failureCount: 0, lastSeenAt: row.createdAt, calls: [], metadataDraft: null };
+      acc.callCount += 1;
+      if (call.success === false) acc.failureCount += 1;
+      if (row.createdAt.getTime() > acc.lastSeenAt.getTime()) acc.lastSeenAt = row.createdAt;
+      if (acc.calls.length < 10) acc.calls.push(call);
+      if (!acc.metadataDraft) acc.metadataDraft = draftFromMetadata(row.metadata, call.name);
+      byName.set(call.name, acc);
+    }
+  }
+
+  return Array.from(byName.entries())
+    .map(([name, acc]) => ({
+      name,
+      callCount: acc.callCount,
+      failureCount: acc.failureCount,
+      lastSeenAt: acc.lastSeenAt.toISOString(),
+      definitionSource: (acc.metadataDraft ? "metadata" : "inferred") as "metadata" | "inferred",
+      draftDefinition: acc.metadataDraft ?? draftFromObservedArgs(name, acc.calls),
+    }))
+    .sort((a, b) => b.failureCount - a.failureCount || b.callCount - a.callCount);
+}
+
+// The failed call's actual arguments and error are THE diagnostic data for "the model formed the
+// call wrong because the definition under-specifies it" - a proposal judge that only sees "Tool
+// call X failed" has to guess what the model sent; one that sees arguments {"q": "order #88231"}
+// and the ValueError can tighten the parameter description against the exact mistake.
+function buildFailureDetail(toolName: string, toolCalls: unknown): string {
+  const base = `Tool call "${toolName}" failed`;
+  if (!Array.isArray(toolCalls)) return base;
+  const failed = toolCalls.find(
+    (c): c is { name?: unknown; input?: unknown; error?: unknown; success?: unknown } =>
+      !!c && typeof c === "object" && (c as { name?: unknown }).name === toolName && (c as { success?: unknown }).success === false
+  );
+  if (!failed) return base;
+  const parts = [base];
+  if (failed.input != null) {
+    const args = typeof failed.input === "string" ? failed.input : JSON.stringify(failed.input);
+    parts.push(`with arguments ${args.slice(0, 300)}`);
+  }
+  if (typeof failed.error === "string" && failed.error.trim()) {
+    parts.push(`- error: ${failed.error.slice(0, 300)}`);
+  }
+  return parts.join(" ");
+}
+
 export async function getToolFailureExamples(db: Db, toolSchemaId: string, windowDays = 7) {
   const schema = await getToolSchemaRow(db, toolSchemaId);
   if (!schema) return null;
@@ -264,7 +412,7 @@ export async function getToolFailureExamples(db: Db, toolSchemaId: string, windo
         input: extractText(trace.input),
         output: extractText(trace.output),
         detail: isToolFailure
-          ? `Tool call "${schema.name}" failed`
+          ? buildFailureDetail(schema.name, trace.toolCalls)
           : `Judged ${event.rating}/10: ${event.justification ?? "no justification"}`,
         rating: isToolFailure ? null : event.rating,
         justification: isToolFailure ? null : event.justification,
@@ -347,7 +495,7 @@ Real production failures involving this tool:
 
 ${evidence}
 
-Rewrite the definition to prevent these failures. Keep the same underlying capability and format (if it's JSON, return valid JSON; if prose, return prose) - improve the description, parameter documentation, constraints, and usage guidance. Return the complete revised definition (not a diff), a short overall reasoning, and an itemized change list, each tagged "added", "tightened", or "removed".`;
+Rewrite the definition to prevent these failures. Where an example shows the arguments the model actually sent, compare them against the parameter schema: if the model keeps sending values the tool rejects (wrong format, free text where an id belongs, a missing field), fix the PARAMETERS themselves - rename or split parameters, add "required", add a type/enum/pattern constraint, and state the exact expected format in the parameter's description with an example value - rather than only expanding the top-level description. A failure that looks transient (timeout, upstream outage) is NOT evidence of a definition problem; do not invent constraints the failures don't support. Keep the same underlying capability and format (if it's JSON, return valid JSON; if prose, return prose). Return the complete revised definition (not a diff), a short overall reasoning, and an itemized change list, each tagged "added", "tightened", or "removed".`;
 
   const result = await callJudgeJson({ model: judgeModel, jsonSchema: TOOL_PROPOSAL_SCHEMA, userMessage, maxTokens: 4000 });
   const payload = result.payload as { definition?: unknown; reasoning?: unknown; changes?: unknown } | null;

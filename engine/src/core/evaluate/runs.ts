@@ -37,7 +37,9 @@ type ResolvedRunConfig = {
   questions: Array<{ main_question?: { query?: string; expectedResults?: string; judgeGuideline?: string } }>;
 };
 
-async function resolveRunConfig(
+// Exported for proposalValidation.ts, which grades baseline-vs-candidate runs with exactly the
+// grading config a real run of that dataset would use.
+export async function resolveRunConfig(
   db: Db,
   datasetId: string,
   evaluationSettingsId: string | null
@@ -457,6 +459,114 @@ export async function getRun(db: Db, runId: string) {
 }
 
 // ---------------------------------------------------------------------------
+// CI gate: pass/fail a finalized run so a CI job can block a merge on eval quality. Two checks,
+// both optional but at least one required: an absolute floor (failUnder) and no-regression
+// against the dataset's previous completed run (with a tolerance, default 0.5 - judge scores are
+// noisy enough that an exact >= comparison would flake builds on variance, not regressions).
+// ---------------------------------------------------------------------------
+
+export type RunGateCheck = {
+  check: "fail-under" | "no-regression";
+  passed: boolean;
+  threshold: number | null;
+  actual: number | null;
+  detail: string;
+};
+
+export type RunGateResult = {
+  runId: string;
+  datasetId: string;
+  averageRating: number | null;
+  resultCount: number;
+  baselineRunId: string | null;
+  baselineAverage: number | null;
+  checks: RunGateCheck[];
+  passed: boolean;
+};
+
+const DEFAULT_GATE_TOLERANCE = 0.5;
+
+export async function computeRunGate(
+  db: Db,
+  runId: string,
+  opts: { failUnder?: number | null; noRegression?: boolean; tolerance?: number }
+): Promise<RunGateResult | null> {
+  const run = await getRun(db, runId);
+  const runRow = await getRunRowFull(db, runId);
+  if (!run || !runRow) return null;
+
+  // Baseline = the dataset's most recent completed run that finished before this one and has at
+  // least one rating. Walked newest-first with a small cap so one empty/failed run in between
+  // doesn't blank the comparison.
+  let baselineRunId: string | null = null;
+  let baselineAverage: number | null = null;
+  if (opts.noRegression) {
+    const cond = and(eq(db.schema.evaluationRuns.datasetId, run.datasetId), eq(db.schema.evaluationRuns.projectId, db.projectId));
+    const rows = (
+      db.kind === "sqlite"
+        ? db.db.select().from(db.schema.evaluationRuns).where(cond).all()
+        : await db.db.select().from(db.schema.evaluationRuns).where(cond)
+    ) as { id: string; status: string | null; createdAt: Date }[];
+    const candidates = rows
+      .filter(r => r.id !== runId && r.status === "completed" && r.createdAt < runRow.createdAt)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, 5);
+    for (const candidate of candidates) {
+      const summary = await getRun(db, candidate.id);
+      if (summary?.averageRating != null) {
+        baselineRunId = candidate.id;
+        baselineAverage = Math.round(summary.averageRating * 100) / 100;
+        break;
+      }
+    }
+  }
+
+  const avg = run.averageRating != null ? Math.round(run.averageRating * 100) / 100 : null;
+  const tolerance = opts.tolerance ?? DEFAULT_GATE_TOLERANCE;
+  const checks: RunGateCheck[] = [];
+
+  if (opts.failUnder != null) {
+    const passed = avg != null && avg >= opts.failUnder;
+    checks.push({
+      check: "fail-under",
+      passed,
+      threshold: opts.failUnder,
+      actual: avg,
+      detail:
+        avg == null
+          ? "Run has no rated results to score"
+          : `Average rating ${avg} ${passed ? ">=" : "<"} floor ${opts.failUnder}`,
+    });
+  }
+  if (opts.noRegression) {
+    const passed = baselineAverage == null || (avg != null && avg >= baselineAverage - tolerance);
+    checks.push({
+      check: "no-regression",
+      passed,
+      threshold: baselineAverage,
+      actual: avg,
+      detail:
+        baselineAverage == null
+          ? "No previous completed run with ratings on this dataset - nothing to regress against"
+          : avg == null
+            ? "Run has no rated results to compare"
+            : `Average rating ${avg} vs previous run's ${baselineAverage} (tolerance ${tolerance})`,
+    });
+  }
+
+  return {
+    runId,
+    datasetId: run.datasetId,
+    averageRating: avg,
+    resultCount: run.resultCount,
+    baselineRunId,
+    baselineAverage,
+    checks,
+    passed: checks.every(c => c.passed),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Dashboard-facing reads (routes/evaluateDashboard.ts). Separate from getRunRow/getRun above
 // (SDK-facing, routes/evaluations.ts) rather than widening those: the dashboard needs the run's
 // full row (evaluationSubject/runSource/createdAt) and its raw per-question results, neither of
@@ -528,6 +638,175 @@ export async function getRunResults(db: Db, runId: string): Promise<RunResultRow
 }
 
 // ---------------------------------------------------------------------------
+// Recorded gate history: one row per gate evaluation the caller asked to record (the SDK's
+// report.gate() records by default; the dashboard's live preview never does), so the CI page
+// shows what actually happened in CI rather than recomputed previews.
+// ---------------------------------------------------------------------------
+
+export type GateResultRow = {
+  id: string;
+  runId: string;
+  datasetId: string;
+  passed: boolean;
+  averageRating: number | null;
+  baselineRunId: string | null;
+  baselineAverage: number | null;
+  checks: unknown;
+  caller: string | null;
+  createdAt: Date;
+  projectId: string | null;
+};
+
+export async function recordGateResult(db: Db, gate: RunGateResult, caller: string | null): Promise<void> {
+  const row: GateResultRow = {
+    id: nanoid(),
+    runId: gate.runId,
+    datasetId: gate.datasetId,
+    passed: gate.passed,
+    averageRating: gate.averageRating,
+    baselineRunId: gate.baselineRunId,
+    baselineAverage: gate.baselineAverage,
+    checks: gate.checks,
+    caller,
+    createdAt: new Date(),
+    projectId: db.projectId,
+  };
+  if (db.kind === "sqlite") {
+    await db.db.insert(db.schema.gateResults).values(row);
+  } else {
+    await db.db.insert(db.schema.gateResults).values(row);
+  }
+}
+
+export async function listGateResults(db: Db, limit = 50): Promise<GateResultRow[]> {
+  const cond = eq(db.schema.gateResults.projectId, db.projectId);
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.gateResults).where(cond).all()
+      : await db.db.select().from(db.schema.gateResults).where(cond)
+  ) as GateResultRow[];
+  rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  return rows.slice(0, limit);
+}
+
+// The dashboard CI page's live preview: gate the dataset's most recent completed run without
+// recording anything - "would my CI have passed right now with these thresholds".
+export async function previewLatestRunGate(
+  db: Db,
+  datasetId: string,
+  opts: { failUnder?: number | null; noRegression?: boolean; tolerance?: number }
+): Promise<RunGateResult | { error: string }> {
+  const cond = and(eq(db.schema.evaluationRuns.datasetId, datasetId), eq(db.schema.evaluationRuns.projectId, db.projectId));
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.evaluationRuns).where(cond).all()
+      : await db.db.select().from(db.schema.evaluationRuns).where(cond)
+  ) as { id: string; status: string | null; createdAt: Date }[];
+  const latest = rows.filter(r => r.status === "completed").sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+  if (!latest) return { error: "No completed runs on this dataset yet" };
+  const gate = await computeRunGate(db, latest.id, opts);
+  return gate ?? { error: "Run not found" };
+}
+
+// ---------------------------------------------------------------------------
+// Per-case run comparison (routes/evaluateDashboard.ts): the drill-down under the version
+// comparison's aggregate verdict - which cases exactly regressed between two runs, with both
+// outputs visible. Results are paired by questionIndex; multiple results per question (repeat
+// runs) average their ratings, and smoke-test variants are excluded (they're phrasing-robustness
+// probes of the same question, not their own cases - including them would double-count).
+// ---------------------------------------------------------------------------
+
+export type RunCaseSide = {
+  rating: number | null;
+  output: string | null;
+  justification: string | null;
+  error: string | null;
+};
+
+export type RunCaseComparison = {
+  questionIndex: number;
+  query: string;
+  baseline: RunCaseSide;
+  candidate: RunCaseSide;
+  delta: number | null;
+};
+
+export type CompareRunsResult = {
+  baselineRun: { runId: string; createdAt: string; version: string | null; averageRating: number | null };
+  candidateRun: { runId: string; createdAt: string; version: string | null; averageRating: number | null };
+  cases: RunCaseComparison[];
+};
+
+function summarizeSide(rows: RunResultRow[]): RunCaseSide {
+  const rated = rows.filter(r => r.rating != null);
+  const rating = rated.length ? Math.round((rated.reduce((a, r) => a + (r.rating as number), 0) / rated.length) * 10) / 10 : null;
+  const representative = rated[0] ?? rows[0];
+  return {
+    rating,
+    output: representative?.output?.text ?? null,
+    justification: representative?.justification ?? null,
+    error: representative?.error?.message ?? null,
+  };
+}
+
+export async function compareRuns(db: Db, baselineRunId: string, candidateRunId: string): Promise<CompareRunsResult | { error: string }> {
+  const [baselineRow, candidateRow] = await Promise.all([getRunRowFull(db, baselineRunId), getRunRowFull(db, candidateRunId)]);
+  if (!baselineRow || !candidateRow) return { error: "Run not found" };
+  if (baselineRow.datasetId !== candidateRow.datasetId) {
+    return { error: "Runs belong to different datasets - a per-case comparison needs the same question set" };
+  }
+
+  const [baselineSummary, candidateSummary, baselineResults, candidateResults] = await Promise.all([
+    getRun(db, baselineRunId),
+    getRun(db, candidateRunId),
+    getRunResults(db, baselineRunId),
+    getRunResults(db, candidateRunId),
+  ]);
+
+  const group = (rows: RunResultRow[]) => {
+    const byQuestion = new Map<number, RunResultRow[]>();
+    for (const row of rows) {
+      if (row.isSmokeTestVariant || row.questionIndex == null) continue;
+      const list = byQuestion.get(row.questionIndex) ?? [];
+      list.push(row);
+      byQuestion.set(row.questionIndex, list);
+    }
+    return byQuestion;
+  };
+  const baselineByQ = group(baselineResults);
+  const candidateByQ = group(candidateResults);
+
+  const questionIndexes = [...new Set([...baselineByQ.keys(), ...candidateByQ.keys()])].sort((a, b) => a - b);
+  const cases: RunCaseComparison[] = questionIndexes.map(questionIndex => {
+    const baseline = summarizeSide(baselineByQ.get(questionIndex) ?? []);
+    const candidate = summarizeSide(candidateByQ.get(questionIndex) ?? []);
+    const sourceRows = candidateByQ.get(questionIndex) ?? baselineByQ.get(questionIndex) ?? [];
+    return {
+      questionIndex,
+      query: sourceRows[0]?.input?.query ?? `Question ${questionIndex + 1}`,
+      baseline,
+      candidate,
+      delta:
+        baseline.rating != null && candidate.rating != null
+          ? Math.round((candidate.rating - baseline.rating) * 10) / 10
+          : null,
+    };
+  });
+
+  const toRunInfo = (row: FullRunRow, summary: Awaited<ReturnType<typeof getRun>>) => ({
+    runId: row.id,
+    createdAt: row.createdAt.toISOString(),
+    version: row.version,
+    averageRating: summary?.averageRating != null ? Math.round(summary.averageRating * 100) / 100 : null,
+  });
+  return {
+    baselineRun: toRunInfo(baselineRow, baselineSummary),
+    candidateRun: toRunInfo(candidateRow, candidateSummary),
+    cases,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Version comparison (routes/evaluateDashboard.ts): the external-agent analog to AgentX's native
 // autotune. Run the same external agent twice against a dataset, tag each run with a version
 // label (see extractVersion above), see which one scored higher - the same candidateAvg >=
@@ -542,6 +821,9 @@ export type VersionComparisonEntry = {
   ratedCount: number;
   averageRating: number | null;
   lastRunAt: string;
+  // The version's most recent run - what the dashboard's per-case comparison (compareRuns below)
+  // diffs when a human clicks through from the aggregate verdict.
+  latestRunId: string;
 };
 
 export type VersionComparisonResult = {
@@ -582,15 +864,18 @@ export async function getVersionComparison(db: Db, datasetId: string): Promise<V
 
   const versionByRunId = new Map(runs.map(r => [r.id, r.version?.trim() || UNVERSIONED]));
 
-  type Bucket = { runIds: Set<string>; ratedSum: number; ratedCount: number; lastRunAt: Date };
+  type Bucket = { runIds: Set<string>; ratedSum: number; ratedCount: number; lastRunAt: Date; latestRunId: string };
   const buckets = new Map<string, Bucket>();
 
   for (const run of runs) {
     const version = versionByRunId.get(run.id)!;
-    const bucket = buckets.get(version) ?? { runIds: new Set<string>(), ratedSum: 0, ratedCount: 0, lastRunAt: run.createdAt };
+    const bucket =
+      buckets.get(version) ??
+      { runIds: new Set<string>(), ratedSum: 0, ratedCount: 0, lastRunAt: run.createdAt, latestRunId: run.id };
     bucket.runIds.add(run.id);
-    if (run.createdAt.getTime() > bucket.lastRunAt.getTime()) {
+    if (run.createdAt.getTime() >= bucket.lastRunAt.getTime()) {
       bucket.lastRunAt = run.createdAt;
+      bucket.latestRunId = run.id;
     }
     buckets.set(version, bucket);
   }
@@ -618,6 +903,7 @@ export async function getVersionComparison(db: Db, datasetId: string): Promise<V
       ratedCount: bucket.ratedCount,
       averageRating: bucket.ratedCount > 0 ? bucket.ratedSum / bucket.ratedCount : null,
       lastRunAt: bucket.lastRunAt.toISOString(),
+      latestRunId: bucket.latestRunId,
     }))
     .sort((a, b) => new Date(b.lastRunAt).getTime() - new Date(a.lastRunAt).getTime());
 

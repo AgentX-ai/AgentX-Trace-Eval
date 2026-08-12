@@ -31,6 +31,12 @@ function base64ToHex(b64: string | undefined | null): string | null {
 // A handful of real-world JSON producers emit snake_case (the literal .proto field names) instead
 // of the protobuf-JSON-mapping's canonical lowerCamelCase - cheap to tolerate for the multi-word
 // top-level fields, so accept either rather than requiring exact spec compliance from every body.
+function normalizeStatusCode(code: unknown): NormalizedSpan["statusCode"] {
+  if (code === 2 || code === "2" || code === "STATUS_CODE_ERROR") return "STATUS_CODE_ERROR";
+  if (code === 1 || code === "1" || code === "STATUS_CODE_OK") return "STATUS_CODE_OK";
+  return "STATUS_CODE_UNSET";
+}
+
 function pick<T>(obj: Record<string, unknown> | undefined, camel: string, snake: string): T | undefined {
   if (!obj) {
     return undefined;
@@ -71,7 +77,10 @@ export function normalizeExportRequest(parsed: Record<string, unknown>): Normali
           attributes: keyValueListToRecord(span.attributes as never),
           resourceAttributes,
           scopeName,
-          statusCode: (status?.code as string | undefined) ?? "STATUS_CODE_UNSET",
+          // The proto3-JSON mapping allows enums as either name strings ("STATUS_CODE_ERROR") or
+          // numbers (2), and real JSON exporters (OTel JS among them) send the number - normalize
+          // both to the string enum here so downstream checks (extractError) compare one shape.
+          statusCode: normalizeStatusCode(status?.code),
           statusMessage: (status?.message as string | undefined) ?? null,
           events: events.map(e => ({
             name: typeof e.name === "string" ? e.name : "",

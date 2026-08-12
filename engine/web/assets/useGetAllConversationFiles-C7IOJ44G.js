@@ -1,1 +1,0 @@
-import{a5 as a,H as l,J as n}from"./index-BX7IFddg.js";const t={all:["allConversationFiles"],id:e=>[...t.all,e]},r=async({conversationId:e})=>{const{data:s}=await l.get(n.getAllConversationFiles(e));return s},o=({conversationId:e,enabled:s=!0})=>a({queryKey:t.id(e),queryFn:()=>r({conversationId:e}),enabled:s});export{r as g,o as u};

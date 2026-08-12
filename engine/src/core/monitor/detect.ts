@@ -10,9 +10,12 @@ import { matchesAgentScope, passesSampleRate } from "./routing.js";
 import { getMonitoringDefaults } from "../project/projects.js";
 
 // Built-in checks, evaluated in code rather than stored as pattern rows (same list as
-// AgentX-web-api's BUILT_IN_AGENT_MONITORING_PATTERNS, minus "negative-feedback": that one is
-// native-chat-UI-only, an SDK trace has no vote/downvote concept to detect).
+// AgentX-web-api's BUILT_IN_AGENT_MONITORING_PATTERNS). "negative-feedback" is the one entry not
+// detected by this file at all: the feedback API (core/monitor/feedback.ts) raises it directly
+// when an end user downvotes, since the user is the detector - it's listed here so the Signals
+// and Patterns surfaces resolve its name like any other built-in.
 export const BUILT_IN_MONITOR_PATTERNS = [
+  { key: "negative-feedback", name: "Negative user feedback", description: "Flags responses the end user explicitly downvoted, reported via the feedback API.", severity: "medium", category: "Reliability" },
   { key: "agent-response-failed", name: "Failed response", description: "Flags responses explicitly marked as failed.", severity: "high", category: "Reliability" },
   { key: "agent-trace-error", name: "Trace error", description: "Flags agent runs where the execution trace contains an error.", severity: "high", category: "Tooling" },
   { key: "agent-tool-failure", name: "Tool failure", description: "Flags failed tool calls recorded in the trace.", severity: "high", category: "Tooling" },

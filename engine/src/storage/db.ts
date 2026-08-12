@@ -602,6 +602,47 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       project_id TEXT
     );
 
+
+    CREATE TABLE IF NOT EXISTS user_feedback (
+      id TEXT PRIMARY KEY,
+      trace_id TEXT NOT NULL,
+      rating TEXT NOT NULL,
+      comment TEXT,
+      end_user_id TEXT,
+      created_at INTEGER NOT NULL,
+      project_id TEXT
+    );
+
+
+    CREATE TABLE IF NOT EXISTS improvement_proposals (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      target_name TEXT NOT NULL,
+      status TEXT NOT NULL,
+      trigger_reason TEXT NOT NULL,
+      current_text TEXT NOT NULL,
+      proposal TEXT NOT NULL,
+      validation TEXT,
+      created_at INTEGER NOT NULL,
+      resolved_at INTEGER,
+      project_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS gate_results (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      dataset_id TEXT NOT NULL,
+      passed INTEGER NOT NULL,
+      average_rating REAL,
+      baseline_run_id TEXT,
+      baseline_average REAL,
+      checks TEXT,
+      caller TEXT,
+      created_at INTEGER NOT NULL,
+      project_id TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS session_scores (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
@@ -1310,6 +1351,47 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       reason TEXT,
       reported_by TEXT,
       reported_at TIMESTAMP NOT NULL,
+      project_id TEXT
+    );
+
+
+    CREATE TABLE IF NOT EXISTS user_feedback (
+      id TEXT PRIMARY KEY,
+      trace_id TEXT NOT NULL,
+      rating TEXT NOT NULL,
+      comment TEXT,
+      end_user_id TEXT,
+      created_at TIMESTAMP NOT NULL,
+      project_id TEXT
+    );
+
+
+    CREATE TABLE IF NOT EXISTS improvement_proposals (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      target_name TEXT NOT NULL,
+      status TEXT NOT NULL,
+      trigger_reason TEXT NOT NULL,
+      current_text TEXT NOT NULL,
+      proposal JSONB NOT NULL,
+      validation JSONB,
+      created_at TIMESTAMP NOT NULL,
+      resolved_at TIMESTAMP,
+      project_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS gate_results (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      dataset_id TEXT NOT NULL,
+      passed BOOLEAN NOT NULL,
+      average_rating DOUBLE PRECISION,
+      baseline_run_id TEXT,
+      baseline_average DOUBLE PRECISION,
+      checks JSONB,
+      caller TEXT,
+      created_at TIMESTAMP NOT NULL,
       project_id TEXT
     );
 

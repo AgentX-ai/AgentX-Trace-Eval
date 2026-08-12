@@ -1,1 +1,0 @@
-import{M as c}from"./toggle-group-DuCsJqiA.js";const e=()=>{const n=[];return Object.entries(c).forEach(([t,o])=>{if(typeof o=="function"&&t!=="default"){const s=t.startsWith("Md")?t:`Md${t}`;n.push({name:s,component:o})}}),n},r=e(),i=n=>{if(!n)return null;const t=r.find(o=>o.name===n);return t?t.component:null};export{r as a,i as g};

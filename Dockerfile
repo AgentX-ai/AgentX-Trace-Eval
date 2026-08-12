@@ -1,10 +1,10 @@
-# AgentX self-host engine — see README's "Docker" section.
+# AgentX self-host engine - see README's "Docker" section.
 #
 # Four stages: the workspace install + judge-core build need Node/Yarn (bun install isn't a
 # guaranteed match for a yarn.lock), the engine compile needs Bun (bun:sqlite, see
 # storage/db.ts's own comment on why the compiled binary can't use better-sqlite3), the dashboard
 # is a separate prebuilt asset (private frontend source, see README's "Dashboard release process"
-# — same fallback build.sh uses when no sibling AgentX-eval-front checkout exists), and the
+# - same fallback build.sh uses when no sibling AgentX-eval-front checkout exists), and the
 # runtime stage is exactly what release.yml already verified a compiled agentx-engine binary runs
 # correctly under: a plain debian:bookworm-slim container.
 #
@@ -15,7 +15,7 @@
 FROM node:24-slim AS deps
 WORKDIR /app
 # python3/make/g++: better-sqlite3 (engine/package.json) has a native addon needing a real build
-# toolchain to compile from source (no prebuilt binary for every platform/arch combo) — it's a
+# toolchain to compile from source (no prebuilt binary for every platform/arch combo) - it's a
 # dev-only dependency in practice (the compiled agentx-engine binary uses Bun's own bun:sqlite
 # instead, see storage/db.ts's comment), but yarn install still builds every listed dependency
 # regardless of which runtime ultimately uses it. This stage is discarded; nothing here reaches
@@ -38,21 +38,19 @@ COPY engine engine
 RUN cd engine && bun build src/index.ts --compile --outfile /out/agentx-engine
 
 # --- dashboard: prebuilt bundle from this repo's own GitHub releases ---
+# ADD (not RUN curl) on purpose: the builder checksum-validates the URL against the remote file's
+# ETag on every build, so a freshly published agentx-web.tar.gz invalidates exactly this layer
+# with no --no-cache needed, while an unchanged asset still hits the cache. A RUN curl layer, by
+# contrast, caches on the command text alone and silently keeps serving a stale bundle forever.
+# Trade-off: no network / missing asset now fails the build loudly instead of quietly producing
+# an API-only image.
+#
+# Pin a specific dashboard build instead of latest:
+#   --build-arg AGENTX_WEB_URL=https://github.com/AgentX-ai/AgentX-trace-eval/releases/download/v0.1.6/agentx-web.tar.gz
 FROM debian:bookworm-slim AS dashboard
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/*
-ARG AGENTX_WEB_RELEASE_TAG=latest
-RUN mkdir -p /web && \
-    if [ "$AGENTX_WEB_RELEASE_TAG" = "latest" ]; then \
-      web_url="https://github.com/AgentX-ai/AgentX-trace-eval/releases/latest/download/agentx-web.tar.gz"; \
-    else \
-      web_url="https://github.com/AgentX-ai/AgentX-trace-eval/releases/download/${AGENTX_WEB_RELEASE_TAG}/agentx-web.tar.gz"; \
-    fi && \
-    if curl -fsSL "$web_url" -o /tmp/agentx-web.tar.gz; then \
-      tar -xzf /tmp/agentx-web.tar.gz -C /web && rm /tmp/agentx-web.tar.gz; \
-    else \
-      echo "warning: no prebuilt dashboard found at $web_url — continuing API-only" >&2; \
-    fi
+ARG AGENTX_WEB_URL=https://github.com/AgentX-ai/AgentX-trace-eval/releases/latest/download/agentx-web.tar.gz
+ADD ${AGENTX_WEB_URL} /tmp/agentx-web.tar.gz
+RUN mkdir -p /web && tar -xzf /tmp/agentx-web.tar.gz -C /web && rm /tmp/agentx-web.tar.gz
 
 # --- runtime ---
 FROM debian:bookworm-slim
@@ -67,7 +65,7 @@ COPY --from=build /out/agentx-engine ./agentx-engine
 COPY --from=dashboard /web ./web
 RUN chown -R agentx:agentx /app /data
 
-# AGENTX_HOME: where the default SQLite DB + config.json live — /data is the mounted volume, not
+# AGENTX_HOME: where the default SQLite DB + config.json live - /data is the mounted volume, not
 # the container's own ~ (root's home), so state survives a container recreate. Set
 # AGENTX_DB_URL=postgres://... instead to point at your own Postgres and skip the volume.
 ENV AGENTX_HOME=/data \

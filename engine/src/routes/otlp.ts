@@ -8,7 +8,7 @@ import { runCustomEvaluators } from "../core/monitor/customEvaluators.js";
 import { runClassification } from "../core/monitor/topics.js";
 import { decodeProtobufExportRequest, encodeProtobufResponse } from "../otel/protoTypes.js";
 import { normalizeExportRequest } from "../otel/normalize.js";
-import { otelSpanToIngestInput } from "../otel/mapping.js";
+import { otelSpanToIngestInput, reconstructParentToolCalls } from "../otel/mapping.js";
 
 // A real OTLP/HTTP trace receiver: point any OpenTelemetry SDK/exporter or the Collector's
 // otlphttpexporter at this base URL (http://localhost:<port>/api/v1/otel) and it works, same as
@@ -83,8 +83,14 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   // responding, same fix as routes/ingest.ts's POST /traces.
   const checkTargets: { traceId: string; agentId: string | null; input: IngestTraceInput }[] = [];
 
-  for (const span of spans) {
-    const candidate = otelSpanToIngestInput(span);
+  // Whole batch mapped first, then the tool-call reconstruction pass (child gen_ai.tool.name
+  // spans folded into their parent interaction's tool_calls - see mapping.ts), THEN per-span
+  // validation/ingest: reconstruction has to see sibling spans together, which a map-and-ingest
+  // single pass never could.
+  const candidates = spans.map(otelSpanToIngestInput);
+  reconstructParentToolCalls(candidates);
+
+  for (const candidate of candidates) {
     const validation = ingestTraceSchema.safeParse(candidate);
     if (!validation.success) {
       rejected++;

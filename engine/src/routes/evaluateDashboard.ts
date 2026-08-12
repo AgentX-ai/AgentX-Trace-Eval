@@ -1,5 +1,13 @@
 import { Router, type Request, type Response } from "express";
 import { nanoid } from "nanoid";
+import { handleCasePreview, handleSuggestExpected, handleAddCase } from "./curationHandlers.js";
+import { validatePromptProposal, validateToolSchemaProposal } from "../core/evaluate/proposalValidation.js";
+import {
+  listImprovementProposals,
+  dismissImprovementProposal,
+  publishImprovementProposal,
+  sweepImprovementsOnce,
+} from "../core/evaluate/improvementSweep.js";
 import type { Db } from "../storage/db.js";
 import { scopedDb } from "../auth/apiKey.js";
 import {
@@ -32,6 +40,9 @@ import {
   getRunResults,
   listRunRows,
   getVersionComparison,
+  compareRuns,
+  listGateResults,
+  previewLatestRunGate,
   type FullRunRow,
   type RunResultRow,
 } from "../core/evaluate/runs.js";
@@ -51,6 +62,7 @@ import {
   publishToolSchemaVersion,
   getToolFailureExamples,
   proposeToolSchemaImprovement,
+  listUnregisteredTools,
   deleteToolSchema,
 } from "../core/evaluate/toolSchemas.js";
 import { runPlayground, extractPlaygroundTools } from "../core/evaluate/playground.js";
@@ -235,6 +247,12 @@ evaluateDashboardRouter.delete("/evaluationSettings/:id/versions/:versionId", as
 });
 
 // Same batch-before-:id ordering as /evaluationSettings/batch/versions above.
+// Curation (production -> golden dataset): same three handlers the SDK-facing router mounts,
+// see curationHandlers.ts. The dashboard's Add-to-dataset dialog calls these.
+evaluateDashboardRouter.post("/datasets/case-preview", handleCasePreview);
+evaluateDashboardRouter.post("/datasets/suggest-expected", handleSuggestExpected);
+evaluateDashboardRouter.post("/datasets/:id/cases", handleAddCase);
+
 evaluateDashboardRouter.get("/datasets/batch/versions", async (req: Request, res: Response) => {
   const ids = typeof req.query.ids === "string" ? req.query.ids.split(",").filter(Boolean) : [];
   const versionCounts = await getDatasetVersionCounts(scopedDb(req), ids);
@@ -258,6 +276,99 @@ evaluateDashboardRouter.delete("/datasets/:id/versions/:versionId", async (req: 
 // report whether the most recent version beat the one before it.
 evaluateDashboardRouter.get("/datasets/:datasetId/run-comparison", async (req: Request, res: Response) => {
   res.status(200).json(await getVersionComparison(scopedDb(req), req.params.datasetId!));
+});
+
+// Improvement Inbox: proposals the background sweep generated + validated on its own, awaiting
+// human review. See core/evaluate/improvementSweep.ts for thresholds/cooldowns/spend caps.
+evaluateDashboardRouter.get("/improve/inbox", async (req: Request, res: Response) => {
+  res.status(200).json({ proposals: await listImprovementProposals(scopedDb(req)) });
+});
+
+evaluateDashboardRouter.post("/improve/inbox/:id/dismiss", async (req: Request, res: Response) => {
+  const result = await dismissImprovementProposal(scopedDb(req), req.params.id!);
+  if (!result) {
+    res.status(404).json({ error: "No pending proposal with that id" });
+    return;
+  }
+  res.status(200).json({ proposal: result });
+});
+
+evaluateDashboardRouter.post("/improve/inbox/:id/publish", async (req: Request, res: Response) => {
+  const result = await publishImprovementProposal(scopedDb(req), req.params.id!);
+  if (!result) {
+    res.status(404).json({ error: "No pending proposal with that id" });
+    return;
+  }
+  res.status(200).json({ proposal: result });
+});
+
+// Manual trigger, scoped to the caller's project - the demo/test path, and the escape hatch when
+// AGENTX_IMPROVEMENT_SWEEP=false disables the background interval.
+evaluateDashboardRouter.post("/improve/inbox/sweep/run", async (req: Request, res: Response) => {
+  res.status(200).json(await sweepImprovementsOnce(scopedDb(req)));
+});
+
+// CI Gates page: recorded gate history (real CI verdicts, written by the SDK-facing gate route
+// with record=true) plus a compute-only preview of "would the latest run pass these thresholds".
+evaluateDashboardRouter.get("/ci/gates", async (req: Request, res: Response) => {
+  const db = scopedDb(req);
+  const [gates, datasets] = await Promise.all([listGateResults(db), listDatasets(db)]);
+  const nameById = new Map(datasets.map(d => [d._id, d.name]));
+  res.status(200).json({
+    gates: gates.map(g => ({
+      _id: g.id,
+      runId: g.runId,
+      datasetId: g.datasetId,
+      datasetName: nameById.get(g.datasetId) ?? g.datasetId,
+      passed: g.passed,
+      averageRating: g.averageRating,
+      baselineAverage: g.baselineAverage,
+      checks: g.checks,
+      caller: g.caller,
+      createdAt: g.createdAt,
+    })),
+  });
+});
+
+evaluateDashboardRouter.get("/ci/gates/preview", async (req: Request, res: Response) => {
+  const { datasetId } = req.query;
+  if (typeof datasetId !== "string" || !datasetId) {
+    res.status(400).json({ error: "datasetId is required" });
+    return;
+  }
+  const failUnderRaw = req.query.failUnder;
+  const failUnder = typeof failUnderRaw === "string" && failUnderRaw !== "" ? Number(failUnderRaw) : null;
+  const noRegression = req.query.noRegression === "true" || req.query.noRegression === "1";
+  if (failUnder != null && !Number.isFinite(failUnder)) {
+    res.status(400).json({ error: "failUnder must be a number" });
+    return;
+  }
+  if (failUnder == null && !noRegression) {
+    res.status(400).json({ error: "At least one check is required: failUnder and/or noRegression" });
+    return;
+  }
+  const result = await previewLatestRunGate(scopedDb(req), datasetId, { failUnder, noRegression });
+  if ("error" in result) {
+    res.status(422).json(result);
+    return;
+  }
+  res.status(200).json(result);
+});
+
+// Per-case drill-down under the aggregate verdict above: which cases exactly regressed between
+// two runs of the same dataset, with both outputs. See core/evaluate/runs.ts's compareRuns.
+evaluateDashboardRouter.get("/runs/compare", async (req: Request, res: Response) => {
+  const { baseline, candidate } = req.query;
+  if (typeof baseline !== "string" || typeof candidate !== "string" || !baseline || !candidate) {
+    res.status(400).json({ error: "baseline and candidate run ids are required" });
+    return;
+  }
+  const result = await compareRuns(scopedDb(req), baseline, candidate);
+  if ("error" in result) {
+    res.status(result.error === "Run not found" ? 404 : 400).json(result);
+    return;
+  }
+  res.status(200).json(result);
 });
 
 // Agent Connectors (core/evaluate/agentConnectors.ts) - "how to invoke my deployed agent," a
@@ -486,6 +597,14 @@ evaluateDashboardRouter.post("/tool-schemas", async (req: Request, res: Response
   res.status(201).json(toolSchema);
 });
 
+// Registered BEFORE /tool-schemas/:id so "unregistered" isn't captured as an id. See
+// core/evaluate/toolSchemas.ts's listUnregisteredTools - the on-ramp for tools already failing
+// in traffic that nobody has registered yet.
+evaluateDashboardRouter.get("/tool-schemas/unregistered", async (req: Request, res: Response) => {
+  const windowDays = req.query.window === "24h" ? 1 : req.query.window === "30d" ? 30 : 7;
+  res.status(200).json({ unregistered: await listUnregisteredTools(scopedDb(req), windowDays) });
+});
+
 evaluateDashboardRouter.get("/tool-schemas/:id", async (req: Request, res: Response) => {
   const toolSchema = await getToolSchemaWithVersionsWire(scopedDb(req), req.params.id!);
   if (!toolSchema) {
@@ -547,6 +666,32 @@ evaluateDashboardRouter.post("/tool-schemas/:id/propose", async (req: Request, r
     res.status(200).json(result);
   } catch (err) {
     res.status(502).json({ error: err instanceof Error ? err.message : "Proposal failed" });
+  }
+});
+
+// Propose -> VALIDATE -> publish: run a proposal's candidate definition against real queries
+// (dataset cases, or this tool's own production failure evidence) on both the current and the
+// candidate definition, and return the measured comparison. See proposalValidation.ts.
+evaluateDashboardRouter.post("/tool-schemas/:id/proposals/validate", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.candidateDefinition !== "string" || !body.candidateDefinition.trim()) {
+    res.status(400).json({ error: "candidateDefinition is required" });
+    return;
+  }
+  try {
+    const result = await validateToolSchemaProposal(scopedDb(req), req.params.id!, {
+      candidateDefinition: body.candidateDefinition,
+      datasetId: typeof body.datasetId === "string" && body.datasetId ? body.datasetId : undefined,
+      model: typeof body.model === "string" && body.model ? body.model : undefined,
+      maxCases: typeof body.maxCases === "number" ? body.maxCases : undefined,
+    });
+    if ("error" in result) {
+      res.status(422).json(result);
+      return;
+    }
+    res.status(200).json(result);
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : "Validation failed" });
   }
 });
 
@@ -631,6 +776,36 @@ evaluateDashboardRouter.get("/prompts/:id/themes", async (req: Request, res: Res
 
 // Never writes on its own - returns a suggestion for the dashboard to show, which the human then
 // accepts via POST /prompts/:id/versions (source: "proposed") or discards outright.
+// Prompt twin of /tool-schemas/:id/proposals/validate above: candidate system prompt vs the
+// current published version, graded against a golden dataset's cases (multi-turn cases played
+// in full) with that dataset's own judge config. See proposalValidation.ts.
+evaluateDashboardRouter.post("/prompts/:id/proposals/validate", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.candidateText !== "string" || !body.candidateText.trim()) {
+    res.status(400).json({ error: "candidateText is required" });
+    return;
+  }
+  if (typeof body.datasetId !== "string" || !body.datasetId) {
+    res.status(400).json({ error: "datasetId is required" });
+    return;
+  }
+  try {
+    const result = await validatePromptProposal(scopedDb(req), req.params.id!, {
+      candidateText: body.candidateText,
+      datasetId: body.datasetId,
+      model: typeof body.model === "string" && body.model ? body.model : undefined,
+      maxCases: typeof body.maxCases === "number" ? body.maxCases : undefined,
+    });
+    if ("error" in result) {
+      res.status(422).json(result);
+      return;
+    }
+    res.status(200).json(result);
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : "Validation failed" });
+  }
+});
+
 evaluateDashboardRouter.post("/prompts/:id/propose", async (req: Request, res: Response) => {
   const { datasetId, includeAllVersions, exampleIds } = req.body ?? {};
   try {

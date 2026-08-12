@@ -39,18 +39,33 @@ browser, and prints a local API key for the SDK. Prefer a container? See [Docker
   **Tool Schema** registries for propose → human-approve → publish iteration, both fed by real
   evidence (worst-rated eval results and production failures); **Model Portability** to replay a
   captured trace's input against alternative models for a quick cost/latency/quality comparison;
-  and a **Playground** grid for testing a prompt/model against dataset cases without a full run.
+  and a **Playground** grid for testing a prompt/model against dataset cases without a full run -
+  tools included (from the Tool Schema registry or ad hoc; with no endpoint configured, calls are
+  simulated so tool choice and argument formation are still testable). Tools failing in traffic
+  that nobody registered yet are surfaced for one-click registration, drafted from the trace's
+  own metadata or the observed calls.
 - **Monitor** - pattern-based detection (phrase/regex/semantic) with per-agent scope and sampling,
   continuous **Online Evaluators** scoring live traffic against judge criteria (per trace, or per
   **session**: whole conversations judged automatically once they go idle), **Custom Evaluators**
   that delegate the verdict to a webhook you control, and **Topics** clustering of what your
   agents are actually being asked. Signals triage, KPI/trend dashboards, and outbound webhook
   notifications on failures.
-- **Close the loop** - report real-world **outcomes** (a reopened ticket, a human confirmation)
-  against traces via `POST /outcomes` or the SDK's `client.outcomes.report(...)`, and the
-  Overview's **Judge Calibration** card measures how often the automated verdicts agreed with
-  reality; a **Model Comparison** card aggregates quality/cost/latency per model from real
-  traffic.
+- **Close the loop** - turn production into tests and fixes into proofs. Any trace or session
+  becomes a golden dataset case in two clicks (multi-turn conversations included, with
+  deduplication and provenance); prompt/tool-schema proposals are **validated** against those
+  cases before a human publishes (candidate vs current, measured); real-world **outcomes**
+  (`client.outcomes.report(...)`) and **end-user feedback** (`client.feedback.report(...)`, a
+  downvote raises a signal directly) feed Overview's **Judge Calibration** card, which measures
+  how often the automated verdicts agreed with reality; and a **Model Comparison** card
+  aggregates quality/cost/latency per model from real traffic.
+- **Improvement Inbox** - the loop runs itself: a background sweep notices when a prompt or
+  tool schema accumulates fresh failure evidence, generates the improvement proposal AND runs its
+  baseline-vs-candidate validation automatically, then queues it under Improve -> Suggestions
+  with the measured verdict attached. Humans keep the only pen: review, then publish or dismiss.
+- **CI gate** - fail a build on eval regression: `report.gate(fail_under=7, no_regression=True)`
+  after any SDK eval run returns an exit code, and every recorded gate lands in the dashboard's
+  **CI Gates** tab (history plus a "would the latest run pass?" preview). See the docs for the
+  copy-paste GitHub Actions workflow.
 - **Bring your own keys** - OpenAI, Anthropic, and Gemini are all supported for judge scoring and
   model calls; nothing works without your own key, and nothing is billed through AgentX.
 - **Single binary** - the engine compiles to a native executable (via Bun) and the CLI to a native
@@ -69,9 +84,12 @@ point `AGENTX_DB_URL` at your own Postgres instead and skip the volume entirely.
 keys with `-e OPENAI_API_KEY=... -e ANTHROPIC_API_KEY=... -e GEMINI_API_KEY=...`, or set them
 later from the dashboard's Platform Settings. The image includes a `/health` `HEALTHCHECK`.
 
-By default the build downloads the latest dashboard release (see
-[Dashboard release process](#dashboard-release-process)); pin an older one with
-`--build-arg AGENTX_WEB_RELEASE_TAG=v0.1.6` if needed.
+The build downloads the latest dashboard release (see
+[Dashboard release process](#dashboard-release-process)) and re-checks it on every rebuild - the
+download layer is an `ADD` from the release URL, which the builder revalidates against the remote
+file, so a newly published dashboard bundle is picked up automatically with no `--no-cache`
+needed. Pin a specific dashboard build instead with
+`--build-arg AGENTX_WEB_URL=https://github.com/AgentX-ai/AgentX-trace-eval/releases/download/v0.1.6/agentx-web.tar.gz`.
 
 ## Configuration
 
@@ -87,6 +105,7 @@ Set these in the environment before starting `agentx-server`:
 | `PORT` | `4700` | Port the engine listens on. |
 | `AGENTX_OTEL_MONITOR` | `true` | Set to `false` to stop running Monitor against OTel-ingested spans. |
 | `AGENTX_MONITOR_CHILD_SPANS` | `false` | Set to `true` to also run Monitor against child spans of a traced call, not just top-level ones. |
+| `AGENTX_IMPROVEMENT_SWEEP` | `true` | Set to `false` to disable the background sweep that auto-generates and validates improvement proposals when failure evidence crosses a threshold (the Improvement Inbox). `POST /evaluate/improve/inbox/sweep/run` still triggers one manually. |
 | `AGENTX_SESSION_SWEEP` | `true` | Set to `false` to disable the background sweep that judges idle multi-turn sessions (session-scoped Online Evaluators). `POST /agent-monitoring/session-sweep/run` still triggers one manually. |
 
 Trace ingest and pattern matching on phrase/regex both work with no keys configured at all - only
@@ -115,9 +134,17 @@ Attributes are mapped using the GenAI semantic conventions (`gen_ai.*`, both the
 field names), OpenLLMetry's legacy indexed attributes, and OpenInference's `input.value`/
 `output.value`/`llm.model_name` - see `engine/src/otel/mapping.ts` for the exact priority order.
 Monitor and Online Evaluators run against every OTel-ingested span by default; set
-`AGENTX_OTEL_MONITOR=false` to disable that. Known gaps: gRPC transport isn't supported (HTTP
-only), and reconstructing a parent LLM span's `tool_calls` from separate child tool-call spans
-isn't attempted (no stable convention for that yet upstream).
+`AGENTX_OTEL_MONITOR=false` to disable that.
+
+OTel traffic is a first-class citizen of the full loop, via three attribute conventions:
+
+| Span attribute | Effect |
+| --- | --- |
+| `session.id`, `gen_ai.conversation.id`, or `agentx.session_id` | Groups traces into a conversation on the Sessions surface - session coherence scoring and session-scoped Online Evaluators apply, exactly like SDK traffic. Without one, spans still group by OTel trace id. |
+| `agentx.prompt_name` (+ optional `agentx.version`) | Tags the trace for the Improve loop - prompt-registry evidence gathering and version comparison work as if the SDK's `metadata={"promptName": ...}` had been passed. |
+| `gen_ai.tool.name` on a child span | The tool call is folded up into its root interaction's `tool_calls` (with `success`/`error` from the span's status), lighting up the Tool quality column, the built-in Tool failure check, and Tool Schema evidence. In-batch only: a parent exported in an earlier OTLP batch isn't updated retroactively. |
+
+Known gap: gRPC transport isn't supported (HTTP only).
 
 ## What's in this repo
 
@@ -214,11 +241,14 @@ write access, saved as `AgentX-eval-front`'s `SELFHOST_RELEASE_TOKEN` secret.
 Trace, Evaluate, and Monitor are wired end-to-end and verified against the real Python SDK, both
 SQLite and Postgres, and the compiled single-binary distribution - including a real OTLP/HTTP
 receiver verified against both protobuf and JSON payloads. The dashboard covers Governance's full
-self-host surface: Trace ingest (traces and sessions), Monitor (patterns, trace- and
-session-scoped online evaluators, custom evaluators, topics, signals triage, KPIs), Evaluate
-(runs, datasets, standalone evaluator configs, version history, Model Portability, and
-Playground), Improve (the Prompt and Tool Schema registries), and Overview (KPIs, trends, topic
-map, Model Comparison, and Judge Calibration against reported outcomes).
+self-host surface: Trace ingest (traces and sessions, with end-user feedback chips), Monitor
+(patterns, trace- and session-scoped online evaluators, custom evaluators, topics, signals
+triage, KPIs), Evaluate (runs, datasets curated straight from production traffic, standalone
+evaluator configs, version history, per-case run comparison, Model Portability, and Playground),
+Improve (the Prompt and Tool Schema registries with validated proposals and unregistered-tool
+surfacing), CI Gates (recorded gate history plus a latest-run preview), and Overview (KPIs,
+trends, topic map, Model Comparison, and Judge Calibration against reported outcomes and
+end-user feedback).
 
 **Known gaps:**
 

@@ -7,6 +7,7 @@ import { evaluationsRouter } from "./routes/evaluations.js";
 import { monitorRouter } from "./routes/monitor.js";
 import { agentsRouter } from "./routes/agents.js";
 import { outcomesRouter } from "./routes/outcomes.js";
+import { feedbackRouter } from "./routes/feedback.js";
 import { agentMonitoringDashboardRouter } from "./routes/agentMonitoringDashboard.js";
 import { evaluateDashboardRouter } from "./routes/evaluateDashboard.js";
 import { otlpRouter } from "./routes/otlp.js";
@@ -14,6 +15,7 @@ import { initDb, closeDb, getDb } from "./storage/db.js";
 import { getDefaultProject, createProject, listProjectsWire } from "./core/project/projects.js";
 import { findWebIndexHtml } from "./web.js";
 import { startSessionSweep } from "./core/monitor/sessionSweep.js";
+import { startImprovementSweep } from "./core/evaluate/improvementSweep.js";
 
 const PORT = Number(process.env.PORT || 4700);
 const isDev = process.argv.includes("--dev");
@@ -82,6 +84,7 @@ async function main() {
   app.use("/api/v1/monitor", requireApiKey(), monitorRouter);
   app.use("/api/v1/agents", requireApiKey(), agentsRouter);
   app.use("/api/v1/outcomes", requireApiKey(), outcomesRouter);
+  app.use("/api/v1/feedback", requireApiKey(), feedbackRouter);
   app.use("/api/v1/agent-monitoring", requireApiKey(), agentMonitoringDashboardRouter);
   app.use("/api/v1/evaluate", requireApiKey(), evaluateDashboardRouter);
   app.use("/api/v1/otel", requireApiKey(), otlpRouter);
@@ -156,6 +159,7 @@ async function main() {
   // Idle-session sweep for session-scoped Online Evaluators (core/monitor/sessionSweep.ts) -
   // unref'd interval, so it never blocks shutdown. AGENTX_SESSION_SWEEP=false disables.
   startSessionSweep();
+  startImprovementSweep();
   const defaultProject = await getDefaultProject(getDb());
   console.log(`AgentX self-host engine listening on http://localhost:${PORT}`);
   console.log(`Default project API key: ${defaultProject?.apiKey}`);

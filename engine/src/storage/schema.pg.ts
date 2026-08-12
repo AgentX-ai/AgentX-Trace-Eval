@@ -358,6 +358,48 @@ export const outcomeReports = pgTable("outcome_reports", {
   projectId: text("project_id"),
 });
 
+// See schema.sqlite.ts's userFeedback for the full comment.
+export const userFeedback = pgTable("user_feedback", {
+  id: text("id").primaryKey(),
+  traceId: text("trace_id").notNull(),
+  rating: text("rating").notNull(),
+  comment: text("comment"),
+  endUserId: text("end_user_id"),
+  createdAt: timestamp("created_at").notNull(),
+  projectId: text("project_id"),
+});
+
+// See schema.sqlite.ts's improvementProposals for the full comment.
+export const improvementProposals = pgTable("improvement_proposals", {
+  id: text("id").primaryKey(),
+  kind: text("kind").notNull(),
+  targetId: text("target_id").notNull(),
+  targetName: text("target_name").notNull(),
+  status: text("status").notNull(),
+  triggerReason: text("trigger_reason").notNull(),
+  currentText: text("current_text").notNull(),
+  proposal: jsonb("proposal").notNull(),
+  validation: jsonb("validation"),
+  createdAt: timestamp("created_at").notNull(),
+  resolvedAt: timestamp("resolved_at"),
+  projectId: text("project_id"),
+});
+
+// See schema.sqlite.ts's gateResults for the full comment.
+export const gateResults = pgTable("gate_results", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull(),
+  datasetId: text("dataset_id").notNull(),
+  passed: boolean("passed").notNull(),
+  averageRating: doublePrecision("average_rating"),
+  baselineRunId: text("baseline_run_id"),
+  baselineAverage: doublePrecision("baseline_average"),
+  checks: jsonb("checks"),
+  caller: text("caller"),
+  createdAt: timestamp("created_at").notNull(),
+  projectId: text("project_id"),
+});
+
 // See schema.sqlite.ts's sessionScores for the full comment.
 export const sessionScores = pgTable("session_scores", {
   id: text("id").primaryKey(),
