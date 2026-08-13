@@ -28,6 +28,7 @@ import {
 } from "../core/monitor/events.js";
 import { getTopicsTrend, getTopIntents, getIssueBreakdown, getTopicsMap } from "../core/monitor/topics.js";
 import { getJudgeCalibration } from "../core/monitor/outcomeCalibration.js";
+import { getEvaluatorCalibration, proposeJudgeTuning, validateJudgeTuning } from "../core/monitor/judgeTuning.js";
 import { getModelComparison } from "../core/monitor/modelComparison.js";
 import { runSessionCoherenceCheck, listSessionScores } from "../core/monitor/sessionScores.js";
 import { listSessions } from "../core/monitor/sessions.js";
@@ -39,8 +40,10 @@ import {
   updateOnlineEvaluator,
   deleteOnlineEvaluator,
   listOnlineEvaluatorsWire,
+  getOnlineEvaluatorRow,
   InvalidEvaluationSettingsIdError,
 } from "../core/monitor/onlineEvaluators.js";
+import { patchEvaluationSettings } from "../core/evaluate/evaluationSettings.js";
 import {
   createCustomEvaluator,
   updateCustomEvaluator,
@@ -435,6 +438,109 @@ agentMonitoringDashboardRouter.get("/online-evaluators/:evaluatorId/events", asy
   const result = await getOnlineEvaluatorEvents(scopedDb(req), req.params.evaluatorId!, parseWindow(req));
   res.status(200).json(result);
 });
+
+// Judge tuning (core/monitor/judgeTuning.ts): measure this evaluator against recorded reality
+// (triage corrections, outcomes, end-user votes), propose a rewrite of its criteria from the
+// disagreements, validate the candidate by exact re-judging, publish through the evaluator's
+// evaluation-settings config (version history included via patchEvaluationSettings).
+agentMonitoringDashboardRouter.get(
+  "/online-evaluators/:evaluatorId/calibration",
+  async (req: Request, res: Response) => {
+    const result = await getEvaluatorCalibration(scopedDb(req), req.params.evaluatorId!, parseWindow(req));
+    if (!result) {
+      res.status(404).json({ error: "Online evaluator not found" });
+      return;
+    }
+    res.status(200).json(result);
+  }
+);
+
+agentMonitoringDashboardRouter.post("/online-evaluators/:evaluatorId/tune", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  try {
+    const result = await proposeJudgeTuning(scopedDb(req), req.params.evaluatorId!, {
+      window: body.window === "24h" || body.window === "30d" ? body.window : "7d",
+      caseEventIds: Array.isArray(body.caseEventIds)
+        ? body.caseEventIds.filter((id: unknown): id is string => typeof id === "string")
+        : undefined,
+    });
+    if (!result) {
+      res.status(404).json({ error: "Online evaluator (or its evaluator config) not found" });
+      return;
+    }
+    if ("error" in result) {
+      res.status(422).json(result);
+      return;
+    }
+    res.status(200).json({ proposal: result });
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : "Tuning proposal failed" });
+  }
+});
+
+agentMonitoringDashboardRouter.post(
+  "/online-evaluators/:evaluatorId/tune/validate",
+  async (req: Request, res: Response) => {
+    const body = req.body ?? {};
+    for (const key of ["acceptanceCriteria", "rejectionCriteria", "evaluationCriteria"]) {
+      if (typeof body[key] !== "string") {
+        res.status(400).json({ error: `${key} (string) is required` });
+        return;
+      }
+    }
+    try {
+      const result = await validateJudgeTuning(
+        scopedDb(req),
+        req.params.evaluatorId!,
+        {
+          acceptanceCriteria: body.acceptanceCriteria,
+          rejectionCriteria: body.rejectionCriteria,
+          evaluationCriteria: body.evaluationCriteria,
+        },
+        { window: body.window === "24h" || body.window === "30d" ? body.window : "7d" }
+      );
+      if (!result) {
+        res.status(404).json({ error: "Online evaluator (or its evaluator config) not found" });
+        return;
+      }
+      if ("error" in result) {
+        res.status(422).json(result);
+        return;
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      res.status(502).json({ error: err instanceof Error ? err.message : "Validation failed" });
+    }
+  }
+);
+
+agentMonitoringDashboardRouter.post(
+  "/online-evaluators/:evaluatorId/tune/publish",
+  async (req: Request, res: Response) => {
+    const body = req.body ?? {};
+    for (const key of ["acceptanceCriteria", "rejectionCriteria", "evaluationCriteria"]) {
+      if (typeof body[key] !== "string") {
+        res.status(400).json({ error: `${key} (string) is required` });
+        return;
+      }
+    }
+    const evaluator = await getOnlineEvaluatorRow(scopedDb(req), req.params.evaluatorId!);
+    if (!evaluator?.evaluationSettingsId) {
+      res.status(404).json({ error: "Online evaluator (or its evaluator config) not found" });
+      return;
+    }
+    const updated = await patchEvaluationSettings(scopedDb(req), evaluator.evaluationSettingsId, {
+      acceptanceCriteria: body.acceptanceCriteria,
+      rejectionCriteria: body.rejectionCriteria,
+      evaluationCriteria: body.evaluationCriteria,
+    });
+    if (!updated) {
+      res.status(404).json({ error: "Evaluator config not found" });
+      return;
+    }
+    res.status(200).json({ evaluationSettings: updated });
+  }
+);
 
 // Custom evaluators (core/monitor/customEvaluators.ts): promoted out of Pattern's condition-row
 // "external" detector - a URL the user controls, POSTed the trace, expected to answer

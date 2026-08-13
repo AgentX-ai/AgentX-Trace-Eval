@@ -58,6 +58,10 @@ browser, and prints a local API key for the SDK. Prefer a container? See [Docker
   downvote raises a signal directly) feed Overview's **Judge Calibration** card, which measures
   how often the automated verdicts agreed with reality; and a **Model Comparison** card
   aggregates quality/cost/latency per model from real traffic.
+- **Judge tuning** - the judges get judged: each online evaluator's verdicts are measured
+  against recorded reality (human re-scores, outcomes, user votes), and its own grading criteria
+  can be rewritten from the disagreements - validated by exact re-judging (fixes the cases it got
+  wrong, preserves a control set it got right) before a human publishes.
 - **Improvement Inbox** - the loop runs itself: a background sweep notices when a prompt or
   tool schema accumulates fresh failure evidence, generates the improvement proposal AND runs its
   baseline-vs-candidate validation automatically, then queues it under Improve -> Suggestions

@@ -7,7 +7,7 @@ import { getAgentNamesById } from "./agents.js";
 // Matches AgentX-web-front's MonitoringWindow (src/types/agentMonitoring.ts).
 export type MonitoringWindow = "24h" | "7d" | "30d";
 
-function windowConfig(window: MonitoringWindow): { days: number; bucketHours: number } {
+export function windowConfig(window: MonitoringWindow): { days: number; bucketHours: number } {
   switch (window) {
     case "24h":
       return { days: 1, bucketHours: 1 };
@@ -177,7 +177,8 @@ export async function listEventsForTrace(db: Db, traceId: string): Promise<Event
   return rows as EventRow[];
 }
 
-async function listEventsSince(db: Db, since: Date): Promise<EventRow[]> {
+// Exported for judgeTuning.ts, which joins an evaluator's rating events against ground truth.
+export async function listEventsSince(db: Db, since: Date): Promise<EventRow[]> {
   const cond = and(gte(db.schema.monitorEvents.createdAt, since), eq(db.schema.monitorEvents.projectId, db.projectId));
   const rows =
     db.kind === "sqlite"
