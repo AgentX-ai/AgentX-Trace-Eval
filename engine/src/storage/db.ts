@@ -656,6 +656,12 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       project_id TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS sweep_leases (
+      name TEXT PRIMARY KEY,
+      holder TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS tool_schemas (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -757,6 +763,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     ["monitor_events", "ALTER TABLE monitor_events ADD COLUMN custom_evaluator_id TEXT"],
     ["monitor_events", "ALTER TABLE monitor_events ADD COLUMN matched INTEGER"],
     ["monitor_events", "ALTER TABLE monitor_events ADD COLUMN score REAL"],
+    ["monitor_events", "ALTER TABLE monitor_events ADD COLUMN session_id TEXT"],
     ["evaluation_runs", "ALTER TABLE evaluation_runs ADD COLUMN version TEXT"],
     ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0"],
     ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN status TEXT NOT NULL DEFAULT 'published'"],
@@ -842,8 +849,11 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     ["app_settings", "ALTER TABLE app_settings ADD COLUMN gemini_api_key TEXT"],
     ["outcome_reports", "ALTER TABLE outcome_reports ADD COLUMN is_negative INTEGER NOT NULL DEFAULT 0"],
     ["projects", "ALTER TABLE projects ADD COLUMN topics_enabled INTEGER NOT NULL DEFAULT 0"],
+    ["projects", "ALTER TABLE projects ADD COLUMN coherence_sweep_enabled INTEGER NOT NULL DEFAULT 1"],
     ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN scope TEXT NOT NULL DEFAULT 'trace'"],
     ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN idle_seconds INTEGER NOT NULL DEFAULT 120"],
+    ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN builtin_key TEXT"],
+    ["session_scores", "ALTER TABLE session_scores ADD COLUMN findings TEXT"],
   ];
   for (const [, statement] of columnMigrations) {
     try {
@@ -951,7 +961,27 @@ function migrateOnlineEvaluatorsToConfigsSqlite(sqlite: SqliteHandle): void {
 // Nanoid-generated ids and human-typed names essentially never collide, so that check is a safe,
 // idempotent proxy for "already migrated" without needing a separate migration-version marker.
 function backfillAgentsSqlite(sqlite: SqliteHandle): void {
-  const distinctNames = sqlite.prepare(`SELECT DISTINCT name FROM traces`).all() as { name: string }[];
+  // Root spans only, both here and in the pending-traces backfill below: a child span's name is a
+  // STEP label ("LLM Call 1", "search_orders"), not an agent identity - seeding agents from child
+  // names polluted the registry, and because ingestTrace deliberately leaves child spans'
+  // agent_id NULL, every boot re-interpreted those NULLs as "not yet migrated" and stamped them
+  // with the fake agents. The corrective UPDATE un-stamps rows previous boots already polluted.
+  sqlite.exec(`UPDATE traces SET agent_id = NULL WHERE parent_span_id IS NOT NULL AND agent_id IS NOT NULL`);
+  // GC the registry rows this bug created: an "agent" whose name only ever appears as a CHILD
+  // span name (never a root), with nothing referencing it - real agents (including explicitly
+  // registered idle ones, which have no trace rows at all) can't match this shape.
+  sqlite.exec(`DELETE FROM agents WHERE
+    EXISTS (SELECT 1 FROM traces t WHERE t.name = agents.name AND t.parent_span_id IS NOT NULL)
+    AND NOT EXISTS (SELECT 1 FROM traces t WHERE t.name = agents.name AND t.parent_span_id IS NULL)
+    AND NOT EXISTS (SELECT 1 FROM monitor_profiles mp WHERE mp.agent_id = agents.id)
+    AND NOT EXISTS (SELECT 1 FROM monitor_signals ms WHERE ms.agent_id = agents.id)
+    AND NOT EXISTS (SELECT 1 FROM monitor_events me WHERE me.agent_id = agents.id)
+    AND NOT EXISTS (SELECT 1 FROM monitor_classifications mc WHERE mc.agent_id = agents.id)
+    AND NOT EXISTS (SELECT 1 FROM monitor_patterns pat WHERE pat.agent_ids LIKE '%' || agents.id || '%')
+    AND NOT EXISTS (SELECT 1 FROM monitor_online_evaluators ev WHERE ev.agent_ids LIKE '%' || agents.id || '%')`);
+  const distinctNames = sqlite
+    .prepare(`SELECT DISTINCT name FROM traces WHERE parent_span_id IS NULL`)
+    .all() as { name: string }[];
 
   const nameToId = new Map<string, string>();
   for (const existing of sqlite.prepare(`SELECT id, name FROM agents`).all() as { id: string; name: string }[]) {
@@ -974,7 +1004,9 @@ function backfillAgentsSqlite(sqlite: SqliteHandle): void {
     return;
   }
 
-  const pendingTraces = sqlite.prepare(`SELECT id, name FROM traces WHERE agent_id IS NULL`).all() as {
+  const pendingTraces = sqlite
+    .prepare(`SELECT id, name FROM traces WHERE agent_id IS NULL AND parent_span_id IS NULL`)
+    .all() as {
     id: string;
     name: string;
   }[];
@@ -1408,6 +1440,12 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       project_id TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS sweep_leases (
+      name TEXT PRIMARY KEY,
+      holder TEXT NOT NULL,
+      expires_at TIMESTAMP NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS tool_schemas (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -1506,6 +1544,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE monitor_events ADD COLUMN IF NOT EXISTS custom_evaluator_id TEXT;
     ALTER TABLE monitor_events ADD COLUMN IF NOT EXISTS matched BOOLEAN;
     ALTER TABLE monitor_events ADD COLUMN IF NOT EXISTS score DOUBLE PRECISION;
+    ALTER TABLE monitor_events ADD COLUMN IF NOT EXISTS session_id TEXT;
     ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS version TEXT;
     ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'published';
@@ -1574,8 +1613,11 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS gemini_api_key TEXT;
     ALTER TABLE outcome_reports ADD COLUMN IF NOT EXISTS is_negative BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS topics_enabled BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS coherence_sweep_enabled BOOLEAN NOT NULL DEFAULT true;
     ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'trace';
     ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS idle_seconds INTEGER NOT NULL DEFAULT 120;
+    ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS builtin_key TEXT;
+    ALTER TABLE session_scores ADD COLUMN IF NOT EXISTS findings JSONB;
 
     -- One-way Topics migration, see bootstrapSqlite's equivalent for the full comment (copy any
     -- enabled per-agent flag up to the project once, then clear the profile flags so a later
@@ -1635,7 +1677,20 @@ async function migrateOnlineEvaluatorsToConfigsPostgres(pool: Pool): Promise<voi
 // rationale (name-vs-real-id idempotency check, why traces.agent_id is the one clean NULL-guarded
 // signal). $1/$2 placeholders instead of ? throughout, otherwise identical logic.
 async function backfillAgentsPostgres(pool: Pool): Promise<void> {
-  const { rows: distinctNames } = await pool.query<{ name: string }>(`SELECT DISTINCT name FROM traces`);
+  // Root spans only + corrective un-stamp - see backfillAgentsSqlite's comment.
+  await pool.query(`UPDATE traces SET agent_id = NULL WHERE parent_span_id IS NOT NULL AND agent_id IS NOT NULL`);
+  await pool.query(`DELETE FROM agents WHERE
+    EXISTS (SELECT 1 FROM traces t WHERE t.name = agents.name AND t.parent_span_id IS NOT NULL)
+    AND NOT EXISTS (SELECT 1 FROM traces t WHERE t.name = agents.name AND t.parent_span_id IS NULL)
+    AND NOT EXISTS (SELECT 1 FROM monitor_profiles mp WHERE mp.agent_id = agents.id)
+    AND NOT EXISTS (SELECT 1 FROM monitor_signals ms WHERE ms.agent_id = agents.id)
+    AND NOT EXISTS (SELECT 1 FROM monitor_events me WHERE me.agent_id = agents.id)
+    AND NOT EXISTS (SELECT 1 FROM monitor_classifications mc WHERE mc.agent_id = agents.id)
+    AND NOT EXISTS (SELECT 1 FROM monitor_patterns pat WHERE pat.agent_ids::text LIKE '%' || agents.id || '%')
+    AND NOT EXISTS (SELECT 1 FROM monitor_online_evaluators ev WHERE ev.agent_ids::text LIKE '%' || agents.id || '%')`);
+  const { rows: distinctNames } = await pool.query<{ name: string }>(
+    `SELECT DISTINCT name FROM traces WHERE parent_span_id IS NULL`
+  );
 
   const nameToId = new Map<string, string>();
   const { rows: existingAgents } = await pool.query<{ id: string; name: string }>(`SELECT id, name FROM agents`);
@@ -1659,7 +1714,7 @@ async function backfillAgentsPostgres(pool: Pool): Promise<void> {
   }
 
   const { rows: pendingTraces } = await pool.query<{ id: string; name: string }>(
-    `SELECT id, name FROM traces WHERE agent_id IS NULL`
+    `SELECT id, name FROM traces WHERE agent_id IS NULL AND parent_span_id IS NULL`
   );
   for (const trace of pendingTraces) {
     const agentId = nameToId.get(trace.name);

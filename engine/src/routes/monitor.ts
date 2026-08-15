@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from "express";
+import { validateSeverityParam } from "../core/shared/severity.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { createPattern, getPattern, listPatternsWire, legacyPayloadToConditions } from "../core/monitor/patterns.js";
 import { builtInPatternsWire } from "../core/monitor/detect.js";
@@ -18,6 +19,22 @@ import { getOnlineEvaluatorRatings, getOnlineEvaluatorEvents, type MonitoringWin
 // Mounted at /api/v1/monitor, matching AgentX-Python's MonitorClient base URL
 // (agentx/monitor/client.py appends "/monitor" to AGENTX_API_BASE_URL if not already present).
 export const monitorRouter = Router();
+
+// Reject invalid severities once for every mutating route on this router (pattern / online
+// evaluator / custom evaluator create+update, signal triage edits) - the dashboard's pickers
+// already restrict to the four valid values, this closes the REST gap where any string produced
+// signals the severity chips and filters can't render.
+monitorRouter.use((req: Request, res: Response, next) => {
+  if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
+    const check = validateSeverityParam(req.body?.severity);
+    if (!check.ok) {
+      res.status(400).json({ error: check.error });
+      return;
+    }
+  }
+  next();
+});
+
 
 monitorRouter.post("/patterns", async (req: Request, res: Response) => {
   const body = req.body ?? {};

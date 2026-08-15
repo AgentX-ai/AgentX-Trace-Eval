@@ -13,6 +13,8 @@ import {
   computeRougeScore,
   computeVectorSimilarity as computeVectorSimilarityShared,
   DEFAULT_JUDGE_PROMPT as SHARED_DEFAULT_JUDGE_PROMPT,
+  DEFAULT_REFERENCE_FREE_JUDGE_PROMPT,
+  REFERENCE_FREE_EXPECTED_PLACEHOLDER,
   DEFAULT_EMBEDDING_MODEL,
   type JudgeCallResult,
 } from "@agentx/judge-core";
@@ -32,6 +34,7 @@ export const DEFAULT_JUDGE_MODEL = "gpt-5.6-luna";
 // Ported verbatim (via @agentx/judge-core) from the hosted SaaS's default judge instructions, so
 // a self-host run with no custom judgePrompt scores the same way.
 export const DEFAULT_JUDGE_PROMPT = SHARED_DEFAULT_JUDGE_PROMPT;
+export { DEFAULT_REFERENCE_FREE_JUDGE_PROMPT };
 
 // DB-stored key (Platform Settings, live-editable) wins over the .env var - checked fresh on
 // every call (a local sqlite read, cheap), but the actual SDK client is only reconstructed when
@@ -166,10 +169,20 @@ export async function scoreAgainstCriteria(
   criteria: JudgeCriteria,
   content: { input: string; output: string; expected?: string; judgeGuideline?: string }
 ): Promise<{ rating: number; justification: string }> {
-  const substitutedPrompt = applyJudgePromptTemplate(criteria.judgePrompt, {
+  // Mode-aware prompt selection. With no reference answer, the default prompt's Expected Results
+  // rules ("authoritative ground truth", "must match... low score") would anchor the judge on a
+  // benchmark that reads "N/A" - so the default swaps to the reference-free sibling, and a CUSTOM
+  // prompt (whose structure we can't rewrite) gets a substitution that defuses those rules
+  // in place. With a reference answer, behavior is exactly what it always was.
+  const hasExpected = !!content.expected;
+  const promptTemplate =
+    !hasExpected && criteria.judgePrompt === DEFAULT_JUDGE_PROMPT
+      ? DEFAULT_REFERENCE_FREE_JUDGE_PROMPT
+      : criteria.judgePrompt;
+  const substitutedPrompt = applyJudgePromptTemplate(promptTemplate, {
     input: content.input,
     output: content.output,
-    expected: content.expected || "N/A",
+    expected: content.expected || REFERENCE_FREE_EXPECTED_PLACEHOLDER,
   });
 
   const additionalContext = `

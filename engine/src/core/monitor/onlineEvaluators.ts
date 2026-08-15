@@ -31,6 +31,8 @@ export type CreateOnlineEvaluatorInput = {
   // monitorOnlineEvaluators.scope comment. idleSeconds only applies to session scope.
   scope?: string;
   idleSeconds?: number;
+  // Internal-only (core/monitor/builtinEvaluators.ts) - the public create route never passes it.
+  builtinKey?: string;
 };
 
 export type UpdateOnlineEvaluatorInput = Partial<CreateOnlineEvaluatorInput>;
@@ -48,6 +50,9 @@ export type OnlineEvaluatorRow = {
   severity: string;
   scope: string;
   idleSeconds: number;
+  // Non-null = system-owned built-in (core/monitor/builtinEvaluators.ts): API-immutable except
+  // `enabled`, never deletable.
+  builtinKey: string | null;
   createdAt: Date;
 };
 
@@ -64,6 +69,7 @@ function toWire(row: OnlineEvaluatorRow) {
     severity: row.severity,
     scope: row.scope,
     idleSeconds: row.idleSeconds,
+    builtinKey: row.builtinKey ?? undefined,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -98,6 +104,8 @@ export async function createOnlineEvaluator(db: Db, input: CreateOnlineEvaluator
     severity: input.severity ?? "medium",
     scope: input.scope === "session" ? "session" : "trace",
     idleSeconds: input.idleSeconds ?? 120,
+    // Only builtinEvaluators.ts creates system rows - the public create route never sets this.
+    builtinKey: input.builtinKey ?? null,
     createdAt: new Date(),
   };
   if (db.kind === "sqlite") {
@@ -143,18 +151,23 @@ export async function updateOnlineEvaluator(db: Db, id: string, input: UpdateOnl
   if (input.evaluationSettingsId !== undefined) {
     await assertEvaluationSettingsExists(db, input.evaluationSettingsId);
   }
+  // Built-ins are read-only except enabled: pausable, never editable away. Everything else in the
+  // patch is ignored rather than erroring, so a stale full-object PUT from an older dashboard
+  // can't corrupt the system row.
+  const patch: UpdateOnlineEvaluatorInput = existing.builtinKey ? { enabled: input.enabled } : input;
+  const input_ = patch;
   const updated: OnlineEvaluatorRow = {
     ...existing,
-    name: input.name ?? existing.name,
-    evaluationSettingsId: input.evaluationSettingsId ?? existing.evaluationSettingsId,
-    sampleRate: input.sampleRate ?? existing.sampleRate,
-    scopeMode: input.scopeMode ?? existing.scopeMode,
-    agentIds: input.agentIds !== undefined ? input.agentIds : existing.agentIds,
-    enabled: input.enabled ?? existing.enabled,
-    alertThreshold: input.alertThreshold !== undefined ? input.alertThreshold : existing.alertThreshold,
-    severity: input.severity ?? existing.severity,
-    scope: input.scope !== undefined ? (input.scope === "session" ? "session" : "trace") : existing.scope,
-    idleSeconds: input.idleSeconds ?? existing.idleSeconds,
+    name: input_.name ?? existing.name,
+    evaluationSettingsId: input_.evaluationSettingsId ?? existing.evaluationSettingsId,
+    sampleRate: input_.sampleRate ?? existing.sampleRate,
+    scopeMode: input_.scopeMode ?? existing.scopeMode,
+    agentIds: input_.agentIds !== undefined ? input_.agentIds : existing.agentIds,
+    enabled: input_.enabled ?? existing.enabled,
+    alertThreshold: input_.alertThreshold !== undefined ? input_.alertThreshold : existing.alertThreshold,
+    severity: input_.severity ?? existing.severity,
+    scope: input_.scope !== undefined ? (input_.scope === "session" ? "session" : "trace") : existing.scope,
+    idleSeconds: input_.idleSeconds ?? existing.idleSeconds,
   };
   const setValues = {
     name: updated.name,
@@ -180,6 +193,12 @@ export async function updateOnlineEvaluator(db: Db, id: string, input: UpdateOnl
 export async function deleteOnlineEvaluator(db: Db, id: string): Promise<boolean> {
   const existing = await getOnlineEvaluatorRow(db, id);
   if (!existing) {
+    return false;
+  }
+  // System rows can be paused (updateOnlineEvaluator's enabled path) but never deleted - the
+  // ensure pass would just recreate one with default settings, silently discarding the tuned
+  // rubric its config accumulated.
+  if (existing.builtinKey) {
     return false;
   }
   const deleteCond = and(eq(db.schema.monitorOnlineEvaluators.id, id), eq(db.schema.monitorOnlineEvaluators.projectId, db.projectId));

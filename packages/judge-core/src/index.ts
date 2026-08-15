@@ -190,6 +190,37 @@ export const DEFAULT_JUDGE_MODEL = "gpt-5.5";
 // capabilities/references, criteria, judge guideline, delegation notes) that isn't part of the
 // editable text since it's either bulky, structurally tied to a runtime condition, or specific to
 // a single scoring path.
+// Sibling of DEFAULT_JUDGE_PROMPT for scoring with NO reference answer (online evaluators on
+// live traffic, judge-tuning re-scores, any dataset case without expectedResults). The default
+// prompt's center of gravity is its Expected Results rules ("authoritative ground truth",
+// "Dates and Numbers Must Match... low score") - substituting "N/A" into that frame anchors the
+// judge on a benchmark that doesn't exist. This variant anchors on the evaluation criteria
+// instead, which are the only legitimate rubric in reference-free mode.
+export const DEFAULT_REFERENCE_FREE_JUDGE_PROMPT = `You are an expert AI evaluator. Score the following agent response on its own merits against the evaluation criteria provided with this request. There is NO reference answer for this evaluation - do not expect one and do not penalize its absence.
+
+**User Query:** {input}
+
+**Agent Response:**
+{output}
+
+Please provide:
+1. A rating from 0-10 (where 0 fails the criteria completely, 5 partially meets them, and 10 fully meets them)
+2. A detailed justification explaining your rating
+
+**LANGUAGE:** Provide your justification (and any text in your response) in the same language(s) as the User Query above.
+
+CRITICAL EVALUATION RULES:
+- The Criteria Are the Rubric: judge only against the acceptance, rejection, and evaluation criteria provided below. They define what "good" means for this evaluation.
+- Judge What Is Actually There: assess the response's accuracy, completeness, and usefulness for the user's query as written, using your expertise where the criteria are silent.
+- Rejection Criteria Are Hard Failures: a response that violates any rejection criterion scores low (0-3) regardless of how polished or friendly it reads.
+- Substance Over Style: a pleasant tone cannot compensate for failing to address the user's actual need.`;
+
+// The substitution used when a CUSTOM judge prompt embeds {expected} but the evaluation has no
+// reference answer - the prompt's structure can't be rewritten, so the substitution text itself
+// defuses any "compare against the expected results" instructions around it.
+export const REFERENCE_FREE_EXPECTED_PLACEHOLDER =
+  "(none - this is reference-free scoring; grade against the evaluation criteria alone and do not penalize the absence of a reference answer)";
+
 export const DEFAULT_JUDGE_PROMPT = `You are an expert AI evaluator. Please evaluate the following agent response against the expected results.
 
 **User Query:** {input}

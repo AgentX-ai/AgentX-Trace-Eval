@@ -2,13 +2,22 @@ import type { Db } from "../../storage/db.js";
 import { getDb, withProjectId } from "../../storage/db.js";
 import { listProjectRows } from "../project/projects.js";
 import { listSessions } from "./sessions.js";
-import { listSessionScores, insertSessionScore, buildSessionTranscript, type SpanWire } from "./sessionScores.js";
+import {
+  listSessionScores,
+  insertSessionScore,
+  buildSessionTranscript,
+  type SpanWire,
+  type SessionFinding,
+} from "./sessionScores.js";
 import { listOnlineEvaluatorRows, type OnlineEvaluatorRow } from "./onlineEvaluators.js";
 import { getEvaluationSettingsRow } from "../evaluate/evaluationSettings.js";
 import { listSessionSpans } from "../trace/ingest.js";
 import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { matchesAgentScope, passesSampleRate } from "./routing.js";
 import { upsertSignal } from "./signals.js";
+import { recordEvent } from "./events.js";
+import { acquireSweepLease } from "../shared/sweepLease.js";
+import { SESSION_BASELINE_KEY } from "./builtinEvaluators.js";
 
 // The idle-session sweep: session-scoped Online Evaluators' only trigger. Sessions have no end
 // event, so "when do we judge a conversation?" is answered the same way Braintrust's trace/group
@@ -28,14 +37,50 @@ const MAX_JUDGED_PER_SWEEP = 5;
 // How far back the sweep looks for candidate sessions - anything older was either already scored
 // or has been idle so long that scoring it now answers no live monitoring question.
 const CANDIDATE_WINDOW = "24h" as const;
+// Every session judge returns structured FINDINGS alongside the score: per-step citations with a
+// short category tag - what the session detail's judge rail renders and uses to flag turns.
+const FINDINGS_SCHEMA_PROP = {
+  findings: {
+    type: "array",
+    maxItems: 6,
+    description:
+      "Concrete failures against the criteria, cited to the numbered step where each occurred. Empty when the session passes cleanly.",
+    items: {
+      type: "object",
+      properties: {
+        stepIndex: { type: "number", description: "Index (from the numbered list) of the step this finding is about" },
+        text: { type: "string", description: "One sentence describing exactly what went wrong at that step" },
+        tag: { type: "string", description: "1-3 word category, e.g. 'Contradiction', 'Lost context', 'Tool misuse', 'Off-task'" },
+      },
+      required: ["stepIndex", "text", "tag"],
+    },
+  },
+};
 
 const SESSION_SCORE_SCHEMA = {
   type: "object",
   properties: {
     rating: { type: "number", description: "0-10 rating for the whole session against the criteria" },
     justification: { type: "string", description: "What the session did well or where it failed the criteria" },
+    ...FINDINGS_SCHEMA_PROP,
   },
-  required: ["rating", "justification"],
+  required: ["rating", "justification", "findings"],
+};
+
+// The Session Baseline Judge additionally localizes WHERE the conversation first broke - the
+// drift pointer the old built-in coherence check had, kept through the merge into the evaluator
+// pipeline because it's what makes a baseline failure actionable in the session view.
+const SESSION_SCORE_WITH_DRIFT_SCHEMA = {
+  type: "object",
+  properties: {
+    ...SESSION_SCORE_SCHEMA.properties,
+    driftSpanIndex: {
+      type: ["number", "null"],
+      description:
+        "Index (from the numbered list) of the FIRST step where the session broke the criteria, or null if none",
+    },
+  },
+  required: ["rating", "justification", "findings", "driftSpanIndex"],
 };
 
 async function judgeSessionAgainstEvaluator(
@@ -43,7 +88,14 @@ async function judgeSessionAgainstEvaluator(
   sessionId: string,
   spanCount: number,
   evaluator: OnlineEvaluatorRow
-): Promise<{ rating: number | null; justification: string | null; judgeModel: string } | null> {
+): Promise<{
+  rating: number | null;
+  justification: string | null;
+  judgeModel: string;
+  anchorTraceId: string | null;
+  driftSpanId: string | null;
+  findings: SessionFinding[];
+} | null> {
   const settings = evaluator.evaluationSettingsId
     ? await getEvaluationSettingsRow(db, evaluator.evaluationSettingsId)
     : null;
@@ -55,7 +107,7 @@ async function judgeSessionAgainstEvaluator(
   if (spans.length === 0) {
     return null;
   }
-  const { transcript, elidedNote } = buildSessionTranscript(spans);
+  const { transcript, promptSpans, elidedNote } = buildSessionTranscript(spans);
   const judgeModel = settings.judgeModel ?? DEFAULT_JUDGE_MODEL;
 
   const criteriaBlock = [
@@ -74,20 +126,107 @@ Session:
 
 ${transcript}
 
-Rate the whole session 0-10 against the criteria (10 = fully meets them across the conversation).`;
+Rate the whole session 0-10 against the criteria (10 = fully meets them across the conversation). Cite each concrete failure as a finding against the numbered step where it occurred - specific and quotable, never a restatement of the overall rating.${
+    evaluator.builtinKey === SESSION_BASELINE_KEY
+      ? " If the session broke the criteria, identify the index of the FIRST step where it happened."
+      : ""
+  }`;
 
+  const withDrift = evaluator.builtinKey === SESSION_BASELINE_KEY;
   const result = await callJudgeJson({
     model: judgeModel,
-    jsonSchema: SESSION_SCORE_SCHEMA,
+    jsonSchema: withDrift ? SESSION_SCORE_WITH_DRIFT_SCHEMA : SESSION_SCORE_SCHEMA,
     userMessage,
-    maxTokens: 1200,
+    maxTokens: 1600,
   });
-  const payload = result.payload as { rating?: unknown; justification?: unknown } | null;
+  const payload = result.payload as {
+    rating?: unknown;
+    justification?: unknown;
+    driftSpanIndex?: unknown;
+    findings?: unknown;
+  } | null;
   const rating = typeof payload?.rating === "number" ? Math.max(0, Math.min(10, payload.rating)) : null;
   const justification = typeof payload?.justification === "string" ? payload.justification : null;
+  // Step-index citations -> real span ids, same elision rule as the drift pointer below: the id
+  // is only resolved when the transcript wasn't elided, but the finding TEXT is kept either way.
+  const findings: SessionFinding[] = (Array.isArray(payload?.findings) ? payload.findings : [])
+    .filter(
+      (f): f is { stepIndex: number; text: string; tag: string } =>
+        !!f &&
+        typeof f === "object" &&
+        typeof (f as { stepIndex?: unknown }).stepIndex === "number" &&
+        typeof (f as { text?: unknown }).text === "string" &&
+        typeof (f as { tag?: unknown }).tag === "string"
+    )
+    .slice(0, 6)
+    .map(f => ({
+      spanIndex: f.stepIndex,
+      spanId:
+        !elidedNote && Number.isInteger(f.stepIndex) && f.stepIndex >= 0 && f.stepIndex < promptSpans.length
+          ? promptSpans[f.stepIndex]!._id
+          : null,
+      text: f.text,
+      tag: f.tag.slice(0, 40),
+    }));
+  // Excerpt-index -> real span id, only trustworthy when nothing was elided (with elision the
+  // ambiguity isn't worth a wrong span highlight) - same rule the old coherence check applied.
+  const driftIndex =
+    withDrift && typeof payload?.driftSpanIndex === "number" && Number.isInteger(payload.driftSpanIndex)
+      ? payload.driftSpanIndex
+      : null;
+  const driftSpanId =
+    driftIndex !== null && !elidedNote && driftIndex >= 0 && driftIndex < promptSpans.length
+      ? promptSpans[driftIndex]!._id
+      : null;
+  // The session's LAST root trace (spans arrive chronologically sorted from listSessionSpans) -
+  // the monitor_events dual-write anchors the session verdict there so trace-keyed ground truth
+  // (outcome reports, end-user votes, triage corrections on that final exchange) can join it in
+  // calibration and tuning. Fallback: last span of any kind (OTel sessions whose roots folded).
+  const roots = spans.filter(s => !s.parentSpanId);
+  const anchorTraceId = (roots.length > 0 ? roots[roots.length - 1] : spans[spans.length - 1])?._id ?? null;
   // spanCount recorded via insertSessionScore by the caller; returned shape kept minimal.
   void spanCount;
-  return { rating, justification, judgeModel };
+  return { rating, justification, judgeModel, anchorTraceId, driftSpanId, findings };
+}
+
+// The per-session "Re-run now" button's path (POST /sessions/:id/coherence-check, route name
+// kept for wire compat): one on-demand Session Baseline Judge verdict, same judging + score
+// shape as the sweep's automatic runs. Deliberately ignores `enabled` - an explicit human click
+// on a paused built-in should still work, matching how paused patterns still dry-run.
+export async function runSessionBaselineCheck(db: Db, sessionId: string) {
+  const evaluator = (await listOnlineEvaluatorRows(db)).find(e => e.builtinKey === SESSION_BASELINE_KEY);
+  if (!evaluator) {
+    return null;
+  }
+  return runSessionEvaluatorCheck(db, sessionId, evaluator.id);
+}
+
+// On-demand verdict from ANY session-scoped evaluator (the session detail's per-judge "Re-run"
+// button) - same judging + score shape as the sweep's automatic runs, `enabled` deliberately
+// ignored for an explicit human click.
+export async function runSessionEvaluatorCheck(db: Db, sessionId: string, evaluatorId: string) {
+  const evaluator = (await listOnlineEvaluatorRows(db)).find(e => e.id === evaluatorId && e.scope === "session");
+  if (!evaluator) {
+    return null;
+  }
+  const spans = await listSessionSpans(db, sessionId);
+  if (spans.length === 0) {
+    return null;
+  }
+  const verdict = await judgeSessionAgainstEvaluator(db, sessionId, spans.length, evaluator);
+  if (!verdict) {
+    return null;
+  }
+  return insertSessionScore(db, {
+    sessionId,
+    kind: `online-eval:${evaluator.id}`,
+    rating: verdict.rating,
+    justification: verdict.justification,
+    driftSpanId: verdict.driftSpanId,
+    findings: verdict.findings,
+    spanCount: spans.length,
+    judgeModel: verdict.judgeModel,
+  });
 }
 
 // One pass over every project: find idle, unscored (or grown-since-scored) multi-turn sessions
@@ -102,6 +241,9 @@ export async function sweepSessionsOnce(): Promise<{ judged: number }> {
     if (judged >= MAX_JUDGED_PER_SWEEP) break;
     const db = withProjectId(baseDb, project.id);
 
+    // The Session Baseline Judge (builtinEvaluators.ts) is just one of these rows now - its
+    // enabled toggle replaced the old project-level coherence switch, and pausing it stops the
+    // baseline judging like pausing any evaluator.
     const evaluators = (await listOnlineEvaluatorRows(db)).filter(e => e.enabled && e.scope === "session");
     if (evaluators.length === 0) continue;
 
@@ -136,10 +278,13 @@ export async function sweepSessionsOnce(): Promise<{ judged: number }> {
             kind,
             rating: verdict.rating,
             justification: verdict.justification,
+            driftSpanId: verdict.driftSpanId,
+            findings: verdict.findings,
             spanCount: session.spanCount,
             judgeModel: verdict.judgeModel,
           });
 
+          let signalId: string | null = null;
           if (
             evaluator.alertThreshold !== null &&
             verdict.rating !== null &&
@@ -147,9 +292,10 @@ export async function sweepSessionsOnce(): Promise<{ judged: number }> {
           ) {
             // Same patternKey prefix as trace-scoped scoring, so the Signals list resolves the
             // evaluator's display name and "view" opens its dialog with zero new frontend
-            // plumbing. traceId deliberately null: the finding is about the conversation, and the
-            // summary names the session id for the Sessions view.
-            await upsertSignal(
+            // plumbing. traceId is the session's last root trace: the finding is about the whole
+            // conversation (the summary names the session id for the Sessions view), but anchoring
+            // the final exchange gives triage a real "view trace" jump instead of a dead end.
+            const signal = await upsertSignal(
               db,
               {
                 type: "online_evaluator_low_session_score",
@@ -159,8 +305,31 @@ export async function sweepSessionsOnce(): Promise<{ judged: number }> {
                 patternKey: `online-eval:${evaluator.id}`,
                 rootCause: evaluator.name,
               },
-              { agentId: session.agentId, traceId: null }
+              { agentId: session.agentId, traceId: verdict.anchorTraceId }
             );
+            signalId = signal._id;
+          }
+
+          // Dual-write into monitor_events: before this, session verdicts lived only in
+          // session_scores, invisible to everything keyed on evaluator events - the ratings
+          // dialog, calibration, judge tuning, and per-evaluator trend queries all select on
+          // onlineEvaluatorId. The distinct type keeps session rows tellable apart from
+          // per-trace "online_eval_score" rows; sessionId is the real subject and traceId is
+          // just the anchor (see judgeSessionAgainstEvaluator's comment).
+          if (verdict.rating !== null) {
+            await recordEvent(db, {
+              signalId,
+              patternKey: `online-eval:${evaluator.id}`,
+              type: "online_eval_session_score",
+              severity: "low",
+              polarity: "score",
+              agentId: session.agentId,
+              traceId: verdict.anchorTraceId,
+              onlineEvaluatorId: evaluator.id,
+              rating: verdict.rating,
+              justification: verdict.justification,
+              sessionId: session.sessionId,
+            });
           }
         } catch (err) {
           // Isolated per session+evaluator, same posture as every other detector loop - one
@@ -188,7 +357,12 @@ export function startSessionSweep(): void {
   sweepTimer = setInterval(() => {
     if (sweeping) return; // a slow judge round must not stack a second concurrent sweep
     sweeping = true;
-    sweepSessionsOnce()
+    // The lease is the cross-REPLICA version of the `sweeping` flag above: N engines sharing one
+    // database elect one sweeper per tick instead of all judging the same idle sessions. TTL
+    // covers a worst-case round (MAX_JUDGED_PER_SWEEP slow judge calls) so a crashed holder's
+    // lease times out on its own. The manual /session-sweep/run route bypasses this on purpose.
+    acquireSweepLease(getDb(), "session-sweep", 5 * 60_000)
+      .then(acquired => (acquired ? sweepSessionsOnce() : null))
       .catch(err => console.error("Session sweep failed:", err instanceof Error ? err.message : err))
       .finally(() => {
         sweeping = false;

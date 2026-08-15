@@ -14,6 +14,7 @@ export const projects = pgTable("projects", {
   redactionMode: text("redaction_mode").notNull().default("standard"),
   latencyThresholdMs: integer("latency_threshold_ms").notNull().default(20000),
   topicsEnabled: boolean("topics_enabled").notNull().default(false),
+  coherenceSweepEnabled: boolean("coherence_sweep_enabled").notNull().default(true),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
 });
 
@@ -285,6 +286,7 @@ export const monitorEvents = pgTable("monitor_events", {
   matched: boolean("matched"),
   // See schema.sqlite.ts's monitorEvents for the full comment.
   score: doublePrecision("score"),
+  sessionId: text("session_id"),
   projectId: text("project_id"),
 });
 
@@ -315,6 +317,7 @@ export const monitorOnlineEvaluators = pgTable("monitor_online_evaluators", {
   severity: text("severity").notNull().default("medium"),
   scope: text("scope").notNull().default("trace"),
   idleSeconds: integer("idle_seconds").notNull().default(120),
+  builtinKey: text("builtin_key"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
   projectId: text("project_id"),
 });
@@ -400,6 +403,13 @@ export const gateResults = pgTable("gate_results", {
   projectId: text("project_id"),
 });
 
+// See schema.sqlite.ts's sweepLeases for the full comment.
+export const sweepLeases = pgTable("sweep_leases", {
+  name: text("name").primaryKey(),
+  holder: text("holder").notNull(),
+  expiresAt: timestamp("expires_at", { mode: "date" }).notNull(),
+});
+
 // See schema.sqlite.ts's sessionScores for the full comment.
 export const sessionScores = pgTable("session_scores", {
   id: text("id").primaryKey(),
@@ -408,6 +418,7 @@ export const sessionScores = pgTable("session_scores", {
   rating: doublePrecision("rating"),
   justification: text("justification"),
   driftSpanId: text("drift_span_id"),
+  findings: jsonb("findings"),
   spanCount: integer("span_count").notNull(),
   judgeModel: text("judge_model").notNull(),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),

@@ -30,9 +30,9 @@ import { getTopicsTrend, getTopIntents, getIssueBreakdown, getTopicsMap } from "
 import { getJudgeCalibration } from "../core/monitor/outcomeCalibration.js";
 import { getEvaluatorCalibration, proposeJudgeTuning, validateJudgeTuning } from "../core/monitor/judgeTuning.js";
 import { getModelComparison } from "../core/monitor/modelComparison.js";
-import { runSessionCoherenceCheck, listSessionScores } from "../core/monitor/sessionScores.js";
+import { listSessionScores } from "../core/monitor/sessionScores.js";
 import { listSessions } from "../core/monitor/sessions.js";
-import { sweepSessionsOnce } from "../core/monitor/sessionSweep.js";
+import { sweepSessionsOnce, runSessionBaselineCheck, runSessionEvaluatorCheck } from "../core/monitor/sessionSweep.js";
 import { getCostTrend } from "../core/monitor/cost.js";
 import { listDatasets, createDataset, updateDataset } from "../core/evaluate/datasets.js";
 import {
@@ -67,6 +67,7 @@ import {
   updateMonitoringDefaults,
 } from "../core/project/projects.js";
 import { maskSecret } from "../core/shared/maskSecret.js";
+import { validateSeverityParam } from "../core/shared/severity.js";
 
 // Mounted at /api/v1/agent-monitoring - the paths AgentX-web-front's dashboard actually calls
 // (src/data/apiPaths.ts's getMonitoring*/*MonitoringProfile/*MonitoringPattern), a different
@@ -82,6 +83,22 @@ import { maskSecret } from "../core/shared/maskSecret.js";
 // only for now). Still out of scope: the autotune/"Improve" proposal system, tied to AgentX's
 // native agent config-branching, which self-host doesn't have. See README's Status section.
 export const agentMonitoringDashboardRouter = Router();
+
+// Reject invalid severities once for every mutating route on this router (pattern / online
+// evaluator / custom evaluator create+update, signal triage edits) - the dashboard's pickers
+// already restrict to the four valid values, this closes the REST gap where any string produced
+// signals the severity chips and filters can't render.
+agentMonitoringDashboardRouter.use((req: Request, res: Response, next) => {
+  if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
+    const check = validateSeverityParam(req.body?.severity);
+    if (!check.ok) {
+      res.status(400).json({ error: check.error });
+      return;
+    }
+  }
+  next();
+});
+
 
 agentMonitoringDashboardRouter.get("/signals", async (req: Request, res: Response) => {
   const { severity, status, agentId, polarity, limit } = req.query;
@@ -282,22 +299,41 @@ agentMonitoringDashboardRouter.get("/model-comparison", async (req: Request, res
   res.status(200).json(await getModelComparison(scopedDb(req), parseWindow(req)));
 });
 
-// Session-level coherence (core/monitor/sessionScores.ts) - one real judge call over the whole
-// assembled session, on demand from the trace detail's span-tree panel. 502 for a judge failure
-// (missing key, provider outage) with the underlying message, same convention as the
-// suggest-human-feedback route above.
+// On-demand Session Baseline Judge run (core/monitor/sessionSweep.ts's runSessionBaselineCheck):
+// one real judge call over the whole assembled session against the built-in evaluator's config
+// (rubric lives there, not in code). Route path kept from the old hardcoded coherence check for
+// wire compat. 502 for a judge failure (missing key, provider outage) with the underlying
+// message, same convention as the suggest-human-feedback route above.
 agentMonitoringDashboardRouter.post("/sessions/:sessionId/coherence-check", async (req: Request, res: Response) => {
   try {
-    const score = await runSessionCoherenceCheck(scopedDb(req), req.params.sessionId!);
+    const score = await runSessionBaselineCheck(scopedDb(req), req.params.sessionId!);
     if (!score) {
-      res.status(404).json({ error: "Session not found or has no spans" });
+      res.status(404).json({ error: "Session not found, has no spans, or the Session Baseline Judge is missing" });
       return;
     }
     res.status(201).json({ score });
   } catch (err) {
-    res.status(502).json({ error: err instanceof Error ? err.message : "Coherence check failed" });
+    res.status(502).json({ error: err instanceof Error ? err.message : "Baseline check failed" });
   }
 });
+
+// Per-evaluator on-demand session judging (the session detail's per-judge "Re-run" button) -
+// generalizes /coherence-check above to any session-scoped evaluator.
+agentMonitoringDashboardRouter.post(
+  "/sessions/:sessionId/judge/:evaluatorId",
+  async (req: Request, res: Response) => {
+    try {
+      const score = await runSessionEvaluatorCheck(scopedDb(req), req.params.sessionId!, req.params.evaluatorId!);
+      if (!score) {
+        res.status(404).json({ error: "Session not found, has no spans, or no such session-scoped evaluator" });
+        return;
+      }
+      res.status(201).json({ score });
+    } catch (err) {
+      res.status(502).json({ error: err instanceof Error ? err.message : "Session judging failed" });
+    }
+  }
+);
 
 agentMonitoringDashboardRouter.get("/sessions/:sessionId/scores", async (req: Request, res: Response) => {
   res.status(200).json({ scores: await listSessionScores(scopedDb(req), req.params.sessionId!) });
@@ -496,6 +532,7 @@ agentMonitoringDashboardRouter.post(
           acceptanceCriteria: body.acceptanceCriteria,
           rejectionCriteria: body.rejectionCriteria,
           evaluationCriteria: body.evaluationCriteria,
+          judgePrompt: typeof body.judgePrompt === "string" ? body.judgePrompt : undefined,
         },
         { window: body.window === "24h" || body.window === "30d" ? body.window : "7d" }
       );
@@ -533,6 +570,9 @@ agentMonitoringDashboardRouter.post(
       acceptanceCriteria: body.acceptanceCriteria,
       rejectionCriteria: body.rejectionCriteria,
       evaluationCriteria: body.evaluationCriteria,
+      // Only when the tuning proposal actually revised the prompt - an absent field leaves the
+      // config's prompt untouched, so criteria-only tunes keep their old publish behavior.
+      ...(typeof body.judgePrompt === "string" && body.judgePrompt.trim() ? { judgePrompt: body.judgePrompt } : {}),
     });
     if (!updated) {
       res.status(404).json({ error: "Evaluator config not found" });
@@ -998,6 +1038,7 @@ agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: 
     redactionMode?: string;
     latencyThresholdMs?: number;
     topicsEnabled?: boolean;
+    coherenceSweepEnabled?: boolean;
   } = {};
   if (typeof body.coverageMode === "string") patch.coverageMode = body.coverageMode;
   if (typeof body.sampleRate === "number") patch.sampleRate = body.sampleRate;
@@ -1005,6 +1046,7 @@ agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: 
   if (typeof body.redactionMode === "string") patch.redactionMode = body.redactionMode;
   if (typeof body.latencyThresholdMs === "number") patch.latencyThresholdMs = body.latencyThresholdMs;
   if (typeof body.topicsEnabled === "boolean") patch.topicsEnabled = body.topicsEnabled;
+  if (typeof body.coherenceSweepEnabled === "boolean") patch.coherenceSweepEnabled = body.coherenceSweepEnabled;
   const monitoringDefaults = await updateMonitoringDefaults(scopedDb(req), patch);
   res.status(200).json({ monitoringDefaults });
 });

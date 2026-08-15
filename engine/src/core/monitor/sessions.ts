@@ -2,6 +2,8 @@ import { and, eq, gte, isNotNull, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import type { MonitoringWindow } from "./events.js";
 import { getAgentNamesById } from "./agents.js";
+import { listOnlineEvaluatorRows } from "./onlineEvaluators.js";
+import { SESSION_BASELINE_KEY } from "./builtinEvaluators.js";
 
 // The Sessions surface under Observe: one row per conversation (traces sharing a session_id),
 // the level Live Traces deliberately doesn't show (one row = one interaction there). Turn count
@@ -47,11 +49,22 @@ export type SessionSummary = {
   turnCount: number;
   spanCount: number;
   errorCount: number;
+  // Active time: the sum of ROOT spans' recorded latencies. The wall-clock span (lastAt-firstAt)
+  // is NOT a duration - a conversation resumed days later would read as days long.
+  totalLatencyMs: number;
   firstAt: string;
   lastAt: string;
-  // Latest coherence snapshot, null until someone (or a future background sweep) has run one.
-  coherenceRating: number | null;
-  coherenceCheckedAt: string | null;
+  // The Judge Score column: the LOWEST latest-per-evaluator verdict among session evaluators
+  // that are currently ENABLED and actually scored this session (baseline included; legacy
+  // "coherence" rows count as the baseline's). Worst-wins because a session that any enabled
+  // quality bar rates poorly deserves attention regardless of how the others rate it. Null until
+  // any enabled judge has run; judgeName says which judge gave the low score.
+  judgeRating: number | null;
+  judgeName: string | null;
+  judgeCheckedAt: string | null;
+  // Every enabled judge's latest verdict for this session, worst-first - the table's per-judge
+  // score bars. judgeRating/judgeName above are always this list's first entry (or null).
+  judges: { name: string; rating: number }[];
 };
 
 export type SessionsResponse = {
@@ -77,6 +90,7 @@ export async function listSessions(db: Db, window: MonitoringWindow): Promise<Se
     turnCount: number;
     spanCount: number;
     errorCount: number;
+    totalLatencyMs: number;
     firstAt: Date;
     lastAt: Date;
   };
@@ -86,28 +100,40 @@ export async function listSessions(db: Db, window: MonitoringWindow): Promise<Se
     const at = row.startedAt ?? row.createdAt;
     let bucket = buckets.get(row.sessionId);
     if (!bucket) {
-      bucket = { agentId: row.agentId, turnCount: 0, spanCount: 0, errorCount: 0, firstAt: at, lastAt: at };
+      bucket = { agentId: null, turnCount: 0, spanCount: 0, errorCount: 0, totalLatencyMs: 0, firstAt: at, lastAt: at };
       buckets.set(row.sessionId, bucket);
     }
     bucket.spanCount++;
     if (!row.parentSpanId) {
       bucket.turnCount++;
+      bucket.totalLatencyMs += row.latencyMs ?? 0;
+      // The session's agent comes from ROOT spans only - same rule Live Traces applies, so the two
+      // tables' AGENT columns always agree. A child span's name is a step label ("LLM Call 1"),
+      // and rows arrive in arbitrary select order, so first-row-wins over all spans showed step
+      // labels as the session's agent whenever a child happened to iterate first.
+      bucket.agentId = bucket.agentId ?? row.agentId;
     }
     if (row.error) {
       bucket.errorCount++;
     }
-    bucket.agentId = bucket.agentId ?? row.agentId;
     if (at < bucket.firstAt) bucket.firstAt = at;
     if (at > bucket.lastAt) bucket.lastAt = at;
   }
 
-  // Latest coherence snapshot per session, one batched fetch for exactly the sessions on screen.
+  // Judge Score per session: latest verdict PER evaluator, then the lowest among the ones whose
+  // evaluator is currently enabled - one batched fetch for exactly the sessions on screen.
   const sessionIds = [...buckets.keys()];
-  const latestCoherence = new Map<string, SessionScoreRow>();
+  // session -> evaluatorId -> its latest score row
+  const latestPerJudge = new Map<string, Map<string, SessionScoreRow>>();
+  const evaluatorsById = new Map<string, { name: string; enabled: boolean }>();
+  let baselineId: string | null = null;
   if (sessionIds.length > 0) {
+    for (const evaluator of await listOnlineEvaluatorRows(db)) {
+      evaluatorsById.set(evaluator.id, { name: evaluator.name, enabled: evaluator.enabled });
+      if (evaluator.builtinKey === SESSION_BASELINE_KEY) baselineId = evaluator.id;
+    }
     const scoreCond = and(
       inArray(db.schema.sessionScores.sessionId, sessionIds),
-      eq(db.schema.sessionScores.kind, "coherence"),
       eq(db.schema.sessionScores.projectId, db.projectId)
     );
     const scores = (
@@ -116,9 +142,18 @@ export async function listSessions(db: Db, window: MonitoringWindow): Promise<Se
         : await db.db.select().from(db.schema.sessionScores).where(scoreCond)
     ) as SessionScoreRow[];
     for (const score of scores) {
-      const existing = latestCoherence.get(score.sessionId);
+      // Legacy "coherence" rows (pre-baseline-judge) count as the baseline's own.
+      const evaluatorId =
+        score.kind === "coherence" ? baselineId : score.kind.startsWith("online-eval:") ? score.kind.slice("online-eval:".length) : null;
+      if (!evaluatorId) continue;
+      let perJudge = latestPerJudge.get(score.sessionId);
+      if (!perJudge) {
+        perJudge = new Map();
+        latestPerJudge.set(score.sessionId, perJudge);
+      }
+      const existing = perJudge.get(evaluatorId);
       if (!existing || score.createdAt > existing.createdAt) {
-        latestCoherence.set(score.sessionId, score);
+        perJudge.set(evaluatorId, score);
       }
     }
   }
@@ -126,7 +161,16 @@ export async function listSessions(db: Db, window: MonitoringWindow): Promise<Se
   const agentNames = await getAgentNamesById(db, [...buckets.values()].map(b => b.agentId));
 
   const sessions: SessionSummary[] = [...buckets.entries()].map(([sessionId, bucket]) => {
-    const coherence = latestCoherence.get(sessionId) ?? null;
+    const judges: { name: string; rating: number; at: Date }[] = [];
+    for (const [evaluatorId, score] of latestPerJudge.get(sessionId) ?? []) {
+      const evaluator = evaluatorsById.get(evaluatorId);
+      // Disabled or deleted judges don't gate anything - their old verdicts shouldn't rank a
+      // session either.
+      if (!evaluator?.enabled || score.rating == null) continue;
+      judges.push({ name: evaluator.name, rating: score.rating, at: score.createdAt });
+    }
+    judges.sort((a, b) => a.rating - b.rating);
+    const worst = judges[0] ?? null;
     return {
       sessionId,
       agentId: bucket.agentId,
@@ -134,10 +178,13 @@ export async function listSessions(db: Db, window: MonitoringWindow): Promise<Se
       turnCount: bucket.turnCount,
       spanCount: bucket.spanCount,
       errorCount: bucket.errorCount,
+      totalLatencyMs: bucket.totalLatencyMs,
       firstAt: bucket.firstAt.toISOString(),
       lastAt: bucket.lastAt.toISOString(),
-      coherenceRating: coherence?.rating ?? null,
-      coherenceCheckedAt: coherence?.createdAt.toISOString() ?? null,
+      judgeRating: worst?.rating ?? null,
+      judgeName: worst?.name ?? null,
+      judgeCheckedAt: worst?.at.toISOString() ?? null,
+      judges: judges.map(j => ({ name: j.name, rating: j.rating })),
     };
   });
 

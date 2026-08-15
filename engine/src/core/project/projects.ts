@@ -22,6 +22,7 @@ export type ProjectRow = {
   redactionMode: string;
   latencyThresholdMs: number;
   topicsEnabled: boolean;
+  coherenceSweepEnabled: boolean;
   createdAt: Date;
 };
 
@@ -38,6 +39,9 @@ export type MonitoringDefaults = {
   // Topics classification opt-in - project-level as of the migration described in
   // schema.sqlite.ts's projects.topicsEnabled comment (formerly per-agent on monitor_profiles).
   topicsEnabled: boolean;
+  // Idle-session coherence sweep opt-OUT (default on) - see schema.sqlite.ts's
+  // projects.coherenceSweepEnabled comment.
+  coherenceSweepEnabled: boolean;
 };
 
 function toMonitoringDefaultsWire(row: ProjectRow): MonitoringDefaults {
@@ -48,6 +52,7 @@ function toMonitoringDefaultsWire(row: ProjectRow): MonitoringDefaults {
     redactionMode: row.redactionMode,
     latencyThresholdMs: row.latencyThresholdMs,
     topicsEnabled: row.topicsEnabled,
+    coherenceSweepEnabled: row.coherenceSweepEnabled,
   };
 }
 
@@ -67,6 +72,7 @@ export async function createProject(db: Db, name: string) {
     redactionMode: "standard",
     latencyThresholdMs: 20000,
     topicsEnabled: false,
+    coherenceSweepEnabled: true,
     createdAt: new Date(),
   };
   if (db.kind === "sqlite") {
@@ -166,6 +172,7 @@ export async function updateMonitoringDefaults(db: Db, patch: UpdateMonitoringDe
     redactionMode: patch.redactionMode ?? existing.redactionMode,
     latencyThresholdMs: patch.latencyThresholdMs ?? existing.latencyThresholdMs,
     topicsEnabled: patch.topicsEnabled ?? existing.topicsEnabled,
+    coherenceSweepEnabled: patch.coherenceSweepEnabled ?? existing.coherenceSweepEnabled,
   };
   const cond = eq(db.schema.projects.id, db.projectId);
   if (db.kind === "sqlite") {

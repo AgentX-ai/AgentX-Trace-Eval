@@ -18,6 +18,7 @@ import {
   publishToolSchemaVersion,
 } from "./toolSchemas.js";
 import { validatePromptProposal, validateToolSchemaProposal } from "./proposalValidation.js";
+import { acquireSweepLease } from "../shared/sweepLease.js";
 
 // The Improvement Inbox's producer: a background sweep that notices when a registered prompt or
 // tool schema has accumulated enough fresh failure evidence, then does the expensive thinking on
@@ -306,7 +307,11 @@ export function startImprovementSweep(): void {
   sweepTimer = setInterval(() => {
     if (sweeping) return; // proposal + validation rounds are slow; never stack two sweeps
     sweeping = true;
-    sweepImprovementsOnce()
+    // Cross-replica guard (see core/shared/sweepLease.ts): one elected sweeper per tick when
+    // several engines share a database. TTL sized for a full proposal+validation round. The
+    // manual /improve/inbox/sweep/run route bypasses this on purpose.
+    acquireSweepLease(getDb(), "improvement-sweep", 15 * 60_000)
+      .then(acquired => (acquired ? sweepImprovementsOnce() : null))
       .catch(err => console.error("Improvement sweep failed:", err instanceof Error ? err.message : err))
       .finally(() => {
         sweeping = false;

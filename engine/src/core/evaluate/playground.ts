@@ -43,7 +43,9 @@ export function extractPlaygroundTools(body: Record<string, unknown>): Playgroun
 
 const TOOL_CALL_TIMEOUT_MS = 8000;
 
-async function callPlaygroundTool(tools: PlaygroundTool[], name: string, args: Record<string, unknown>): Promise<unknown> {
+// Exported for the conversation simulator (simulation.ts), which runs the agent side of each
+// turn exactly like a Playground run - same schema-only simulation, same endpoint contract.
+export async function callPlaygroundTool(tools: PlaygroundTool[], name: string, args: Record<string, unknown>): Promise<unknown> {
   const tool = tools.find(t => t.name === name);
   if (!tool) {
     throw new Error(`No endpoint configured for tool "${name}"`);

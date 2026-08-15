@@ -11,8 +11,9 @@ import { feedbackRouter } from "./routes/feedback.js";
 import { agentMonitoringDashboardRouter } from "./routes/agentMonitoringDashboard.js";
 import { evaluateDashboardRouter } from "./routes/evaluateDashboard.js";
 import { otlpRouter } from "./routes/otlp.js";
-import { initDb, closeDb, getDb } from "./storage/db.js";
-import { getDefaultProject, createProject, listProjectsWire } from "./core/project/projects.js";
+import { initDb, closeDb, getDb, withProjectId } from "./storage/db.js";
+import { getDefaultProject, createProject, listProjectsWire, listProjectRows } from "./core/project/projects.js";
+import { ensureSessionBaselineJudge } from "./core/monitor/builtinEvaluators.js";
 import { findWebIndexHtml } from "./web.js";
 import { startSessionSweep } from "./core/monitor/sessionSweep.js";
 import { startImprovementSweep } from "./core/evaluate/improvementSweep.js";
@@ -117,6 +118,8 @@ async function main() {
       return;
     }
     const project = await createProject(getDb(), body.name.trim());
+    // Every project ships with its system evaluators from birth (Session Baseline Judge et al).
+    await ensureSessionBaselineJudge(withProjectId(getDb(), project._id));
     res.status(201).json({ project });
   });
 
@@ -156,6 +159,12 @@ async function main() {
   }
 
   const server = await listenWithRetry(app, PORT);
+  // System evaluators, ensured per existing project before the sweeps start (a new project gets
+  // its own at creation in POST /projects above). Idempotent - a fast no-op on every boot after
+  // the first.
+  for (const project of await listProjectRows(getDb())) {
+    await ensureSessionBaselineJudge(withProjectId(getDb(), project.id));
+  }
   // Idle-session sweep for session-scoped Online Evaluators (core/monitor/sessionSweep.ts) -
   // unref'd interval, so it never blocks shutdown. AGENTX_SESSION_SWEEP=false disables.
   startSessionSweep();

@@ -65,7 +65,8 @@ import {
   listUnregisteredTools,
   deleteToolSchema,
 } from "../core/evaluate/toolSchemas.js";
-import { runPlayground, extractPlaygroundTools } from "../core/evaluate/playground.js";
+import { runPlayground, extractPlaygroundTools, callPlaygroundTool } from "../core/evaluate/playground.js";
+import { runConversationSimulation } from "../core/evaluate/simulation.js";
 import {
   createPlaygroundRun,
   updatePlaygroundRunResults,
@@ -502,6 +503,53 @@ evaluateDashboardRouter.post("/playground/run", async (req: Request, res: Respon
     maxTokens: typeof body.maxTokens === "number" ? body.maxTokens : undefined,
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
   });
+  res.status(200).json(result);
+});
+
+// Conversation simulation (core/evaluate/simulation.ts): a simulated user (persona + goal)
+// converses with the Playground's current prompt/model/tools for up to maxTurns; each turn is
+// recorded through the real ingest path under one sim-<id> session unless record=false. Bounded
+// and synchronous (turn cap + per-call timeouts), same "compute and return" posture as
+// /playground/run above.
+evaluateDashboardRouter.post("/playground/simulate", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.model !== "string" || !body.model.trim()) {
+    res.status(400).json({ error: "model is required" });
+    return;
+  }
+  if (typeof body.persona !== "string" || !body.persona.trim()) {
+    res.status(400).json({ error: "persona is required" });
+    return;
+  }
+  if (typeof body.goal !== "string" || !body.goal.trim()) {
+    res.status(400).json({ error: "goal is required" });
+    return;
+  }
+  if (!Array.isArray(body.messages)) {
+    res.status(400).json({ error: "messages must be an array" });
+    return;
+  }
+  const result = await runConversationSimulation(
+    scopedDb(req),
+    {
+      model: body.model,
+      messages: body.messages,
+      persona: body.persona,
+      goal: body.goal,
+      maxTurns: typeof body.maxTurns === "number" ? body.maxTurns : undefined,
+      userModel: typeof body.userModel === "string" ? body.userModel : undefined,
+      tools: extractPlaygroundTools(body),
+      evaluationSettingsId:
+        typeof body.evaluationSettingsId === "string" && body.evaluationSettingsId.trim()
+          ? body.evaluationSettingsId
+          : undefined,
+      agentName: typeof body.agentName === "string" ? body.agentName : undefined,
+      record: body.record !== false,
+      maxTokens: typeof body.maxTokens === "number" ? body.maxTokens : undefined,
+      temperature: typeof body.temperature === "number" ? body.temperature : undefined,
+    },
+    callPlaygroundTool
+  );
   res.status(200).json(result);
 });
 

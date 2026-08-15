@@ -4,6 +4,8 @@ import type { Db } from "../../storage/db.js";
 import { getEvaluationSettingsRow, type EvaluationSettingsRow } from "./evaluationSettings.js";
 import type { SimilarityConfig } from "./datasets.js";
 import { runCodeScorer, type CodeScorerConfig, type CodeScorerResult } from "./codeScorer.js";
+import { extractWebhookUrls, notifyWebhooks } from "../monitor/webhooks.js";
+import { listProfileRows } from "../monitor/profiles.js";
 import {
   scoreAgainstCriteria,
   generateSmokeTestVariants,
@@ -675,6 +677,25 @@ export async function recordGateResult(db: Db, gate: RunGateResult, caller: stri
     await db.db.insert(db.schema.gateResults).values(row);
   } else {
     await db.db.insert(db.schema.gateResults).values(row);
+  }
+
+  // A recorded FAIL pages the same webhook channels live-monitoring signals already use - a CI
+  // gate blocking a merge is exactly the kind of event someone wants in Slack, and only recorded
+  // results alert (record=false preview runs stay silent). Gates aren't agent-scoped, so this
+  // notifies the union of every agent profile's webhook targets in the project, fire-and-forget.
+  if (!gate.passed) {
+    const failing = gate.checks.filter(c => !c.passed);
+    const urls = [
+      ...new Set((await listProfileRows(db)).flatMap(profile => extractWebhookUrls(profile.channels))),
+    ];
+    notifyWebhooks(urls, {
+      summary: `CI gate FAILED for run ${gate.runId}${caller ? ` (${caller})` : ""}: ${
+        failing.map(c => c.detail).join("; ") || "no checks passed"
+      }`,
+      severity: "high",
+      patternKey: `ci-gate:${gate.datasetId}`,
+      agentId: null,
+    });
   }
 }
 

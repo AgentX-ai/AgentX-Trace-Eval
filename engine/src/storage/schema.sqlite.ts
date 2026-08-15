@@ -31,6 +31,12 @@ export const projects = sqliteTable("projects", {
   // reads it for behavior anymore; a one-way boot-time backfill (storage/db.ts) copies any
   // enabled profile up to its project once, then clears the profile flags.
   topicsEnabled: integer("topics_enabled", { mode: "boolean" }).notNull().default(false),
+  // Idle-session coherence sweep opt-OUT (default on): the built-in whole-session consistency
+  // check (core/monitor/sessionScores.ts's runSessionCoherenceCheck) runs automatically from the
+  // idle-session sweep for qualifying sessions; the dashboard's per-session button stays as the
+  // manual re-run. Default true unlike topicsEnabled: coherence is bounded by the sweep's own
+  // per-tick judge budget, so on-by-default doesn't risk unbounded spend.
+  coherenceSweepEnabled: integer("coherence_sweep_enabled", { mode: "boolean" }).notNull().default(true),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
 
@@ -412,6 +418,11 @@ export const monitorEvents = sqliteTable("monitor_events", {
   // never drives the matched/hit decision, just recorded for visibility. Not reused for
   // onlineEvaluatorId rows (see EventRow's own comment in core/monitor/events.ts).
   score: real("score"),
+  // Set only for session-scoped online-evaluator rows (core/monitor/sessionSweep.ts's dual-write)
+  // - the verdict is about a whole conversation, and traceId is just the session's last root
+  // trace used as an anchor so trace-keyed ground truth (outcomes, user votes) can join. Trace-
+  // scoped rows leave this null.
+  sessionId: text("session_id"),
   projectId: text("project_id"),
 });
 
@@ -464,6 +475,11 @@ export const monitorOnlineEvaluators = sqliteTable("monitor_online_evaluators", 
   // mutually exclusive per evaluator: a session-scoped one never runs at ingest.
   scope: text("scope").notNull().default("trace"),
   idleSeconds: integer("idle_seconds").notNull().default(120),
+  // Non-null marks a system-owned built-in evaluator (core/monitor/builtinEvaluators.ts) - e.g.
+  // "session-baseline", the Session Baseline Judge every project gets. Read-only through the API
+  // except `enabled`, so the built-in can be paused but never edited away; its rubric lives in a
+  // real evaluator config (not code), so judge tuning works on it like any other evaluator.
+  builtinKey: text("builtin_key"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   projectId: text("project_id"),
 });
@@ -599,6 +615,15 @@ export const gateResults = sqliteTable("gate_results", {
   projectId: text("project_id"),
 });
 
+// One row per background sweep name (core/shared/sweepLease.ts): the multi-replica guard that
+// keeps N engine replicas sharing one database from each running the same sweep every tick.
+// Global on purpose - no project_id, a sweep iterates every project itself.
+export const sweepLeases = sqliteTable("sweep_leases", {
+  name: text("name").primaryKey(),
+  holder: text("holder").notNull(),
+  expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+});
+
 export const sessionScores = sqliteTable("session_scores", {
   id: text("id").primaryKey(),
   sessionId: text("session_id").notNull(),
@@ -606,6 +631,10 @@ export const sessionScores = sqliteTable("session_scores", {
   rating: real("rating"),
   justification: text("justification"),
   driftSpanId: text("drift_span_id"),
+  // Structured per-turn citations from the session judge ([{spanId, spanIndex, text, tag}]) -
+  // what the session detail's judge rail renders as FINDINGS and uses to flag cited turns.
+  // spanId null when the transcript was elided (index ambiguity, same rule as driftSpanId).
+  findings: text("findings", { mode: "json" }),
   // How many spans the session had when this score was computed - a session has no clean "end"
   // event, so a score is a point-in-time snapshot; a later check on the same (now longer) session
   // appends a new row rather than mutating this one.

@@ -77,6 +77,10 @@ function toWire(
       id: e.id,
       agentId: e.agentId ? { _id: e.agentId, name: agentNamesById?.get(e.agentId) ?? e.agentId } : undefined,
       traceId: e.traceId ?? undefined,
+      // Non-null for session-scoped verdicts (sessionSweep's dual-write): the finding is about the
+      // whole conversation, traceId is just its last-root-trace anchor - the dashboard links the
+      // session instead of the trace when this is set.
+      sessionId: e.sessionId ?? undefined,
       seenAt: e.createdAt.toISOString(),
       query: occurrenceEvidence?.get(e.id)?.query,
       responsePreview: occurrenceEvidence?.get(e.id)?.responsePreview,

@@ -48,6 +48,10 @@ export type EventRow = {
   // evaluator rows entirely (this is not reused for onlineEvaluatorId rows, which have their own
   // `rating` field with different 0-10 semantics).
   score: number | null;
+  // Set only for session-scoped online-evaluator rows (core/monitor/sessionSweep.ts) - the
+  // verdict covers a whole conversation; traceId then holds the session's last root trace as an
+  // anchor for trace-keyed ground truth joins. Null for every per-trace row.
+  sessionId: string | null;
 };
 
 export async function recordEvent(
@@ -63,8 +67,11 @@ export async function recordEvent(
     | "customEvaluatorId"
     | "matched"
     | "score"
+    | "sessionId"
   > &
-    Partial<Pick<EventRow, "onlineEvaluatorId" | "rating" | "justification" | "customEvaluatorId" | "matched" | "score">>
+    Partial<
+      Pick<EventRow, "onlineEvaluatorId" | "rating" | "justification" | "customEvaluatorId" | "matched" | "score" | "sessionId">
+    >
 ): Promise<void> {
   const row: EventRow = {
     id: nanoid(),
@@ -76,6 +83,7 @@ export async function recordEvent(
     customEvaluatorId: null,
     matched: null,
     score: null,
+    sessionId: null,
     ...input,
   };
   if (db.kind === "sqlite") {
@@ -507,6 +515,9 @@ export type OnlineEvaluatorEvent = {
   createdAt: Date;
   input: string;
   output: string;
+  // Non-null when this verdict covers a whole session (sessionSweep's dual-write) - the dialog
+  // shows a session badge and links the session, not just the anchor trace.
+  sessionId: string | null;
 };
 
 // Individual scored traces for one online evaluator within a window, worst-rated first - the
@@ -541,6 +552,7 @@ export async function getOnlineEvaluatorEvents(
         createdAt: row.createdAt,
         input: extractText(trace.input),
         output: extractText(trace.output),
+        sessionId: row.sessionId,
       };
       return event;
     })

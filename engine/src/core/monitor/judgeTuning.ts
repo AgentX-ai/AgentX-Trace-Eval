@@ -1,11 +1,17 @@
-import { and, eq, gte, isNotNull } from "drizzle-orm";
+import { and, eq, gte } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { listEventsSince, windowConfig, type MonitoringWindow, type EventRow } from "./events.js";
 import { getOnlineEvaluatorRow } from "./onlineEvaluators.js";
 import { getEvaluationSettingsRow } from "../evaluate/evaluationSettings.js";
 import { getTraceRow } from "../trace/ingest.js";
 import { extractText } from "./events.js";
-import { scoreAgainstCriteria, callJudgeJson, DEFAULT_JUDGE_MODEL, DEFAULT_JUDGE_PROMPT } from "../evaluate/judge.js";
+import {
+  scoreAgainstCriteria,
+  callJudgeJson,
+  DEFAULT_JUDGE_MODEL,
+  DEFAULT_JUDGE_PROMPT,
+  DEFAULT_REFERENCE_FREE_JUDGE_PROMPT,
+} from "../evaluate/judge.js";
 
 // Judge tuning: measure one online evaluator's verdicts against recorded reality, then improve
 // the JUDGE'S OWN CRITERIA from the disagreements - the same evidence -> propose -> validate ->
@@ -65,6 +71,7 @@ export type EvaluatorCalibration = {
 
 type FeedbackCorrectionRow = {
   eventId: string | null;
+  metric: string;
   correctedScore: number | null;
   rationale: string;
   createdAt: Date;
@@ -88,16 +95,16 @@ export async function getEvaluatorCalibration(
       e.onlineEvaluatorId === evaluatorId && e.rating !== null && e.traceId !== null
   );
 
-  // Corrections keyed by the event the human was re-scoring; outcomes keyed by trace.
-  const feedbackCond = and(
-    eq(db.schema.monitorSignalFeedback.projectId, db.projectId),
-    isNotNull(db.schema.monitorSignalFeedback.correctedScore)
-  );
+  // Corrections keyed by the event the human was re-scoring; outcomes keyed by trace. Two shapes
+  // count as a correction: an explicit re-score (correctedScore set, from the Feedback dialog) and
+  // a "false-positive" resolution from the Signal inbox (no score - the human said "this flag was
+  // wrong", which is a verdict, not a number, so none is fabricated for it).
+  const feedbackCond = eq(db.schema.monitorSignalFeedback.projectId, db.projectId);
   const corrections = (
-    db.kind === "sqlite"
+    (db.kind === "sqlite"
       ? db.db.select().from(db.schema.monitorSignalFeedback).where(feedbackCond).all()
-      : await db.db.select().from(db.schema.monitorSignalFeedback).where(feedbackCond)
-  ) as FeedbackCorrectionRow[];
+      : await db.db.select().from(db.schema.monitorSignalFeedback).where(feedbackCond)) as FeedbackCorrectionRow[]
+  ).filter(c => c.correctedScore !== null || c.metric === "false-positive");
   const correctionByEvent = new Map<string, FeedbackCorrectionRow>();
   for (const c of corrections) {
     if (c.eventId) correctionByEvent.set(c.eventId, c); // later rows overwrite: latest correction wins
@@ -133,6 +140,16 @@ export async function getEvaluatorCalibration(
         isBad: correction.correctedScore < threshold,
         detail: correction.rationale,
         correctedScore: correction.correctedScore,
+        reportedBy: null,
+      };
+    } else if (correction && correction.metric === "false-positive") {
+      // A false-positive resolution asserts "the flagged response was actually fine" - a hard
+      // not-bad verdict with no re-score attached.
+      groundTruth = {
+        source: "correction",
+        isBad: false,
+        detail: correction.rationale,
+        correctedScore: null,
         reportedBy: null,
       };
     } else if (outcome) {
@@ -195,6 +212,7 @@ const TUNING_SCHEMA = {
     acceptanceCriteria: { type: "string" },
     rejectionCriteria: { type: "string" },
     evaluationCriteria: { type: "string" },
+    judgePrompt: { type: "string" },
     reasoning: { type: "string" },
     changes: {
       type: "array",
@@ -206,7 +224,7 @@ const TUNING_SCHEMA = {
       },
     },
   },
-  required: ["acceptanceCriteria", "rejectionCriteria", "evaluationCriteria", "reasoning", "changes"],
+  required: ["acceptanceCriteria", "rejectionCriteria", "evaluationCriteria", "judgePrompt", "reasoning", "changes"],
   additionalProperties: false,
 } as const;
 
@@ -214,12 +232,13 @@ export type JudgeTuningProposal = {
   acceptanceCriteria: string;
   rejectionCriteria: string;
   evaluationCriteria: string;
+  judgePrompt: string;
   reasoning: string;
   changes: { tag: string; text: string }[];
   judgeModel: string;
   evidenceCount: number;
   evaluationSettingsId: string;
-  current: { acceptanceCriteria: string; rejectionCriteria: string; evaluationCriteria: string };
+  current: { acceptanceCriteria: string; rejectionCriteria: string; evaluationCriteria: string; judgePrompt: string };
 };
 
 function describeCase(c: CalibrationCase, i: number): string {
@@ -255,23 +274,35 @@ export async function proposeJudgeTuning(
     return { error: "No disagreement cases to tune from - the judge currently agrees with all recorded ground truth" };
   }
 
+  // The RESOLVED prompt (empty config means the engine default) so the tuner sees what actually
+  // runs. Which default depends on scope: this evaluator judges live traffic with no reference
+  // answer, so the reference-free variant is the real runtime prompt.
+  const currentJudgePrompt = (settings.judgePrompt ?? "").trim() || DEFAULT_REFERENCE_FREE_JUDGE_PROMPT;
   const current = {
     acceptanceCriteria: settings.acceptanceCriteria ?? "",
     rejectionCriteria: settings.rejectionCriteria ?? "",
     evaluationCriteria: settings.evaluationCriteria ?? "",
+    judgePrompt: currentJudgePrompt,
   };
-  const userMessage = `You are tuning the grading criteria of an LLM-as-judge that continuously scores an AI agent's production responses 0-10 (below ${calibration.threshold} counts as "bad" and raises an alert). Its verdicts have been compared against recorded reality (human re-scores with rationales, real-world outcomes, end-user votes) and the cases below are where the judge got it WRONG.
+  const userMessage = `You are tuning an LLM-as-judge that continuously scores an AI agent's production responses 0-10 (below ${calibration.threshold} counts as "bad" and raises an alert). Its verdicts have been compared against recorded reality (human re-scores with rationales, real-world outcomes, end-user votes) and the cases below are where the judge got it WRONG.
+
+You may revise both its grading CRITERIA and its JUDGE PROMPT (the framing instructions the criteria are appended to).
 
 Current criteria:
 - Acceptance criteria (what makes a response good): ${current.acceptanceCriteria || "(empty)"}
 - Rejection criteria (what makes a response bad): ${current.rejectionCriteria || "(empty)"}
 - Evaluation criteria (what to weigh): ${current.evaluationCriteria || "(empty)"}
 
+Current judge prompt (a TEMPLATE - the literal placeholders {input} and {output} are substituted at scoring time and MUST both appear verbatim in any revision; {expected} is optional and is absent at runtime for this evaluator, so do not add instructions that depend on a reference answer):
+---
+${currentJudgePrompt}
+---
+
 Disagreement cases:
 
 ${cases.map(describeCase).join("\n\n")}
 
-Rewrite all three criteria so the judge would agree with the recorded ground truth on these cases. Human rationales are the strongest signal - encode the PRINCIPLE behind them, not the individual case. Do not overfit: no references to specific case content, and keep everything that was already working. Return the complete revised text for all three criteria (return the current text unchanged for any criterion that needs no change), a short reasoning, and an itemized change list tagged "added"/"tightened"/"removed".`;
+Rewrite so the judge would agree with the recorded ground truth on these cases. Human rationales are the strongest signal - encode the PRINCIPLE behind them, not the individual case. Do not overfit: no references to specific case content, and keep everything that was already working. Prefer criteria changes; only revise the judge prompt when the failure is in its framing (e.g. what it tells the judge to prioritize) rather than in the criteria. Return the complete revised text for all three criteria AND the judge prompt (return current text unchanged for anything that needs no change), a short reasoning, and an itemized change list tagged "added"/"tightened"/"removed".`;
 
   const judgeModel = opts.judgeModel || settings.judgeModel || DEFAULT_JUDGE_MODEL;
   const result = await callJudgeJson({ userMessage, model: judgeModel, jsonSchema: TUNING_SCHEMA, maxTokens: 3000 });
@@ -279,18 +310,43 @@ Rewrite all three criteria so the judge would agree with the recorded ground tru
     acceptanceCriteria?: unknown;
     rejectionCriteria?: unknown;
     evaluationCriteria?: unknown;
+    judgePrompt?: unknown;
     reasoning?: unknown;
     changes?: unknown;
   } | null;
   if (!payload || typeof payload.acceptanceCriteria !== "string") {
     throw new Error("The judge did not return a usable tuning proposal");
   }
+  const changes = Array.isArray(payload.changes) ? (payload.changes as { tag: string; text: string }[]) : [];
+
+  // Structural guard on the prompt template: a revision that drops {input} or {output} would
+  // break every future substitution, so it falls back to the current prompt (noted in the change
+  // list) rather than ever publishing a broken template. The criteria have no placeholders, so
+  // they need no equivalent check.
+  // Models sometimes echo the --- fences that delimit the current prompt in the meta-prompt;
+  // strip them so they never accrete into the stored template across tuning rounds.
+  const stripFences = (text: string) =>
+    text
+      .replace(/^\s*-{3,}\s*\n/, "")
+      .replace(/\n\s*-{3,}\s*$/, "")
+      .trim();
+  let proposedJudgePrompt =
+    typeof payload.judgePrompt === "string" && stripFences(payload.judgePrompt) ? stripFences(payload.judgePrompt) : currentJudgePrompt;
+  if (!proposedJudgePrompt.includes("{input}") || !proposedJudgePrompt.includes("{output}")) {
+    proposedJudgePrompt = currentJudgePrompt;
+    changes.push({
+      tag: "removed",
+      text: "A proposed judge-prompt revision was discarded because it dropped the required {input}/{output} placeholders - the current prompt is kept unchanged.",
+    });
+  }
+
   return {
     acceptanceCriteria: payload.acceptanceCriteria,
     rejectionCriteria: typeof payload.rejectionCriteria === "string" ? payload.rejectionCriteria : current.rejectionCriteria,
     evaluationCriteria: typeof payload.evaluationCriteria === "string" ? payload.evaluationCriteria : current.evaluationCriteria,
+    judgePrompt: proposedJudgePrompt,
     reasoning: typeof payload.reasoning === "string" ? payload.reasoning : "",
-    changes: Array.isArray(payload.changes) ? (payload.changes as { tag: string; text: string }[]) : [],
+    changes,
     judgeModel,
     evidenceCount: cases.length,
     evaluationSettingsId: evaluator.evaluationSettingsId,
@@ -324,7 +380,7 @@ export type JudgeTuningValidation = {
 export async function validateJudgeTuning(
   db: Db,
   evaluatorId: string,
-  candidate: { acceptanceCriteria: string; rejectionCriteria: string; evaluationCriteria: string },
+  candidate: { acceptanceCriteria: string; rejectionCriteria: string; evaluationCriteria: string; judgePrompt?: string },
   opts: { window?: MonitoringWindow } = {}
 ): Promise<JudgeTuningValidation | { error: string } | null> {
   const evaluator = await getOnlineEvaluatorRow(db, evaluatorId);
@@ -340,11 +396,15 @@ export async function validateJudgeTuning(
     return { error: "Nothing to validate against - no recorded disagreements in the window" };
   }
 
+  // Candidate judge prompt (when the proposal revised it) so validation measures the full
+  // candidate package - prompt + criteria together, exactly what a publish would ship. Falls
+  // back to the config's own prompt; scoreAgainstCriteria's reference-free selection still
+  // applies when that resolves to the default.
   const criteria = {
     acceptanceCriteria: candidate.acceptanceCriteria,
     rejectionCriteria: candidate.rejectionCriteria,
     evaluationCriteria: candidate.evaluationCriteria,
-    judgePrompt: (settings.judgePrompt ?? "").trim() || DEFAULT_JUDGE_PROMPT,
+    judgePrompt: candidate.judgePrompt?.trim() || (settings.judgePrompt ?? "").trim() || DEFAULT_JUDGE_PROMPT,
     judgeModel: settings.judgeModel ?? DEFAULT_JUDGE_MODEL,
   };
   const threshold = calibration.threshold;
