@@ -807,6 +807,9 @@ export const appSettings = sqliteTable("app_settings", {
   // AGENTX_AUTH_SECRET isn't set - persisted so sessions survive restarts (instance-wide, like
   // the rest of this table).
   authSecret: text("auth_secret"),
+  // One-time metric-pack backfill marker (core/evaluate/metricPack.ts): set after pre-existing
+  // projects get the built-in RAG/safety configs, so a user deleting one stays deleted.
+  metricPackSeededAt: integer("metric_pack_seeded_at", { mode: "timestamp_ms" }),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
 

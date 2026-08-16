@@ -214,7 +214,22 @@ export async function deleteOnlineEvaluator(db: Db, id: string): Promise<boolean
 // Scoring
 // ---------------------------------------------------------------------------
 
-type ScorableTrace = { input?: unknown; output?: unknown };
+// Retrieved chunks for {context}-referencing judge prompts (the RAG metric pack): read from the
+// trace's metadata.retrievalContext - a string, or an array of chunk strings joined with
+// separators. Anything else (absent, wrong shape) means "no context", which the prompt states
+// explicitly rather than judging against an empty string.
+function extractRetrievalContext(metadata: unknown): string | undefined {
+  if (!metadata || typeof metadata !== "object") return undefined;
+  const raw = (metadata as { retrievalContext?: unknown }).retrievalContext;
+  if (typeof raw === "string" && raw.trim()) return raw;
+  if (Array.isArray(raw)) {
+    const chunks = raw.filter((c): c is string => typeof c === "string" && c.trim().length > 0);
+    if (chunks.length > 0) return chunks.map((c, i) => `[chunk ${i + 1}] ${c}`).join("\n\n");
+  }
+  return undefined;
+}
+
+type ScorableTrace = { input?: unknown; output?: unknown; metadata?: unknown };
 
 // Called from both ingest paths (routes/ingest.ts, routes/otlp.ts) after every trace, independent
 // of that trace's own `monitor` flag - online evaluators are a server-side-configured feature (you
@@ -260,7 +275,7 @@ export async function runOnlineEvaluators(
           judgePrompt: (settings.judgePrompt ?? "").trim() || DEFAULT_JUDGE_PROMPT,
           judgeModel: settings.judgeModel ?? DEFAULT_JUDGE_MODEL,
         },
-        { input: inputText, output: outputText }
+        { input: inputText, output: outputText, context: extractRetrievalContext(trace.metadata) }
       ));
     } catch (err) {
       // One evaluator failing (missing API key, provider outage) must not skip every other

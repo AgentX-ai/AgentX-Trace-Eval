@@ -14,6 +14,7 @@ import { otlpRouter } from "./routes/otlp.js";
 import { initDb, closeDb, getDb, withProjectId } from "./storage/db.js";
 import { getDefaultProject, createProject, listProjectsWire, listProjectsWireForOrgs, listProjectRows } from "./core/project/projects.js";
 import { ensureSessionBaselineJudge } from "./core/monitor/builtinEvaluators.js";
+import { ensureMetricPackConfigs, metricPackBackfillDone, markMetricPackBackfillDone } from "./core/evaluate/metricPack.js";
 import {
   authMode,
   initAuth,
@@ -175,8 +176,9 @@ async function main() {
       return;
     }
     const project = await createProject(getDb(), body.name.trim(), organizationId);
-    // Every project ships with its system evaluators from birth (Session Baseline Judge et al).
+    // Every project ships with its system evaluators and metric-pack configs from birth.
     await ensureSessionBaselineJudge(withProjectId(getDb(), project._id));
+    await ensureMetricPackConfigs(withProjectId(getDb(), project._id));
     res.status(201).json({ project });
   });
 
@@ -234,6 +236,14 @@ async function main() {
   // the first.
   for (const project of await listProjectRows(getDb())) {
     await ensureSessionBaselineJudge(withProjectId(getDb(), project.id));
+  }
+  // One-time metric-pack backfill for projects that predate it - flag-gated so a user deleting a
+  // pack config afterwards stays deleted (new projects seed at creation instead).
+  if (!(await metricPackBackfillDone(getDb()))) {
+    for (const project of await listProjectRows(getDb())) {
+      await ensureMetricPackConfigs(withProjectId(getDb(), project.id));
+    }
+    await markMetricPackBackfillDone(getDb());
   }
   // Idle-session sweep for session-scoped Online Evaluators (core/monitor/sessionSweep.ts) -
   // unref'd interval, so it never blocks shutdown. AGENTX_SESSION_SWEEP=false disables.

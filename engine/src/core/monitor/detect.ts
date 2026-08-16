@@ -20,6 +20,7 @@ export const BUILT_IN_MONITOR_PATTERNS = [
   { key: "agent-trace-error", name: "Trace error", description: "Flags agent runs where the execution trace contains an error.", severity: "high", category: "Tooling" },
   { key: "agent-tool-failure", name: "Tool failure", description: "Flags failed tool calls recorded in the trace.", severity: "high", category: "Tooling" },
   { key: "empty-agent-response", name: "Empty agent response", description: "Flags responses where the agent returned no usable text.", severity: "medium", category: "Reliability" },
+  { key: "pii-in-response", name: "PII in response", description: "Flags responses containing what looks like personal data: email addresses, phone numbers, SSNs, or payment card numbers. Regex-based, zero LLM cost.", severity: "high", category: "Safety" },
   { key: "latency-regression", name: "Latency regression", description: "Flags responses that exceed the configured latency threshold.", severity: "medium", category: "Performance" },
 ] as const;
 
@@ -52,6 +53,19 @@ export function builtInPatternsWire() {
 // most severe first, first match wins. `failed` (an explicit runtime failure flag) has no SDK
 // wire equivalent, self-host traces only ever have `error`, so that check is folded into the
 // trace-error case here instead of kept separate.
+const PII_CHECKS: { kind: string; pattern: RegExp }[] = [
+  { kind: "an email address", pattern: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/ },
+  { kind: "a social security number", pattern: /\b\d{3}-\d{2}-\d{4}\b/ },
+  // Major-network prefixes only (Visa/Mastercard/Amex/Discover), optional space/dash grouping.
+  { kind: "a payment card number", pattern: /\b(?:4\d{3}|5[1-5]\d{2}|3[47]\d{2}|6011)[ -]?\d{4}[ -]?\d{4}[ -]?\d{1,4}\b/ },
+  // Separators required, so a bare 10-digit id never matches.
+  { kind: "a phone number", pattern: /(?:\+?1[ .-])?\(?\d{3}\)[ .-]?\d{3}[.-]\d{4}\b|\b\d{3}[.-]\d{3}[.-]\d{4}\b/ },
+];
+
+function detectPiiKinds(text: string): string[] {
+  return PII_CHECKS.filter(check => check.pattern.test(text)).map(check => check.kind);
+}
+
 function detectBuiltIn(trace: TraceLike & { latencyMs?: number | null }, latencyThresholdMs: number): DetectedSignal | null {
   // Checked BEFORE the generic trace-error case: when a tool call fails and its exception
   // escapes the agent loop, the SDK records both (success:false on the call AND the span's own
@@ -87,6 +101,21 @@ function detectBuiltIn(trace: TraceLike & { latencyMs?: number | null }, latency
       severity: "medium",
       summary: "The agent returned an empty response.",
       patternKey: "empty-agent-response",
+    };
+  }
+
+  // Regex-based PII sniff, zero LLM cost - deliberately conservative patterns (prefixed card
+  // numbers, separator-required phone numbers) so ids/timestamps in agent output don't
+  // false-positive. An agent legitimately ECHOING data the user just provided still flags:
+  // whether that's acceptable is a triage decision, not a detection one.
+  const piiKinds = detectPiiKinds(responseText);
+  if (piiKinds.length > 0) {
+    return {
+      type: "pii_in_response",
+      severity: "high",
+      summary: `The response contains what looks like ${piiKinds.join(" and ")}.`,
+      patternKey: "pii-in-response",
+      rootCause: piiKinds.join(", "),
     };
   }
 

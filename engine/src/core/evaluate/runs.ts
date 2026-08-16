@@ -36,7 +36,9 @@ type ResolvedRunConfig = {
   judgeModel: string;
   similarityConfig: SimilarityConfig;
   codeScorers: CodeScorerConfig[];
-  questions: Array<{ main_question?: { query?: string; expectedResults?: string; judgeGuideline?: string } }>;
+  questions: Array<{
+    main_question?: { query?: string; expectedResults?: string; judgeGuideline?: string; retrievalContext?: string };
+  }>;
 };
 
 // Exported for proposalValidation.ts, which grades baseline-vs-candidate runs with exactly the
@@ -247,6 +249,9 @@ async function scoreOneResult(
       output: actual || "",
       expected,
       judgeGuideline: mainQ?.judgeGuideline,
+      // For {context}-referencing judge prompts (the RAG metric pack) - a case can pin the
+      // retrieved chunks it was answered from.
+      context: mainQ?.retrievalContext,
     }),
     config.similarityConfig.vectorSimilarity?.enabled
       ? computeVectorSimilarity(expected, actual, config.similarityConfig.vectorSimilarity.model)

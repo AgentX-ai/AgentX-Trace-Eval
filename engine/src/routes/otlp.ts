@@ -134,7 +134,7 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
       });
     }
 
-    runOnlineEvaluators(db, { input: input.input, output: input.output }, { agentId, traceId }).catch(err => {
+    runOnlineEvaluators(db, { input: input.input, output: input.output, metadata: input.metadata }, { agentId, traceId }).catch(err => {
       console.error("Online evaluator scoring failed:", err instanceof Error ? err.message : err);
     });
 

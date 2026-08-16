@@ -67,6 +67,7 @@ import {
 } from "../core/evaluate/toolSchemas.js";
 import { runPlayground, extractPlaygroundTools, callPlaygroundTool } from "../core/evaluate/playground.js";
 import { runConversationSimulation } from "../core/evaluate/simulation.js";
+import { generateSyntheticCases } from "../core/evaluate/synthesize.js";
 import {
   createPlaygroundRun,
   updatePlaygroundRunResults,
@@ -504,6 +505,33 @@ evaluateDashboardRouter.post("/playground/run", async (req: Request, res: Respon
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
   });
   res.status(200).json(result);
+});
+
+// Synthetic golden-case generation (core/evaluate/synthesize.ts): paste a source document, get
+// grounded test cases back for review - compute-and-return, the dashboard appends kept cases via
+// the normal dataset update.
+evaluateDashboardRouter.post("/synthesize-cases", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.sourceText !== "string" || !body.sourceText.trim()) {
+    res.status(400).json({ error: "sourceText is required" });
+    return;
+  }
+  try {
+    const result = await generateSyntheticCases(scopedDb(req), {
+      sourceText: body.sourceText,
+      count: typeof body.count === "number" ? body.count : 5,
+      guidance: typeof body.guidance === "string" ? body.guidance : undefined,
+      // Optional: an existing dataset to few-shot style from (absent in create-dataset mode).
+      datasetId: typeof body.datasetId === "string" && body.datasetId ? body.datasetId : undefined,
+    });
+    if ("error" in result) {
+      res.status(422).json(result);
+      return;
+    }
+    res.status(200).json(result);
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : "Case generation failed" });
+  }
 });
 
 // Conversation simulation (core/evaluate/simulation.ts): a simulated user (persona + goal)

@@ -166,7 +166,7 @@ async function callOpenAIJson({
 // (chain of thought, capabilities/references, criteria, per-question judge guideline, delegation
 // notes) is still always appended by the caller after the substituted template, so a custom
 // prompt can never silently lose that context even if it doesn't reference these three variables.
-export const JUDGE_PROMPT_VARIABLES = ["input", "output", "expected"] as const;
+export const JUDGE_PROMPT_VARIABLES = ["input", "output", "expected", "context"] as const;
 export type JudgePromptVariable = (typeof JUDGE_PROMPT_VARIABLES)[number];
 
 // Substitutes {name} tokens in a judge prompt template with the given values. Unknown tokens (not

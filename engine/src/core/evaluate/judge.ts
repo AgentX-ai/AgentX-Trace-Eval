@@ -167,7 +167,7 @@ const SCORE_SCHEMA = {
 // than each having their own copy.
 export async function scoreAgainstCriteria(
   criteria: JudgeCriteria,
-  content: { input: string; output: string; expected?: string; judgeGuideline?: string }
+  content: { input: string; output: string; expected?: string; judgeGuideline?: string; context?: string }
 ): Promise<{ rating: number; justification: string }> {
   // Mode-aware prompt selection. With no reference answer, the default prompt's Expected Results
   // rules ("authoritative ground truth", "must match... low score") would anchor the judge on a
@@ -183,6 +183,9 @@ export async function scoreAgainstCriteria(
     input: content.input,
     output: content.output,
     expected: content.expected || REFERENCE_FREE_EXPECTED_PLACEHOLDER,
+    // RAG-style prompts (the built-in metric pack) reference {context}; every other template
+    // simply never mentions the token, so this is inert for them.
+    context: content.context || "(no retrieval context provided)",
   });
 
   const additionalContext = `

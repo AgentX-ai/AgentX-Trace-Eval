@@ -87,7 +87,7 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
   // feature (opt in by creating one, not by a per-call flag), see core/monitor/onlineEvaluators.ts.
   runOnlineEvaluators(
     scopedDb(req),
-    { input: parsed.data.input, output: parsed.data.output },
+    { input: parsed.data.input, output: parsed.data.output, metadata: parsed.data.metadata },
     { agentId, traceId }
   ).catch(err => {
     console.error("Online evaluator scoring failed:", err instanceof Error ? err.message : err);

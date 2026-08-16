@@ -13,6 +13,14 @@ describe("getProviderForModel", () => {
 });
 
 describe("applyJudgePromptTemplate", () => {
+  it("substitutes {context} for RAG-style prompts", () => {
+    const result = applyJudgePromptTemplate("Ctx: {context} Q: {input}", {
+      context: "chunk one\nchunk two",
+      input: "what is covered?",
+    });
+    expect(result).toBe("Ctx: chunk one\nchunk two Q: what is covered?");
+  });
+
   it("substitutes known variables", () => {
     const result = applyJudgePromptTemplate("Q: {input} A: {output} Expected: {expected}", {
       input: "2+2?",

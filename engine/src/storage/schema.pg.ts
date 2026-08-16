@@ -523,6 +523,7 @@ export const appSettings = pgTable("app_settings", {
   anthropicApiKey: text("anthropic_api_key"),
   geminiApiKey: text("gemini_api_key"),
   authSecret: text("auth_secret"),
+  metricPackSeededAt: timestamp("metric_pack_seeded_at", { mode: "date" }),
   updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
 });
 
