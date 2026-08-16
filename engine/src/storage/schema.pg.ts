@@ -15,6 +15,7 @@ export const projects = pgTable("projects", {
   latencyThresholdMs: integer("latency_threshold_ms").notNull().default(20000),
   topicsEnabled: boolean("topics_enabled").notNull().default(false),
   coherenceSweepEnabled: boolean("coherence_sweep_enabled").notNull().default(true),
+  organizationId: text("organization_id"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
 });
 
@@ -521,7 +522,84 @@ export const appSettings = pgTable("app_settings", {
   openaiApiKey: text("openai_api_key"),
   anthropicApiKey: text("anthropic_api_key"),
   geminiApiKey: text("gemini_api_key"),
+  authSecret: text("auth_secret"),
   updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
+});
+
+// See schema.sqlite.ts's auth block for the full comment (better-auth core + organization
+// plugin tables, auth_* model names).
+export const authUsers = pgTable("auth_user", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  emailVerified: boolean("email_verified").notNull().default(false),
+  image: text("image"),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
+});
+
+export const authSessions = pgTable("auth_session", {
+  id: text("id").primaryKey(),
+  expiresAt: timestamp("expires_at", { mode: "date" }).notNull(),
+  token: text("token").notNull().unique(),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  userId: text("user_id").notNull(),
+  activeOrganizationId: text("active_organization_id"),
+});
+
+export const authAccounts = pgTable("auth_account", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull(),
+  providerId: text("provider_id").notNull(),
+  userId: text("user_id").notNull(),
+  accessToken: text("access_token"),
+  refreshToken: text("refresh_token"),
+  idToken: text("id_token"),
+  accessTokenExpiresAt: timestamp("access_token_expires_at", { mode: "date" }),
+  refreshTokenExpiresAt: timestamp("refresh_token_expires_at", { mode: "date" }),
+  scope: text("scope"),
+  password: text("password"),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
+});
+
+export const authVerifications = pgTable("auth_verification", {
+  id: text("id").primaryKey(),
+  identifier: text("identifier").notNull(),
+  value: text("value").notNull(),
+  expiresAt: timestamp("expires_at", { mode: "date" }).notNull(),
+  createdAt: timestamp("created_at", { mode: "date" }),
+  updatedAt: timestamp("updated_at", { mode: "date" }),
+});
+
+export const authOrganizations = pgTable("auth_organization", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  slug: text("slug").unique(),
+  logo: text("logo"),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  metadata: text("metadata"),
+});
+
+export const authMembers = pgTable("auth_member", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull(),
+  userId: text("user_id").notNull(),
+  role: text("role").notNull().default("member"),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+});
+
+export const authInvitations = pgTable("auth_invitation", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull(),
+  email: text("email").notNull(),
+  role: text("role"),
+  status: text("status").notNull().default("pending"),
+  expiresAt: timestamp("expires_at", { mode: "date" }).notNull(),
+  inviterId: text("inviter_id").notNull(),
 });
 
 export type PgSchema = {

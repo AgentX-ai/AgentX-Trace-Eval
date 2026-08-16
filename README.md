@@ -111,9 +111,31 @@ Set these in the environment before starting `agentx-server`:
 | `AGENTX_MONITOR_CHILD_SPANS` | `false` | Set to `true` to also run Monitor against child spans of a traced call, not just top-level ones. |
 | `AGENTX_IMPROVEMENT_SWEEP` | `true` | Set to `false` to disable the background sweep that auto-generates and validates improvement proposals when failure evidence crosses a threshold (the Improvement Inbox). `POST /evaluate/improve/inbox/sweep/run` still triggers one manually. |
 | `AGENTX_SESSION_SWEEP` | `true` | Set to `false` to disable the background sweep that judges idle multi-turn sessions (session-scoped Online Evaluators). `POST /agent-monitoring/session-sweep/run` still triggers one manually. |
+| `AGENTX_AUTH` | `disabled` | Set to `enabled` to require dashboard sign-in (see "Dashboard authentication" below). The default keeps the zero-setup local posture. |
+| `AGENTX_AUTH_SECRET` | (auto-generated) | Session-signing secret for `AGENTX_AUTH=enabled`. Generated and persisted on first enabled boot if unset; set explicitly when running multiple replicas. |
+| `AGENTX_PUBLIC_URL` | - | The externally reachable base URL when running behind a proxy/domain with auth enabled (used for auth callbacks/cookies). |
+| `AGENTX_TRUSTED_ORIGINS` | - | Comma-separated extra origins allowed to make authenticated browser requests (e.g. a dev dashboard on another port). |
 
 Trace ingest and pattern matching on phrase/regex both work with no keys configured at all - only
 judge scoring and semantic pattern detection need a provider key.
+
+### Dashboard authentication
+
+By default there is no login: the engine trusts anything that can reach its port (one machine,
+one operator), and the dashboard bootstraps its API key automatically. That stays the default.
+
+`AGENTX_AUTH=enabled` turns on dashboard sign-in for shared deployments (a team server, or
+hosting the dashboard on the internet):
+
+- The first visit shows an owner-setup screen. The first account created becomes the owner of a
+  default organization and takes over every existing project on the instance. Later signups join
+  that organization as members.
+- Signing in is what grants the dashboard its project list (and each project's API key); the
+  unauthenticated bootstrap endpoint is disabled in this mode.
+- SDK ingest is unchanged in both modes: it authenticates with project API keys, never sessions.
+  Enabling or disabling auth never breaks a deployed integration.
+- Identity is standard [better-auth](https://better-auth.com) (email/password out of the box),
+  stored in the same database as everything else - works on both SQLite and Postgres.
 
 ## SDK & OpenTelemetry
 

@@ -12,8 +12,18 @@ import { agentMonitoringDashboardRouter } from "./routes/agentMonitoringDashboar
 import { evaluateDashboardRouter } from "./routes/evaluateDashboard.js";
 import { otlpRouter } from "./routes/otlp.js";
 import { initDb, closeDb, getDb, withProjectId } from "./storage/db.js";
-import { getDefaultProject, createProject, listProjectsWire, listProjectRows } from "./core/project/projects.js";
+import { getDefaultProject, createProject, listProjectsWire, listProjectsWireForOrgs, listProjectRows } from "./core/project/projects.js";
 import { ensureSessionBaselineJudge } from "./core/monitor/builtinEvaluators.js";
+import {
+  authMode,
+  initAuth,
+  getAuth,
+  getSessionUser,
+  getUserOrganizationIds,
+  needsSetup,
+  resolveAuthSecret,
+} from "./auth/betterAuth.js";
+import { toNodeHandler } from "better-auth/node";
 import { findWebIndexHtml } from "./web.js";
 import { startSessionSweep } from "./core/monitor/sessionSweep.js";
 import { startImprovementSweep } from "./core/evaluate/improvementSweep.js";
@@ -61,6 +71,31 @@ async function main() {
   await initDb();
 
   const app = express();
+
+  // Dashboard auth (core/auth/betterAuth.ts): AGENTX_AUTH=enabled turns on users/orgs/sessions;
+  // the default (disabled) keeps the zero-setup "reachable port = trusted" self-host posture with
+  // none of this initialized. The auth handler is mounted BEFORE express.json - better-auth reads
+  // the raw request body itself, and a pre-consumed stream breaks its sign-in/sign-up routes.
+  // /api/v1/auth/config stays OURS (registered first so the wildcard never swallows it) and
+  // exists in both modes: it's how the SPA decides between login, owner setup, and no-auth.
+  if (authMode() === "enabled") {
+    initAuth(getDb(), {
+      secret: await resolveAuthSecret(getDb()),
+      baseURL: process.env.AGENTX_PUBLIC_URL?.trim() || undefined,
+      trustedOrigins: process.env.AGENTX_TRUSTED_ORIGINS?.split(",").map(o => o.trim()).filter(Boolean),
+    });
+  }
+  app.get("/api/v1/auth/config", async (_req, res) => {
+    const mode = authMode();
+    res.status(200).json({
+      mode,
+      needsSetup: mode === "enabled" ? await needsSetup(getDb()) : false,
+    });
+  });
+  if (authMode() === "enabled") {
+    app.all("/api/v1/auth/*", toNodeHandler(getAuth()));
+  }
+
   app.use(express.json({ limit: "10mb" }));
 
   // Access log (method, path, status, duration) for every request. No morgan dependency here -
@@ -97,6 +132,12 @@ async function main() {
   // never lists or exposes every project's key, only the one a fresh/never-configured client
   // should bootstrap into.
   app.get("/api/v1/dev/bootstrap", async (_req, res) => {
+    // Enabled-auth mode has no anonymous key handout - that's the whole point of the mode. The
+    // dashboard gets keys via the session-guarded /projects route instead.
+    if (authMode() === "enabled") {
+      res.status(403).json({ error: "Disabled while AGENTX_AUTH=enabled - sign in and use /api/v1/projects" });
+      return;
+    }
     const defaultProject = await getDefaultProject(getDb());
     if (!defaultProject) {
       res.status(500).json({ error: "No default project - this shouldn't happen after initDb() has run" });
@@ -112,12 +153,28 @@ async function main() {
   // follow-up work. Returns the new project's key in full since the caller just created it and has
   // to learn it from somewhere.
   app.post("/api/v1/projects", async (req, res) => {
+    // Enabled-auth mode: creating a project requires a signed-in user, and the project is owned
+    // by their organization from birth.
+    let organizationId: string | null = null;
+    if (authMode() === "enabled") {
+      const user = await getSessionUser(req);
+      if (!user) {
+        res.status(401).json({ error: "Sign in to create a project" });
+        return;
+      }
+      const orgs = await getUserOrganizationIds(user.id);
+      if (orgs.length === 0) {
+        res.status(403).json({ error: "No organization membership" });
+        return;
+      }
+      organizationId = orgs[0] ?? null;
+    }
     const body = req.body ?? {};
     if (typeof body.name !== "string" || !body.name.trim()) {
       res.status(400).json({ error: "name is required" });
       return;
     }
-    const project = await createProject(getDb(), body.name.trim());
+    const project = await createProject(getDb(), body.name.trim(), organizationId);
     // Every project ships with its system evaluators from birth (Session Baseline Judge et al).
     await ensureSessionBaselineJudge(withProjectId(getDb(), project._id));
     res.status(201).json({ project });
@@ -127,7 +184,20 @@ async function main() {
   // unauthenticated posture as the two routes above, deliberately includes every project's own
   // apiKey so the switcher can hold each project's key up front and swap the x-api-key header on
   // switch, with no separate per-project auth handshake.
-  app.get("/api/v1/projects", async (_req, res) => {
+  app.get("/api/v1/projects", async (req, res) => {
+    // Enabled-auth mode: this route hands out project API keys, so it's the one the session
+    // strictly guards - keys are scoped to the caller's organizations. Disabled mode keeps the
+    // original unauthenticated listing.
+    if (authMode() === "enabled") {
+      const user = await getSessionUser(req);
+      if (!user) {
+        res.status(401).json({ error: "Sign in to list projects" });
+        return;
+      }
+      const projects = await listProjectsWireForOrgs(getDb(), await getUserOrganizationIds(user.id));
+      res.status(200).json({ projects });
+      return;
+    }
     const projects = await listProjectsWire(getDb());
     res.status(200).json({ projects });
   });

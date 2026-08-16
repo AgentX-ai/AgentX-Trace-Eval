@@ -23,6 +23,9 @@ export type ProjectRow = {
   latencyThresholdMs: number;
   topicsEnabled: boolean;
   coherenceSweepEnabled: boolean;
+  // Owning auth organization (AGENTX_AUTH=enabled mode) - null in disabled mode and for pre-auth
+  // rows until the first owner signup claims them (core/auth/betterAuth.ts's onUserCreated).
+  organizationId: string | null;
   createdAt: Date;
 };
 
@@ -60,7 +63,7 @@ function generateApiKey(): string {
   return `agtx_local_${randomBytes(24).toString("hex")}`;
 }
 
-export async function createProject(db: Db, name: string) {
+export async function createProject(db: Db, name: string, organizationId: string | null = null) {
   const row: ProjectRow = {
     id: nanoid(),
     name,
@@ -73,6 +76,7 @@ export async function createProject(db: Db, name: string) {
     latencyThresholdMs: 20000,
     topicsEnabled: false,
     coherenceSweepEnabled: true,
+    organizationId,
     createdAt: new Date(),
   };
   if (db.kind === "sqlite") {
@@ -147,6 +151,14 @@ export async function listProjectRows(db: Db): Promise<ProjectRow[]> {
 // already in hand, no separate per-project auth handshake needed.
 export async function listProjectsWire(db: Db) {
   return (await listProjectRows(db)).map(toWire);
+}
+
+// Enabled-auth mode's project listing: only the projects owned by the caller's organizations.
+// Unclaimed (orgless) rows are deliberately invisible here - they only exist before the first
+// owner signup, which claims them all.
+export async function listProjectsWireForOrgs(db: Db, organizationIds: string[]) {
+  const allowed = new Set(organizationIds);
+  return (await listProjectRows(db)).filter(row => row.organizationId && allowed.has(row.organizationId)).map(toWire);
 }
 
 // Unlike every other function in this file, these two operate on the *current, already-resolved*

@@ -744,6 +744,80 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       gemini_api_key TEXT,
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS auth_user (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      email_verified INTEGER NOT NULL DEFAULT 0,
+      image TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_session (
+      id TEXT PRIMARY KEY,
+      expires_at INTEGER NOT NULL,
+      token TEXT NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      ip_address TEXT,
+      user_agent TEXT,
+      user_id TEXT NOT NULL,
+      active_organization_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_account (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      access_token TEXT,
+      refresh_token TEXT,
+      id_token TEXT,
+      access_token_expires_at INTEGER,
+      refresh_token_expires_at INTEGER,
+      scope TEXT,
+      password TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_verification (
+      id TEXT PRIMARY KEY,
+      identifier TEXT NOT NULL,
+      value TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER,
+      updated_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_organization (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      slug TEXT UNIQUE,
+      logo TEXT,
+      created_at INTEGER NOT NULL,
+      metadata TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_member (
+      id TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member',
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_invitation (
+      id TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL,
+      email TEXT NOT NULL,
+      role TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      expires_at INTEGER NOT NULL,
+      inviter_id TEXT NOT NULL
+    );
   `);
 
   // Columns added after the tables above already shipped: CREATE TABLE IF NOT EXISTS doesn't
@@ -854,6 +928,8 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN idle_seconds INTEGER NOT NULL DEFAULT 120"],
     ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN builtin_key TEXT"],
     ["session_scores", "ALTER TABLE session_scores ADD COLUMN findings TEXT"],
+    ["projects", "ALTER TABLE projects ADD COLUMN organization_id TEXT"],
+    ["app_settings", "ALTER TABLE app_settings ADD COLUMN auth_secret TEXT"],
   ];
   for (const [, statement] of columnMigrations) {
     try {
@@ -1529,6 +1605,80 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       updated_at TIMESTAMP NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS auth_user (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      email_verified BOOLEAN NOT NULL DEFAULT false,
+      image TEXT,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_session (
+      id TEXT PRIMARY KEY,
+      expires_at TIMESTAMP NOT NULL,
+      token TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL,
+      ip_address TEXT,
+      user_agent TEXT,
+      user_id TEXT NOT NULL,
+      active_organization_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_account (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      access_token TEXT,
+      refresh_token TEXT,
+      id_token TEXT,
+      access_token_expires_at TIMESTAMP,
+      refresh_token_expires_at TIMESTAMP,
+      scope TEXT,
+      password TEXT,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_verification (
+      id TEXT PRIMARY KEY,
+      identifier TEXT NOT NULL,
+      value TEXT NOT NULL,
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP,
+      updated_at TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_organization (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      slug TEXT UNIQUE,
+      logo TEXT,
+      created_at TIMESTAMP NOT NULL,
+      metadata TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_member (
+      id TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member',
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_invitation (
+      id TEXT PRIMARY KEY,
+      organization_id TEXT NOT NULL,
+      email TEXT NOT NULL,
+      role TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      expires_at TIMESTAMP NOT NULL,
+      inviter_id TEXT NOT NULL
+    );
+
     -- Postgres supports IF NOT EXISTS on ADD COLUMN natively, unlike SQLite (see
     -- bootstrapSqlite's columnMigrations for the equivalent there), so pre-existing databases
     -- from before these columns existed can just re-run this same statement safely.
@@ -1618,6 +1768,8 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS idle_seconds INTEGER NOT NULL DEFAULT 120;
     ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS builtin_key TEXT;
     ALTER TABLE session_scores ADD COLUMN IF NOT EXISTS findings JSONB;
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS organization_id TEXT;
+    ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS auth_secret TEXT;
 
     -- One-way Topics migration, see bootstrapSqlite's equivalent for the full comment (copy any
     -- enabled per-agent flag up to the project once, then clear the profile flags so a later

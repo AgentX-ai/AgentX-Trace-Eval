@@ -37,6 +37,9 @@ export const projects = sqliteTable("projects", {
   // manual re-run. Default true unlike topicsEnabled: coherence is bounded by the sweep's own
   // per-tick judge budget, so on-by-default doesn't risk unbounded spend.
   coherenceSweepEnabled: integer("coherence_sweep_enabled", { mode: "boolean" }).notNull().default(true),
+  // Which auth organization owns this project (AGENTX_AUTH=enabled mode). Null in disabled mode
+  // and for pre-auth rows; the first owner signup claims all orgless projects.
+  organizationId: text("organization_id"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
 
@@ -800,7 +803,93 @@ export const appSettings = sqliteTable("app_settings", {
   openaiApiKey: text("openai_api_key"),
   anthropicApiKey: text("anthropic_api_key"),
   geminiApiKey: text("gemini_api_key"),
+  // Session-signing secret for AGENTX_AUTH=enabled mode, generated on first enabled boot when
+  // AGENTX_AUTH_SECRET isn't set - persisted so sessions survive restarts (instance-wide, like
+  // the rest of this table).
+  authSecret: text("auth_secret"),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+// --- Auth (AGENTX_AUTH=enabled mode; core/auth/betterAuth.ts) ---------------------------------
+// better-auth's tables (core + organization plugin), hand-written to the library's documented
+// shapes rather than CLI-generated, since this codebase's migrations are the bootstrap DDL in
+// storage/db.ts, not drizzle-kit. Model names are prefixed auth_* (via better-auth modelName
+// config) so "user" never collides with a Postgres reserved word and the auth surface is
+// instantly recognizable in the DB. No project_id columns: identity is instance-wide, it's what
+// GRANTS access to projects (via auth_organization -> projects.organization_id).
+export const authUsers = sqliteTable("auth_user", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  emailVerified: integer("email_verified", { mode: "boolean" }).notNull().default(false),
+  image: text("image"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export const authSessions = sqliteTable("auth_session", {
+  id: text("id").primaryKey(),
+  expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+  token: text("token").notNull().unique(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  userId: text("user_id").notNull(),
+  // Organization plugin: the org this session is acting as (null = default resolution).
+  activeOrganizationId: text("active_organization_id"),
+});
+
+export const authAccounts = sqliteTable("auth_account", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull(),
+  providerId: text("provider_id").notNull(),
+  userId: text("user_id").notNull(),
+  accessToken: text("access_token"),
+  refreshToken: text("refresh_token"),
+  idToken: text("id_token"),
+  accessTokenExpiresAt: integer("access_token_expires_at", { mode: "timestamp_ms" }),
+  refreshTokenExpiresAt: integer("refresh_token_expires_at", { mode: "timestamp_ms" }),
+  scope: text("scope"),
+  password: text("password"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export const authVerifications = sqliteTable("auth_verification", {
+  id: text("id").primaryKey(),
+  identifier: text("identifier").notNull(),
+  value: text("value").notNull(),
+  expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }),
+});
+
+export const authOrganizations = sqliteTable("auth_organization", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  slug: text("slug").unique(),
+  logo: text("logo"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  metadata: text("metadata"),
+});
+
+export const authMembers = sqliteTable("auth_member", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull(),
+  userId: text("user_id").notNull(),
+  role: text("role").notNull().default("member"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export const authInvitations = sqliteTable("auth_invitation", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull(),
+  email: text("email").notNull(),
+  role: text("role"),
+  status: text("status").notNull().default("pending"),
+  expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+  inviterId: text("inviter_id").notNull(),
 });
 
 export type SqliteSchema = {
