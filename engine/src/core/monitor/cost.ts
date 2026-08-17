@@ -1,6 +1,6 @@
 import { and, eq, gte } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
-import { listPortabilityModels, estimateCostUSD } from "../evaluate/models.js";
+import { listPortabilityModels, estimateCostUSD, normalizeModelId } from "../evaluate/models.js";
 import type { MonitoringWindow } from "./events.js";
 
 // Overview's "Total LLM cost" chart (Braintrust-style stacked bar, but stacked by model rather
@@ -71,6 +71,43 @@ export type CostTrendResponse = {
   totalCost: number;
 };
 
+// Models seen on token-bearing traces (last 30 days) with no catalog pricing, exact or
+// date-suffix-normalized - the Platform Settings pricing panel lists these with a one-click
+// "add pricing" prefill, so unpriced spend is visible instead of silently contributing $0 to the
+// cost chart. Grouped under the normalized id (one row covers all snapshots of a model).
+export type UnpricedModel = {
+  model: string;
+  traces: number;
+  inputTokens: number;
+  outputTokens: number;
+};
+
+export async function listUnpricedModels(db: Db): Promise<UnpricedModel[]> {
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const [rows, pricingModels] = await Promise.all([listCostTracesSince(db, since), listPortabilityModels(db)]);
+  const pricedIds = new Set(pricingModels.map(model => model.id));
+
+  const byModel = new Map<string, UnpricedModel>();
+  for (const row of rows) {
+    if (!row.model) {
+      continue;
+    }
+    if ((row.inputTokens ?? 0) + (row.outputTokens ?? 0) === 0) {
+      continue;
+    }
+    if (pricedIds.has(row.model) || pricedIds.has(normalizeModelId(row.model))) {
+      continue;
+    }
+    const key = normalizeModelId(row.model);
+    const entry = byModel.get(key) ?? { model: key, traces: 0, inputTokens: 0, outputTokens: 0 };
+    entry.traces++;
+    entry.inputTokens += row.inputTokens ?? 0;
+    entry.outputTokens += row.outputTokens ?? 0;
+    byModel.set(key, entry);
+  }
+  return Array.from(byModel.values()).sort((a, b) => b.traces - a.traces);
+}
+
 export async function getCostTrend(db: Db, window: MonitoringWindow): Promise<CostTrendResponse> {
   const { days, bucketHours } = windowConfig(window);
   const bucketMs = bucketHours * 60 * 60 * 1000;
@@ -91,7 +128,10 @@ export async function getCostTrend(db: Db, window: MonitoringWindow): Promise<Co
     if (!row.model) {
       continue;
     }
-    const pricing = pricingByModel.get(row.model);
+    // Exact catalog id first, then the date-suffix-normalized id - and the MATCHED id becomes the
+    // chart key, so "gpt-4o-mini" and "gpt-4o-mini-2024-07-18" merge into one stack segment.
+    const matchedId = pricingByModel.has(row.model) ? row.model : normalizeModelId(row.model);
+    const pricing = pricingByModel.get(matchedId);
     if (!pricing) {
       continue;
     }
@@ -104,8 +144,8 @@ export async function getCostTrend(db: Db, window: MonitoringWindow): Promise<Co
       continue;
     }
     const bucket = buckets[index]!;
-    bucket[row.model] = (bucket[row.model] ?? 0) + cost;
-    totalsByModel[row.model] = (totalsByModel[row.model] ?? 0) + cost;
+    bucket[matchedId] = (bucket[matchedId] ?? 0) + cost;
+    totalsByModel[matchedId] = (totalsByModel[matchedId] ?? 0) + cost;
     totalCost += cost;
   }
 

@@ -15,6 +15,7 @@ import { initDb, closeDb, getDb, withProjectId } from "./storage/db.js";
 import { getDefaultProject, createProject, listProjectsWire, listProjectsWireForOrgs, listProjectRows } from "./core/project/projects.js";
 import { ensureSessionBaselineJudge } from "./core/monitor/builtinEvaluators.js";
 import { ensureMetricPackConfigs, metricPackBackfillDone, markMetricPackBackfillDone } from "./core/evaluate/metricPack.js";
+import { finishMcpAuth } from "./core/evaluate/mcp.js";
 import {
   authMode,
   initAuth,
@@ -98,6 +99,31 @@ async function main() {
   }
 
   app.use(express.json({ limit: "10mb" }));
+
+  // Remote-MCP OAuth callback (core/evaluate/mcp.ts): the consent popup's redirect target.
+  // Unauthenticated by necessity - the MCP server's authorization server redirects the USER'S
+  // BROWSER here with only code+state; state is the engine-minted session id, and the session
+  // store (15-minute TTL, in-memory) is the actual authority on what the code can do.
+  app.get("/api/v1/mcp-oauth/callback", async (req, res) => {
+    const code = typeof req.query.code === "string" ? req.query.code : "";
+    const state = typeof req.query.state === "string" ? req.query.state : "";
+    const fail = (message: string) =>
+      res
+        .status(400)
+        .send(`<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;padding:40px"><h3>Authorization failed</h3><p>${message.replace(/</g, "&lt;")}</p><p>Close this window and try again.</p></body>`);
+    if (!code || !state) {
+      fail(typeof req.query.error_description === "string" ? req.query.error_description : "Missing code or state");
+      return;
+    }
+    const result = await finishMcpAuth(state, code);
+    if ("error" in result) {
+      fail(result.error);
+      return;
+    }
+    res
+      .status(200)
+      .send(`<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;padding:40px"><h3>Authorized</h3><p>You can close this window - the dashboard will continue automatically.</p><script>setTimeout(function(){window.close()},800)</script></body>`);
+  });
 
   // Access log (method, path, status, duration) for every request. No morgan dependency here -
   // engine/ compiles to a single Bun binary (see package.json's `compile` script), so this stays

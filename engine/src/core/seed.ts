@@ -75,7 +75,7 @@ async function seedExampleMonitorDataIfEmpty(db: Db): Promise<void> {
     await runMonitorCheck(
       db,
       { input: t.input, output: t.output, latencyMs: t.latencyMs },
-      { agentId: agent._id, traceId, requireEnabledProfile: true }
+      { agentId: agent._id, traceId }
     );
   }
 }

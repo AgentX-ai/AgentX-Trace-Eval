@@ -396,9 +396,44 @@ export async function getTrend(db: Db, window: MonitoringWindow): Promise<Monito
 export type MonitoringTopFailingResponse = {
   window: MonitoringWindow;
   agents: { agentId: string; name?: string; failingRuns: number; failureRate: number | null }[];
-  tools: { name: string; failures: number; failureRate: number | null }[];
+  tools: { name: string; failures: number; callCount: number; failureRate: number | null }[];
   patterns: { patternKey: string; name: string; count: number }[];
 };
+
+// Per-tool call volume and failure counts straight from the traces' recorded tool_calls arrays -
+// ground truth rather than the signal log. Counts EVERY recorded call under its tool name (so
+// MCP-registered tools are included like any other), where the signal path only flags the first
+// failed call of a trace and knows no denominator for a rate.
+async function listToolCallStatsSince(db: Db, since: Date): Promise<Map<string, { total: number; failures: number }>> {
+  const cond = and(gte(db.schema.traces.createdAt, since), eq(db.schema.traces.projectId, db.projectId));
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select({ toolCalls: db.schema.traces.toolCalls }).from(db.schema.traces).where(cond).all()
+      : await db.db.select({ toolCalls: db.schema.traces.toolCalls }).from(db.schema.traces).where(cond)
+  ) as { toolCalls: unknown }[];
+  const byTool = new Map<string, { total: number; failures: number }>();
+  for (const row of rows) {
+    if (!Array.isArray(row.toolCalls)) {
+      continue;
+    }
+    for (const call of row.toolCalls) {
+      if (!call || typeof call !== "object") {
+        continue;
+      }
+      const { name, success } = call as { name?: unknown; success?: unknown };
+      if (typeof name !== "string" || !name) {
+        continue;
+      }
+      const entry = byTool.get(name) ?? { total: 0, failures: 0 };
+      entry.total++;
+      if (success === false) {
+        entry.failures++;
+      }
+      byTool.set(name, entry);
+    }
+  }
+  return byTool;
+}
 
 export async function getTopFailing(db: Db, window: MonitoringWindow, limit = 10): Promise<MonitoringTopFailingResponse> {
   const { days } = windowConfig(window);
@@ -406,7 +441,6 @@ export async function getTopFailing(db: Db, window: MonitoringWindow, limit = 10
   const rows = await listEventsSince(db, since);
 
   const byAgent = new Map<string, { total: number; failing: number }>();
-  const byTool = new Map<string, number>();
   const byPattern = new Map<string, { patternKey: string; name: string; count: number }>();
 
   for (const row of rows) {
@@ -423,10 +457,6 @@ export async function getTopFailing(db: Db, window: MonitoringWindow, limit = 10
     }
     if (row.patternKey === "healthy-response" || row.polarity !== "failure") {
       continue;
-    }
-    if (row.patternKey.startsWith("agent-tool-failure")) {
-      const toolName = row.patternKey.split(":")[1] ?? "unknown";
-      byTool.set(toolName, (byTool.get(toolName) ?? 0) + 1);
     }
     const existing = byPattern.get(row.patternKey);
     if (existing) {
@@ -449,9 +479,16 @@ export async function getTopFailing(db: Db, window: MonitoringWindow, limit = 10
     .sort((a, b) => b.failingRuns - a.failingRuns)
     .slice(0, limit);
 
-  const tools = Array.from(byTool.entries())
-    .map(([name, failures]) => ({ name, failures, failureRate: null }))
-    .sort((a, b) => b.failures - a.failures)
+  const toolStats = await listToolCallStatsSince(db, since);
+  const tools = Array.from(toolStats.entries())
+    .map(([name, { total, failures }]) => ({
+      name,
+      failures,
+      callCount: total,
+      failureRate: total > 0 ? failures / total : null,
+    }))
+    .filter(t => t.failures > 0)
+    .sort((a, b) => b.failures - a.failures || (b.failureRate ?? 0) - (a.failureRate ?? 0))
     .slice(0, limit);
 
   const patterns = Array.from(byPattern.values())
@@ -562,6 +599,50 @@ export async function getOnlineEvaluatorEvents(
   // expect "worst 20 of totalCount" to add up against, matching what the window's real event count
   // actually is rather than silently under-counting to match resolved.length.
   return { events: resolved.filter((e): e is OnlineEvaluatorEvent => e !== null), totalCount: rows.length };
+}
+
+// Every online-evaluator verdict recorded for ONE trace, newest first - the trace dialog's
+// "Judge scores" section. Evaluator names are resolved so the dialog needs no second fetch.
+export type TraceEvaluationEntry = {
+  id: string;
+  evaluatorId: string;
+  evaluatorName: string;
+  rating: number;
+  justification: string | null;
+  createdAt: Date;
+};
+
+export async function listTraceEvaluations(db: Db, traceId: string): Promise<TraceEvaluationEntry[]> {
+  const cond = and(eq(db.schema.monitorEvents.traceId, traceId), eq(db.schema.monitorEvents.projectId, db.projectId));
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.monitorEvents).where(cond).all()
+      : await db.db.select().from(db.schema.monitorEvents).where(cond)
+  ) as EventRow[];
+  const scored = rows.filter(
+    (r): r is EventRow & { onlineEvaluatorId: string; rating: number } =>
+      r.onlineEvaluatorId !== null && r.rating !== null
+  );
+  scored.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+  const nameById = new Map<string, string>();
+  const evaluatorRows = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.monitorOnlineEvaluators).where(eq(db.schema.monitorOnlineEvaluators.projectId, db.projectId)).all()
+      : await db.db.select().from(db.schema.monitorOnlineEvaluators).where(eq(db.schema.monitorOnlineEvaluators.projectId, db.projectId))
+  ) as { id: string; name: string }[];
+  for (const evaluator of evaluatorRows) {
+    nameById.set(evaluator.id, evaluator.name);
+  }
+
+  return scored.map(row => ({
+    id: row.id,
+    evaluatorId: row.onlineEvaluatorId,
+    evaluatorName: nameById.get(row.onlineEvaluatorId) ?? row.onlineEvaluatorId,
+    rating: row.rating,
+    justification: row.justification,
+    createdAt: row.createdAt,
+  }));
 }
 
 export type CustomEvaluatorEvent = {

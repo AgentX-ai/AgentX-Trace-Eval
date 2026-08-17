@@ -24,6 +24,7 @@ import {
   getOnlineEvaluatorRatings,
   getOnlineEvaluatorEvents,
   getCustomEvaluatorEvents,
+  listTraceEvaluations,
   type MonitoringWindow,
 } from "../core/monitor/events.js";
 import { getTopicsTrend, getTopIntents, getIssueBreakdown, getTopicsMap } from "../core/monitor/topics.js";
@@ -32,8 +33,13 @@ import { getEvaluatorCalibration, proposeJudgeTuning, validateJudgeTuning } from
 import { getModelComparison } from "../core/monitor/modelComparison.js";
 import { listSessionScores } from "../core/monitor/sessionScores.js";
 import { listSessions } from "../core/monitor/sessions.js";
-import { sweepSessionsOnce, runSessionBaselineCheck, runSessionEvaluatorCheck } from "../core/monitor/sessionSweep.js";
-import { getCostTrend } from "../core/monitor/cost.js";
+import {
+  sweepSessionsOnce,
+  runSessionBaselineCheck,
+  runSessionEvaluatorCheck,
+  isSessionScoreFresh,
+} from "../core/monitor/sessionSweep.js";
+import { getCostTrend, listUnpricedModels } from "../core/monitor/cost.js";
 import { listDatasets, createDataset, updateDataset } from "../core/evaluate/datasets.js";
 import {
   createOnlineEvaluator,
@@ -318,11 +324,18 @@ agentMonitoringDashboardRouter.post("/sessions/:sessionId/coherence-check", asyn
 });
 
 // Per-evaluator on-demand session judging (the session detail's per-judge "Re-run" button) -
-// generalizes /coherence-check above to any session-scoped evaluator.
+// generalizes /coherence-check above to any session-scoped evaluator. ?ifStale=true makes it a
+// no-op when the evaluator already scored the session after its last activity (the sweep's own
+// freshness rule) - importers judging backfilled sessions use this so a session the 24h sweep
+// also covers is never judged twice.
 agentMonitoringDashboardRouter.post(
   "/sessions/:sessionId/judge/:evaluatorId",
   async (req: Request, res: Response) => {
     try {
+      if (req.query.ifStale === "true" && (await isSessionScoreFresh(scopedDb(req), req.params.sessionId!, req.params.evaluatorId!))) {
+        res.status(200).json({ skipped: true });
+        return;
+      }
       const score = await runSessionEvaluatorCheck(scopedDb(req), req.params.sessionId!, req.params.evaluatorId!);
       if (!score) {
         res.status(404).json({ error: "Session not found, has no spans, or no such session-scoped evaluator" });
@@ -462,6 +475,12 @@ agentMonitoringDashboardRouter.delete("/online-evaluators/:evaluatorId", async (
     return;
   }
   res.status(204).send();
+});
+
+// Every online-evaluator verdict for one trace - the trace dialog's "Judge scores" section
+// (evaluator-centric views exist above; this is the trace-centric complement).
+agentMonitoringDashboardRouter.get("/traces/:traceId/evaluations", async (req: Request, res: Response) => {
+  res.status(200).json({ evaluations: await listTraceEvaluations(scopedDb(req), req.params.traceId!) });
 });
 
 agentMonitoringDashboardRouter.get("/online-evaluators/:evaluatorId/ratings", async (req: Request, res: Response) => {
@@ -887,6 +906,12 @@ agentMonitoringDashboardRouter.post("/estimate", async (req: Request, res: Respo
 // small default set on first boot rather than a hardcoded array a code change was needed to fix.
 agentMonitoringDashboardRouter.get("/portability/models", async (req: Request, res: Response) => {
   res.status(200).json({ models: await listPortabilityModels(scopedDb(req)) });
+});
+
+// Models seen on token-bearing traces (30d) with no catalog pricing - the Settings pricing panel
+// lists them with a one-click add so unpriced spend is visible instead of a silent $0.
+agentMonitoringDashboardRouter.get("/portability/models/unpriced", async (req: Request, res: Response) => {
+  res.status(200).json({ models: await listUnpricedModels(scopedDb(req)) });
 });
 
 const VALID_PROVIDERS = ["openai", "anthropic", "gemini", "custom"];

@@ -201,6 +201,23 @@ export async function runSessionBaselineCheck(db: Db, sessionId: string) {
   return runSessionEvaluatorCheck(db, sessionId, evaluator.id);
 }
 
+// Whether this evaluator already scored the session after its last activity - the exact
+// freshness check the sweep applies before re-judging a grown session. Exposed for the judge
+// route's ifStale mode (importers like the SDK's Moveworks sync judge backfilled sessions
+// explicitly, and this keeps them from double-judging sessions the 24h sweep will also cover).
+export async function isSessionScoreFresh(db: Db, sessionId: string, evaluatorId: string): Promise<boolean> {
+  const spans = await listSessionSpans(db, sessionId);
+  if (spans.length === 0) {
+    return false;
+  }
+  const lastActivity = Math.max(
+    ...spans.map(span => new Date(span.startedAt ?? span.createdAt).getTime())
+  );
+  const scores = await listSessionScores(db, sessionId);
+  const latest = scores.find(score => score.kind === `online-eval:${evaluatorId}`);
+  return !!latest && new Date(latest.createdAt).getTime() >= lastActivity;
+}
+
 // On-demand verdict from ANY session-scoped evaluator (the session detail's per-judge "Re-run"
 // button) - same judging + score shape as the sweep's automatic runs, `enabled` deliberately
 // ignored for an explicit human click.

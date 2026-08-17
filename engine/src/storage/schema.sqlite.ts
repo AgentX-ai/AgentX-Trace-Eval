@@ -661,6 +661,10 @@ export const toolSchemas = sqliteTable("tool_schemas", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   description: text("description"),
+  // Optional test endpoint the Playground's "From Tool Schemas" picker carries over as the
+  // tool's endpointUrl default. NEVER called by the engine outside a Playground/simulation run -
+  // the registry itself stays execution-free (production tools run in the agent's own code).
+  testEndpointUrl: text("test_endpoint_url"),
   currentVersion: integer("current_version").notNull().default(1),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),

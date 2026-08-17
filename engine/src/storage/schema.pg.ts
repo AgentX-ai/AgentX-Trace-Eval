@@ -431,6 +431,7 @@ export const toolSchemas = pgTable("tool_schemas", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   description: text("description"),
+  testEndpointUrl: text("test_endpoint_url"),
   currentVersion: integer("current_version").notNull().default(1),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
   updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),

@@ -18,6 +18,9 @@ export type ToolSchemaRow = {
   projectId: string | null;
   name: string;
   description: string | null;
+  // Playground-only test endpoint default (see schema.sqlite.ts) - the engine never calls it
+  // outside a Playground/simulation run.
+  testEndpointUrl: string | null;
   currentVersion: number;
   createdAt: Date;
   updatedAt: Date;
@@ -40,6 +43,7 @@ function toolSchemaToWire(row: ToolSchemaRow) {
     _id: row.id,
     name: row.name,
     description: row.description,
+    testEndpointUrl: row.testEndpointUrl ?? undefined,
     currentVersion: row.currentVersion,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -58,13 +62,17 @@ function versionToWire(row: ToolSchemaVersionRow) {
   };
 }
 
-export async function createToolSchema(db: Db, input: { name: string; definition: string; description?: string }) {
+export async function createToolSchema(
+  db: Db,
+  input: { name: string; definition: string; description?: string; testEndpointUrl?: string }
+) {
   const now = new Date();
   const schemaRow: ToolSchemaRow = {
     id: nanoid(),
     projectId: db.projectId,
     name: input.name,
     description: input.description ?? null,
+    testEndpointUrl: input.testEndpointUrl?.trim() || null,
     currentVersion: 1,
     createdAt: now,
     updatedAt: now,
@@ -124,6 +132,26 @@ export async function getToolSchemaVersionRow(
   return rows.find(r => r.version === version) ?? null;
 }
 
+// A definition registered from a remote MCP server embeds an `mcp: { server, name }` provenance
+// block (the dashboard's RemoteMcpRegisterSection writes it). Surfaced on the list wire so the
+// registry can label those rows "mcp name > function name".
+function extractMcpProvenance(definition: string | undefined): { name?: string; server?: string } | undefined {
+  if (!definition) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(definition) as { mcp?: { name?: unknown; server?: unknown } };
+    if (!parsed || typeof parsed !== "object" || !parsed.mcp || typeof parsed.mcp !== "object") {
+      return undefined;
+    }
+    const name = typeof parsed.mcp.name === "string" && parsed.mcp.name ? parsed.mcp.name : undefined;
+    const server = typeof parsed.mcp.server === "string" && parsed.mcp.server ? parsed.mcp.server : undefined;
+    return name || server ? { name, server } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function listToolSchemasWire(db: Db) {
   const cond = eq(db.schema.toolSchemas.projectId, db.projectId);
   const rows = (
@@ -132,7 +160,29 @@ export async function listToolSchemasWire(db: Db) {
       : await db.db.select().from(db.schema.toolSchemas).where(cond)
   ) as ToolSchemaRow[];
   rows.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-  return rows.map(toolSchemaToWire);
+
+  const versionCond = eq(db.schema.toolSchemaVersions.projectId, db.projectId);
+  const versionRows = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.toolSchemaVersions).where(versionCond).all()
+      : await db.db.select().from(db.schema.toolSchemaVersions).where(versionCond)
+  ) as ToolSchemaVersionRow[];
+  const bySchema = new Map<string, ToolSchemaVersionRow[]>();
+  for (const versionRow of versionRows) {
+    const list = bySchema.get(versionRow.toolSchemaId) ?? [];
+    list.push(versionRow);
+    bySchema.set(versionRow.toolSchemaId, list);
+  }
+
+  return rows.map(row => {
+    const versions = bySchema.get(row.id) ?? [];
+    // Current version first; fall back to v1 (the original registration always carries the
+    // provenance even if a judge-proposed rewrite of the definition later dropped the block).
+    const current = versions.find(v => v.version === row.currentVersion);
+    const original = versions.find(v => v.version === 1);
+    const mcp = extractMcpProvenance(current?.definition) ?? extractMcpProvenance(original?.definition);
+    return { ...toolSchemaToWire(row), mcp };
+  });
 }
 
 export async function getToolSchemaWithVersionsWire(db: Db, id: string) {
@@ -175,6 +225,21 @@ export async function publishToolSchemaVersion(
     version: versionRow.version,
     definition: versionRow.definition,
   };
+}
+
+// The one mutable registry field outside the versioned definition: set or clear the Playground
+// test endpoint after registration.
+export async function updateToolSchemaTestEndpoint(db: Db, id: string, testEndpointUrl: string | null) {
+  const row = await getToolSchemaRow(db, id);
+  if (!row) return null;
+  const value = testEndpointUrl?.trim() || null;
+  const cond = and(eq(db.schema.toolSchemas.id, id), eq(db.schema.toolSchemas.projectId, db.projectId));
+  if (db.kind === "sqlite") {
+    await db.db.update(db.schema.toolSchemas).set({ testEndpointUrl: value, updatedAt: new Date() }).where(cond);
+  } else {
+    await db.db.update(db.schema.toolSchemas).set({ testEndpointUrl: value, updatedAt: new Date() }).where(cond);
+  }
+  return toolSchemaToWire({ ...row, testEndpointUrl: value });
 }
 
 export async function deleteToolSchema(db: Db, id: string): Promise<boolean> {

@@ -30,7 +30,7 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
     res.status(422).json({ error: "Invalid trace payload", details: parsed.error.flatten() });
     return;
   }
-  const { traceId, agentId } = await ingestTrace(scopedDb(req), parsed.data);
+  const { traceId, agentId, deduped } = await ingestTrace(scopedDb(req), parsed.data);
 
   // trace_id is the one field send_trace_sync() reads (see ingest_client.py); the fire-and-forget
   // enqueue() path used by default doesn't inspect the body at all, so this shape covers both.
@@ -48,6 +48,13 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
     return;
   }
 
+  // A replayed span (same span_id, already stored - e.g. a Moveworks re-sync or an OTel retry)
+  // was already checked and judged the first time: re-running the passes below would double-bill
+  // every judge call and double-count every recorded event.
+  if (deduped) {
+    return;
+  }
+
   // Checked in the background, after responding: no background job queue in self-host (see plan
   // task #110), this is the same in-process fire-and-forget shape, just no longer blocking the
   // response the caller is actually waiting on. A caller polling client.monitor.signals or
@@ -60,12 +67,11 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
   // rejection here (now fully detached from the request/response cycle) would otherwise be a
   // silent, uncaught background rejection instead of a logged one.
   //
-  // Two paths: mirrors tracer.trace(..., monitor=True, pattern_ids=[...]) when the caller opted in
-  // per-trace (explicit, "no profile row" runs the full default sweep, no dashboard setup
-  // required); otherwise still runs, but gated by requireEnabledProfile so it's a no-op unless the
-  // dashboard's per-agent monitoring toggle (AgentMonitoringProfile) was actually turned on for
-  // this agent, without this, an enabled profile had zero effect on regular SDK traces (only
-  // OTLP-ingested ones, via routes/otlp.ts, ever got automatic coverage).
+  // Same opt-in-by-existing posture as online evaluators below: active patterns and built-in
+  // checks run on every root trace, no per-agent dashboard toggle required (the per-agent
+  // monitoring profile concept is no longer a UI-level gate; an agent with a profile row that
+  // was explicitly disabled still opts out inside runMonitorCheck). monitor=true with explicit
+  // pattern_ids still restricts detection to exactly those patterns.
   const traceForMonitor = {
     input: parsed.data.input,
     output: parsed.data.output,
@@ -76,9 +82,7 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
   runMonitorCheck(
     scopedDb(req),
     traceForMonitor,
-    parsed.data.monitor
-      ? { agentId, traceId, patternIds: parsed.data.pattern_ids }
-      : { agentId, traceId, requireEnabledProfile: true }
+    parsed.data.monitor ? { agentId, traceId, patternIds: parsed.data.pattern_ids } : { agentId, traceId }
   ).catch(err => {
     console.error("Monitor check failed:", err instanceof Error ? err.message : err);
   });

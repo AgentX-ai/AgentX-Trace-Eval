@@ -1,6 +1,6 @@
 import { and, eq, gte } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
-import { listPortabilityModels, estimateCostUSD } from "../evaluate/models.js";
+import { listPortabilityModels, estimateCostUSD, normalizeModelId } from "../evaluate/models.js";
 import type { MonitoringWindow } from "./events.js";
 
 // Overview's "Model comparison" table - how each LLM actually performing in production stacks up
@@ -158,7 +158,8 @@ export async function getModelComparison(db: Db, window: MonitoringWindow): Prom
     const classified = bucket.healthy + bucket.failing;
     const sortedLatencies = [...bucket.latencies].sort((a, b) => a - b);
     const p95Index = Math.min(sortedLatencies.length - 1, Math.floor(0.95 * sortedLatencies.length));
-    const pricing = pricingByModel.get(model) ?? null;
+    // Exact catalog id, else the date-suffix-normalized id (snapshot ids price as their base).
+    const pricing = pricingByModel.get(model) ?? pricingByModel.get(normalizeModelId(model)) ?? null;
     return {
       model,
       traceCount: bucket.traceCount,

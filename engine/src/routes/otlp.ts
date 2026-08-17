@@ -98,8 +98,12 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
       continue;
     }
     const input = validation.data;
-    const { traceId, agentId } = await ingestTrace(db, input);
-    checkTargets.push({ traceId, agentId, input });
+    const { traceId, agentId, deduped } = await ingestTrace(db, input);
+    // A replayed span (OTel exporter retry) was already checked/judged on first arrival -
+    // skipping it here mirrors routes/ingest.ts's own deduped guard.
+    if (!deduped) {
+      checkTargets.push({ traceId, agentId, input });
+    }
   }
 
   const partialSuccess = rejected > 0 ? { rejectedSpans: rejected, errorMessage: lastError } : undefined;

@@ -216,6 +216,13 @@ export async function deletePortabilityModel(db: Db, id: string): Promise<boolea
   return true;
 }
 
+// Providers stamp dated snapshot suffixes onto model ids ("gpt-4o-mini-2024-07-18",
+// "claude-haiku-4-5-20251001") while the pricing catalog keys the base id. Stripping one trailing
+// date suffix lets snapshot traffic price under its base model without a per-snapshot catalog row.
+export function normalizeModelId(model: string): string {
+  return model.replace(/-(?:\d{4}-\d{2}-\d{2}|\d{8})$/, "");
+}
+
 // cacheReadTokens/cacheWriteTokens are subsets of inputTokens (not additional tokens - see
 // traces.cacheReadTokens's comment in schema.sqlite.ts), priced separately when the model has its
 // own cache rates configured. Unconfigured cache rates fall back to the regular input rate, so a

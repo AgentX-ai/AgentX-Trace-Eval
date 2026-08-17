@@ -57,7 +57,27 @@ export const ingestTraceSchema = z.object({
 
 export type IngestTraceInput = z.infer<typeof ingestTraceSchema>;
 
-export async function ingestTrace(db: Db, payload: IngestTraceInput): Promise<{ traceId: string; agentId: string | null }> {
+export async function ingestTrace(
+  db: Db,
+  payload: IngestTraceInput
+): Promise<{ traceId: string; agentId: string | null; deduped: boolean }> {
+  // Idempotent re-ingest: a client-supplied span_id is a stable identity (OTel span ids, and
+  // importers like the SDK's Moveworks Data API sync use deterministic ids), so replaying the
+  // same span updates nothing and returns the existing row instead of inserting a duplicate.
+  // `deduped: true` also tells the route to SKIP the background monitor/evaluator passes - a
+  // replayed span was already checked and judged when it first arrived, and re-running them
+  // double-bills every judge call and double-counts every event.
+  if (payload.span_id) {
+    const dupCond = and(eq(db.schema.traces.spanId, payload.span_id), eq(db.schema.traces.projectId, db.projectId));
+    const existing = (
+      db.kind === "sqlite"
+        ? db.db.select({ id: db.schema.traces.id, agentId: db.schema.traces.agentId }).from(db.schema.traces).where(dupCond).limit(1).all()
+        : await db.db.select({ id: db.schema.traces.id, agentId: db.schema.traces.agentId }).from(db.schema.traces).where(dupCond).limit(1)
+    ) as { id: string; agentId: string | null }[];
+    if (existing[0]) {
+      return { traceId: existing[0].id, agentId: existing[0].agentId, deduped: true };
+    }
+  }
   const id = nanoid();
   // Root spans only: a span_tree=True SDK trace or a multi-span OTel session sends one row per
   // LLM call/tool call too (e.g. "LLM Call 1", "policy_lookup", each its own parentSpanId-linked
@@ -88,7 +108,13 @@ export async function ingestTrace(db: Db, payload: IngestTraceInput): Promise<{ 
     spanId: payload.span_id ?? null,
     parentSpanId: payload.parent_span_id ?? null,
     startedAt: payload.started_at_unix_nano ? new Date(Number(BigInt(payload.started_at_unix_nano) / 1_000_000n)) : null,
-    createdAt: new Date(),
+    // Historical imports (Moveworks Data API sync and any future backfill) send real past
+    // start times; createdAt drives every window-based view (cost chart, sessions, top failing),
+    // so it must reflect when the traffic HAPPENED, not when it was imported. Live traffic's
+    // startedAt is "now" anyway, so this is byte-identical for the normal path.
+    createdAt: payload.started_at_unix_nano
+      ? new Date(Number(BigInt(payload.started_at_unix_nano) / 1_000_000n))
+      : new Date(),
     agentId,
     projectId: db.projectId,
   };
@@ -99,7 +125,7 @@ export async function ingestTrace(db: Db, payload: IngestTraceInput): Promise<{ 
     await db.db.insert(db.schema.traces).values(row);
   }
 
-  return { traceId: id, agentId };
+  return { traceId: id, agentId, deduped: false };
 }
 
 export type TraceRow = {

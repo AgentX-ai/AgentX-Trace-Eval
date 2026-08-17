@@ -64,10 +64,12 @@ import {
   proposeToolSchemaImprovement,
   listUnregisteredTools,
   deleteToolSchema,
+  updateToolSchemaTestEndpoint,
 } from "../core/evaluate/toolSchemas.js";
 import { runPlayground, extractPlaygroundTools, callPlaygroundTool } from "../core/evaluate/playground.js";
 import { runConversationSimulation } from "../core/evaluate/simulation.js";
 import { generateSyntheticCases } from "../core/evaluate/synthesize.js";
+import { loadMcpTools } from "../core/evaluate/mcp.js";
 import {
   createPlaygroundRun,
   updatePlaygroundRunResults,
@@ -660,7 +662,7 @@ evaluateDashboardRouter.get("/tool-schemas", async (req: Request, res: Response)
 });
 
 evaluateDashboardRouter.post("/tool-schemas", async (req: Request, res: Response) => {
-  const { name, definition, description } = req.body ?? {};
+  const { name, definition, description, testEndpointUrl } = req.body ?? {};
   if (typeof name !== "string" || !name.trim()) {
     res.status(400).json({ error: "name is required (must match the traced tool-call name exactly)" });
     return;
@@ -669,8 +671,77 @@ evaluateDashboardRouter.post("/tool-schemas", async (req: Request, res: Response
     res.status(400).json({ error: "definition is required" });
     return;
   }
-  const toolSchema = await createToolSchema(scopedDb(req), { name: name.trim(), definition, description });
+  if (testEndpointUrl !== undefined && testEndpointUrl !== null && testEndpointUrl !== "" && !isHttpUrl(testEndpointUrl)) {
+    res.status(400).json({ error: "testEndpointUrl must be an http(s) URL" });
+    return;
+  }
+  const toolSchema = await createToolSchema(scopedDb(req), {
+    name: name.trim(),
+    definition,
+    description,
+    testEndpointUrl: typeof testEndpointUrl === "string" ? testEndpointUrl : undefined,
+  });
   res.status(201).json(toolSchema);
+});
+
+// Set or clear a registered tool's Playground test endpoint - the one mutable field outside the
+// versioned definition. Null/empty clears it.
+evaluateDashboardRouter.patch("/tool-schemas/:id/test-endpoint", async (req: Request, res: Response) => {
+  const raw = req.body?.testEndpointUrl;
+  if (raw !== undefined && raw !== null && raw !== "" && !isHttpUrl(raw)) {
+    res.status(400).json({ error: "testEndpointUrl must be an http(s) URL" });
+    return;
+  }
+  const updated = await updateToolSchemaTestEndpoint(scopedDb(req), req.params.id!, typeof raw === "string" ? raw : null);
+  if (!updated) {
+    res.status(404).json({ error: "Tool schema not found" });
+    return;
+  }
+  res.status(200).json(updated);
+});
+
+function isHttpUrl(value: unknown): boolean {
+  if (typeof value !== "string" || !value.trim()) return false;
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+// Remote MCP introspection for Register Tool (core/evaluate/mcp.ts): connect, tools/list, hand
+// the shapes back for review. headers = the dialog's key-value pairs (sent as HTTP headers -
+// the only channel a remote server has). Nothing is registered by this route; the dialog
+// registers the reviewed selection through the ordinary POST /tool-schemas.
+evaluateDashboardRouter.post("/mcp/tools", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.serverUrl !== "string" || !body.serverUrl.trim()) {
+    res.status(400).json({ error: "serverUrl is required" });
+    return;
+  }
+  const headers: Record<string, string> = {};
+  if (Array.isArray(body.headers)) {
+    for (const pair of body.headers) {
+      if (pair && typeof pair === "object" && typeof pair.key === "string" && pair.key.trim() && typeof pair.value === "string") {
+        headers[pair.key.trim()] = pair.value;
+      }
+    }
+  }
+  // The OAuth redirect URI must be browser-reachable: explicit AGENTX_PUBLIC_URL wins (proxied
+  // deployments), else the origin this request arrived on (localhost self-host).
+  const base = process.env.AGENTX_PUBLIC_URL?.trim() || `${req.protocol}://${req.get("host")}`;
+  const result = await loadMcpTools({
+    serverUrl: body.serverUrl,
+    headers,
+    callbackUrl: `${base.replace(/\/$/, "")}/api/v1/mcp-oauth/callback`,
+    sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+  });
+  if ("error" in result) {
+    res.status(502).json(result);
+    return;
+  }
+  res.status(200).json(result);
 });
 
 // Registered BEFORE /tool-schemas/:id so "unregistered" isn't captured as an id. See

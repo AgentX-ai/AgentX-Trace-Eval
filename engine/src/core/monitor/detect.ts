@@ -194,36 +194,23 @@ async function detectCustomPatterns(db: Db, trace: TraceLike, agentId: string | 
   return null;
 }
 
-// Entry point called from routes/ingest.ts, two ways: explicitly, when a trace is submitted with
-// monitor=true (mirrors tracer.trace(..., monitor=True, pattern_ids=[...]): explicit pattern_ids
-// restricts detection to exactly those custom pattern ids, skipping built-ins; omitted runs the
-// full default sweep), and implicitly, on every other trace, gated by requireEnabledProfile below
-// so a dashboard-enabled AgentMonitoringProfile actually takes effect on regular SDK traces
-// instead of only ever mattering for OTLP-ingested ones (routes/otlp.ts already calls this
-// unconditionally).
+// Entry point called from routes/ingest.ts and routes/otlp.ts on every root trace - the same
+// opt-in-by-existing posture online evaluators have: active patterns and built-in checks run
+// without any per-agent dashboard setup. monitor=true with explicit pattern_ids (mirrors
+// tracer.trace(..., monitor=True, pattern_ids=[...])) restricts detection to exactly those
+// custom pattern ids, skipping built-ins. An agent whose profile row was explicitly DISABLED
+// still opts out below - that's the only remaining per-agent gate.
 export async function runMonitorCheck(
   db: Db,
   trace: TraceLike & { latencyMs?: number | null },
-  ctx: { agentId?: string | null; traceId?: string | null; patternIds?: string[]; requireEnabledProfile?: boolean }
+  ctx: { agentId?: string | null; traceId?: string | null; patternIds?: string[] }
 ): Promise<void> {
   const agentId = ctx.agentId ?? null;
-  // Profile-level gates: enabled/sampleRate/failureDetectionEnabled/infoDetectionEnabled are
-  // persisted (core/monitor/profiles.ts) and round-trip through the dashboard's per-agent settings
-  // dialog. No profile row (agent never configured) behaves exactly like today for the *explicit*
-  // monitor=true path: fully on, unsampled - that's the "no dashboard setup required" SDK-first
-  // design goal.
   const profile = agentId ? await getProfileRow(db, agentId) : null;
   // sampleRate/retentionDays/latency threshold are project-level (core/project/projects.ts's
   // MonitoringDefaults) - a single request-scoped fetch, applied uniformly to every agent in this
   // project rather than each agent's own (now-inert) profile fields.
   const defaults = await getMonitoringDefaults(db);
-  // The *implicit* path (every trace, not just monitor=true ones) is the opposite: "no profile"
-  // must mean "skip", not "fully on" - otherwise every agent would start being monitored (and
-  // judge-API-billed) automatically the moment any trace is ingested, before anyone touched the
-  // dashboard at all. Only an agent with a real, explicitly-enabled profile gets implicit coverage.
-  if (ctx.requireEnabledProfile && !profile?.enabled) {
-    return;
-  }
   if (profile && !profile.enabled) {
     return;
   }
