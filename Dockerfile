@@ -35,6 +35,10 @@ WORKDIR /app
 COPY --from=deps /app/node_modules node_modules
 COPY --from=deps /app/packages/judge-core packages/judge-core
 COPY engine engine
+# The workspace install nests version-conflicted deps under engine/node_modules instead of
+# hoisting (e.g. @modelcontextprotocol/sdk's express@5 claims the root slot, pushing the
+# engine's own express@4 down here) - without this copy the compile can't resolve them.
+COPY --from=deps /app/engine/node_modules engine/node_modules
 RUN cd engine && bun build src/index.ts --compile --outfile /out/agentx-engine
 
 # --- dashboard: prebuilt bundle from this repo's own GitHub releases ---
