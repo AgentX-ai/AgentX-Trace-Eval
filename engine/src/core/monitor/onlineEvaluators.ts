@@ -6,6 +6,7 @@ import { matchesAgentScope, passesSampleRate } from "./routing.js";
 import { recordEvent } from "./events.js";
 import { upsertSignal } from "./signals.js";
 import { getEvaluationSettingsRow } from "../evaluate/evaluationSettings.js";
+import { renderTraceTrajectory } from "../trace/trajectory.js";
 
 // LangSmith's actual "online evals": a real judge scoring sampled live traffic continuously,
 // producing a rating over time - distinct from core/monitor/detect.ts's pattern-matching (a
@@ -245,6 +246,18 @@ export async function runOnlineEvaluators(
   const inputText = typeof trace.input === "string" ? trace.input : JSON.stringify(trace.input ?? "");
   const outputText = typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output ?? "");
 
+  // Rendered once, lazily, shared by every evaluator scoring this trace - the judge sees the
+  // agent's actual execution path (span subtree / tool calls), not just the final answer. A
+  // render failure degrades to the old output-only judging rather than skipping the evaluator.
+  let trajectoryPromise: Promise<string | null> | null = null;
+  const getTrajectory = () => {
+    if (!ctx.traceId) return Promise.resolve(null);
+    if (!trajectoryPromise) {
+      trajectoryPromise = renderTraceTrajectory(db, ctx.traceId).catch(() => null);
+    }
+    return trajectoryPromise;
+  };
+
   for (const evaluator of evaluators) {
     if (!evaluator.enabled) continue;
     // Session-scoped evaluators never run at ingest - the idle-session sweep
@@ -275,7 +288,12 @@ export async function runOnlineEvaluators(
           judgePrompt: (settings.judgePrompt ?? "").trim() || DEFAULT_JUDGE_PROMPT,
           judgeModel: settings.judgeModel ?? DEFAULT_JUDGE_MODEL,
         },
-        { input: inputText, output: outputText, context: extractRetrievalContext(trace.metadata) }
+        {
+          input: inputText,
+          output: outputText,
+          context: extractRetrievalContext(trace.metadata),
+          trajectory: (await getTrajectory()) ?? undefined,
+        }
       ));
     } catch (err) {
       // One evaluator failing (missing API key, provider outage) must not skip every other
