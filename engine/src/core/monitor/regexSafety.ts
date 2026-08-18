@@ -96,10 +96,12 @@ export function validateUserRegex(source: string): RegexValidation {
   }
   try {
     // Same flags detection uses, so a flag-specific syntax error surfaces here, not at match time.
-    // Compiling an operator-supplied pattern is the entire point of this function - there is no
+    // CodeQL flags this as regex injection (js/regex-injection) and it is accurate about the flow:
+    // `source` is operator-supplied. It is also the entire point of the function - there is no
     // sanitized form of "is this regex valid?" - and the ReDoS shape that makes an injected regex
-    // dangerous is rejected by hasNestedQuantifier above, before we ever get here.
-    // codeql[js/regex-injection]
+    // dangerous is rejected by hasNestedQuantifier above, before we get here. Clearing the alert
+    // properly means a non-backtracking engine (RE2), which changes matching semantics; until then
+    // it wants dismissing in the Security tab, not a code change.
     new RegExp(source, "i");
   } catch (err) {
     return { ok: false, error: `Invalid regular expression: ${err instanceof Error ? err.message : String(err)}` };
