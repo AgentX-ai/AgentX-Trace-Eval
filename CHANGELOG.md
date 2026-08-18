@@ -671,8 +671,8 @@ That first suite then grew into a full one, written to find defects rather than 
 current behaviour: 35 more vitest files for the engine (424 cases - unit tests for the pure
 helpers, plus integration suites that boot the real engine as a subprocess and drive it over HTTP
 the way an SDK would), similarity-metric tests for judge-core, and 20 Go tests for the CLI
-launcher. Twelve real defects came out of writing them, each fixed alongside the test that caught
-it. `tsconfig.build.json`'s exclude grew to cover `src/test/` as well as `*.test.ts`, because the
+launcher. Thirteen real defects came out of writing them, each fixed alongside the test that
+caught it - the last of them only once the suite was running in CI. `tsconfig.build.json`'s exclude grew to cover `src/test/` as well as `*.test.ts`, because the
 integration harness lives there under names that are not `*.test.ts` and would otherwise have
 compiled into `dist/`.
 
@@ -720,13 +720,47 @@ installed dashboard before downloading its replacement, so a failed or interrupt
 the machine with no dashboard at all; it unpacks to a temporary directory and swaps in only after
 the download succeeds.
 
-Two things left honest rather than fixed. `appendResults` looks like the same race as the five
+One thing left honest rather than fixed. `appendResults` looks like the same race as the five
 above - a unique index on `(run_id, idempotency_key)` with a judge call sitting between the check
 and the insert - but it would not reproduce, because the code scorers block the event loop and
 therefore serialize; showing it needs a genuinely slow async judge, so it is unchanged and
-untested rather than quietly declared safe. And the CI workflow this branch adds
-(`.github/workflows/test.yml`, running both TypeScript workspaces, the Go CLI, and the engine again
-against a Postgres service container) has never executed: GitHub does not raise workflow runs for
-pushes made with an app installation token, and a workflow file only becomes dispatchable once it
-is on the default branch. Everything above was therefore verified locally, on both backends; the
-first post-merge run on GitHub's own runners is the real check.
+untested rather than quietly declared safe.
+
+The thirteenth defect came from CI, and only CI could have found it. `.github/workflows/test.yml`
+runs both TypeScript workspaces, the Go CLI, and the engine a second time against a Postgres
+service container, so the dialect suites execute instead of skipping. It had never once run, which
+looked like a permissions or registration problem and was neither: a `pull_request` workflow runs
+from the PR's merge ref, GitHub cannot build that ref while the PR conflicts, and #1 had landed on
+main about ninety minutes before this branch added the workflow file, so it had never been
+schedulable at all. Merging main back down was what started it, and it went straight into six
+failing suites, four of them dying before their engine finished booting, all SIGABRT:
+
+    node::RemoveEnvironmentCleanupHook ... Assertion failed: (env) != nullptr
+    Statement::~Statement() [better_sqlite3.node]
+
+better-sqlite3 11 finalizes a prepared statement after its Node environment is gone, which Node 24
+asserts on where earlier versions no-oped. It is GC-timing dependent, so only some processes died -
+which is what made it read as flakiness rather than a version problem. Nothing local could have
+caught it: this box runs Node 22, where all 442 pass, while `release.yml` and
+`publish-judge-core.yml` both build on 24. Fixed by moving to better-sqlite3 12, whose prebuilds
+cover Node 24.
+
+That same run caught the registry race fix above being incomplete. Its retry loop recomputed the
+next version from `currentVersion` - a column the winner updates *after* its insert - so a loser
+re-read the number it had just lost with, collided again, and burned all eight attempts in a few
+microseconds; exhausting the loop then threw a bare Error, which the handler turned into the
+"Internal server error" the loop existed to prevent. The next version now comes from `MAX(version)`
+in the versions table, which the winner's own insert advances, so five racers converge in five
+attempts, and a genuinely exhausted budget answers 409 rather than blaming the server.
+
+The test harness had been quietly orphaning every engine it started, too. `startEngine` spawns
+`node tsx/cli.mjs src/index.ts`, but tsx runs the engine in a grandchild, so `stop()`'s SIGKILL
+removed only the wrapper and left the engine reparented to init, still holding its port and its
+SQLite handle. 133 of them had piled up on a four-core box before the load average made it
+obvious - and on a four-core CI runner that is not a slow leak, it is the machine: engines from
+finished suites competing with the ones still booting, which is the shape of the ECONNRESET and
+boot-timeout failures in that same run. The child now gets its own process group and every kill
+path signals the group.
+
+With those three in, CI is green on Node 24: 442 passed on SQLite, and 442 passed again against
+the Postgres service container with nothing skipped.
