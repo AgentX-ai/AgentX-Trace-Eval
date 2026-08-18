@@ -178,12 +178,27 @@ export async function runConversationSimulation(
 
     const turn: SimulationTurn = { userMessage: userTurn.message, agentMessage: null, latencyMs: null, error: null };
     const start = Date.now();
+    // Per-tool-call timing captured by wrapping the executor, so the recorded turn can be
+    // ingested as a real span tree (root turn + timed children) and the trace dialog's
+    // Execution Timeline has this turn's actual execution to show.
+    const toolSpans: { name: string; args: Record<string, unknown>; output: unknown; error?: string; startMs: number; durationMs: number }[] = [];
     try {
       const completion = await callModelWithTools(
         input.model,
         { system, messages: [...prefixTurns, ...history, { role: "user", content: userTurn.message }] },
         tools.map(t => ({ name: t.name, description: t.description, parameters: t.parameters })),
-        (name, args) => callTool(tools, name, args),
+        async (name, args) => {
+          const callStart = Date.now();
+          try {
+            const result = await callTool(tools, name, args);
+            toolSpans.push({ name, args, output: result, startMs: callStart, durationMs: Date.now() - callStart });
+            return result;
+          } catch (err) {
+            const message = err instanceof Error ? err.message : "Tool call failed";
+            toolSpans.push({ name, args, output: null, error: message, startMs: callStart, durationMs: Date.now() - callStart });
+            throw err;
+          }
+        },
         { maxTokens: input.maxTokens, temperature: input.temperature }
       );
       turn.latencyMs = Date.now() - start;
@@ -192,7 +207,15 @@ export async function runConversationSimulation(
 
       if (record && sessionId) {
         // Through the real ingest path, not a raw insert - agent resolution, session grouping,
-        // and every downstream reader behave exactly as they would for genuine traffic.
+        // and every downstream reader behave exactly as they would for genuine traffic. Each
+        // turn is a real span tree: a root span (this turn, its own span id so the trace
+        // dialog's filterToInteractionSpans scopes to it instead of the whole session) with the
+        // model call and each timed tool execution as children - that subtree is what the trace
+        // dialog's Execution Timeline renders. Children skip agent resolution and stay out of
+        // turn counts everywhere (parent_span_id set), and only the root carries token usage so
+        // cost aggregation never double-counts.
+        const turnSpanId = `${sessionId}-t${turns.length + 1}`;
+        const toNanos = (ms: number) => (BigInt(ms) * 1000000n).toString();
         await ingestTrace(db, {
           name: agentName,
           input: { query: userTurn.message },
@@ -200,11 +223,40 @@ export async function runConversationSimulation(
           latency_ms: turn.latencyMs,
           model: input.model,
           session_id: sessionId,
+          span_id: turnSpanId,
+          started_at_unix_nano: toNanos(start),
           tool_calls: completion.toolCalls.length > 0 ? (completion.toolCalls as unknown as Record<string, unknown>[]) : undefined,
           input_tokens: completion.usage?.inputTokens,
           output_tokens: completion.usage?.outputTokens,
           metadata: { simulated: true, persona: input.persona, goal: input.goal },
         });
+        const toolTimeMs = toolSpans.reduce((sum, t) => sum + t.durationMs, 0);
+        await ingestTrace(db, {
+          name: `LLM ${input.model}`,
+          input: { query: userTurn.message },
+          output: completion.text,
+          latency_ms: Math.max((turn.latencyMs ?? 0) - toolTimeMs, 0),
+          model: input.model,
+          session_id: sessionId,
+          span_id: `${turnSpanId}-llm`,
+          parent_span_id: turnSpanId,
+          started_at_unix_nano: toNanos(start),
+          metadata: { simulated: true },
+        });
+        for (const [index, tool] of toolSpans.entries()) {
+          await ingestTrace(db, {
+            name: tool.name,
+            input: tool.args,
+            output: tool.output ?? undefined,
+            error: tool.error,
+            latency_ms: tool.durationMs,
+            session_id: sessionId,
+            span_id: `${turnSpanId}-tool${index + 1}`,
+            parent_span_id: turnSpanId,
+            started_at_unix_nano: toNanos(tool.startMs),
+            metadata: { simulated: true },
+          });
+        }
       }
     } catch (err) {
       turn.error = err instanceof Error ? err.message : "Agent call failed";
