@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import { asyncRouter } from "./asyncRouter.js";
 import { validateSeverityParam } from "../core/shared/severity.js";
+import { validateSampleRateParam } from "../core/shared/sampleRate.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { createPattern, getPattern, listPatternsWire, legacyPayloadToConditions } from "../core/monitor/patterns.js";
 import { builtInPatternsWire } from "../core/monitor/detect.js";
@@ -31,6 +32,14 @@ monitorRouter.use((req: Request, res: Response, next) => {
     const check = validateSeverityParam(req.body?.severity);
     if (!check.ok) {
       res.status(400).json({ error: check.error });
+      return;
+    }
+    // Same gap, same fix: an out-of-range or non-numeric sampleRate used to be stored as-is, and
+    // core/monitor/routing.ts reads anything <= 0 (or any non-number) as "never run" - a check
+    // that shows enabled in the dashboard and silently never fires. See core/shared/sampleRate.ts.
+    const sampleRate = validateSampleRateParam(req.body?.sampleRate);
+    if (!sampleRate.ok) {
+      res.status(400).json({ error: sampleRate.error });
       return;
     }
   }

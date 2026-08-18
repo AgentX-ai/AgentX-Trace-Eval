@@ -162,6 +162,46 @@ const PROBES: Probe[] = [
   { name: "POST /feedback with an empty body", path: "/api/v1/feedback", init: json({}) },
   { name: "GET /feedback/trace/:id for an unknown id", path: "/api/v1/feedback/trace/nope" },
   { name: "GET /monitor/signals?limit=abc", path: "/api/v1/monitor/signals?limit=abc" },
+  {
+    name: "POST /agent-monitoring/custom-evaluators with a sampleRate above 1",
+    path: "/api/v1/agent-monitoring/custom-evaluators",
+    init: json({ name: "over", url: "https://example.test/hook", sampleRate: 42 }),
+  },
+  {
+    name: "POST /agent-monitoring/custom-evaluators with a negative sampleRate",
+    path: "/api/v1/agent-monitoring/custom-evaluators",
+    init: json({ name: "under", url: "https://example.test/hook", sampleRate: -1 }),
+  },
+  {
+    name: "POST /agent-monitoring/custom-evaluators with a non-numeric sampleRate",
+    path: "/api/v1/agent-monitoring/custom-evaluators",
+    init: json({ name: "nan", url: "https://example.test/hook", sampleRate: "half" }),
+  },
+  {
+    name: "POST /agent-monitoring/custom-evaluators with a non-http url",
+    path: "/api/v1/agent-monitoring/custom-evaluators",
+    init: json({ name: "file", url: "file:///etc/passwd" }),
+  },
+  {
+    name: "POST /agent-monitoring/online-evaluators with an unknown settings id",
+    path: "/api/v1/agent-monitoring/online-evaluators",
+    init: json({ name: "orphan", evaluationSettingsId: "nope" }),
+  },
+  {
+    name: "POST /agent-monitoring/patterns with an unknown scopeMode",
+    path: "/api/v1/agent-monitoring/patterns",
+    init: json({ name: "scoped", type: "phrase", includeTerms: ["x"], scopeMode: "sometimes" }),
+  },
+  {
+    name: "POST /outcomes with an unknown traceId",
+    path: "/api/v1/outcomes",
+    init: json({ traceId: "nope", outcome: "resolved" }),
+  },
+  {
+    name: "POST /feedback with an unknown traceId",
+    path: "/api/v1/feedback",
+    init: json({ traceId: "nope", vote: "down" }),
+  },
 ];
 
 let engine: TestEngine;
