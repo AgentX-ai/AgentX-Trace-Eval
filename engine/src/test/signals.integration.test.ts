@@ -1,0 +1,186 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { startEngine, type TestEngine } from "./server.js";
+
+// One signal per (pattern, agent), with a count of how often it has happened - that count is what
+// an operator triages by, so it has to be right. It is maintained across concurrent detections
+// running in detached post-ingest work, which is where the read-modify-write version of it lost
+// updates and, on Postgres, lost whole detections to a unique-index violation.
+
+let engine: TestEngine;
+let key: string;
+
+const post = (body: unknown, apiKey?: string | null): RequestInit & { apiKey?: string | null } => ({
+  method: "POST",
+  body: JSON.stringify(body),
+  headers: { "content-type": "application/json" },
+  ...(apiKey === undefined ? {} : { apiKey }),
+});
+
+type Signal = {
+  _id: string;
+  patternKey?: string;
+  agentId?: { _id: string; name: string } | string | null;
+  occurrenceCount?: number;
+  occurrences?: unknown[];
+  status?: string;
+  summary?: string;
+};
+
+async function signals(apiKey = key): Promise<Signal[]> {
+  const res = await engine.json("/api/v1/agent-monitoring/signals?limit=100&polarity=all", { apiKey });
+  expect(res.status).toBe(200);
+  return (res.body as { signals: Signal[] }).signals ?? [];
+}
+
+async function waitForCount(apiKey: string, patternKey: string, expected: number, timeoutMs = 25_000): Promise<Signal | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  let found: Signal | undefined;
+  while (Date.now() < deadline) {
+    found = (await signals(apiKey)).find(s => s.patternKey === patternKey);
+    if (found && (found.occurrenceCount ?? 0) >= expected) return found;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  return found;
+}
+
+async function newProject(name: string): Promise<string> {
+  const res = await engine.json("/api/v1/projects", post({ name }, null));
+  expect(res.status).toBe(201);
+  return (res.body as { project: { apiKey: string } }).project.apiKey;
+}
+
+beforeAll(async () => {
+  engine = await startEngine();
+  key = await newProject("Signals project");
+}, 90_000);
+
+afterAll(async () => {
+  await engine?.stop();
+});
+
+describe("signal deduplication and counting", () => {
+  it("folds repeated detections into one signal and counts every one", async () => {
+    const projectKey = await newProject("Sequential counting");
+    for (let i = 0; i < 5; i++) {
+      await engine.json("/api/v1/ingest/traces", post({ name: "repeat-agent", span_id: `rep-${i}`, input: "q", output: "", error: "Boom" }, projectKey));
+    }
+    const signal = await waitForCount(projectKey, "agent-trace-error", 5);
+    expect(signal, "no signal was raised at all").toBeTruthy();
+    expect(signal!.occurrenceCount, "occurrences were dropped").toBe(5);
+
+    const rows = (await signals(projectKey)).filter(s => s.patternKey === "agent-trace-error");
+    expect(rows, "the same pattern and agent produced more than one signal row").toHaveLength(1);
+  }, 60_000);
+
+  it("counts every detection when they all arrive at once", async () => {
+    // The same workload, fired together. On SQLite this serialises; the assertion matters most on
+    // Postgres (see the dialect suite), but the contract is the same on both.
+    const projectKey = await newProject("Concurrent counting");
+    const count = 12;
+    await Promise.all(
+      Array.from({ length: count }, (_, i) =>
+        engine.json("/api/v1/ingest/traces", post({ name: "burst-agent", span_id: `burst-sig-${i}`, input: "q", output: "", error: "Boom" }, projectKey))
+      )
+    );
+
+    const signal = await waitForCount(projectKey, "agent-trace-error", count);
+    expect(signal).toBeTruthy();
+    expect(signal!.occurrenceCount, `${count} detections were counted as ${signal!.occurrenceCount}`).toBe(count);
+    expect((await signals(projectKey)).filter(s => s.patternKey === "agent-trace-error")).toHaveLength(1);
+    expect(engine.log()).not.toContain("Monitor check failed");
+  }, 90_000);
+
+  it("records one occurrence entry per detection, each pointing at its own trace", async () => {
+    const projectKey = await newProject("Occurrence list");
+    const traceIds: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const res = await engine.json("/api/v1/ingest/traces", post({ name: "occ-agent", span_id: `occ-${i}`, input: "q", output: "", error: "Boom" }, projectKey));
+      traceIds.push((res.body as { trace_id: string }).trace_id);
+    }
+    const signal = await waitForCount(projectKey, "agent-trace-error", 3);
+    const detail = await engine.json(`/api/v1/agent-monitoring/signals/${signal!._id}`, { apiKey: projectKey });
+    const occurrences = ((detail.body as { signal?: { occurrences?: { traceId: string }[] } }).signal?.occurrences ??
+      (detail.body as { occurrences?: { traceId: string }[] }).occurrences ??
+      []) as { traceId: string }[];
+    expect(occurrences.length).toBe(3);
+    expect(occurrences.map(o => o.traceId).sort()).toEqual([...traceIds].sort());
+  }, 60_000);
+
+  it("keeps separate signals for different agents hitting the same pattern", async () => {
+    const projectKey = await newProject("Per-agent signals");
+    await engine.json("/api/v1/ingest/traces", post({ name: "agent-one", span_id: "a1", input: "q", output: "", error: "Boom" }, projectKey));
+    await engine.json("/api/v1/ingest/traces", post({ name: "agent-two", span_id: "a2", input: "q", output: "", error: "Boom" }, projectKey));
+
+    const deadline = Date.now() + 20_000;
+    let rows: Signal[] = [];
+    while (Date.now() < deadline) {
+      rows = (await signals(projectKey)).filter(s => s.patternKey === "agent-trace-error");
+      if (rows.length >= 2) break;
+      await new Promise(r => setTimeout(r, 200));
+    }
+    expect(rows, "two agents' failures were folded into one signal").toHaveLength(2);
+    for (const row of rows) {
+      expect(row.occurrenceCount).toBe(1);
+    }
+  }, 60_000);
+
+  it("keeps separate signals for different patterns on the same agent", async () => {
+    const projectKey = await newProject("Per-pattern signals");
+    await engine.json("/api/v1/ingest/traces", post({ name: "multi-agent", span_id: "m1", input: "q", output: "", error: "Boom" }, projectKey));
+    await engine.json("/api/v1/ingest/traces", post({ name: "multi-agent", span_id: "m2", input: "q", output: "   " }, projectKey));
+
+    const deadline = Date.now() + 20_000;
+    let keys: string[] = [];
+    while (Date.now() < deadline) {
+      keys = (await signals(projectKey)).map(s => s.patternKey ?? "");
+      if (keys.includes("agent-trace-error") && keys.includes("empty-agent-response")) break;
+      await new Promise(r => setTimeout(r, 200));
+    }
+    expect(keys).toContain("agent-trace-error");
+    expect(keys).toContain("empty-agent-response");
+  }, 60_000);
+
+  it("names the failing tool in the signal key, so two broken tools are two signals", async () => {
+    const projectKey = await newProject("Per-tool signals");
+    for (const tool of ["lookup_order", "cancel_order"]) {
+      await engine.json(
+        "/api/v1/ingest/traces",
+        post({ name: "tool-agent", span_id: `tool-${tool}`, input: "q", output: "sorry", tool_calls: [{ name: tool, success: false }] }, projectKey)
+      );
+    }
+    const deadline = Date.now() + 20_000;
+    let rows: Signal[] = [];
+    while (Date.now() < deadline) {
+      rows = (await signals(projectKey)).filter(s => (s.patternKey ?? "").startsWith("agent-tool-failure"));
+      if (rows.length >= 2) break;
+      await new Promise(r => setTimeout(r, 200));
+    }
+    expect(rows.map(r => r.patternKey).sort()).toEqual(["agent-tool-failure:cancel_order", "agent-tool-failure:lookup_order"]);
+  }, 60_000);
+
+  it("keeps counting into an existing signal after it has been triaged", async () => {
+    const projectKey = await newProject("Triaged counting");
+    await engine.json("/api/v1/ingest/traces", post({ name: "triage-agent", span_id: "tr-1", input: "q", output: "", error: "Boom" }, projectKey));
+    const signal = await waitForCount(projectKey, "agent-trace-error", 1);
+
+    const patched = await engine.json(`/api/v1/agent-monitoring/signals/${signal!._id}`, {
+      ...post({ status: "resolved" }, projectKey),
+      method: "PATCH",
+    });
+    expect(patched.status).toBeLessThan(300);
+
+    await engine.json("/api/v1/ingest/traces", post({ name: "triage-agent", span_id: "tr-2", input: "q", output: "", error: "Boom" }, projectKey));
+    const after = await waitForCount(projectKey, "agent-trace-error", 2);
+    expect(after!.occurrenceCount, "a recurrence after triage was not counted").toBe(2);
+    expect(after!._id, "a recurrence created a second signal instead of reopening the first").toBe(signal!._id);
+  }, 60_000);
+
+  it("keeps one project's signals out of another's list", async () => {
+    const projectKey = await newProject("Signal isolation");
+    await engine.json("/api/v1/ingest/traces", post({ name: "isolated-agent", span_id: "iso-1", input: "q", output: "", error: "Boom" }, projectKey));
+    await waitForCount(projectKey, "agent-trace-error", 1);
+
+    const otherKey = await newProject("Signal isolation other");
+    expect((await signals(otherKey)).filter(s => JSON.stringify(s).includes("isolated-agent"))).toEqual([]);
+  }, 60_000);
+});

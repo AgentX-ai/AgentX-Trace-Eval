@@ -376,6 +376,35 @@ describe.skipIf(!postgresAvailable)("Postgres-specific behaviour", () => {
     expect(record.currentVersion, "currentVersion drifted away from the stored history").toBe(Math.max(...stored, 1));
   }, 60_000);
 
+  it("counts every simultaneous detection into one signal, losing none", async () => {
+    // Detection runs in detached post-ingest work, so a burst of failing traces all reach
+    // upsertSignal having seen no existing signal row. Before this was made atomic, one insert
+    // violated monitor_signals_pattern_key_agent_id and that trace's detection was dropped with
+    // only a log line, while the survivors each wrote back a count they had read a moment
+    // earlier - twelve detections were reported as five.
+    const count = 12;
+    await Promise.all(
+      Array.from({ length: count }, (_, i) =>
+        engine.json("/api/v1/ingest/traces", post({ name: "pg-signal-agent", span_id: `pg-sig-${i}`, input: "q", output: "", error: "Boom" }))
+      )
+    );
+
+    const deadline = Date.now() + 30_000;
+    let rows: { patternKey?: string; occurrenceCount?: number }[] = [];
+    while (Date.now() < deadline) {
+      const res = await engine.json("/api/v1/agent-monitoring/signals?limit=100&polarity=all");
+      rows = ((res.body as { signals?: { patternKey?: string; occurrenceCount?: number }[] }).signals ?? []).filter(
+        s => s.patternKey === "agent-trace-error"
+      );
+      if (rows[0] && (rows[0].occurrenceCount ?? 0) >= count) break;
+      await new Promise(r => setTimeout(r, 250));
+    }
+
+    expect(rows, "the burst produced more than one signal row for one pattern and agent").toHaveLength(1);
+    expect(rows[0]!.occurrenceCount, `${count} detections were counted as ${rows[0]?.occurrenceCount}`).toBe(count);
+    expect(engine.log(), "a detection was dropped rather than counted").not.toContain("Monitor check failed");
+  }, 90_000);
+
   it("registers one agent for a burst of first-ever traces sharing a name", async () => {
     const name = `pg-first-sighting-${Math.random().toString(36).slice(2, 8)}`;
     await Promise.all(
