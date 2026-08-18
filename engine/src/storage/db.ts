@@ -769,6 +769,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
 
     CREATE TABLE IF NOT EXISTS auth_account (
       id TEXT PRIMARY KEY,
+      issuer TEXT,
       account_id TEXT NOT NULL,
       provider_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
@@ -816,6 +817,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       role TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       expires_at INTEGER NOT NULL,
+      created_at INTEGER,
       inviter_id TEXT NOT NULL
     );
   `);
@@ -825,6 +827,11 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
   // added explicitly. SQLite has no ADD COLUMN IF NOT EXISTS, so each is tried individually and a
   // "duplicate column" failure (already applied) is swallowed; anything else rethrows.
   const columnMigrations: Array<[string, string]> = [
+    // better-auth 1.7 added `issuer` to its account model and `created_at` to invitations; the
+    // hand-written tables above predate it, and without these an install that upgrades
+    // better-auth 500s on every single sign-up (see the backfill below).
+    ["auth_account", "ALTER TABLE auth_account ADD COLUMN issuer TEXT"],
+    ["auth_invitation", "ALTER TABLE auth_invitation ADD COLUMN created_at INTEGER"],
     ["monitor_patterns", "ALTER TABLE monitor_patterns ADD COLUMN sample_rate REAL NOT NULL DEFAULT 1"],
     ["monitor_patterns", "ALTER TABLE monitor_patterns ADD COLUMN scope_mode TEXT NOT NULL DEFAULT 'all'"],
     ["monitor_patterns", "ALTER TABLE monitor_patterns ADD COLUMN agent_ids TEXT"],
@@ -946,6 +953,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
   }
 
   ensureTraceSpanIdUnique(statement => sqlite.exec(statement));
+  sqlite.exec(BACKFILL_AUTH_ACCOUNT_ISSUER);
 
   migrateOnlineEvaluatorsToConfigsSqlite(sqlite);
   backfillAgentsSqlite(sqlite);
@@ -963,6 +971,13 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     UPDATE monitor_profiles SET topics_enabled = 0 WHERE topics_enabled = 1;
   `);
 }
+
+// Accounts written before better-auth 1.7 have no issuer. Every account this engine creates is a
+// locally-managed one (email/password only - no social providers are configured), and better-auth
+// spells that issuer "local:<providerId>", so the value is derivable rather than lost. Without the
+// backfill those rows stay invisible to 1.7's issuer-scoped account lookups, which means an
+// existing user's password sign-in silently stops working after an upgrade.
+const BACKFILL_AUTH_ACCOUNT_ISSUER = `UPDATE auth_account SET issuer = 'local:' || provider_id WHERE issuer IS NULL`;
 
 // A client-supplied span_id is a stable identity (core/trace/ingest.ts leans on it to make an
 // OTel exporter retry or an SDK re-send idempotent), and the code has always ASSUMED it unique
@@ -1678,6 +1693,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
 
     CREATE TABLE IF NOT EXISTS auth_account (
       id TEXT PRIMARY KEY,
+      issuer TEXT,
       account_id TEXT NOT NULL,
       provider_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
@@ -1725,6 +1741,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       role TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP,
       inviter_id TEXT NOT NULL
     );
 
@@ -1834,6 +1851,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
   `);
 
   await ensureTraceSpanIdUniqueAsync(statement => pool.query(statement).then(() => undefined));
+  await pool.query(BACKFILL_AUTH_ACCOUNT_ISSUER);
 
   await migrateOnlineEvaluatorsToConfigsPostgres(pool);
   await backfillAgentsPostgres(pool);

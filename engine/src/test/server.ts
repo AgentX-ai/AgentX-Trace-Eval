@@ -154,11 +154,16 @@ export async function startEngine(
     throw new Error(`engine never became healthy:\n${output}`);
   }
 
-  const bootstrap = (await (await fetch(`${baseUrl}/api/v1/dev/bootstrap`)).json()) as { apiKey?: string };
+  // AGENTX_AUTH=enabled deliberately closes the anonymous key handout (403) - that is the point of
+  // the mode - so a suite testing it gets an engine with no ambient key and asks for one through
+  // the session-guarded route instead.
+  const authEnabled = env.AGENTX_AUTH === "enabled";
+  const bootstrapRes = await fetch(`${baseUrl}/api/v1/dev/bootstrap`);
+  const bootstrap = (await bootstrapRes.json()) as { apiKey?: string };
   const apiKey = bootstrap.apiKey ?? "";
-  if (!apiKey) {
+  if (!apiKey && !authEnabled) {
     child.kill("SIGKILL");
-    throw new Error(`bootstrap returned no API key:\n${output}`);
+    throw new Error(`bootstrap returned no API key (status ${bootstrapRes.status}):\n${output}`);
   }
 
   const request: TestEngine["request"] = (pathname, init = {}) => {
