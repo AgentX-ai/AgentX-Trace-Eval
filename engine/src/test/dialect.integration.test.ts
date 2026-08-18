@@ -318,6 +318,64 @@ describe.skipIf(!postgresAvailable)("Postgres-specific behaviour", () => {
     expect(new Set(responses.map(r => (r.body as { trace_id: string }).trace_id)).size).toBe(1);
   }, 60_000);
 
+  it("issues distinct prompt version numbers for simultaneous publishes", async () => {
+    // Version numbers are derived (read currentVersion, add one), which is the same
+    // read-then-write shape span dedup had. On SQLite it holds because better-sqlite3 never
+    // interleaves; here it is a genuine race, and a reused version number would either collide
+    // with the unique index (a raw 500 and a lost edit) or silently overwrite a version.
+    const created = await engine.json(
+      "/api/v1/evaluate/prompts",
+      post({ name: "pg-raced-prompt", text: "v1", description: "d" })
+    );
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const promptId = (created.body as { _id?: string; id?: string })._id ?? (created.body as { id: string }).id;
+
+    const responses = await Promise.all(
+      Array.from({ length: 5 }, (_, i) => engine.json(`/api/v1/evaluate/prompts/${promptId}/versions`, post({ text: `concurrent ${i}` })))
+    );
+
+    const versions = responses.filter(r => r.status === 201).map(r => (r.body as { version: number }).version);
+    expect(new Set(versions).size, `duplicate version numbers issued: ${versions.join(", ")}`).toBe(versions.length);
+    for (const failed of responses.filter(r => r.status !== 201)) {
+      expect(failed.status, `a losing publish returned a server error: ${JSON.stringify(failed.body)}`).toBeLessThan(500);
+    }
+
+    const detail = await engine.json(`/api/v1/evaluate/prompts/${promptId}`);
+    const record = detail.body as { currentVersion: number; versions?: { version: number }[] };
+    const historyMax = Math.max(...(record.versions ?? []).map(v => v.version), 1);
+    expect(record.currentVersion, "currentVersion drifted away from the stored history").toBe(historyMax);
+  }, 60_000);
+
+  it("issues distinct tool-schema version numbers for simultaneous publishes", async () => {
+    // The sibling registry to prompts, and the one that had no unique index at all - so before
+    // that index existed this produced several rows all claiming the same version, with no error
+    // anywhere. Asserted through the stored history, not just the responses.
+    const definition = (extra: string) =>
+      JSON.stringify({ name: "pg_raced_tool", description: extra, parameters: { type: "object", properties: {} } });
+
+    const created = await engine.json(
+      "/api/v1/evaluate/tool-schemas",
+      post({ name: "pg_raced_tool", definition: definition("v1") })
+    );
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const toolId = (created.body as { _id?: string; id?: string })._id ?? (created.body as { id: string }).id;
+
+    const responses = await Promise.all(
+      Array.from({ length: 5 }, (_, i) =>
+        engine.json(`/api/v1/evaluate/tool-schemas/${toolId}/versions`, post({ definition: definition(`concurrent ${i}`) }))
+      )
+    );
+    for (const failed of responses.filter(r => r.status !== 201)) {
+      expect(failed.status, `a losing publish returned a server error: ${JSON.stringify(failed.body)}`).toBeLessThan(500);
+    }
+
+    const detail = await engine.json(`/api/v1/evaluate/tool-schemas/${toolId}`);
+    const record = detail.body as { currentVersion: number; versions?: { version: number }[] };
+    const stored = (record.versions ?? []).map(v => v.version);
+    expect(new Set(stored).size, `the stored history has repeated version numbers: ${stored.join(", ")}`).toBe(stored.length);
+    expect(record.currentVersion, "currentVersion drifted away from the stored history").toBe(Math.max(...stored, 1));
+  }, 60_000);
+
   it("registers one agent for a burst of first-ever traces sharing a name", async () => {
     const name = `pg-first-sighting-${Math.random().toString(36).slice(2, 8)}`;
     await Promise.all(

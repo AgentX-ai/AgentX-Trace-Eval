@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { and, eq, gte } from "drizzle-orm";
+import { and, eq, gte, lt } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { getTraceRow } from "../trace/ingest.js";
 import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
@@ -228,6 +228,9 @@ export async function getToolSchemaWithVersionsWire(db: Db, id: string) {
   return { ...toolSchemaToWire(row), versions: versions.map(versionToWire) };
 }
 
+// See core/evaluate/prompts.ts's PUBLISH_MAX_ATTEMPTS.
+const PUBLISH_MAX_ATTEMPTS = 8;
+
 export async function publishToolSchemaVersion(
   db: Db,
   toolSchemaId: string,
@@ -241,45 +244,76 @@ export async function publishToolSchemaVersion(
     resolvedExampleIds?: string[];
   }
 ) {
-  const schema = await getToolSchemaRow(db, toolSchemaId);
-  if (!schema) return null;
-  const now = new Date();
-  const nextVersion = schema.currentVersion + 1;
-  const versionRow: ToolSchemaVersionRow = {
-    id: nanoid(),
-    projectId: db.projectId,
-    toolSchemaId,
-    version: nextVersion,
-    definition: input.definition,
-    source: input.source ?? "manual",
-    reasoning: input.reasoning ?? null,
-    basedOnVersion: input.basedOnVersion ?? null,
-    createdAt: now,
-  };
-  const updateCond = and(eq(db.schema.toolSchemas.id, toolSchemaId), eq(db.schema.toolSchemas.projectId, db.projectId));
-  // Adopting a proposal resolves the evidence it was built from - merged (not replaced) so
-  // earlier adoptions stay resolved.
-  const resolvedEvidence =
-    input.resolvedExampleIds && input.resolvedExampleIds.length > 0
-      ? Array.from(new Set([...resolvedEvidenceIds(schema), ...input.resolvedExampleIds]))
-      : undefined;
-  const patch = {
-    currentVersion: nextVersion,
-    updatedAt: now,
-    ...(resolvedEvidence ? { resolvedEvidence } : {}),
-  };
-  if (db.kind === "sqlite") {
-    await db.db.insert(db.schema.toolSchemaVersions).values(versionRow);
-    await db.db.update(db.schema.toolSchemas).set(patch).where(updateCond);
-  } else {
-    await db.db.insert(db.schema.toolSchemaVersions).values(versionRow);
-    await db.db.update(db.schema.toolSchemas).set(patch).where(updateCond);
+  // Identical shape and identical hazard to core/evaluate/prompts.ts's publishPromptVersion - see
+  // that function for the full reasoning. This registry additionally never had the unique index
+  // its sibling did, so before storage/db.ts's tool_schema_versions_tool_schema_id_version, a
+  // race here produced two definitions both stored as the same version with no error at all.
+  for (let attempt = 0; attempt < PUBLISH_MAX_ATTEMPTS; attempt++) {
+    const schema = await getToolSchemaRow(db, toolSchemaId);
+    if (!schema) return null;
+    const now = new Date();
+    const nextVersion = schema.currentVersion + 1;
+    const versionRow: ToolSchemaVersionRow = {
+      id: nanoid(),
+      projectId: db.projectId,
+      toolSchemaId,
+      version: nextVersion,
+      definition: input.definition,
+      source: input.source ?? "manual",
+      reasoning: input.reasoning ?? null,
+      basedOnVersion: input.basedOnVersion ?? null,
+      createdAt: now,
+    };
+    const inserted = (
+      db.kind === "sqlite"
+        ? db.db
+            .insert(db.schema.toolSchemaVersions)
+            .values(versionRow)
+            .onConflictDoNothing()
+            .returning({ id: db.schema.toolSchemaVersions.id })
+            .all()
+        : await db.db
+            .insert(db.schema.toolSchemaVersions)
+            .values(versionRow)
+            .onConflictDoNothing()
+            .returning({ id: db.schema.toolSchemaVersions.id })
+    ) as { id: string }[];
+    if (!inserted[0]) {
+      continue;
+    }
+    // Adopting a proposal resolves the evidence it was built from - merged (not replaced) so
+    // earlier adoptions stay resolved.
+    const resolvedEvidence =
+      input.resolvedExampleIds && input.resolvedExampleIds.length > 0
+        ? Array.from(new Set([...resolvedEvidenceIds(schema), ...input.resolvedExampleIds]))
+        : undefined;
+    // resolvedEvidence is merged on every attempt regardless of version ordering, but
+    // currentVersion only moves forward - a publish finishing second must not drag it back.
+    const versionCond = and(
+      eq(db.schema.toolSchemas.id, toolSchemaId),
+      eq(db.schema.toolSchemas.projectId, db.projectId),
+      lt(db.schema.toolSchemas.currentVersion, nextVersion)
+    );
+    const evidenceCond = and(eq(db.schema.toolSchemas.id, toolSchemaId), eq(db.schema.toolSchemas.projectId, db.projectId));
+    if (db.kind === "sqlite") {
+      await db.db.update(db.schema.toolSchemas).set({ currentVersion: nextVersion, updatedAt: now }).where(versionCond);
+      if (resolvedEvidence) {
+        await db.db.update(db.schema.toolSchemas).set({ resolvedEvidence, updatedAt: now }).where(evidenceCond);
+      }
+    } else {
+      await db.db.update(db.schema.toolSchemas).set({ currentVersion: nextVersion, updatedAt: now }).where(versionCond);
+      if (resolvedEvidence) {
+        await db.db.update(db.schema.toolSchemas).set({ resolvedEvidence, updatedAt: now }).where(evidenceCond);
+      }
+    }
+    const current = await getToolSchemaRow(db, toolSchemaId);
+    return {
+      ...toolSchemaToWire({ ...schema, currentVersion: current?.currentVersion ?? nextVersion, updatedAt: now }),
+      version: versionRow.version,
+      definition: versionRow.definition,
+    };
   }
-  return {
-    ...toolSchemaToWire({ ...schema, currentVersion: nextVersion, updatedAt: now }),
-    version: versionRow.version,
-    definition: versionRow.definition,
-  };
+  throw new Error(`Could not publish a new version of tool schema ${toolSchemaId} - too many simultaneous publishes`);
 }
 
 // The one mutable registry field outside the versioned definition: set or clear the Playground

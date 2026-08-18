@@ -953,6 +953,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
   }
 
   ensureTraceSpanIdUnique(statement => sqlite.exec(statement));
+  ensureVersionUnique(statement => sqlite.exec(statement));
   sqlite.exec(BACKFILL_AUTH_ACCOUNT_ISSUER);
 
   migrateOnlineEvaluatorsToConfigsSqlite(sqlite);
@@ -970,6 +971,41 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     );
     UPDATE monitor_profiles SET topics_enabled = 0 WHERE topics_enabled = 1;
   `);
+}
+
+// prompt_versions has had a (project_id, prompt_id, version) unique index since it shipped;
+// tool_schema_versions, its sibling registry, never got the matching one. That asymmetry is not
+// cosmetic: version numbers on both are derived (read currentVersion, add one), so two publishes
+// racing produce the same number, and only the table with the index notices. Without it the
+// tool-schema history silently ends up with two different definitions both calling themselves
+// v4, and nothing anywhere reports a problem.
+const TOOL_SCHEMA_VERSION_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS tool_schema_versions_tool_schema_id_version ON tool_schema_versions (project_id, tool_schema_id, version)`;
+
+// Same posture as the traces index above: an install that already collected duplicates keeps
+// booting, with the query to find them.
+function warnVersionIndexFailed(err: unknown): void {
+  console.warn(
+    `Could not create the tool_schema_versions(project_id, tool_schema_id, version) unique index: ${err instanceof Error ? err.message : String(err)}\n` +
+      `  This usually means duplicate version numbers already exist. Find them with:\n` +
+      `    SELECT project_id, tool_schema_id, version, count(*) FROM tool_schema_versions\n` +
+      `    GROUP BY project_id, tool_schema_id, version HAVING count(*) > 1;`
+  );
+}
+
+function ensureVersionUnique(exec: (statement: string) => void): void {
+  try {
+    exec(TOOL_SCHEMA_VERSION_INDEX);
+  } catch (err) {
+    warnVersionIndexFailed(err);
+  }
+}
+
+async function ensureVersionUniqueAsync(exec: (statement: string) => Promise<void>): Promise<void> {
+  try {
+    await exec(TOOL_SCHEMA_VERSION_INDEX);
+  } catch (err) {
+    warnVersionIndexFailed(err);
+  }
 }
 
 // Accounts written before better-auth 1.7 have no issuer. Every account this engine creates is a
@@ -1851,6 +1887,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
   `);
 
   await ensureTraceSpanIdUniqueAsync(statement => pool.query(statement).then(() => undefined));
+  await ensureVersionUniqueAsync(statement => pool.query(statement).then(() => undefined));
   await pool.query(BACKFILL_AUTH_ACCOUNT_ISSUER);
 
   await migrateOnlineEvaluatorsToConfigsPostgres(pool);
