@@ -3,6 +3,7 @@ import type { Server } from "node:http";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import { requireApiKey } from "./auth/apiKey.js";
 import { asyncHandler } from "./routes/asyncRouter.js";
+import { rateLimit, CREDENTIAL_LIMIT, DATA_PLANE_LIMIT } from "./auth/rateLimit.js";
 import { ingestRouter } from "./routes/ingest.js";
 import { evaluationsRouter } from "./routes/evaluations.js";
 import { monitorRouter } from "./routes/monitor.js";
@@ -88,7 +89,11 @@ async function main() {
       trustedOrigins: process.env.AGENTX_TRUSTED_ORIGINS?.split(",").map(o => o.trim()).filter(Boolean),
     });
   }
-  app.get("/api/v1/auth/config", asyncHandler(async (_req, res) => {
+  // Anything that hands out, or is guarded by, a credential (see auth/rateLimit.ts). One bucket
+  // shared across these routes so a guesser cannot spread attempts over several of them.
+  const credentialLimit = rateLimit("credential", CREDENTIAL_LIMIT);
+
+  app.get("/api/v1/auth/config", credentialLimit, asyncHandler(async (_req, res) => {
     const mode = authMode();
     res.status(200).json({
       mode,
@@ -96,7 +101,7 @@ async function main() {
     });
   }));
   if (authMode() === "enabled") {
-    app.all("/api/v1/auth/*", toNodeHandler(getAuth()));
+    app.all("/api/v1/auth/*", credentialLimit, toNodeHandler(getAuth()));
   }
 
   app.use(express.json({ limit: "10mb" }));
@@ -145,17 +150,20 @@ async function main() {
 
   // requireApiKey() is async too (it reads the projects table), so it can reject the same way a
   // route handler can - see routes/asyncRouter.ts.
+  // Far above any real SDK burst - throttling ingest would drop the telemetry this engine exists
+  // to keep - and there only to bound a key-guessing loop against requireApiKey.
+  const dataPlaneLimit = rateLimit("data-plane", DATA_PLANE_LIMIT);
   const apiKey = asyncHandler(requireApiKey());
 
-  app.use("/api/v1/ingest", apiKey, ingestRouter);
-  app.use("/api/v1/custom-agent-evaluations", apiKey, evaluationsRouter);
-  app.use("/api/v1/monitor", apiKey, monitorRouter);
-  app.use("/api/v1/agents", apiKey, agentsRouter);
-  app.use("/api/v1/outcomes", apiKey, outcomesRouter);
-  app.use("/api/v1/feedback", apiKey, feedbackRouter);
-  app.use("/api/v1/agent-monitoring", apiKey, agentMonitoringDashboardRouter);
-  app.use("/api/v1/evaluate", apiKey, evaluateDashboardRouter);
-  app.use("/api/v1/otel", apiKey, otlpRouter);
+  app.use("/api/v1/ingest", dataPlaneLimit, apiKey, ingestRouter);
+  app.use("/api/v1/custom-agent-evaluations", dataPlaneLimit, apiKey, evaluationsRouter);
+  app.use("/api/v1/monitor", dataPlaneLimit, apiKey, monitorRouter);
+  app.use("/api/v1/agents", dataPlaneLimit, apiKey, agentsRouter);
+  app.use("/api/v1/outcomes", dataPlaneLimit, apiKey, outcomesRouter);
+  app.use("/api/v1/feedback", dataPlaneLimit, apiKey, feedbackRouter);
+  app.use("/api/v1/agent-monitoring", dataPlaneLimit, apiKey, agentMonitoringDashboardRouter);
+  app.use("/api/v1/evaluate", dataPlaneLimit, apiKey, evaluateDashboardRouter);
+  app.use("/api/v1/otel", dataPlaneLimit, apiKey, otlpRouter);
 
   // Unauthenticated on purpose, same "skip a login step entirely" zero-setup UX the single-key
   // model always had - now specifically hands back the *Default* project's key (whichever project
@@ -163,7 +171,7 @@ async function main() {
   // additional project you register is only reachable via its own key from then on; this endpoint
   // never lists or exposes every project's key, only the one a fresh/never-configured client
   // should bootstrap into.
-  app.get("/api/v1/dev/bootstrap", asyncHandler(async (_req, res) => {
+  app.get("/api/v1/dev/bootstrap", credentialLimit, asyncHandler(async (_req, res) => {
     // Enabled-auth mode has no anonymous key handout - that's the whole point of the mode. The
     // dashboard gets keys via the session-guarded /projects route instead.
     if (authMode() === "enabled") {
@@ -184,7 +192,7 @@ async function main() {
   // key doesn't already expose. No rename/delete routes yet - full project-management UI is still
   // follow-up work. Returns the new project's key in full since the caller just created it and has
   // to learn it from somewhere.
-  app.post("/api/v1/projects", asyncHandler(async (req, res) => {
+  app.post("/api/v1/projects", credentialLimit, asyncHandler(async (req, res) => {
     // Enabled-auth mode: creating a project requires a signed-in user, and the project is owned
     // by their organization from birth.
     let organizationId: string | null = null;
@@ -217,7 +225,7 @@ async function main() {
   // unauthenticated posture as the two routes above, deliberately includes every project's own
   // apiKey so the switcher can hold each project's key up front and swap the x-api-key header on
   // switch, with no separate per-project auth handshake.
-  app.get("/api/v1/projects", asyncHandler(async (req, res) => {
+  app.get("/api/v1/projects", credentialLimit, asyncHandler(async (req, res) => {
     // Enabled-auth mode: this route hands out project API keys, so it's the one the session
     // strictly guards - keys are scoped to the caller's organizations. Disabled mode keeps the
     // original unauthenticated listing.

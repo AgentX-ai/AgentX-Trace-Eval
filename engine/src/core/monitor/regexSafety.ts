@@ -85,19 +85,20 @@ export function hasNestedQuantifier(source: string): boolean {
 }
 
 export function validateUserRegex(source: string): RegexValidation {
-  try {
-    // Compiled with the same flags detection uses, so a flag-specific syntax error surfaces here
-    // rather than at match time.
-    new RegExp(source, "i");
-  } catch (err) {
-    return { ok: false, error: `Invalid regular expression: ${err instanceof Error ? err.message : String(err)}` };
-  }
+  // Scanned before compiling, so a pattern already judged dangerous is never handed to RegExp at
+  // all - construction alone is cheap, but there is no reason to build one we are about to refuse.
   if (hasNestedQuantifier(source)) {
     return {
       ok: false,
       error:
         "This regular expression nests one unbounded repetition inside another (e.g. \"(a+)+\"), which can take exponential time on long agent output and would block the engine. Rewrite it without the nested quantifier.",
     };
+  }
+  try {
+    // Same flags detection uses, so a flag-specific syntax error surfaces here, not at match time.
+    new RegExp(source, "i");
+  } catch (err) {
+    return { ok: false, error: `Invalid regular expression: ${err instanceof Error ? err.message : String(err)}` };
   }
   return { ok: true };
 }

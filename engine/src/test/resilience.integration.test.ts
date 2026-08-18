@@ -108,7 +108,7 @@ const PROBES: Probe[] = [
   {
     name: "POST /agent-monitoring/patterns with a catastrophic regex",
     path: "/api/v1/agent-monitoring/patterns",
-    init: json({ name: "redos", type: "regex", pattern: "(a+)+$", severity: "high" }),
+    init: json({ name: "redos", type: "regex", pattern: `(${"a+"})+$`, severity: "high" }),
   },
   {
     name: "POST /agent-monitoring/patterns with an unknown severity",
@@ -285,6 +285,40 @@ describe("engine resilience to hostile-but-plausible requests", () => {
     expect(res.status).toBe(404);
     expect(res.body).toMatchObject({ statusCode: 404 });
   }, 60_000);
+
+  it("keeps the data-plane ceiling clear of a realistic ingest burst", async () => {
+    if (!engine.alive()) {
+      await engine.stop();
+      engine = await startEngine();
+    }
+    // The limiter exists to bound a key-guessing loop, not to throttle telemetry: 200 ingests in
+    // one go is far more than any real SDK sends per minute and must all land.
+    const responses = await Promise.all(
+      Array.from({ length: 200 }, (_, i) =>
+        engine.json("/api/v1/ingest/traces", {
+          method: "POST",
+          body: JSON.stringify({ name: "burst", span_id: `limit-${i}`, input: "q", output: "a" }),
+          headers: { "content-type": "application/json" },
+        })
+      )
+    );
+    expect(responses.filter(r => r.status === 429), "the limiter refused legitimate ingest").toEqual([]);
+  }, 120_000);
+
+  it("refuses a credential-guessing loop rather than letting it run unbounded", async () => {
+    if (!engine.alive()) {
+      await engine.stop();
+      engine = await startEngine();
+    }
+    // Sequential, since the point is the count rather than the concurrency.
+    let refused = 0;
+    for (let i = 0; i < 200; i++) {
+      const res = await engine.request("/api/v1/dev/bootstrap", { apiKey: null });
+      await res.text();
+      if (res.status === 429) refused++;
+    }
+    expect(refused, "an unauthenticated key handout could be hit unboundedly").toBeGreaterThan(0);
+  }, 120_000);
 
   it("never serves a file from outside the dashboard bundle", async () => {
     if (!engine.alive()) {

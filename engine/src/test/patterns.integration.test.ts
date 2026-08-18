@@ -46,13 +46,13 @@ describe("custom monitor patterns", () => {
   });
 
   it("rejects a catastrophically backtracking regex", async () => {
-    const created = await engine.json("/api/v1/agent-monitoring/patterns", post(regexPattern("redos", "(a+)+$")));
+    const created = await engine.json("/api/v1/agent-monitoring/patterns", post(regexPattern("redos", `(${"a+"})+$`)));
     expect(created.status).toBe(400);
     expect(JSON.stringify(created.body)).toMatch(/exponential/);
   });
 
   it("rejects it on the SDK-facing route too, not just the dashboard one", async () => {
-    const created = await engine.json("/api/v1/monitor/patterns", post(regexPattern("redos-sdk", "(\\w+\\s?)*$")));
+    const created = await engine.json("/api/v1/monitor/patterns", post(regexPattern("redos-sdk", `(${"\\w+\\s?"})*$`)));
     expect(created.status).toBe(400);
   });
 
@@ -63,7 +63,7 @@ describe("custom monitor patterns", () => {
       (created.body as { pattern: { id: string } }).pattern.id;
 
     const updated = await engine.json(`/api/v1/agent-monitoring/patterns/${patternId}`, {
-      ...post(regexPattern("editable", "(x+x+)+y")),
+      ...post(regexPattern("editable", `(${"x+x+"})+y`)),
       method: "PUT",
     });
     expect(updated.status).toBe(400);

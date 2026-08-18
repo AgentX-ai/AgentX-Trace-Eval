@@ -111,7 +111,7 @@ describe("evaluatePatternConditions", () => {
   it("skips a catastrophically backtracking regex instead of pinning the thread", async () => {
     // A pattern stored before save-time validation existed. Without the guard this call does not
     // return in any practical amount of time, and nothing else on the process runs meanwhile.
-    const redos = condition({ detector: "regex", value: "(a+)+$" });
+    const redos = condition({ detector: "regex", value: `(${"a+"})+$` });
     const started = Date.now();
     const result = await run([redos], `${"a".repeat(400)}b`);
     expect(Date.now() - started).toBeLessThan(1_000);

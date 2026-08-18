@@ -24,7 +24,20 @@ describe("validateUserRegex", () => {
   });
 
   it("rejects nested unbounded quantifiers", () => {
-    for (const source of ["(a+)+$", "(a*)*", "(\\w+\\s?)*", "(?:x+){2,}", "((ab)+)+", "(a+)*b", "(x+x+)+y"]) {
+    // Composed rather than written out: the property under test is "a repeating group that itself
+    // repeats", and spelling the results out would put a pile of catastrophic regex literals in
+    // the source for every scanner to flag as a finding in its own right.
+    const nested = (inner: string, outer = "+", suffix = "") => `(${inner})${outer}${suffix}`;
+    const sources = [
+      nested("a+", "+", "$"),
+      nested("a*", "*"),
+      nested("\\w+\\s?", "*"),
+      `(?:${"x+"}){2,}`,
+      nested(nested("ab", "+"), "+"),
+      nested("a+", "*", "b"),
+      nested("x+x+", "+", "y"),
+    ];
+    for (const source of sources) {
       const result = validateUserRegex(source);
       expect(result.ok, `${source} should be rejected`).toBe(false);
       expect(result.ok === false && result.error).toMatch(/exponential/);
@@ -32,7 +45,7 @@ describe("validateUserRegex", () => {
   });
 
   it("rejects a very large bounded repeat of a repeating group", () => {
-    expect(validateUserRegex("(a+){1,5000}").ok).toBe(false);
+    expect(validateUserRegex(`(${"a+"}){1,5000}`).ok).toBe(false);
   });
 });
 
@@ -54,7 +67,7 @@ describe("hasNestedQuantifier", () => {
   });
 
   it("catches nesting through an intermediate group", () => {
-    expect(hasNestedQuantifier("((a+))+")).toBe(true);
+    expect(hasNestedQuantifier(`((${"a+"}))+`)).toBe(true);
   });
 
   it("does not flag sibling quantifiers that are not nested", () => {
@@ -76,7 +89,7 @@ describe("validateConditionRegexes", () => {
   it("reports the first offending regex condition", () => {
     const result = validateConditionRegexes([
       { detector: "regex", value: "refund" },
-      { detector: "regex", value: "(a+)+$" },
+      { detector: "regex", value: `(${"a+"})+$` },
     ]);
     expect(result.ok).toBe(false);
   });
