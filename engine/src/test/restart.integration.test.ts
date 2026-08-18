@@ -1,5 +1,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 import fs from "node:fs";
+import path from "node:path";
+import Database from "better-sqlite3";
 import { startEngine, type TestEngine } from "./server.js";
 
 // Everything below runs against a database that already has rows in it. Every migration in
@@ -64,6 +66,40 @@ describe("restarting against an existing database", () => {
     const names = JSON.stringify(evaluators.body).match(/"name":"[^"]+"/g) ?? [];
     expect(new Set(names).size).toBe(names.length);
   }, 180_000);
+
+  it("creates the traces(project_id, span_id) unique index on an existing database", async () => {
+    const db = new Database(path.join(home!, "agentx.db"), { readonly: true });
+    const index = db
+      .prepare("SELECT name, \"unique\" FROM pragma_index_list('traces') WHERE name = ?")
+      .get("traces_project_id_span_id") as { name?: string; unique?: number } | undefined;
+    db.close();
+    expect(index?.name).toBe("traces_project_id_span_id");
+    expect(index?.unique).toBe(1);
+  });
+
+  it("still boots, with a warning, when duplicate spans predate the index", async () => {
+    // An install that hit the concurrent-replay race before the fix shipped cannot have the index
+    // created until an operator cleans up. Refusing to boot over that would be far worse than
+    // running without the cross-process guarantee, so this checks the engine degrades rather than
+    // dies - and says exactly what is wrong.
+    const db = new Database(path.join(home!, "agentx.db"));
+    db.exec("DROP INDEX IF EXISTS traces_project_id_span_id");
+    const row = db.prepare("SELECT * FROM traces WHERE span_id IS NOT NULL LIMIT 1").get() as Record<string, unknown>;
+    expect(row, "the earlier tests should have left a span-bearing trace behind").toBeTruthy();
+    const columns = Object.keys(row);
+    db.prepare(`INSERT INTO traces (${columns.join(", ")}) VALUES (${columns.map(c => "@" + c).join(", ")})`).run({
+      ...row,
+      id: "duplicate-span-row",
+    });
+    db.close();
+
+    const engine = await startEngine({}, { home });
+    engines.push(engine);
+    expect(engine.alive()).toBe(true);
+    expect(engine.log()).toContain("Could not create the traces(project_id, span_id) unique index");
+    // And it is still serving, not wedged.
+    expect((await engine.json("/api/v1/ingest/traces")).status).toBe(200);
+  }, 120_000);
 
   it("boots a third time without error", async () => {
     const third = await startEngine({}, { home });

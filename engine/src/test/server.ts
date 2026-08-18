@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import pg from "pg";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -28,6 +29,38 @@ function tsxCli(): string {
   return found;
 }
 
+// Postgres is the engine's other supported backend (AGENTX_DB_URL), and storage/db.ts branches
+// on `db.kind` in well over a hundred places - two hand-written query paths per read, which is
+// exactly the shape that drifts. Testing it needs a real server, so it is opt-in: set
+// AGENTX_TEST_DB_URL to a superuser connection string (the tests create and drop their own
+// throwaway databases on it) and the Postgres suites run; leave it unset and they skip.
+export const TEST_POSTGRES_URL = process.env.AGENTX_TEST_DB_URL ?? "";
+export const postgresAvailable = Boolean(TEST_POSTGRES_URL);
+
+let databaseCounter = 0;
+
+async function createThrowawayDatabase(): Promise<{ url: string; drop: () => Promise<void> }> {
+  const name = `agentx_test_${process.pid}_${++databaseCounter}`;
+  const admin = new pg.Client({ connectionString: TEST_POSTGRES_URL });
+  await admin.connect();
+  await admin.query(`CREATE DATABASE ${name}`);
+  await admin.end();
+
+  const url = new URL(TEST_POSTGRES_URL);
+  url.pathname = `/${name}`;
+  return {
+    url: url.toString(),
+    drop: async () => {
+      const cleanup = new pg.Client({ connectionString: TEST_POSTGRES_URL });
+      await cleanup.connect();
+      // The engine's pool may not have fully released yet when a suite tears down.
+      await cleanup.query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1`, [name]);
+      await cleanup.query(`DROP DATABASE IF EXISTS ${name}`);
+      await cleanup.end();
+    },
+  };
+}
+
 async function freePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
     const srv = net.createServer();
@@ -45,6 +78,8 @@ export type TestEngine = {
   apiKey: string;
   /** The AGENTX_HOME this engine was booted against - pass it back to startEngine to reuse the same database. */
   home: string;
+  /** Which storage backend this engine is running on, for test names and dialect-specific assertions. */
+  backend: "sqlite" | "postgres";
   /** Everything the engine wrote to stdout/stderr since boot. */
   log(): string;
   /** False once the engine process has exited - i.e. something killed it. */
@@ -61,9 +96,10 @@ export type TestEngine = {
 
 export async function startEngine(
   env: Record<string, string> = {},
-  options: { home?: string } = {}
+  options: { home?: string; postgres?: boolean } = {}
 ): Promise<TestEngine> {
   const port = await freePort();
+  const database = options.postgres ? await createThrowawayDatabase() : null;
   // A caller-supplied home boots against an EXISTING database, which is the only way to exercise
   // the upgrade path (migrations against populated tables) rather than a first-run one.
   const home = options.home ?? fs.mkdtempSync(path.join(os.tmpdir(), "agentx-test-"));
@@ -84,6 +120,7 @@ export async function startEngine(
         AGENTX_SESSION_SWEEP: "false",
         AGENTX_IMPROVEMENT_SWEEP: "false",
         NODE_ENV: "test",
+        ...(database ? { AGENTX_DB_URL: database.url } : {}),
         ...env,
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -140,6 +177,7 @@ export async function startEngine(
     baseUrl,
     apiKey,
     home,
+    backend: database ? "postgres" : "sqlite",
     log: () => output,
     alive: () => exited === null,
     exitCode: () => exited,
@@ -162,6 +200,9 @@ export async function startEngine(
       }
       if (!keepHome) {
         fs.rmSync(home, { recursive: true, force: true });
+      }
+      if (database) {
+        await database.drop();
       }
     },
     signal: async (sig: NodeJS.Signals) => {

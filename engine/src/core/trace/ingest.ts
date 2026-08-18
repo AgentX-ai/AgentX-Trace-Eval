@@ -69,14 +69,9 @@ export async function ingestTrace(
   // replayed span was already checked and judged when it first arrived, and re-running them
   // double-bills every judge call and double-counts every event.
   if (payload.span_id) {
-    const dupCond = and(eq(db.schema.traces.spanId, payload.span_id), eq(db.schema.traces.projectId, db.projectId));
-    const existing = (
-      db.kind === "sqlite"
-        ? db.db.select({ id: db.schema.traces.id, agentId: db.schema.traces.agentId }).from(db.schema.traces).where(dupCond).limit(1).all()
-        : await db.db.select({ id: db.schema.traces.id, agentId: db.schema.traces.agentId }).from(db.schema.traces).where(dupCond).limit(1)
-    ) as { id: string; agentId: string | null }[];
-    if (existing[0]) {
-      return { traceId: existing[0].id, agentId: existing[0].agentId, deduped: true };
+    const existing = await findTraceBySpanId(db, payload.span_id);
+    if (existing) {
+      return { traceId: existing.id, agentId: existing.agentId, deduped: true };
     }
   }
   const id = nanoid();
@@ -125,13 +120,37 @@ export async function ingestTrace(
     projectId: db.projectId,
   };
 
-  if (db.kind === "sqlite") {
-    await db.db.insert(db.schema.traces).values(row);
-  } else {
-    await db.db.insert(db.schema.traces).values(row);
+  // The check above is not a guarantee, only a fast path: it and this insert are two statements,
+  // and on Postgres every query yields, so concurrent replays of one span (an OTel exporter retry,
+  // an SDK re-send - the exact traffic the check exists for) all get past it. ON CONFLICT DO
+  // NOTHING against the traces(project_id, span_id) unique index (storage/db.ts) is what actually
+  // decides a winner; an empty RETURNING means this call lost, and the row the winner wrote is the
+  // one every caller should be told about. Traces with no span_id never conflict (NULL != NULL) and
+  // take exactly the path they always did.
+  const inserted = (
+    db.kind === "sqlite"
+      ? db.db.insert(db.schema.traces).values(row).onConflictDoNothing().returning({ id: db.schema.traces.id }).all()
+      : await db.db.insert(db.schema.traces).values(row).onConflictDoNothing().returning({ id: db.schema.traces.id })
+  ) as { id: string }[];
+
+  if (!inserted[0] && payload.span_id) {
+    const winner = await findTraceBySpanId(db, payload.span_id);
+    if (winner) {
+      return { traceId: winner.id, agentId: winner.agentId, deduped: true };
+    }
   }
 
   return { traceId: id, agentId, deduped: false };
+}
+
+async function findTraceBySpanId(db: Db, spanId: string): Promise<{ id: string; agentId: string | null } | null> {
+  const cond = and(eq(db.schema.traces.spanId, spanId), eq(db.schema.traces.projectId, db.projectId));
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select({ id: db.schema.traces.id, agentId: db.schema.traces.agentId }).from(db.schema.traces).where(cond).limit(1).all()
+      : await db.db.select({ id: db.schema.traces.id, agentId: db.schema.traces.agentId }).from(db.schema.traces).where(cond).limit(1)
+  ) as { id: string; agentId: string | null }[];
+  return rows[0] ?? null;
 }
 
 export type TraceRow = {

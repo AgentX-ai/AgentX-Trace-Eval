@@ -945,6 +945,8 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     }
   }
 
+  ensureTraceSpanIdUnique(statement => sqlite.exec(statement));
+
   migrateOnlineEvaluatorsToConfigsSqlite(sqlite);
   backfillAgentsSqlite(sqlite);
   backfillDefaultProjectSqlite(sqlite);
@@ -960,6 +962,49 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     );
     UPDATE monitor_profiles SET topics_enabled = 0 WHERE topics_enabled = 1;
   `);
+}
+
+// A client-supplied span_id is a stable identity (core/trace/ingest.ts leans on it to make an
+// OTel exporter retry or an SDK re-send idempotent), and the code has always ASSUMED it unique
+// within a project - it just never said so to the database. That assumption held on SQLite by
+// accident: better-sqlite3 is synchronous, so ingestTrace's "does this span exist yet?" check and
+// its INSERT never interleave with another request. On Postgres every query really yields, and ten
+// concurrent replays of one span all pass the check and all insert - ten rows, ten sets of monitor
+// checks, ten judge calls billed, everything counted ten times. This index is what makes the
+// intent enforceable; ingestTrace's ON CONFLICT DO NOTHING is what acts on it.
+//
+// NULL span_ids (the majority of traces - anything not using span_tree/OTel) are exempt for free:
+// NULL never equals NULL in a unique index, on either engine.
+const TRACE_SPAN_ID_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS traces_project_id_span_id ON traces (project_id, span_id)`;
+
+// An install that already accumulated duplicates (a Postgres deployment that hit the race before
+// this shipped) cannot have the index created until they are cleaned up. That is the operator's
+// data to decide about, so this warns with the exact query rather than deleting rows on their
+// behalf - and the engine keeps booting either way, just without the cross-process guarantee.
+function warnTraceSpanIdIndexFailed(err: unknown): void {
+  console.warn(
+    `Could not create the traces(project_id, span_id) unique index: ${err instanceof Error ? err.message : String(err)}\n` +
+      `  This usually means duplicate spans already exist. Find them with:\n` +
+      `    SELECT project_id, span_id, count(*) FROM traces WHERE span_id IS NOT NULL\n` +
+      `    GROUP BY project_id, span_id HAVING count(*) > 1;\n` +
+      `  Ingestion still works; concurrent replays of the same span may duplicate until it is resolved.`
+  );
+}
+
+function ensureTraceSpanIdUnique(exec: (statement: string) => void): void {
+  try {
+    exec(TRACE_SPAN_ID_INDEX);
+  } catch (err) {
+    warnTraceSpanIdIndexFailed(err);
+  }
+}
+
+async function ensureTraceSpanIdUniqueAsync(exec: (statement: string) => Promise<void>): Promise<void> {
+  try {
+    await exec(TRACE_SPAN_ID_INDEX);
+  } catch (err) {
+    warnTraceSpanIdIndexFailed(err);
+  }
 }
 
 // One-time backfill: online evaluators used to store their own acceptance_criteria/
@@ -1787,6 +1832,8 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     );
     UPDATE monitor_profiles SET topics_enabled = false WHERE topics_enabled = true;
   `);
+
+  await ensureTraceSpanIdUniqueAsync(statement => pool.query(statement).then(() => undefined));
 
   await migrateOnlineEvaluatorsToConfigsPostgres(pool);
   await backfillAgentsPostgres(pool);
