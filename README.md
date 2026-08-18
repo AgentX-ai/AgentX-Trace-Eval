@@ -198,9 +198,12 @@ yarn install   # workspace install: engine/ + packages/judge-core together
 
 ### Fastest dev loop
 
-Runs the engine directly via `tsx`, no compile step, restarts on file changes. `web/` isn't
-committed (see [What's in this repo](#whats-in-this-repo)), so populate it once before your first
-run - grab the prebuilt dashboard bundle (works for anyone, no private-repo access needed):
+Runs the engine directly via `tsx`, no compile step, restarts on file changes. `yarn dev` first
+builds the `@agentx/judge-core` workspace package automatically (a ~1s `tsup` step - the engine
+imports its `dist/`, which a fresh clone doesn't have yet), and `.env` is optional (judge features
+need provider keys, tracing/ingest work without any). `web/` isn't committed (see
+[What's in this repo](#whats-in-this-repo)), so populate it once before your first run - grab the
+prebuilt dashboard bundle (works for anyone, no private-repo access needed):
 
 ```bash
 mkdir -p web && curl -fsSL https://github.com/AgentX-ai/AgentX-trace-eval/releases/latest/download/agentx-web.tar.gz | tar -xz -C web

@@ -1,6 +1,12 @@
 import { nanoid } from "nanoid";
 import { eq, and, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import {
+  renderTraceTrajectory,
+  extractTraceToolSequence,
+  matchTrajectory,
+  type TrajectoryMatchMode,
+} from "../trace/trajectory.js";
 import { getEvaluationSettingsRow, type EvaluationSettingsRow } from "./evaluationSettings.js";
 import type { SimilarityConfig } from "./datasets.js";
 import { runCodeScorer, type CodeScorerConfig, type CodeScorerResult } from "./codeScorer.js";
@@ -37,7 +43,15 @@ type ResolvedRunConfig = {
   similarityConfig: SimilarityConfig;
   codeScorers: CodeScorerConfig[];
   questions: Array<{
-    main_question?: { query?: string; expectedResults?: string; judgeGuideline?: string; retrievalContext?: string };
+    main_question?: {
+      query?: string;
+      expectedResults?: string;
+      judgeGuideline?: string;
+      retrievalContext?: string;
+      // Agent-native expectation: the tool calls this case should make, matched against the
+      // linked trace's actual tool sequence (core/trace/trajectory.ts's matchTrajectory).
+      expectedTrajectory?: { tools?: string[]; mode?: string };
+    };
   }>;
 };
 
@@ -247,6 +261,11 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
     }
   }
 
+  // Trajectory-aware judging: a result that links its trace (snippets pass sync=True and return
+  // span.trace_id) gets the agent's actual execution path rendered into the judge prompt, so the
+  // judge scores HOW the answer was produced (tool choice, order, failures), not just the answer.
+  const trajectory = item.traceId ? await renderTraceTrajectory(db, item.traceId).catch(() => null) : null;
+
   const [judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore, codeScorerResults] = await Promise.all([
     // Resolved, never rejected - the same isolation the code scorers below already have.
     scoreAgainstCriteria(config, {
@@ -257,6 +276,7 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
       // For {context}-referencing judge prompts (the RAG metric pack) - a case can pin the
       // retrieved chunks it was answered from.
       context: mainQ?.retrievalContext,
+      trajectory: trajectory ?? undefined,
     }).then(
       result => ({ ...result, judgeError: null as Error | null }),
       (err: unknown) => ({
@@ -280,6 +300,34 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
       )
     ),
   ]);
+
+  // Trajectory match: a case that declares expected tool calls gets a deterministic pass/fail
+  // scored against the linked trace's actual sequence. Reported through codeScorerResults so it
+  // rides the existing storage and results UI as one more named scorer row.
+  const expectedTrajectory = mainQ?.expectedTrajectory;
+  const expectedTools = (expectedTrajectory?.tools ?? []).map(t => String(t).trim()).filter(Boolean);
+  if (expectedTools.length > 0) {
+    const mode = (["strict", "unordered", "subset", "superset"] as const).includes(
+      expectedTrajectory?.mode as TrajectoryMatchMode
+    )
+      ? (expectedTrajectory?.mode as TrajectoryMatchMode)
+      : "strict";
+    if (!item.traceId) {
+      codeScorerResults.push({
+        name: `Trajectory match (${mode})`,
+        score: null,
+        error: "No trace linked to this result - trace with sync=True and return the span's trace_id",
+      });
+    } else {
+      const actualSequence = (await extractTraceToolSequence(db, item.traceId)) ?? [];
+      const match = matchTrajectory(expectedTools, actualSequence, mode);
+      codeScorerResults.push({
+        name: `Trajectory match (${mode})`,
+        score: match.matched ? 1 : 0,
+        reasoning: match.reasoning,
+      });
+    }
+  }
 
   return { ...judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore, codeScorerResults };
 }

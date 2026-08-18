@@ -5,7 +5,9 @@
   "description": "AgentX self-host governance engine: Evaluate, Monitor, and Trace as a local HTTP API.",
   "type": "module",
   "scripts": {
+    "predev": "yarn workspace @agentx/judge-core build",
     "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "prebuild": "yarn workspace @agentx/judge-core build",
     "build": "tsc -p tsconfig.build.json",
     "start": "node --env-file-if-exists=.env dist/index.js",
     "compile": "bun build src/index.ts --compile --outfile dist/agentx-engine",
