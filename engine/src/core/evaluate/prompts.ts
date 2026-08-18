@@ -228,8 +228,7 @@ export async function listPromptsForSdk(db: Db) {
 // The only write path for a version, used both for a manual edit and for accepting a proposal
 // (source: "proposed", reasoning/basedOnVersion set), keeping propose/publish as two separate
 // calls so a proposal never reaches storage without a human explicitly approving it.
-// Enough headroom for real contention (a handful of editors, or a sweep publishing while a
-// human does) without spinning if something is genuinely wrong.
+// Headroom for real contention without spinning if something is genuinely wrong.
 const PUBLISH_MAX_ATTEMPTS = 8;
 
 export async function publishPromptVersion(
@@ -237,12 +236,9 @@ export async function publishPromptVersion(
   promptId: string,
   input: { text: string; source?: string; reasoning?: string; basedOnVersion?: number }
 ) {
-  // Publishing is "append to the history", and the version number is derived from a separate read
-  // - so two people publishing at the same moment both compute the same next number. The unique
-  // index on (project_id, prompt_id, version) is what stops that becoming two rows both claiming
-  // v4; this loop is what stops the loser being told "Internal server error" and losing its edit.
-  // Re-read, take the next free number, try again. Bounded, because a caller waiting on a publish
-  // would rather hear about persistent contention than spin.
+  // The version number comes from a separate read, so two simultaneous publishes compute the same
+  // one. The unique index stops that becoming two rows claiming v4; this loop stops the loser being
+  // told "Internal server error" and losing its edit. Re-read, take the next free number, retry.
   for (let attempt = 0; attempt < PUBLISH_MAX_ATTEMPTS; attempt++) {
     const prompt = await getPromptRow(db, promptId);
     if (!prompt) return null;
@@ -267,8 +263,7 @@ export async function publishPromptVersion(
     if (!inserted[0]) {
       continue;
     }
-    // Only ever moves currentVersion forward: a concurrent publish that already landed a HIGHER
-    // number must not be dragged back by this one finishing second.
+    // Only moves forward: a publish finishing second must not drag it back over a higher one.
     const updateCond = and(
       eq(db.schema.prompts.id, promptId),
       eq(db.schema.prompts.projectId, db.projectId),

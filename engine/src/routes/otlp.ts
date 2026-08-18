@@ -50,13 +50,9 @@ const MONITOR_CHILD_SPANS = process.env.AGENTX_MONITOR_CHILD_SPANS === "true";
 
 otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   const isProtobuf = Boolean(req.is("application/x-protobuf"));
-  // express.json() only parses application/json, and the raw parser above only handles
-  // application/x-protobuf - anything else leaves req.body as an empty object, which reads here
-  // as a valid export containing zero spans. That answered 200 to an exporter whose spans were
-  // being thrown away: a proxy rewriting the header, or a hand-rolled client defaulting to
-  // form-urlencoded, produced a permanently empty Observe tab and not one error anywhere to
-  // explain it. OTLP/HTTP specifies exactly these two content types, so anything else is a
-  // client error worth saying out loud.
+  // Any other content type leaves req.body an empty object, which reads here as a valid export of
+  // zero spans - so a proxy rewriting the header, or a client defaulting to form-urlencoded, got a
+  // 200 while every span was dropped. OTLP/HTTP specifies exactly these two.
   const isJson = Boolean(req.is("application/json"));
   if (!isProtobuf && !isJson) {
     res.status(415).json({

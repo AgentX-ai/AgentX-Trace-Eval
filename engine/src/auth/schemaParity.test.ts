@@ -4,16 +4,10 @@ import { organization } from "better-auth/plugins";
 import * as sqliteSchema from "../storage/schema.sqlite.js";
 import * as pgSchema from "../storage/schema.pg.js";
 
-// better-auth owns the shape of the auth tables; this engine hand-writes them (storage/
-// schema.*.ts plus the bootstrap DDL in storage/db.ts) instead of running better-auth's own
-// migrator, because everything else here is hand-written DDL too. That is fine right up until
-// better-auth adds a field: the dependency is pinned as ^1.6.29, so a plain `yarn install` can
-// pick up 1.7, and 1.7 added a REQUIRED `issuer` to the account model. The result was a fresh
-// install where every single sign-up answered 500 - no test, no type error, nothing but a
-// runtime error in a mode nobody ran.
-//
-// So this compares the two definitions directly. It fails on the next such addition, at build
-// time, naming the exact table and field to add.
+// better-auth owns the shape of these tables; this engine hand-writes them. That is fine until
+// better-auth adds a field: it is pinned ^1.6.29, a plain install picks up 1.7, and 1.7 added a
+// REQUIRED `issuer` - every sign-up answered 500, with no test and no type error to catch it.
+// This compares the two definitions directly and names the missing field.
 
 // The same options index.ts passes to betterAuth() - the model names have to match or the tables
 // come back under better-auth's defaults instead of this engine's.

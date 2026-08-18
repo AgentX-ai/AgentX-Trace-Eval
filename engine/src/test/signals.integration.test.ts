@@ -1,10 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEngine, type TestEngine } from "./server.js";
 
-// One signal per (pattern, agent), with a count of how often it has happened - that count is what
-// an operator triages by, so it has to be right. It is maintained across concurrent detections
-// running in detached post-ingest work, which is where the read-modify-write version of it lost
-// updates and, on Postgres, lost whole detections to a unique-index violation.
+// One signal per (pattern, agent), with the count operators triage by - maintained across
+// concurrent detections in detached post-ingest work, which is where the read-modify-write version
+// lost updates and, on Postgres, lost whole detections to a unique-index violation.
 
 let engine: TestEngine;
 let key: string;

@@ -148,17 +148,12 @@ export async function upsertSignal(
       firstSeenAt: now,
       lastSeenAt: now,
     };
-    // ON CONFLICT DO NOTHING rather than a plain insert: the SELECT above and this INSERT are two
-    // statements, and detection runs from the detached post-ingest work, so a burst of traces
-    // raising the same signal all reach here having seen no existing row. On Postgres one of them
-    // then violated monitor_signals_pattern_key_agent_id and threw - and because the caller only
-    // logs a failed monitor check, that trace's detection was simply lost. Losing the insert is
-    // fine; it means someone else created the row, so fall through and count this occurrence
-    // against theirs.
-    //
-    // Signals with no agentId are the exception: NULL never conflicts with NULL in a unique index
-    // on either engine, so those still dedup only through the SELECT above - sequentially correct,
-    // and unchanged from before. Every signal raised for a real trace has an agent.
+    // The SELECT above and this INSERT are two statements, so a burst of traces raising the same
+    // signal all arrive having seen no row; on Postgres one then violated
+    // monitor_signals_pattern_key_agent_id and that detection was lost to a log line. Losing the
+    // insert just means someone else created the row - fall through and count against theirs.
+    // Signals with no agentId still dedup through the SELECT alone (NULL never conflicts with
+    // NULL), unchanged; every signal raised for a real trace has an agent.
     const inserted = (
       db.kind === "sqlite"
         ? db.db.insert(db.schema.monitorSignals).values(row).onConflictDoNothing().returning({ id: db.schema.monitorSignals.id }).all()
@@ -169,11 +164,9 @@ export async function upsertSignal(
     }
   }
 
-  // occurrenceCount is incremented by the database, not by writing back a number read a moment
-  // ago: twelve traces raising one signal at once each read the same count and each wrote
-  // count + 1, so the Signals view reported 5 occurrences of something that happened 12 times -
-  // and that count is exactly what an operator triages by. RETURNING gives the post-update row,
-  // so the caller still gets the real id and the real count without a second read.
+  // Incremented by the database, not written back from a number read a moment ago: twelve
+  // concurrent detections were reported as five, and that count is what operators triage by.
+  // RETURNING gives the post-update row without a second read.
   const setValues = {
     summary: detected.summary,
     severity: detected.severity,
@@ -188,9 +181,8 @@ export async function upsertSignal(
       : await db.db.update(db.schema.monitorSignals).set(setValues).where(cond).returning()
   ) as SignalRow[];
 
-  // Defensive: a row existed a statement ago (either the SELECT found one or this call's insert
-  // lost to someone else's), so an empty RETURNING means something deleted it in between. Report
-  // what this call knows rather than throwing inside a background check nobody is awaiting.
+  // A row existed a statement ago, so an empty RETURNING means something deleted it in between.
+  // Report what this call knows rather than throwing inside a background check nobody awaits.
   const updated: SignalRow = updatedRows[0] ?? {
     id: existing?.id ?? nanoid(),
     projectId: db.projectId,

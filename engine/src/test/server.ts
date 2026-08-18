@@ -6,11 +6,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Boots the REAL engine the way a user does - `tsx src/index.ts`, its own main(), its own
-// SQLite file - rather than an in-process Express app assembled by the test. That's deliberate:
-// the failures worth catching here are runtime ones (an unhandled rejection that kills the
-// process, a route that never responds, a migration that only runs on a fresh database), and none
-// of those reproduce if the test hand-builds the app instead of letting index.ts do it.
+// Boots the REAL engine the way a user does - `tsx src/index.ts`, its own main(), its own SQLite
+// file. The failures worth catching are runtime ones (a rejection that kills the process, a
+// migration that only runs on a fresh database), and none reproduce against a hand-built app.
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const engineRoot = path.resolve(here, "../..");
@@ -29,11 +27,8 @@ function tsxCli(): string {
   return found;
 }
 
-// Postgres is the engine's other supported backend (AGENTX_DB_URL), and storage/db.ts branches
-// on `db.kind` in well over a hundred places - two hand-written query paths per read, which is
-// exactly the shape that drifts. Testing it needs a real server, so it is opt-in: set
-// AGENTX_TEST_DB_URL to a superuser connection string (the tests create and drop their own
-// throwaway databases on it) and the Postgres suites run; leave it unset and they skip.
+// Postgres suites are opt-in: set AGENTX_TEST_DB_URL to a superuser connection string and they
+// run against throwaway databases they create and drop; leave it unset and they skip.
 export const TEST_POSTGRES_URL = process.env.AGENTX_TEST_DB_URL ?? "";
 export const postgresAvailable = Boolean(TEST_POSTGRES_URL);
 
@@ -100,8 +95,7 @@ export async function startEngine(
 ): Promise<TestEngine> {
   const port = await freePort();
   const database = options.postgres ? await createThrowawayDatabase() : null;
-  // A caller-supplied home boots against an EXISTING database, which is the only way to exercise
-  // the upgrade path (migrations against populated tables) rather than a first-run one.
+  // A caller-supplied home boots against an existing database - the upgrade path, not a first run.
   const home = options.home ?? fs.mkdtempSync(path.join(os.tmpdir(), "agentx-test-"));
   let output = "";
   let exited: number | null = null;
@@ -154,9 +148,7 @@ export async function startEngine(
     throw new Error(`engine never became healthy:\n${output}`);
   }
 
-  // AGENTX_AUTH=enabled deliberately closes the anonymous key handout (403) - that is the point of
-  // the mode - so a suite testing it gets an engine with no ambient key and asks for one through
-  // the session-guarded route instead.
+  // AGENTX_AUTH=enabled closes the anonymous key handout, so that suite boots with no ambient key.
   const authEnabled = env.AGENTX_AUTH === "enabled";
   const bootstrapRes = await fetch(`${baseUrl}/api/v1/dev/bootstrap`);
   const bootstrap = (await bootstrapRes.json()) as { apiKey?: string };

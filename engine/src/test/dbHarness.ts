@@ -4,13 +4,9 @@ import path from "node:path";
 import pg from "pg";
 import type { Db } from "../storage/db.js";
 
-// An in-process database, for testing the core layer directly rather than only through HTTP.
-// Some behaviour simply isn't reachable from a route - retention pruning runs as a side effect of
-// ingest, the multi-replica sweep lease needs two holders, and asserting on backdated rows means
-// writing them at a specific time rather than waiting a month.
-//
-// storage/db.ts reads AGENTX_HOME at module load and caches one Db per process, so this sets the
-// environment before importing it and hands back a per-file database. One open() per test file.
+// An in-process database, for core paths no route reaches: retention pruning is a side effect of
+// ingest, the sweep lease needs two holders, and backdated rows have to be written at a chosen
+// time. storage/db.ts caches one Db per process, so this is one open() per test file.
 
 export type TestDb = {
   db: Db;

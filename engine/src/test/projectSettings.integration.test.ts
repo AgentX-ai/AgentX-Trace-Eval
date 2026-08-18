@@ -1,10 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEngine, type TestEngine } from "./server.js";
 
-// The project API key is the entire data-plane credential - there is no second factor and no
-// per-route scope. Rotating it has one job: the old one must stop working, immediately and
-// everywhere. Nothing tested that, and "the old key still works" is the kind of bug that looks
-// like success from the caller's side.
+// The project API key is the entire data-plane credential. Rotating it has one job: the old one
+// must stop working immediately - and "the old key still works" looks like success to the caller.
 
 let engine: TestEngine;
 

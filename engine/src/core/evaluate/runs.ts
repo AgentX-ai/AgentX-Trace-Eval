@@ -222,12 +222,10 @@ async function getTraceRowForScoring(db: Db, traceId: string): Promise<{ toolCal
   return row ?? null;
 }
 
-// judgeError isolates the ONE part of scoring that needs an LLM API key. The four similarity
-// metrics and the sandboxed code scorers need no key at all - they are the whole no-key story
-// self-host advertises - and they used to be computed and then thrown away whenever the judge
-// call rejected, because all of it shared a single Promise.all and a single catch upstream. A
-// self-host install with no OPENAI_API_KEY therefore got null in every similarity column even
-// though the numbers had already been calculated.
+// judgeError isolates the one part of scoring that needs an API key. The similarity metrics and
+// code scorers need none - they are the whole no-key story - but shared a Promise.all and a catch
+// with the judge, so an install with no OPENAI_API_KEY got null in every similarity column even
+// though the numbers had been calculated.
 type ScoredResult = { rating: number | null; justification: string; judgeError: Error | null } & SimilarityScores & {
     codeScorerResults: CodeScorerResult[];
   };
@@ -250,8 +248,7 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
   }
 
   const [judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore, codeScorerResults] = await Promise.all([
-    // Resolved, never rejected - same isolation the code scorers below already have, so one
-    // missing API key can't void the scores that didn't need it.
+    // Resolved, never rejected - the same isolation the code scorers below already have.
     scoreAgainstCriteria(config, {
       input: item.input?.query || "",
       output: actual || "",
@@ -334,8 +331,7 @@ export async function appendResults(
     } else {
       try {
         const scored = await scoreOneResult(db, config, item);
-        // Kept whatever they are, judge outcome aside: these are what a run without an LLM key
-        // has to show for itself.
+        // Kept regardless of the judge outcome - all a run without an LLM key has to show.
         similarity = scored;
         codeScorerResults = scored.codeScorerResults;
         if (scored.judgeError) {

@@ -143,9 +143,8 @@ async function main() {
   // is actually up without needing the API key.
   app.get("/health", (_req, res) => res.status(200).json({ status: "ok" }));
 
-  // One wrapped instance shared by every mount below: requireApiKey() is itself async (it reads
-  // the projects table), so a locked or unreachable database makes it reject exactly the way a
-  // route handler can - see routes/asyncRouter.ts for why that has to become next(err).
+  // requireApiKey() is async too (it reads the projects table), so it can reject the same way a
+  // route handler can - see routes/asyncRouter.ts.
   const apiKey = asyncHandler(requireApiKey());
 
   app.use("/api/v1/ingest", apiKey, ingestRouter);
@@ -262,27 +261,20 @@ async function main() {
     app.get(/^(?!\/api).*/, (_req, res) => res.sendFile(webIndexHtml));
   }
 
-  // Last stop for anything a handler threw or rejected with (routes/asyncRouter.ts routes async
-  // rejections here). Registered after every route including the SPA fallback, because Express
-  // only reaches an error handler that comes AFTER the layer that failed. Answers in the same
-  // `statusCode`-carrying JSON shape as the /api 404 above, which is what AgentX-web-front's axios
-  // interceptor reads (see its initAxios.ts).
-  //
-  // The `next` parameter is unused but must stay declared: Express identifies error middleware by
-  // arity, and dropping it turns this back into an ordinary handler that never runs.
+  // Last stop for anything a handler threw or rejected with. Registered after every route,
+  // because Express only reaches an error handler that comes AFTER the failing layer. Same
+  // statusCode-carrying JSON shape as the /api 404 above (AgentX-web-front's axios interceptor
+  // reads it). `next` is unused but must stay declared - Express detects error middleware by arity.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     console.error(`Unhandled error in ${req.method} ${req.originalUrl}:`, err);
-    // Handlers that respond and then keep working in the background (routes/ingest.ts's POST
-    // /traces is the canonical one) can fail after the response is already on the wire - there is
-    // nothing left to send, so log it and stop.
+    // Handlers that respond and then keep working (routes/ingest.ts's POST /traces) can fail with
+    // the response already on the wire - nothing left to send.
     if (res.headersSent) {
       return;
     }
-    // body-parser reports a malformed/oversized/wrong-type body by throwing an error carrying its
-    // own 4xx status (400 entity.parse.failed, 413 entity.too.large, 415 unsupported charset).
-    // Those reached Express's built-in handler before this one existed and answered 400/413/415;
-    // flattening them to 500 would tell a client its own bad request was a server fault.
+    // body-parser throws with its own 4xx status (400 parse.failed, 413 too.large, 415 charset).
+    // Flattening those to 500 would blame the server for the client's bad request.
     const status = (err as { status?: unknown; statusCode?: unknown } | null)?.status ?? (err as { statusCode?: unknown } | null)?.statusCode;
     if (typeof status === "number" && status >= 400 && status < 500) {
       res.status(status).json({ statusCode: status, message: err instanceof Error ? err.message : "Bad request" });
@@ -376,20 +368,15 @@ async function main() {
   process.on("SIGTERM", shutdown);
 }
 
-// Defence in depth behind the per-request handling above. Node's default for an unhandled
-// rejection is to throw, which exits the process - for a server that turns any one missed `await`
-// (in a background sweep, a detached fire-and-forget check, a library's internal timer) into a
-// full outage for every project on the box, with SQLite's WAL left unflushed because the SIGTERM
-// path never runs. Log it loudly and keep serving instead; the log line is the signal that
-// something needs a real fix, and it is strictly more useful than a process that is gone.
+// Defence in depth behind the per-request handling above. Node exits on an unhandled rejection,
+// which turns any one missed `await` - a background sweep, a detached check, a library's timer -
+// into an outage for every project on the box. Log it loudly and keep serving.
 process.on("unhandledRejection", reason => {
   console.error("Unhandled promise rejection (engine kept running):", reason);
 });
-// An uncaught *exception*, by contrast, keeps Node's fatal default: unlike a stray rejection it
-// can leave whatever threw halfway through its work, and carrying on from there is how a crash
-// becomes silent corruption. This only adds the log line that the default handler doesn't print
-// in a recognisable form. (SQLite is safe across this: WAL mode is crash-safe by design, it's the
-// checkpoint that's skipped, not committed data.)
+// An uncaught exception keeps Node's fatal default: it can leave whatever threw halfway through,
+// and carrying on from there is how a crash becomes silent corruption. This only adds the log
+// line. (SQLite is safe: WAL mode is crash-safe, it is the checkpoint that is skipped.)
 process.on("uncaughtException", err => {
   console.error("Uncaught exception, exiting:", err);
   process.exit(1);

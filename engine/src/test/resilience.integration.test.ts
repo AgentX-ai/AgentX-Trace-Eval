@@ -1,15 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEngine, type TestEngine } from "./server.js";
 
-// Every route handler in this engine is an `async (req, res) => ...` mounted on Express 4, and
-// Express 4 does not catch a rejected handler promise - it becomes an unhandled rejection, which
-// Node kills the process over. So "this endpoint throws on a weird query param" isn't a 500 here,
-// it's an outage for every project on the box, plus a SQLite WAL that never got flushed (the
-// SIGTERM shutdown path in index.ts is skipped entirely on that exit).
-//
-// This suite therefore checks something stronger than "returns a sensible status": it checks the
-// process is still alive afterwards. Each probe restarts the engine if a previous one killed it,
-// so one crash doesn't mask the rest - the failure message lists every request that killed it.
+// Express 4 does not catch a rejected handler promise, so "this endpoint throws on a weird query
+// param" is an outage for every project on the box, not a 500. These probes therefore assert the
+// process is still alive afterwards. Each restarts the engine if a previous one killed it, so one
+// crash doesn't mask the rest.
 
 type Probe = {
   name: string;

@@ -19,10 +19,9 @@ export type WebhookSignal = {
   rootCause?: string | null;
 };
 
-// Matches core/monitor/customEvaluators.ts's CUSTOM_EVALUATOR_TIMEOUT_MS - the engine's other
-// call out to an operator-supplied URL. Without a deadline a target that accepts the connection
-// and then never answers holds a socket for undici's multi-minute default, and signals are
-// emitted as fast as traffic arrives, so those accumulate.
+// Matches customEvaluators.ts's own budget. Without a deadline a target that accepts the
+// connection and never answers holds a socket for undici's multi-minute default, and signals
+// arrive as fast as traffic does.
 const WEBHOOK_TIMEOUT_MS = 8000;
 
 // Fire-and-forget, non-blocking: a webhook target being slow or down must never delay trace
@@ -52,9 +51,8 @@ export function notifyWebhooks(urls: string[], signal: WebhookSignal): void {
       signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
     })
       .then(res => {
-        // fetch only rejects on a transport failure, so a 404 from a mistyped Slack URL - by far
-        // the likeliest misconfiguration - used to be indistinguishable from a delivered
-        // notification. Nothing to retry, but the operator should at least be able to see it.
+        // fetch only rejects on transport failure, so a 404 from a mistyped Slack URL was
+        // indistinguishable from a delivered notification.
         if (!res.ok) {
           console.error(`Monitor webhook delivery failed (${url}): responded ${res.status}`);
         }

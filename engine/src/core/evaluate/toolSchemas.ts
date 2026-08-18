@@ -244,10 +244,9 @@ export async function publishToolSchemaVersion(
     resolvedExampleIds?: string[];
   }
 ) {
-  // Identical shape and identical hazard to core/evaluate/prompts.ts's publishPromptVersion - see
-  // that function for the full reasoning. This registry additionally never had the unique index
-  // its sibling did, so before storage/db.ts's tool_schema_versions_tool_schema_id_version, a
-  // race here produced two definitions both stored as the same version with no error at all.
+  // Same shape and same hazard as prompts.ts's publishPromptVersion. This registry additionally
+  // had no unique index until storage/db.ts added one, so a race here stored two definitions under
+  // the same version with no error at all.
   for (let attempt = 0; attempt < PUBLISH_MAX_ATTEMPTS; attempt++) {
     const schema = await getToolSchemaRow(db, toolSchemaId);
     if (!schema) return null;
@@ -287,8 +286,7 @@ export async function publishToolSchemaVersion(
       input.resolvedExampleIds && input.resolvedExampleIds.length > 0
         ? Array.from(new Set([...resolvedEvidenceIds(schema), ...input.resolvedExampleIds]))
         : undefined;
-    // resolvedEvidence is merged on every attempt regardless of version ordering, but
-    // currentVersion only moves forward - a publish finishing second must not drag it back.
+    // Evidence merges regardless of ordering; currentVersion only moves forward.
     const versionCond = and(
       eq(db.schema.toolSchemas.id, toolSchemaId),
       eq(db.schema.toolSchemas.projectId, db.projectId),

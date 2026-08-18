@@ -5,12 +5,9 @@ import { openTestDb, type TestDb } from "./dbHarness.js";
 import { pruneRetentionData } from "../core/monitor/events.js";
 import type { Db } from "../storage/db.js";
 
-// Retention pruning is the only code in the engine that deletes a user's telemetry, and it runs
-// as an opportunistic side effect of ingest rather than on a schedule anyone watches. Everything
-// about it is asymmetric: too timid and the database grows forever, too eager and traffic
-// disappears with no record that it ever existed - and a scoping mistake takes another project's
-// data with it. None of that is reachable through a route, which is why this drives the core
-// function directly with rows written at chosen times.
+// The only code here that deletes a user's telemetry, run as a side effect of ingest rather than
+// on a schedule anyone watches. Too eager and traffic disappears with no record; a scoping mistake
+// takes another project's with it. Driven directly, since no route writes rows at chosen times.
 
 let test: TestDb;
 let projectA: string;

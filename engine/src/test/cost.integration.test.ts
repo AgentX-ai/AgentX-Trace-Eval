@@ -1,11 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEngine, type TestEngine } from "./server.js";
 
-// Overview's cost chart is the only place this engine puts a dollar figure in front of anyone.
-// It prices real traces against the user-maintained catalog, merges dated model snapshots onto
-// their base id, and buckets by when the traffic happened. A factor-of-1000 or a mis-bucketed
-// day reads as a perfectly plausible number, so this checks exact amounts against a catalog the
-// test defines.
+// The only place this engine puts a dollar figure in front of anyone. A factor of 1000, or a
+// mis-bucketed day, reads as a plausible number - so this checks exact amounts against a catalog
+// the test defines.
 
 let engine: TestEngine;
 let key: string;

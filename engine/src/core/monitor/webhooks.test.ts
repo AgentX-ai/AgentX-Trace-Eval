@@ -3,10 +3,9 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { extractWebhookUrls, notifyWebhooks } from "./webhooks.js";
 
-// notifyWebhooks POSTs to an operator-supplied URL on every raised signal, from inside the
-// detached post-ingest work. Two properties matter more than the payload: it must not block the
-// caller, and a target that never answers must not hold a socket open indefinitely - signals can
-// arrive as fast as traffic does.
+// POSTs to an operator-supplied URL on every raised signal. Two properties matter more than the
+// payload: it must not block the caller, and a target that never answers must not hold a socket
+// open indefinitely - signals arrive as fast as traffic does.
 
 type Received = { path: string; body: string };
 

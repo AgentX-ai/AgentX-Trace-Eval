@@ -1,10 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEngine, type TestEngine } from "./server.js";
 
-// "Turn production traffic into a golden dataset case" is the close-the-loop feature, and it is
-// two clicks in the dashboard - so the same trace gets added twice constantly. Deduplication and
-// multi-turn ordering are what stop a dataset quietly filling with near-copies in the wrong
-// sequence, and neither is visible until someone reads the dataset back.
+// Two clicks in the dashboard, so the same trace gets added twice constantly. Dedup and multi-turn
+// ordering are what stop a dataset filling with near-copies in the wrong sequence - neither
+// visible until someone reads the dataset back.
 
 let engine: TestEngine;
 let key: string;

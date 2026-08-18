@@ -1,19 +1,9 @@
-// Custom monitor patterns let an operator store a regular expression that the engine then runs
-// against production text on every ingest (core/monitor/conditions.ts's evaluateDetector). Two
-// things go wrong with a regex arriving over an API:
-//
-// 1. It may not compile. Today that is swallowed at match time and the pattern simply never
-//    fires - the operator gets a saved pattern, a green dashboard row, and silence forever.
-// 2. It may compile and backtrack catastrophically. `(a+)+$` against ~40 'a's followed by a 'b'
-//    takes exponential time, and because JS regexes cannot be interrupted, that pins the single
-//    thread this engine runs on: no route responds, no health check answers, for every project on
-//    the box. The matched text is agent output, which end users influence, so the length needed
-//    to trigger it is not under the operator's control.
-//
-// Validating at save time turns both into an immediate, explainable 400. The nested-quantifier
-// scan below is the standard "star height > 1" heuristic: it is deliberately conservative (it can
-// reject a pattern that would have been fine) because the cost of a false positive is an operator
-// rewording a regex, and the cost of a false negative is an outage.
+// A custom monitor pattern's regex is stored over the API and then run against production text on
+// every ingest. Two ways that goes wrong: it may not compile, which was swallowed at match time so
+// the pattern just never fired; or it may backtrack catastrophically, which pins the single thread
+// this engine runs on since JS regexes cannot be interrupted. Validating at save time turns both
+// into an explainable 400. The scan below is the standard "star height > 1" heuristic, deliberately
+// conservative - a false positive costs a reworded regex, a false negative costs an outage.
 
 export type RegexValidation = { ok: true } | { ok: false; error: string };
 
@@ -47,11 +37,8 @@ function unboundedQuantifierAt(source: string, index: number): boolean {
   return openEnded || upper > 100;
 }
 
-/**
- * Flags a quantifier applied to a group that itself contains an unbounded quantifier - `(a+)+`,
- * `(\w*\s?)*`, `(?:x+){2,}` and friends. Character classes and escaped characters are skipped so
- * `\(`, `[+*]` and `\+` don't read as structure.
- */
+/** Flags a quantifier applied to a group that itself repeats unboundedly - `(a+)+`, `(\w*\s?)*`.
+ *  Character classes and escapes are skipped so `\(` and `[+*]` don't read as structure. */
 export function hasNestedQuantifier(source: string): boolean {
   // One entry per open group: whether an unbounded quantifier has been seen inside it so far.
   const groupStack: boolean[] = [];

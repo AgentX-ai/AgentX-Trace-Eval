@@ -2,11 +2,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { openTestDb, type TestDb } from "./dbHarness.js";
 import { acquireSweepLease } from "../core/shared/sweepLease.js";
 
-// The lease is what stops N replicas of the engine each running the same background sweep every
-// tick and N-times-judging the same sessions - real money, on the user's own API key. Its whole
-// correctness claim is that two replicas racing one tick cannot both win, which needs two
-// holders: sweepLease.ts draws one HOLDER_ID per module instance, so a second instance loaded
-// through a reset module registry stands in for a second replica against the same database.
+// Stops N replicas each running the same sweep every tick and N-times-judging the same sessions,
+// on the user's own API key. Testing it needs two holders: sweepLease.ts draws one HOLDER_ID per
+// module instance, so a second instance from a reset module registry stands in for a replica.
 
 let test: TestDb;
 

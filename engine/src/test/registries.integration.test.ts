@@ -1,11 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEngine, type TestEngine } from "./server.js";
 
-// The Prompt and Tool Schema registries are the "propose, human-approve, publish" half of the
-// Improve loop: a version-numbered history per record, with the current version being what
-// everything else compares against. Version numbering is derived (read currentVersion, add one),
-// which is the same read-then-write shape that already broke span dedup under concurrency, and a
-// lost or reused version number here is a silently corrupted history.
+// Version numbers are derived (read currentVersion, add one) - the same read-then-write shape
+// that broke span dedup - and a lost or reused number here is a silently corrupted history.
 
 let engine: TestEngine;
 let key: string;

@@ -973,12 +973,10 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
   `);
 }
 
-// prompt_versions has had a (project_id, prompt_id, version) unique index since it shipped;
-// tool_schema_versions, its sibling registry, never got the matching one. That asymmetry is not
-// cosmetic: version numbers on both are derived (read currentVersion, add one), so two publishes
-// racing produce the same number, and only the table with the index notices. Without it the
-// tool-schema history silently ends up with two different definitions both calling themselves
-// v4, and nothing anywhere reports a problem.
+// prompt_versions has had this index since it shipped; tool_schema_versions never got the
+// matching one. Version numbers on both are derived (read currentVersion, add one), so two
+// publishes racing produce the same number - and without the index the tool-schema history just
+// ends up with two different definitions both calling themselves v4, silently.
 const TOOL_SCHEMA_VERSION_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS tool_schema_versions_tool_schema_id_version ON tool_schema_versions (project_id, tool_schema_id, version)`;
 
 // Same posture as the traces index above: an install that already collected duplicates keeps
@@ -1008,30 +1006,20 @@ async function ensureVersionUniqueAsync(exec: (statement: string) => Promise<voi
   }
 }
 
-// Accounts written before better-auth 1.7 have no issuer. Every account this engine creates is a
-// locally-managed one (email/password only - no social providers are configured), and better-auth
-// spells that issuer "local:<providerId>", so the value is derivable rather than lost. Without the
-// backfill those rows stay invisible to 1.7's issuer-scoped account lookups, which means an
-// existing user's password sign-in silently stops working after an upgrade.
+// Accounts written before better-auth 1.7 have no issuer, and 1.7 looks accounts up scoped by it -
+// so without this an existing user's password silently stops working on upgrade. Every account
+// here is local email/password, which better-auth spells "local:<providerId>".
 const BACKFILL_AUTH_ACCOUNT_ISSUER = `UPDATE auth_account SET issuer = 'local:' || provider_id WHERE issuer IS NULL`;
 
-// A client-supplied span_id is a stable identity (core/trace/ingest.ts leans on it to make an
-// OTel exporter retry or an SDK re-send idempotent), and the code has always ASSUMED it unique
-// within a project - it just never said so to the database. That assumption held on SQLite by
-// accident: better-sqlite3 is synchronous, so ingestTrace's "does this span exist yet?" check and
-// its INSERT never interleave with another request. On Postgres every query really yields, and ten
-// concurrent replays of one span all pass the check and all insert - ten rows, ten sets of monitor
-// checks, ten judge calls billed, everything counted ten times. This index is what makes the
-// intent enforceable; ingestTrace's ON CONFLICT DO NOTHING is what acts on it.
-//
-// NULL span_ids (the majority of traces - anything not using span_tree/OTel) are exempt for free:
-// NULL never equals NULL in a unique index, on either engine.
+// ingestTrace has always assumed span_id is unique within a project - it just never said so to
+// the database. That held on SQLite by accident (better-sqlite3 is synchronous, so its existence
+// check and INSERT never interleave); on Postgres ten concurrent replays of one span all passed
+// the check and all inserted, billing ten sets of monitor and judge calls for one interaction.
+// NULL span_ids - most traces - are exempt for free: NULL never equals NULL in a unique index.
 const TRACE_SPAN_ID_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS traces_project_id_span_id ON traces (project_id, span_id)`;
 
-// An install that already accumulated duplicates (a Postgres deployment that hit the race before
-// this shipped) cannot have the index created until they are cleaned up. That is the operator's
-// data to decide about, so this warns with the exact query rather than deleting rows on their
-// behalf - and the engine keeps booting either way, just without the cross-process guarantee.
+// An install that already accumulated duplicates cannot create the index until they are cleaned
+// up. That is the operator's data, so warn with the query rather than deleting rows for them.
 function warnTraceSpanIdIndexFailed(err: unknown): void {
   console.warn(
     `Could not create the traces(project_id, span_id) unique index: ${err instanceof Error ? err.message : String(err)}\n` +

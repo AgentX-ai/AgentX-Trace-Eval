@@ -3,9 +3,8 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { startEngine, type TestEngine } from "./server.js";
 
-// Custom Evaluators hand the verdict to an HTTP endpoint the operator controls, called on every
-// ingested trace from the detached post-response work. That makes someone else's server part of
-// this engine's ingest path: whatever it does - 500, garbage, silence - must stay their problem.
+// Custom Evaluators put someone else's server in this engine's ingest path. Whatever it does -
+// 500, garbage, silence - has to stay their problem.
 
 let engine: TestEngine;
 let server: http.Server;
@@ -200,14 +199,11 @@ describe("custom evaluators on the ingest path", () => {
   }
 
   it("defaults to sampling a tenth of traffic when no sampleRate is given", async () => {
-    // Pinned because it is surprising and easy to hit: a Custom Evaluator created without an
-    // explicit sampleRate skips ~90% of traces, so an operator wiring up their endpoint and
-    // sending a handful of test traces will most likely see nothing happen at all.
-    //
-    // The 0.1 comes from monitor_online_evaluators, which customEvaluators.ts was modeled on, and
-    // there the number is justified in the schema comment: "Every check here is a real LLM call
-    // against the user's own API key". A Custom Evaluator calls the operator's OWN endpoint - no
-    // per-call billing - and Patterns, the other free, user-configured check, default to 1.
+    // Pinned because it is surprising: without an explicit sampleRate an evaluator skips ~90% of
+    // traces, so wiring up an endpoint and sending a few test traces most likely does nothing. The
+    // 0.1 is inherited from monitor_online_evaluators, where the schema comment justifies it as
+    // "a real LLM call against the user's own API key" - which a Custom Evaluator is not, and
+    // Patterns, the other free check, default to 1.
     const created = await engine.json(
       "/api/v1/agent-monitoring/custom-evaluators",
       post({ name: "default-sample-rate", url: `${base}/no-match`, severity: "high" })

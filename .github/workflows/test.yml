@@ -1,14 +1,16 @@
 name: Tests
-# There was no test workflow: the suites added alongside this file only prove anything if they
-# run on every change. Three jobs, matching the three things this repo actually ships - the
-# TypeScript engine and its shared judge-core package, the Go CLI, and the engine again against
-# Postgres, which is the backend where the concurrency behaviour differs (see
-# engine/src/test/dialect.integration.test.ts).
+# The engine and judge-core, the Go CLI, and the engine again against Postgres - the backend where
+# concurrent writes actually interleave (engine/src/test/dialect.integration.test.ts).
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch: {}
+
+# Read-only: nothing here publishes. Same explicit block release.yml and publish-judge-core.yml
+# already set, and what CodeQL's workflow-permissions check asks for.
+permissions:
+  contents: read
 
 jobs:
   typescript:
@@ -27,8 +29,7 @@ jobs:
       - name: Install workspace dependencies
         run: yarn install --frozen-lockfile
 
-      # The engine imports @agentx/judge-core through its "exports" map, so the workspace package
-      # has to be built before anything can import it.
+      # The engine imports judge-core through its "exports" map, so it has to be built first.
       - name: Build judge-core
         run: yarn workspace @agentx/judge-core build
 
@@ -40,8 +41,7 @@ jobs:
       - name: Test judge-core
         run: yarn workspace @agentx/judge-core test
 
-      # The integration suites boot the real engine as a subprocess per file, so this is slower
-      # than a unit-only run and worth its own generous timeout rather than the job default.
+      # The integration suites boot the real engine per file, so this outruns the job default.
       - name: Test engine
         run: yarn workspace @agentx/engine test
         timeout-minutes: 15
@@ -78,8 +78,7 @@ jobs:
       - name: Build judge-core
         run: yarn workspace @agentx/judge-core build
 
-      # AGENTX_TEST_DB_URL is what un-skips the Postgres suites; the tests create and drop their
-      # own throwaway databases on this connection, so it points at the default one.
+      # AGENTX_TEST_DB_URL un-skips the Postgres suites; they create and drop their own databases.
       - name: Test engine against Postgres
         run: yarn workspace @agentx/engine test
         timeout-minutes: 20
@@ -92,10 +91,8 @@ jobs:
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
 
-      # Tag rather than a pinned SHA like the actions above: those SHAs are carried over from this
-      # repo's existing workflows, and inventing one for an action they have never used would be a
-      # guess. No cache-dependency-path either - cli/ has no third-party dependencies and so no
-      # go.sum for setup-go to hash.
+      # Tag, not a pinned SHA: the SHAs above are carried over from this repo's other workflows,
+      # and this action is new here. cli/ has no dependencies, so there is no go.sum to cache on.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

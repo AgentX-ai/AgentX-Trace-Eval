@@ -1,11 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEngine, type TestEngine } from "./server.js";
 
-// Sessions is Observe's conversation-level view: one row per session_id, assembled in JS from the
-// trace rows. Its counting rules are specific and easy to get subtly wrong - turns are root spans
-// only, active time is the sum of root latencies rather than wall-clock (a conversation resumed
-// the next day is not a day long), and the agent name comes from roots so this table and Live
-// Traces never disagree. All of it is silent when wrong.
+// One row per session_id, assembled in JS. The counting rules are specific: turns are root spans
+// only, active time sums root latencies rather than wall-clock (a conversation resumed the next
+// day is not a day long), and the agent comes from roots so this and Live Traces agree.
 
 let engine: TestEngine;
 let key: string;

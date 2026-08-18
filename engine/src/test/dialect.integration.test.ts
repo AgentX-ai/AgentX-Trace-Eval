@@ -1,15 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { postgresAvailable, startEngine, type TestEngine } from "./server.js";
 
-// storage/db.ts carries two hand-written query paths for almost every read - `db.kind === "sqlite"
-// ? db.db.select()...all() : await db.db.select()...` - plus two schema files (schema.sqlite.ts and
-// schema.pg.ts) that have to stay in step by hand. That is the classic shape for silent
-// divergence: a filter added to one branch, a column typed differently, a sort that only holds on
-// one engine. Nothing catches it unless both backends run the same scenario and the answers are
-// compared.
-//
-// Opt-in: set AGENTX_TEST_DB_URL to a Postgres superuser connection string. Without it this file
-// skips rather than failing, so a checkout with no Postgres still runs green.
+// storage/db.ts carries two hand-written query paths per read, plus two schema files kept in step
+// by hand - the classic shape for silent divergence. Nothing catches it unless both backends run
+// the same scenario and the answers are compared. Opt-in via AGENTX_TEST_DB_URL; skips without it.
 
 const post = (body: unknown): RequestInit => ({
   method: "POST",

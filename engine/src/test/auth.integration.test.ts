@@ -3,11 +3,9 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { postgresAvailable, startEngine, type TestEngine } from "./server.js";
 
-// AGENTX_AUTH=enabled is a whole second posture for the engine - users, organizations, cookie
-// sessions - and it changes who can obtain a project API key, which is the data-plane credential
-// for everything else. Nothing exercised it. The interesting question is not "does login work"
-// but "does enabling it actually close the door the disabled mode leaves open", and "does the SDK
-// path keep working regardless", since ingest must never do a login flow.
+// A whole second posture for the engine, and it changes who can obtain a project API key. The
+// question is not "does login work" but "does enabling it close the door the default mode leaves
+// open", and "does the SDK path keep working" - ingest must never do a login flow.
 
 let engine: TestEngine;
 

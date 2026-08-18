@@ -1,18 +1,11 @@
-// Nanosecond epoch timestamps arrive as strings on every path that carries them - OTLP's proto3
-// JSON mapping encodes uint64 as a string, and the Python SDK matches that shape for consistency
-// (see core/trace/ingest.ts's ingestTraceSchema) - because they exceed JS safe-integer precision.
-//
-// Both readers used to hand the raw value straight to BigInt(), which THROWS on anything that
-// isn't a decimal integer literal: "1.7e18" from a producer that round-tripped the value through
-// a float, "" from a client that sends empty strings for absent fields, or plain prose. That
-// throw happened inside an async Express handler, where Express 4 turns it into an unhandled
-// rejection and Node exits - one malformed span from one client took the whole engine down. This
-// module is the single tolerant reader both paths now use.
+// Nanosecond epoch timestamps arrive as strings (they exceed JS safe-integer precision), from both
+// OTLP and the SDK. Both readers used to hand the raw value to BigInt(), which THROWS on anything
+// that isn't a decimal integer - "1.7e18", "", prose - inside an async Express handler, where that
+// became an unhandled rejection and Node exited. One tolerant reader for both paths.
 
 const MAX_NANOS_IN_DATE_RANGE = 8_640_000_000_000_000n * 1_000_000n;
 
-// Decimal digits only, with an optional sign: exactly what BigInt() accepts without throwing,
-// checked up front instead of caught afterwards.
+// Exactly what BigInt() accepts, checked up front instead of caught afterwards.
 const DECIMAL_INTEGER = /^[+-]?\d+$/;
 
 /**
@@ -41,12 +34,8 @@ export function parseUnixNanosOrZero(value: unknown): bigint {
   return parseUnixNanos(value) ?? 0n;
 }
 
-/**
- * Converts a wire nanosecond timestamp to a Date, or null if it isn't parseable or lands outside
- * the range a JS Date can represent. A Date built from an out-of-range value is an Invalid Date,
- * which every driver rejects at bind time (another throw on the ingest path) and which no query
- * would match anyway.
- */
+/** To a Date, or null if unparseable or outside the range a Date can hold - an Invalid Date is
+ *  what every driver rejects at bind time, which was the second throw on this path. */
 export function unixNanosToDate(value: unknown): Date | null {
   const nanos = parseUnixNanos(value);
   if (nanos === null || nanos > MAX_NANOS_IN_DATE_RANGE || nanos < -MAX_NANOS_IN_DATE_RANGE) {

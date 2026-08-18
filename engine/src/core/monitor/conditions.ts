@@ -75,11 +75,9 @@ async function evaluateDetector(condition: PatternCondition, text: string, seman
     return { matched: false };
   }
   if (condition.detector === "regex") {
-    // Rejected at save time now (routes/monitor.ts and routes/agentMonitoringDashboard.ts both
-    // run core/monitor/regexSafety.ts's validator), but a row stored before that validation
-    // existed would still reach here - and a JS regex cannot be interrupted, so letting one
-    // catastrophic backtracker through pins the engine's only thread for every project on the
-    // box. Skipping the condition with a loud log is the strictly better failure.
+    // Rejected at save time now (regexSafety.ts), but a row stored before that would still reach
+    // here - and a JS regex cannot be interrupted, so one backtracker pins the engine's only
+    // thread. A logged skip is the better failure.
     if (hasNestedQuantifier(value)) {
       console.error(
         `Skipping monitor regex "${value}": nested unbounded quantifiers can take exponential time. Edit the pattern to remove the nesting.`

@@ -84,9 +84,8 @@ export async function ingestTrace(
   // applied here too. Root traces are unaffected; the vast majority of ingested traces (anything
   // not using span_tree=True/OTel multi-span) have no parent_span_id at all.
   const agentId = payload.parent_span_id ? null : await resolveAgentId(db, payload.agent_id || payload.name);
-  // An unparseable started_at_unix_nano is dropped, not fatal: a trace collector's job is to keep
-  // the observation, and losing the whole span over one bad field would hide exactly the traffic
-  // an operator is trying to debug. The warning is what surfaces the client-side bug.
+  // Dropped, not fatal: losing a whole span over one bad field hides exactly the traffic an
+  // operator is trying to debug. The warning is what surfaces the client-side bug.
   const startedAt = unixNanosToDate(payload.started_at_unix_nano);
   if (payload.started_at_unix_nano && !startedAt) {
     console.warn(`Ignoring unparseable started_at_unix_nano "${payload.started_at_unix_nano}" on trace "${payload.name}"`);
@@ -120,13 +119,10 @@ export async function ingestTrace(
     projectId: db.projectId,
   };
 
-  // The check above is not a guarantee, only a fast path: it and this insert are two statements,
-  // and on Postgres every query yields, so concurrent replays of one span (an OTel exporter retry,
-  // an SDK re-send - the exact traffic the check exists for) all get past it. ON CONFLICT DO
-  // NOTHING against the traces(project_id, span_id) unique index (storage/db.ts) is what actually
-  // decides a winner; an empty RETURNING means this call lost, and the row the winner wrote is the
-  // one every caller should be told about. Traces with no span_id never conflict (NULL != NULL) and
-  // take exactly the path they always did.
+  // The check above is a fast path, not a guarantee: on Postgres concurrent replays of one span -
+  // the exact traffic it exists for - all get past it. ON CONFLICT against the
+  // traces(project_id, span_id) index decides the winner; an empty RETURNING means this call lost,
+  // so report the row the winner wrote. Traces with no span_id never conflict.
   const inserted = (
     db.kind === "sqlite"
       ? db.db.insert(db.schema.traces).values(row).onConflictDoNothing().returning({ id: db.schema.traces.id }).all()

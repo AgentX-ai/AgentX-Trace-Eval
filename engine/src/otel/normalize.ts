@@ -48,11 +48,9 @@ function pick<T>(obj: Record<string, unknown> | undefined, camel: string, snake:
 // Accepts the same shape whether it came from decodeProtobufExportRequest() or was parsed
 // directly from a JSON request body - both are plain objects with (mostly) camelCase keys by the
 // time they reach here, see protoTypes.ts's toObject options comment.
-// Nothing below may throw. normalizeExportRequest runs outside routes/otlp.ts's decode
-// try/catch, in an async handler, so a throw here is an unhandled rejection rather than a 400 -
-// see core/shared/unixNano.ts. Every list and object read off the wire is therefore checked
-// rather than asserted, because "an OTel exporter sent this" is not the same as "this matches the
-// spec": half-written batches, hand-rolled clients and buggy Collector processors all land here.
+// Nothing below may throw: this runs outside routes/otlp.ts's decode try/catch, in an async
+// handler, so a throw is an unhandled rejection rather than a 400. Every list and object off the
+// wire is checked rather than asserted - "an exporter sent this" is not "this matches the spec".
 function objectList(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? (value.filter(item => item && typeof item === "object") as Record<string, unknown>[]) : [];
 }
@@ -83,8 +81,7 @@ export function normalizeExportRequest(parsed: Record<string, unknown>): Normali
           spanIdHex: base64ToHex(pick(span, "spanId", "span_id")) ?? "",
           parentSpanIdHex: base64ToHex(pick(span, "parentSpanId", "parent_span_id")),
           name: typeof span.name === "string" && span.name ? span.name : "unknown",
-          // 0n for anything unparseable, which mapping.ts already treats as "no timestamp" (it
-          // only derives a latency from a positive delta, and omits started_at_unix_nano at 0).
+          // 0n for anything unparseable, which mapping.ts already treats as "no timestamp".
           startTimeUnixNano: parseUnixNanosOrZero(pick(span, "startTimeUnixNano", "start_time_unix_nano")),
           endTimeUnixNano: parseUnixNanosOrZero(pick(span, "endTimeUnixNano", "end_time_unix_nano")),
           attributes: keyValueListToRecord(span.attributes as never),

@@ -86,25 +86,12 @@ export async function resolveAgentId(db: Db, input: string): Promise<string> {
   return autoRegisterAgent(db, input);
 }
 
-// The id an auto-registered agent gets, derived from (project, name) instead of drawn at random.
-//
-// Auto-registration is a find-or-create across two statements, and the find cannot see a create
-// that has not committed yet - so a burst of first-ever traces for one new agent name (a deploy,
-// a load test, an SDK fanning out across workers) used to register the name once PER REQUEST.
-// Twenty duplicate rows in the Agents tab, and worse, those twenty traces split across twenty
-// agent ids, fragmenting every per-agent KPI and scope rule that keys off one. It held on SQLite
-// only because better-sqlite3 is synchronous; on Postgres, and on any multi-replica deployment
-// (which AGENTX_AUTH_SECRET's docs explicitly contemplate), it is wide open.
-//
-// A unique index on (project_id, name) would be the obvious fix and is the wrong one: two agents
-// deliberately registered under the same display name is a supported thing (see this file's header
-// comment - that is what POST /agents is for, disambiguated by id from then on). Deriving the id
-// instead makes the PRIMARY KEY do the work for the auto-registration path alone: every replica
-// computes the same id for the same (project, name), so the second insert conflicts and loses.
-// Explicit registrations keep their random nanoid and can still collide by name freely.
-//
-// Existing installs are unaffected: an agent already registered under the name is found by
-// findOldestAgentByName above and this is never reached.
+// Auto-registration is find-or-create across two statements, so a burst of first-ever traces for
+// one new name registered it once per request - twenty rows in the Agents tab, and those traces
+// split across twenty agent ids. A unique index on (project_id, name) would be wrong: two agents
+// deliberately sharing a display name is supported (see this file's header). Deriving the id
+// instead lets the PRIMARY KEY settle it for this path alone, while explicit registrations keep
+// their random nanoid. Never reached for a name already registered - findOldestAgentByName wins.
 function autoRegisteredAgentId(projectId: string, name: string): string {
   return createHash("sha256").update(`${projectId}\u0000${name}`).digest("base64url").slice(0, 21);
 }
@@ -119,8 +106,8 @@ async function autoRegisterAgent(db: Db, name: string): Promise<string> {
   if (inserted[0]) {
     return inserted[0].id;
   }
-  // Lost the race - the winner wrote the same id, so it is already the right answer, but re-read
-  // by name so a pre-existing row under a different id still wins over this derived one.
+  // Lost the race. Re-read by name rather than assuming the derived id, so a pre-existing row
+  // under a different id still wins.
   const winner = await findOldestAgentByName(db, name);
   return winner?.id ?? row.id;
 }

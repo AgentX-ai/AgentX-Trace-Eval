@@ -34,9 +34,8 @@ monitorRouter.use((req: Request, res: Response, next) => {
       res.status(400).json({ error: check.error });
       return;
     }
-    // Same gap, same fix: an out-of-range or non-numeric sampleRate used to be stored as-is, and
-    // core/monitor/routing.ts reads anything <= 0 (or any non-number) as "never run" - a check
-    // that shows enabled in the dashboard and silently never fires. See core/shared/sampleRate.ts.
+    // Same gap: routing.ts reads anything <= 0, or any non-number, as "never run" - a check that
+    // shows enabled and never fires. See core/shared/sampleRate.ts.
     const sampleRate = validateSampleRateParam(req.body?.sampleRate);
     if (!sampleRate.ok) {
       res.status(400).json({ error: sampleRate.error });

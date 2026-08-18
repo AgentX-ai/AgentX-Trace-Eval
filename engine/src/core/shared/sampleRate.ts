@@ -1,12 +1,7 @@
-// Sampling rate for the checks that support throttling - monitor patterns, online evaluators and
-// custom evaluators. core/monitor/routing.ts's passesSampleRate reads it as: >= 1 always runs,
-// <= 0 never runs, anything between is a coin flip.
-//
-// That reading is why an unvalidated value is worse than it looks. `sampleRate: -1` and
-// `sampleRate: "half"` were both accepted and stored verbatim, and both mean the check NEVER
-// RUNS - while the dashboard keeps showing it as enabled. A silently dead evaluator is the single
-// hardest failure to notice in a monitoring product, so the boundary rejects the value instead.
-// Same shape as core/shared/severity.ts's validator, applied by the same router-level middleware.
+// core/monitor/routing.ts reads a sample rate as: >= 1 always runs, <= 0 never runs, between is a
+// coin flip. So `-1` and the string "half" were both accepted, stored verbatim, and meant the check
+// NEVER RUNS while the dashboard showed it as enabled. Same shape as severity.ts's validator,
+// applied by the same router-level middleware.
 export function isValidSampleRate(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
 }

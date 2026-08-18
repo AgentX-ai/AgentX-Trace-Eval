@@ -1,11 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEngine, type TestEngine } from "./server.js";
 
-// Judge Calibration is the number that makes "trust the LLM judge" falsifiable: for every
-// real-world outcome reported back, compare it against the verdict AgentX had already recorded
-// for that trace. A confusion matrix computed the wrong way round is the worst possible bug here,
-// because the output is a confident percentage either way - so this builds a scenario with one
-// of each cell and checks the arithmetic against it.
+// Judge Calibration compares each reported real-world outcome against the verdict AgentX had
+// already recorded. A confusion matrix computed the wrong way round outputs a confident percentage
+// either way, so this builds one of each cell and checks the arithmetic against it.
 
 let engine: TestEngine;
 let key: string;

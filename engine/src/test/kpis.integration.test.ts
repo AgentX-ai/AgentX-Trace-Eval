@@ -1,13 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEngine, type TestEngine } from "./server.js";
 
-// Overview's headline numbers - health rate, failure rate, tool failure rate, p95 latency and the
-// bucketed trend - are all computed in JS over the monitor_events log (core/monitor/events.ts).
-// Nothing about a wrong number here looks wrong: the dashboard renders a plausible percentage
-// either way. So this seeds a mix with a known answer and checks the arithmetic exactly.
-//
-// Everything runs in a project created by the test, because the default project ships with seeded
-// example data that would make exact counts impossible.
+// Overview's headline numbers are computed in JS over the monitor_events log, and the dashboard
+// renders a plausible percentage either way - so this seeds a mix with a known answer. In a
+// project the test creates: the default one ships with example data that would skew the counts.
 
 let engine: TestEngine;
 let key: string;
