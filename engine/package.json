@@ -6,12 +6,12 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
-    "build": "tsc -p .",
+    "build": "tsc -p tsconfig.build.json",
     "start": "node --env-file-if-exists=.env dist/index.js",
     "compile": "bun build src/index.ts --compile --outfile dist/agentx-engine",
     "db:migrate": "tsx --env-file-if-exists=.env src/storage/migrate.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit -p . && tsc --noEmit -p tsconfig.test.json"
+    "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
     "@agentx/judge-core": "*",

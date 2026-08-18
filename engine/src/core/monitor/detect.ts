@@ -214,7 +214,11 @@ export async function runMonitorCheck(
   if (profile && !profile.enabled) {
     return;
   }
-  if (profile && !passesSampleRate(defaults.sampleRate)) {
+  // Not gated on `profile` (it was, until this was fixed): monitoring is always-on per trace,
+  // while profile rows only exist for agents someone configured explicitly - so gating this
+  // project-level setting on one made it a silent no-op for a default install. topics.ts's
+  // runClassification always read it unconditionally; both consumers now agree.
+  if (!passesSampleRate(defaults.sampleRate)) {
     return;
   }
 

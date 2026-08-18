@@ -220,14 +220,23 @@ loop wired up between the two repos yet.
 
 ### Tests
 
+Unit and integration tests (vitest for the engine and judge-core, `go test` for the CLI). They run
+against a temporary SQLite database - no API keys or network needed:
+
 ```bash
-yarn test        # judge-core + engine (vitest) + the Go CLI
+yarn test        # judge-core + engine + the Go CLI
 yarn typecheck   # both TypeScript packages, tests included
 ```
 
-The engine's integration suites boot the real engine as a subprocess against a throwaway SQLite
-database, so they need no configuration - but the ones that exercise Postgres skip unless you
-point them at a server:
+Or one workspace at a time:
+
+```bash
+yarn workspace @agentx/engine test
+yarn workspace @agentx/judge-core test
+```
+
+The engine's integration suites boot the real engine as a subprocess. The ones that exercise
+Postgres skip unless you point them at a server:
 
 ```bash
 docker run -d --name agentx-pg-test -e POSTGRES_PASSWORD=agentx -e POSTGRES_DB=agentx -p 55432:5432 postgres:16-alpine

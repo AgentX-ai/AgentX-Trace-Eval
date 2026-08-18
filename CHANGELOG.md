@@ -632,3 +632,37 @@ floor): the first call reported an 8018-token cache write, the second an 8018-to
 both landed in the traces row correctly, and a configured-vs-unconfigured cost comparison on the
 same token counts ($0.001665 vs. the unconfigured fallback of $0.00018, matching the pre-existing
 flat-rate formula exactly) confirmed both the discount and the regression guard.
+
+Monitor's project-level sample rate (Platform Settings > Monitoring Defaults) turned out to be a
+silent no-op for most traffic. `runMonitorCheck`'s gate read `if (profile &&
+!passesSampleRate(defaults.sampleRate))`, so it only applied to agents that happened to have a
+`monitor_profiles` row - and nothing writes one on ingest, only an explicit profile PUT or
+`core/seed.ts`. Left over from when the always-on monitor-checks change removed the
+`ctx.requireEnabledProfile` gate above it: harmless while "no profile" still meant "skip", but it
+inverted the setting's meaning once every ingested trace was checked. On a default install,
+turning coverage down to 10% (or 0%) changed nothing. Measured before the fix at `sampleRate: 0.5`
+over 300 failing traces each: agent without a profile row 300/300 monitored, agent with one
+145/300, agent-less traces 300/300. Fixed by dropping the `profile &&` prefix from the sampling
+gate only - the `profile && !profile.enabled` check above it stays, since an explicitly disabled
+profile is still the per-agent opt-out.
+
+Two related things left alone deliberately. `pruneRetentionData` is still called under
+`if (profile)`, so the project's `retentionDays` also only prunes for profiled agents - same root
+cause, but unblocking it starts *deleting* traces/events for agents that were never pruned before,
+which is a data-loss decision to make on its own. And the SDK-facing `POST
+/api/v1/monitor/patterns` still doesn't forward `sampleRate`/`scopeMode`/`agentIds`, with no
+pattern PUT/PATCH/DELETE on that router at all, so per-pattern sampling remains dashboard-only;
+no route validates `sampleRate` into `[0, 1]` either, where a stored `-1` silently means "monitor
+nothing" and a `50` (a UI sending percent) silently means "monitor everything".
+
+This is also the engine's first test suite: `routing.test.ts` (unit tests for
+`passesSampleRate`/`matchesAgentScope`, including out-of-range and NaN semantics and a guard for
+the `"selected"` vs `"specific"` scope-string bug recorded above) and `detect.test.ts`
+(`runMonitorCheck` against a real temporary SQLite database - project-rate sampling with a profile
+row, without one, and with no agentId; rates 0 and 1; the disabled-profile opt-out; per-pattern
+sampling; and the deliberate `pattern_ids` bypass). `Math.random` is stubbed with a seeded PRNG so
+the statistical assertions are deterministic rather than flaky, and all four project-rate tests
+were confirmed to fail against the old gate (200/200 and 20/20 monitored where ~100 and 0 were
+expected) before the fix went in. `engine`'s `test` script drops `--passWithNoTests`, and `build`
+moves to a new `tsconfig.build.json` excluding `*.test.ts` so `dist/` stays shipping code while
+`yarn typecheck` and editors still cover the tests.

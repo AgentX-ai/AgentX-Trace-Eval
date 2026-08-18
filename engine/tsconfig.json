@@ -16,8 +16,5 @@
     "sourceMap": true
   },
   "include": ["src/**/*.ts"],
-  // Tests live next to the code they cover, so they have to be excluded here or `tsc -p .` would
-  // emit them into dist/ and ship them in the release binary. tsconfig.test.json type-checks them
-  // (see package.json's typecheck script) without emitting anything.
-  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/test/**"]
+  "exclude": ["node_modules", "dist"]
 }
