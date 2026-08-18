@@ -5,6 +5,7 @@ import type { Db } from "../../storage/db.js";
 import { resolveAgentId } from "../monitor/agents.js";
 import { listPortabilityModels, estimateCostUSD } from "../evaluate/models.js";
 import { getClassificationForTrace } from "../monitor/topics.js";
+import { unixNanosToDate } from "../shared/unixNano.js";
 
 // Mirrors the wire payload agentx.tracing.tracer.Tracer._send builds in the Python SDK
 // (agentx/tracing/tracer.py); see AgentX-Python for the exact field list this was checked
@@ -88,6 +89,13 @@ export async function ingestTrace(
   // applied here too. Root traces are unaffected; the vast majority of ingested traces (anything
   // not using span_tree=True/OTel multi-span) have no parent_span_id at all.
   const agentId = payload.parent_span_id ? null : await resolveAgentId(db, payload.agent_id || payload.name);
+  // An unparseable started_at_unix_nano is dropped, not fatal: a trace collector's job is to keep
+  // the observation, and losing the whole span over one bad field would hide exactly the traffic
+  // an operator is trying to debug. The warning is what surfaces the client-side bug.
+  const startedAt = unixNanosToDate(payload.started_at_unix_nano);
+  if (payload.started_at_unix_nano && !startedAt) {
+    console.warn(`Ignoring unparseable started_at_unix_nano "${payload.started_at_unix_nano}" on trace "${payload.name}"`);
+  }
   const row = {
     id,
     name: payload.name,
@@ -107,14 +115,12 @@ export async function ingestTrace(
     cacheWriteTokens: payload.cache_write_tokens ?? null,
     spanId: payload.span_id ?? null,
     parentSpanId: payload.parent_span_id ?? null,
-    startedAt: payload.started_at_unix_nano ? new Date(Number(BigInt(payload.started_at_unix_nano) / 1_000_000n)) : null,
+    startedAt,
     // Historical imports (Moveworks Data API sync and any future backfill) send real past
     // start times; createdAt drives every window-based view (cost chart, sessions, top failing),
     // so it must reflect when the traffic HAPPENED, not when it was imported. Live traffic's
     // startedAt is "now" anyway, so this is byte-identical for the normal path.
-    createdAt: payload.started_at_unix_nano
-      ? new Date(Number(BigInt(payload.started_at_unix_nano) / 1_000_000n))
-      : new Date(),
+    createdAt: startedAt ?? new Date(),
     agentId,
     projectId: db.projectId,
   };

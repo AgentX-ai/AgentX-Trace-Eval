@@ -1,4 +1,5 @@
-import { Router, type Request, type Response } from "express";
+import type { Request, Response } from "express";
+import { asyncRouter } from "./asyncRouter.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { createAgent, getAgent, listAgentsWire } from "../core/monitor/agents.js";
 
@@ -9,7 +10,7 @@ import { createAgent, getAgent, listAgentsWire } from "../core/monitor/agents.js
 // monitorRouter matches client.monitor.* - a thin router reusing the same core/monitor/agents.ts
 // functions the dashboard router (agentMonitoringDashboard.ts) calls, not a separate
 // implementation.
-export const agentsRouter = Router();
+export const agentsRouter = asyncRouter();
 
 agentsRouter.get("/", async (req: Request, res: Response) => {
   const agents = await listAgentsWire(scopedDb(req));

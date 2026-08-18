@@ -1,4 +1,5 @@
-import { Router, type Request, type Response } from "express";
+import type { Request, Response } from "express";
+import { asyncRouter } from "./asyncRouter.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { recordUserFeedback, listFeedbackForTrace } from "../core/monitor/userFeedback.js";
 
@@ -7,7 +8,7 @@ import { recordUserFeedback, listFeedbackForTrace } from "../core/monitor/userFe
 // deliberately separate from it: an outcome is an after-the-fact system result ("ticket
 // reopened"), feedback is a human reaction with vote semantics ("up"/"down") plus its own
 // signal-raising behavior - see core/monitor/userFeedback.ts for what one report fans out into.
-export const feedbackRouter = Router();
+export const feedbackRouter = asyncRouter();
 
 feedbackRouter.post("/", async (req: Request, res: Response) => {
   const body = req.body ?? {};

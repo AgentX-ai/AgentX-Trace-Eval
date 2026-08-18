@@ -1,4 +1,5 @@
-import { Router, type Request, type Response } from "express";
+import type { Request, Response } from "express";
+import { asyncRouter } from "./asyncRouter.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { createDataset, getDataset, listDatasets, extractSimilarityConfig, extractCodeScorers } from "../core/evaluate/datasets.js";
 import { createEvaluationSettings, getEvaluationSettings, listEvaluationSettings } from "../core/evaluate/evaluationSettings.js";
@@ -25,7 +26,7 @@ import { handleCasePreview, handleSuggestExpected, handleAddCase } from "./curat
 // hosted SaaS's async whole-run LLM analysis (analyze_run/get_analysis_status/get_report),
 // list_models, and get_missing_results are not ported: a materially larger, separate feature
 // (durable job queue, richer report schema) left for a future pass.
-export const evaluationsRouter = Router();
+export const evaluationsRouter = asyncRouter();
 
 evaluationsRouter.post("/datasets", async (req: Request, res: Response) => {
   const { name, description, numberOfRequests, acceptanceCriteria, rejectionCriteria, evaluationCriteria, questions } =

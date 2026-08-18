@@ -10,8 +10,8 @@
     "start": "node --env-file-if-exists=.env dist/index.js",
     "compile": "bun build src/index.ts --compile --outfile dist/agentx-engine",
     "db:migrate": "tsx --env-file-if-exists=.env src/storage/migrate.ts",
-    "test": "vitest run --passWithNoTests",
-    "typecheck": "tsc --noEmit -p ."
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p . && tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "@agentx/judge-core": "*",

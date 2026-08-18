@@ -1,4 +1,5 @@
 import { keyValueListToRecord } from "./attributes.js";
+import { parseUnixNanosOrZero } from "../core/shared/unixNano.js";
 
 export type NormalizedSpanEvent = { name: string; attributes: Record<string, unknown> };
 
@@ -21,8 +22,8 @@ export type NormalizedSpan = {
 // (bytes: String, see protoTypes.ts) and a spec-compliant OTLP/JSON body - same conversion either
 // way. Rendered as hex (32/16 chars) to match how every OTel backend and the W3C tracecontext spec
 // display ids, not how they're transmitted.
-function base64ToHex(b64: string | undefined | null): string | null {
-  if (!b64) {
+function base64ToHex(b64: unknown): string | null {
+  if (typeof b64 !== "string" || !b64) {
     return null;
   }
   return Buffer.from(b64, "base64").toString("hex");
@@ -47,33 +48,45 @@ function pick<T>(obj: Record<string, unknown> | undefined, camel: string, snake:
 // Accepts the same shape whether it came from decodeProtobufExportRequest() or was parsed
 // directly from a JSON request body - both are plain objects with (mostly) camelCase keys by the
 // time they reach here, see protoTypes.ts's toObject options comment.
+// Nothing below may throw. normalizeExportRequest runs outside routes/otlp.ts's decode
+// try/catch, in an async handler, so a throw here is an unhandled rejection rather than a 400 -
+// see core/shared/unixNano.ts. Every list and object read off the wire is therefore checked
+// rather than asserted, because "an OTel exporter sent this" is not the same as "this matches the
+// spec": half-written batches, hand-rolled clients and buggy Collector processors all land here.
+function objectList(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? (value.filter(item => item && typeof item === "object") as Record<string, unknown>[]) : [];
+}
+
+function objectOrUndefined(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
 export function normalizeExportRequest(parsed: Record<string, unknown>): NormalizedSpan[] {
   const spans: NormalizedSpan[] = [];
-  const resourceSpansList = (pick<unknown[]>(parsed, "resourceSpans", "resource_spans") ?? []) as Record<
-    string,
-    unknown
-  >[];
+  const resourceSpansList = objectList(pick<unknown[]>(parsed, "resourceSpans", "resource_spans"));
 
   for (const rs of resourceSpansList) {
-    const resource = rs.resource as Record<string, unknown> | undefined;
+    const resource = objectOrUndefined(rs.resource);
     const resourceAttributes = keyValueListToRecord(resource?.attributes as never);
-    const scopeSpansList = (pick<unknown[]>(rs, "scopeSpans", "scope_spans") ?? []) as Record<string, unknown>[];
+    const scopeSpansList = objectList(pick<unknown[]>(rs, "scopeSpans", "scope_spans"));
 
     for (const ss of scopeSpansList) {
-      const scope = ss.scope as Record<string, unknown> | undefined;
+      const scope = objectOrUndefined(ss.scope);
       const scopeName = typeof scope?.name === "string" ? scope.name : null;
-      const spanList = (ss.spans ?? []) as Record<string, unknown>[];
+      const spanList = objectList(ss.spans);
 
       for (const span of spanList) {
-        const status = span.status as Record<string, unknown> | undefined;
-        const events = (span.events ?? []) as Record<string, unknown>[];
+        const status = objectOrUndefined(span.status);
+        const events = objectList(span.events);
         spans.push({
           traceIdHex: base64ToHex(pick(span, "traceId", "trace_id")) ?? "",
           spanIdHex: base64ToHex(pick(span, "spanId", "span_id")) ?? "",
           parentSpanIdHex: base64ToHex(pick(span, "parentSpanId", "parent_span_id")),
           name: typeof span.name === "string" && span.name ? span.name : "unknown",
-          startTimeUnixNano: BigInt((pick<string>(span, "startTimeUnixNano", "start_time_unix_nano") ?? "0") || "0"),
-          endTimeUnixNano: BigInt((pick<string>(span, "endTimeUnixNano", "end_time_unix_nano") ?? "0") || "0"),
+          // 0n for anything unparseable, which mapping.ts already treats as "no timestamp" (it
+          // only derives a latency from a positive delta, and omits started_at_unix_nano at 0).
+          startTimeUnixNano: parseUnixNanosOrZero(pick(span, "startTimeUnixNano", "start_time_unix_nano")),
+          endTimeUnixNano: parseUnixNanosOrZero(pick(span, "endTimeUnixNano", "end_time_unix_nano")),
           attributes: keyValueListToRecord(span.attributes as never),
           resourceAttributes,
           scopeName,
@@ -81,7 +94,7 @@ export function normalizeExportRequest(parsed: Record<string, unknown>): Normali
           // numbers (2), and real JSON exporters (OTel JS among them) send the number - normalize
           // both to the string enum here so downstream checks (extractError) compare one shape.
           statusCode: normalizeStatusCode(status?.code),
-          statusMessage: (status?.message as string | undefined) ?? null,
+          statusMessage: typeof status?.message === "string" ? status.message : null,
           events: events.map(e => ({
             name: typeof e.name === "string" ? e.name : "",
             attributes: keyValueListToRecord(e.attributes as never),

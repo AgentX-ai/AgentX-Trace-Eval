@@ -1,5 +1,6 @@
-import { Router, type Request, type Response } from "express";
+import type { Request, Response } from "express";
 import express from "express";
+import { asyncRouter } from "./asyncRouter.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { ingestTraceSchema, ingestTrace, type IngestTraceInput } from "../core/trace/ingest.js";
 import { runMonitorCheck } from "../core/monitor/detect.js";
@@ -24,7 +25,7 @@ import { otelSpanToIngestInput, reconstructParentToolCalls } from "../otel/mappi
 // clients). One incoming span becomes one AgentX trace row (core/trace/ingest.ts's existing
 // ingestTrace, reused unchanged) - see otel/mapping.ts for the GenAI/OpenLLMetry/OpenInference
 // attribute-to-field mapping and its disclosed limitations.
-export const otlpRouter = Router();
+export const otlpRouter = asyncRouter();
 
 // Scoped to this router (only activates for this content-type) so it can coexist with the
 // app-level express.json() already mounted in index.ts - body-parser middlewares pass through

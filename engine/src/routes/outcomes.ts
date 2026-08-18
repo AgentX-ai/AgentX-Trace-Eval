@@ -1,4 +1,5 @@
-import { Router, type Request, type Response } from "express";
+import type { Request, Response } from "express";
+import { asyncRouter } from "./asyncRouter.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { createOutcomeReport } from "../core/outcomes/outcomeReports.js";
 
@@ -9,7 +10,7 @@ import { createOutcomeReport } from "../core/outcomes/outcomeReports.js";
 // back against a traceId, days or weeks after the original trace/eval ran. Auth is the same
 // project API key every other route uses; no separate webhook-signing scheme, matching this
 // engine's existing "one API key, no per-integration secrets" posture.
-export const outcomesRouter = Router();
+export const outcomesRouter = asyncRouter();
 
 outcomesRouter.post("/", async (req: Request, res: Response) => {
   const body = req.body ?? {};

@@ -2,7 +2,9 @@
 // AgentX-web-api/src/helpers/agentMonitoringConditions.ts: pure, dependency-free multi-condition
 // evaluation for custom monitor patterns. The semantic detector is injected as a callback so this
 // module never imports the LLM layer; core/monitor/detect.ts passes the real judge, tests can pass
-// the fast heuristic below.
+// the fast heuristic below. (regexSafety.js is the one import, and is itself pure.)
+import { hasNestedQuantifier } from "./regexSafety.js";
+
 export type PatternMatchTarget = "response" | "userMessage" | "trace";
 
 export type PatternCondition = {
@@ -73,6 +75,17 @@ async function evaluateDetector(condition: PatternCondition, text: string, seman
     return { matched: false };
   }
   if (condition.detector === "regex") {
+    // Rejected at save time now (routes/monitor.ts and routes/agentMonitoringDashboard.ts both
+    // run core/monitor/regexSafety.ts's validator), but a row stored before that validation
+    // existed would still reach here - and a JS regex cannot be interrupted, so letting one
+    // catastrophic backtracker through pins the engine's only thread for every project on the
+    // box. Skipping the condition with a loud log is the strictly better failure.
+    if (hasNestedQuantifier(value)) {
+      console.error(
+        `Skipping monitor regex "${value}": nested unbounded quantifiers can take exponential time. Edit the pattern to remove the nesting.`
+      );
+      return { matched: false };
+    }
     try {
       return { matched: new RegExp(value, condition.caseSensitive ? "" : "i").test(text) };
     } catch {

@@ -222,11 +222,17 @@ async function getTraceRowForScoring(db: Db, traceId: string): Promise<{ toolCal
   return row ?? null;
 }
 
-async function scoreOneResult(
-  db: Db,
-  config: ResolvedRunConfig,
-  item: SubmittedResult
-): Promise<{ rating: number; justification: string } & SimilarityScores & { codeScorerResults: CodeScorerResult[] }> {
+// judgeError isolates the ONE part of scoring that needs an LLM API key. The four similarity
+// metrics and the sandboxed code scorers need no key at all - they are the whole no-key story
+// self-host advertises - and they used to be computed and then thrown away whenever the judge
+// call rejected, because all of it shared a single Promise.all and a single catch upstream. A
+// self-host install with no OPENAI_API_KEY therefore got null in every similarity column even
+// though the numbers had already been calculated.
+type ScoredResult = { rating: number | null; justification: string; judgeError: Error | null } & SimilarityScores & {
+    codeScorerResults: CodeScorerResult[];
+  };
+
+async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: SubmittedResult): Promise<ScoredResult> {
   const question = item.questionIndex != null ? config.questions[item.questionIndex] : undefined;
   const mainQ = question?.main_question;
   const expected = mainQ?.expectedResults;
@@ -244,6 +250,8 @@ async function scoreOneResult(
   }
 
   const [judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore, codeScorerResults] = await Promise.all([
+    // Resolved, never rejected - same isolation the code scorers below already have, so one
+    // missing API key can't void the scores that didn't need it.
     scoreAgainstCriteria(config, {
       input: item.input?.query || "",
       output: actual || "",
@@ -252,7 +260,14 @@ async function scoreOneResult(
       // For {context}-referencing judge prompts (the RAG metric pack) - a case can pin the
       // retrieved chunks it was answered from.
       context: mainQ?.retrievalContext,
-    }),
+    }).then(
+      result => ({ ...result, judgeError: null as Error | null }),
+      (err: unknown) => ({
+        rating: null,
+        justification: "",
+        judgeError: err instanceof Error ? err : new Error(String(err)),
+      })
+    ),
     config.similarityConfig.vectorSimilarity?.enabled
       ? computeVectorSimilarity(expected, actual, config.similarityConfig.vectorSimilarity.model)
       : Promise.resolve(null),
@@ -319,17 +334,25 @@ export async function appendResults(
     } else {
       try {
         const scored = await scoreOneResult(db, config, item);
-        rating = scored.rating;
-        justification = scored.justification;
+        // Kept whatever they are, judge outcome aside: these are what a run without an LLM key
+        // has to show for itself.
         similarity = scored;
         codeScorerResults = scored.codeScorerResults;
+        if (scored.judgeError) {
+          status = "skipped";
+          justification = scored.judgeError.message;
+          // Judge call failures (bad/missing API key, provider outage) previously left no trace
+          // anywhere except this one result's justification field, effectively invisible unless a
+          // caller went looking at the exact result row. Surfacing it here at least gets it into
+          // agentx-server's own logs.
+          console.error(`Evaluate: judge scoring failed for run ${runId} (${item.idempotencyKey}):`, scored.judgeError);
+        } else {
+          rating = scored.rating;
+          justification = scored.justification;
+        }
       } catch (err) {
         status = "skipped";
         justification = err instanceof Error ? err.message : "Scoring failed";
-        // Judge call failures (bad/missing API key, provider outage) previously left no trace
-        // anywhere except this one result's justification field, effectively invisible unless a
-        // caller went looking at the exact result row. Surfacing it here at least gets it into
-        // agentx-server's own logs.
         console.error(`Evaluate: scoring failed for run ${runId} (${item.idempotencyKey}):`, err);
       }
     }

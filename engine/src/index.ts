@@ -1,7 +1,8 @@
 import path from "node:path";
 import type { Server } from "node:http";
-import express, { type Express } from "express";
+import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import { requireApiKey } from "./auth/apiKey.js";
+import { asyncHandler } from "./routes/asyncRouter.js";
 import { ingestRouter } from "./routes/ingest.js";
 import { evaluationsRouter } from "./routes/evaluations.js";
 import { monitorRouter } from "./routes/monitor.js";
@@ -87,13 +88,13 @@ async function main() {
       trustedOrigins: process.env.AGENTX_TRUSTED_ORIGINS?.split(",").map(o => o.trim()).filter(Boolean),
     });
   }
-  app.get("/api/v1/auth/config", async (_req, res) => {
+  app.get("/api/v1/auth/config", asyncHandler(async (_req, res) => {
     const mode = authMode();
     res.status(200).json({
       mode,
       needsSetup: mode === "enabled" ? await needsSetup(getDb()) : false,
     });
-  });
+  }));
   if (authMode() === "enabled") {
     app.all("/api/v1/auth/*", toNodeHandler(getAuth()));
   }
@@ -104,7 +105,7 @@ async function main() {
   // Unauthenticated by necessity - the MCP server's authorization server redirects the USER'S
   // BROWSER here with only code+state; state is the engine-minted session id, and the session
   // store (15-minute TTL, in-memory) is the actual authority on what the code can do.
-  app.get("/api/v1/mcp-oauth/callback", async (req, res) => {
+  app.get("/api/v1/mcp-oauth/callback", asyncHandler(async (req, res) => {
     const code = typeof req.query.code === "string" ? req.query.code : "";
     const state = typeof req.query.state === "string" ? req.query.state : "";
     const fail = (message: string) =>
@@ -123,7 +124,7 @@ async function main() {
     res
       .status(200)
       .send(`<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;padding:40px"><h3>Authorized</h3><p>You can close this window - the dashboard will continue automatically.</p><script>setTimeout(function(){window.close()},800)</script></body>`);
-  });
+  }));
 
   // Access log (method, path, status, duration) for every request. No morgan dependency here -
   // engine/ compiles to a single Bun binary (see package.json's `compile` script), so this stays
@@ -142,15 +143,20 @@ async function main() {
   // is actually up without needing the API key.
   app.get("/health", (_req, res) => res.status(200).json({ status: "ok" }));
 
-  app.use("/api/v1/ingest", requireApiKey(), ingestRouter);
-  app.use("/api/v1/custom-agent-evaluations", requireApiKey(), evaluationsRouter);
-  app.use("/api/v1/monitor", requireApiKey(), monitorRouter);
-  app.use("/api/v1/agents", requireApiKey(), agentsRouter);
-  app.use("/api/v1/outcomes", requireApiKey(), outcomesRouter);
-  app.use("/api/v1/feedback", requireApiKey(), feedbackRouter);
-  app.use("/api/v1/agent-monitoring", requireApiKey(), agentMonitoringDashboardRouter);
-  app.use("/api/v1/evaluate", requireApiKey(), evaluateDashboardRouter);
-  app.use("/api/v1/otel", requireApiKey(), otlpRouter);
+  // One wrapped instance shared by every mount below: requireApiKey() is itself async (it reads
+  // the projects table), so a locked or unreachable database makes it reject exactly the way a
+  // route handler can - see routes/asyncRouter.ts for why that has to become next(err).
+  const apiKey = asyncHandler(requireApiKey());
+
+  app.use("/api/v1/ingest", apiKey, ingestRouter);
+  app.use("/api/v1/custom-agent-evaluations", apiKey, evaluationsRouter);
+  app.use("/api/v1/monitor", apiKey, monitorRouter);
+  app.use("/api/v1/agents", apiKey, agentsRouter);
+  app.use("/api/v1/outcomes", apiKey, outcomesRouter);
+  app.use("/api/v1/feedback", apiKey, feedbackRouter);
+  app.use("/api/v1/agent-monitoring", apiKey, agentMonitoringDashboardRouter);
+  app.use("/api/v1/evaluate", apiKey, evaluateDashboardRouter);
+  app.use("/api/v1/otel", apiKey, otlpRouter);
 
   // Unauthenticated on purpose, same "skip a login step entirely" zero-setup UX the single-key
   // model always had - now specifically hands back the *Default* project's key (whichever project
@@ -158,7 +164,7 @@ async function main() {
   // additional project you register is only reachable via its own key from then on; this endpoint
   // never lists or exposes every project's key, only the one a fresh/never-configured client
   // should bootstrap into.
-  app.get("/api/v1/dev/bootstrap", async (_req, res) => {
+  app.get("/api/v1/dev/bootstrap", asyncHandler(async (_req, res) => {
     // Enabled-auth mode has no anonymous key handout - that's the whole point of the mode. The
     // dashboard gets keys via the session-guarded /projects route instead.
     if (authMode() === "enabled") {
@@ -171,7 +177,7 @@ async function main() {
       return;
     }
     res.status(200).json({ apiKey: defaultProject.apiKey });
-  });
+  }));
 
   // Unauthenticated for the same reason /dev/bootstrap is: self-host's whole security model is
   // "if you can reach this local port, you're trusted" (one machine, one operator) - gatekeeping
@@ -179,7 +185,7 @@ async function main() {
   // key doesn't already expose. No rename/delete routes yet - full project-management UI is still
   // follow-up work. Returns the new project's key in full since the caller just created it and has
   // to learn it from somewhere.
-  app.post("/api/v1/projects", async (req, res) => {
+  app.post("/api/v1/projects", asyncHandler(async (req, res) => {
     // Enabled-auth mode: creating a project requires a signed-in user, and the project is owned
     // by their organization from birth.
     let organizationId: string | null = null;
@@ -206,13 +212,13 @@ async function main() {
     await ensureSessionBaselineJudge(withProjectId(getDb(), project._id));
     await ensureMetricPackConfigs(withProjectId(getDb(), project._id));
     res.status(201).json({ project });
-  });
+  }));
 
   // The frontend's project switcher's list source (AgentX-web-front's ProjectProvider) - same
   // unauthenticated posture as the two routes above, deliberately includes every project's own
   // apiKey so the switcher can hold each project's key up front and swap the x-api-key header on
   // switch, with no separate per-project auth handshake.
-  app.get("/api/v1/projects", async (req, res) => {
+  app.get("/api/v1/projects", asyncHandler(async (req, res) => {
     // Enabled-auth mode: this route hands out project API keys, so it's the one the session
     // strictly guards - keys are scoped to the caller's organizations. Disabled mode keeps the
     // original unauthenticated listing.
@@ -228,7 +234,7 @@ async function main() {
     }
     const projects = await listProjectsWire(getDb());
     res.status(200).json({ projects });
-  });
+  }));
 
   // The dashboard bundle is AgentX's real, full frontend (see README's "Open source scope"), so
   // it still calls a handful of hosted-SaaS-only endpoints this engine doesn't implement
@@ -255,6 +261,35 @@ async function main() {
     // only ever catches non-API GETs.
     app.get(/^(?!\/api).*/, (_req, res) => res.sendFile(webIndexHtml));
   }
+
+  // Last stop for anything a handler threw or rejected with (routes/asyncRouter.ts routes async
+  // rejections here). Registered after every route including the SPA fallback, because Express
+  // only reaches an error handler that comes AFTER the layer that failed. Answers in the same
+  // `statusCode`-carrying JSON shape as the /api 404 above, which is what AgentX-web-front's axios
+  // interceptor reads (see its initAxios.ts).
+  //
+  // The `next` parameter is unused but must stay declared: Express identifies error middleware by
+  // arity, and dropping it turns this back into an ordinary handler that never runs.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+    console.error(`Unhandled error in ${req.method} ${req.originalUrl}:`, err);
+    // Handlers that respond and then keep working in the background (routes/ingest.ts's POST
+    // /traces is the canonical one) can fail after the response is already on the wire - there is
+    // nothing left to send, so log it and stop.
+    if (res.headersSent) {
+      return;
+    }
+    // body-parser reports a malformed/oversized/wrong-type body by throwing an error carrying its
+    // own 4xx status (400 entity.parse.failed, 413 entity.too.large, 415 unsupported charset).
+    // Those reached Express's built-in handler before this one existed and answered 400/413/415;
+    // flattening them to 500 would tell a client its own bad request was a server fault.
+    const status = (err as { status?: unknown; statusCode?: unknown } | null)?.status ?? (err as { statusCode?: unknown } | null)?.statusCode;
+    if (typeof status === "number" && status >= 400 && status < 500) {
+      res.status(status).json({ statusCode: status, message: err instanceof Error ? err.message : "Bad request" });
+      return;
+    }
+    res.status(500).json({ statusCode: 500, message: "Internal server error" });
+  });
 
   const server = await listenWithRetry(app, PORT);
   // System evaluators, ensured per existing project before the sweeps start (a new project gets
@@ -340,6 +375,25 @@ async function main() {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 }
+
+// Defence in depth behind the per-request handling above. Node's default for an unhandled
+// rejection is to throw, which exits the process - for a server that turns any one missed `await`
+// (in a background sweep, a detached fire-and-forget check, a library's internal timer) into a
+// full outage for every project on the box, with SQLite's WAL left unflushed because the SIGTERM
+// path never runs. Log it loudly and keep serving instead; the log line is the signal that
+// something needs a real fix, and it is strictly more useful than a process that is gone.
+process.on("unhandledRejection", reason => {
+  console.error("Unhandled promise rejection (engine kept running):", reason);
+});
+// An uncaught *exception*, by contrast, keeps Node's fatal default: unlike a stray rejection it
+// can leave whatever threw halfway through its work, and carrying on from there is how a crash
+// becomes silent corruption. This only adds the log line that the default handler doesn't print
+// in a recognisable form. (SQLite is safe across this: WAL mode is crash-safe by design, it's the
+// checkpoint that's skipped, not committed data.)
+process.on("uncaughtException", err => {
+  console.error("Uncaught exception, exiting:", err);
+  process.exit(1);
+});
 
 main().catch(err => {
   console.error("agentx engine failed to start:", err);

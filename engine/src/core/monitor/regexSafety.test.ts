@@ -1,0 +1,87 @@
+import { describe, expect, it } from "vitest";
+import { hasNestedQuantifier, validateConditionRegexes, validateUserRegex } from "./regexSafety.js";
+
+describe("validateUserRegex", () => {
+  it("accepts the kinds of regex an operator actually writes", () => {
+    for (const source of [
+      "refund(ed|ing)?",
+      "\\bcannot help\\b",
+      "^I'm sorry",
+      "order #\\d{4,10}",
+      "(?:apolog|sorry)",
+      "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
+      "\\d{3}-\\d{2}-\\d{4}",
+      "(cat|dog){2}",
+    ]) {
+      expect(validateUserRegex(source), source).toEqual({ ok: true });
+    }
+  });
+
+  it("rejects a regex that does not compile, instead of saving a pattern that can never fire", () => {
+    const result = validateUserRegex("([unclosed");
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.error).toMatch(/Invalid regular expression/);
+  });
+
+  it("rejects nested unbounded quantifiers", () => {
+    for (const source of ["(a+)+$", "(a*)*", "(\\w+\\s?)*", "(?:x+){2,}", "((ab)+)+", "(a+)*b", "(x+x+)+y"]) {
+      const result = validateUserRegex(source);
+      expect(result.ok, `${source} should be rejected`).toBe(false);
+      expect(result.ok === false && result.error).toMatch(/exponential/);
+    }
+  });
+
+  it("rejects a very large bounded repeat of a repeating group", () => {
+    expect(validateUserRegex("(a+){1,5000}").ok).toBe(false);
+  });
+});
+
+describe("hasNestedQuantifier", () => {
+  it("does not read escaped parens or quantifiers as structure", () => {
+    expect(hasNestedQuantifier("\\(a\\+\\)\\+")).toBe(false);
+    expect(hasNestedQuantifier("a\\+\\+")).toBe(false);
+  });
+
+  it("does not read a character class's contents as structure", () => {
+    expect(hasNestedQuantifier("[(+*)]+")).toBe(false);
+    expect(hasNestedQuantifier("[a-z+]*")).toBe(false);
+    // A ] inside a class still closes it only after the first character.
+    expect(hasNestedQuantifier("[+]+")).toBe(false);
+  });
+
+  it("allows a bounded repeat nested in another bounded repeat", () => {
+    expect(hasNestedQuantifier("(ab{2}){3}")).toBe(false);
+  });
+
+  it("catches nesting through an intermediate group", () => {
+    expect(hasNestedQuantifier("((a+))+")).toBe(true);
+  });
+
+  it("does not flag sibling quantifiers that are not nested", () => {
+    expect(hasNestedQuantifier("(a+)(b+)")).toBe(false);
+    expect(hasNestedQuantifier("a+b+c+")).toBe(false);
+  });
+});
+
+describe("validateConditionRegexes", () => {
+  it("ignores phrase and semantic conditions", () => {
+    expect(
+      validateConditionRegexes([
+        { detector: "phrase", value: "(a+)+" },
+        { detector: "semantic", value: "the agent looped forever" },
+      ])
+    ).toEqual({ ok: true });
+  });
+
+  it("reports the first offending regex condition", () => {
+    const result = validateConditionRegexes([
+      { detector: "regex", value: "refund" },
+      { detector: "regex", value: "(a+)+$" },
+    ]);
+    expect(result.ok).toBe(false);
+  });
+
+  it("ignores a blank regex value", () => {
+    expect(validateConditionRegexes([{ detector: "regex", value: "   " }])).toEqual({ ok: true });
+  });
+});

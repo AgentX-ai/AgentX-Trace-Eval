@@ -1,4 +1,5 @@
-import { Router, type Request, type Response } from "express";
+import type { Request, Response } from "express";
+import { asyncRouter } from "./asyncRouter.js";
 import { nanoid } from "nanoid";
 import { handleCasePreview, handleSuggestExpected, handleAddCase } from "./curationHandlers.js";
 import { validatePromptProposal, validateToolSchemaProposal } from "../core/evaluate/proposalValidation.js";
@@ -125,7 +126,7 @@ function parseWindow(req: Request): MonitoringWindow {
 // those fields are simply omitted rather than faked, and pinning a run to the exact edit-history
 // version it graded against is a separate, not-yet-built feature from the edit history itself. See
 // README's Status section.
-export const evaluateDashboardRouter = Router();
+export const evaluateDashboardRouter = asyncRouter();
 
 // Matches AgentX-web-front's src/lib/selfHostMode.ts LOCAL_USER exactly (same synthetic
 // always-logged-in local user used everywhere else self-host stands in for a real account).
