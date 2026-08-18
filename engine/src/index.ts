@@ -76,6 +76,12 @@ async function main() {
 
   const app = express();
 
+  // Two ceilings, see auth/rateLimit.ts. credentialLimit covers anything that hands out or is
+  // guarded by a credential; dataPlaneLimit sits far above any real SDK burst, because throttling
+  // ingest would drop the telemetry this engine exists to keep.
+  const credentialLimit = rateLimit(CREDENTIAL_LIMIT);
+  const dataPlaneLimit = rateLimit(DATA_PLANE_LIMIT);
+
   // Dashboard auth (core/auth/betterAuth.ts): AGENTX_AUTH=enabled turns on users/orgs/sessions;
   // the default (disabled) keeps the zero-setup "reachable port = trusted" self-host posture with
   // none of this initialized. The auth handler is mounted BEFORE express.json - better-auth reads
@@ -89,10 +95,6 @@ async function main() {
       trustedOrigins: process.env.AGENTX_TRUSTED_ORIGINS?.split(",").map(o => o.trim()).filter(Boolean),
     });
   }
-  // Anything that hands out, or is guarded by, a credential (see auth/rateLimit.ts). One bucket
-  // shared across these routes so a guesser cannot spread attempts over several of them.
-  const credentialLimit = rateLimit(CREDENTIAL_LIMIT);
-
   app.get("/api/v1/auth/config", credentialLimit, asyncHandler(async (_req, res) => {
     const mode = authMode();
     res.status(200).json({
@@ -110,7 +112,7 @@ async function main() {
   // Unauthenticated by necessity - the MCP server's authorization server redirects the USER'S
   // BROWSER here with only code+state; state is the engine-minted session id, and the session
   // store (15-minute TTL, in-memory) is the actual authority on what the code can do.
-  app.get("/api/v1/mcp-oauth/callback", asyncHandler(async (req, res) => {
+  app.get("/api/v1/mcp-oauth/callback", credentialLimit, asyncHandler(async (req, res) => {
     const code = typeof req.query.code === "string" ? req.query.code : "";
     const state = typeof req.query.state === "string" ? req.query.state : "";
     const fail = (message: string) =>
@@ -146,13 +148,10 @@ async function main() {
 
   // Unauthenticated: lets `agentx-server --dev` (and the CLI's launch check) confirm the engine
   // is actually up without needing the API key.
-  app.get("/health", (_req, res) => res.status(200).json({ status: "ok" }));
+  app.get("/health", dataPlaneLimit, (_req, res) => res.status(200).json({ status: "ok" }));
 
   // requireApiKey() is async too (it reads the projects table), so it can reject the same way a
   // route handler can - see routes/asyncRouter.ts.
-  // Far above any real SDK burst - throttling ingest would drop the telemetry this engine exists
-  // to keep - and there only to bound a key-guessing loop against requireApiKey.
-  const dataPlaneLimit = rateLimit(DATA_PLANE_LIMIT);
   const apiKey = asyncHandler(requireApiKey());
 
   app.use("/api/v1/ingest", dataPlaneLimit, apiKey, ingestRouter);
