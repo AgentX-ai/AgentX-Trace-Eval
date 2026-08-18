@@ -28,7 +28,7 @@ import {
   resolveAuthSecret,
 } from "./auth/betterAuth.js";
 import { toNodeHandler } from "better-auth/node";
-import { findWebIndexHtml } from "./web.js";
+import { findWebIndexHtml, downloadWebBundle } from "./web.js";
 import { startSessionSweep } from "./core/monitor/sessionSweep.js";
 import { startImprovementSweep } from "./core/evaluate/improvementSweep.js";
 
@@ -255,7 +255,12 @@ async function main() {
     res.status(404).json({ statusCode: 404, message: "Not found" });
   });
 
-  const webIndexHtml = findWebIndexHtml();
+  // Dev mode with no web/ (fresh source checkout): fetch the released dashboard bundle once so
+  // `yarn dev --dev` boots with the full UI instead of API-only plus a manual curl|tar step.
+  let webIndexHtml = findWebIndexHtml();
+  if (!webIndexHtml && isDev) {
+    webIndexHtml = await downloadWebBundle();
+  }
   if (webIndexHtml) {
     const webDir = path.dirname(webIndexHtml);
     // express.static serves real built assets (JS/CSS bundles, etc.) and calls next() for
@@ -319,6 +324,10 @@ async function main() {
   console.log(`  AGENTX_API_KEY=${defaultProject?.apiKey}`);
   if (isDev && !webIndexHtml) {
     console.log(`Dev mode: web UI not found (expected web/index.html next to this checkout).`);
+    console.log(`Fetch it manually with:`);
+    console.log(
+      `  mkdir -p web && curl -fsSL https://github.com/AgentX-ai/AgentX-Trace-Eval/releases/latest/download/agentx-web.tar.gz | tar -xz -C web`
+    );
   }
 
   // Ctrl+C (SIGINT) / `kill` (SIGTERM, also what `tsx watch` sends the old process on every file

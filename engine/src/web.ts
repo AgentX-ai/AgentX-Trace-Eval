@@ -1,5 +1,7 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Locates web/index.html without relying on Bun-specific asset embedding (which would need a
@@ -32,4 +34,43 @@ export function findWebIndexHtml(): string | null {
     }
   }
   return null;
+}
+
+// The prebuilt dashboard bundle published onto this repo's own releases - the same asset
+// install.sh, build.sh's fallback, and the Dockerfile's dashboard stage all consume.
+const WEB_BUNDLE_URL = "https://github.com/AgentX-ai/AgentX-Trace-Eval/releases/latest/download/agentx-web.tar.gz";
+
+// Dev-mode convenience: a fresh `git clone && yarn && yarn dev --dev` has no web/ directory
+// (it isn't committed - see README's "Fastest dev loop"), which used to mean an API-only boot
+// and a manual curl|tar step. Instead, fetch the released bundle into the repo's web/ once.
+// Best-effort by design: offline or a missing release just returns null and the caller falls
+// back to the old "not found" message with the manual command.
+export async function downloadWebBundle(): Promise<string | null> {
+  const sourceDir = path.dirname(fileURLToPath(import.meta.url));
+  const webDir = path.join(sourceDir, "..", "..", "web"); // repo root/web from engine/src|dist
+  const tarPath = path.join(os.tmpdir(), `agentx-web-${process.pid}.tar.gz`);
+  try {
+    console.log(`Dev mode: web UI not found - downloading the prebuilt dashboard bundle...`);
+    const resp = await fetch(WEB_BUNDLE_URL, { signal: AbortSignal.timeout(60_000) });
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+    fs.writeFileSync(tarPath, Buffer.from(await resp.arrayBuffer()));
+    fs.mkdirSync(webDir, { recursive: true });
+    // System tar (macOS, Linux, and Windows 10+ all ship one) rather than an npm tarball dep.
+    execFileSync("tar", ["-xzf", tarPath, "-C", webDir]);
+    const indexHtml = path.join(webDir, "index.html");
+    if (!fs.existsSync(indexHtml)) {
+      throw new Error("bundle extracted but web/index.html is missing");
+    }
+    console.log(`Dev mode: dashboard bundle installed into ${webDir}`);
+    return indexHtml;
+  } catch (err) {
+    console.log(
+      `Dev mode: dashboard download failed (${err instanceof Error ? err.message : err}) - continuing API-only.`
+    );
+    return null;
+  } finally {
+    fs.rmSync(tarPath, { force: true });
+  }
 }
