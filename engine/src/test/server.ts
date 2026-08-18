@@ -118,8 +118,22 @@ export async function startEngine(
         ...env,
       },
       stdio: ["ignore", "pipe", "pipe"],
+      // tsx runs the engine in a grandchild process, so killing `child` only removes the wrapper
+      // and leaves the engine orphaned - 130-odd of them accumulated over a few runs before this
+      // was noticed. Its own process group makes the whole tree killable in one signal.
+      detached: true,
     }
   );
+
+  // ESRCH just means the tree is already gone, which is the outcome we wanted anyway.
+  const killTree = (sig: NodeJS.Signals) => {
+    try {
+      if (child.pid) process.kill(-child.pid, sig);
+      else child.kill(sig);
+    } catch {
+      child.kill(sig);
+    }
+  };
 
   child.stdout?.on("data", chunk => (output += String(chunk)));
   child.stderr?.on("data", chunk => (output += String(chunk)));
@@ -144,7 +158,7 @@ export async function startEngine(
     await new Promise(r => setTimeout(r, 100));
   }
   if (!healthy) {
-    child.kill("SIGKILL");
+    killTree("SIGKILL");
     throw new Error(`engine never became healthy:\n${output}`);
   }
 
@@ -154,7 +168,7 @@ export async function startEngine(
   const bootstrap = (await bootstrapRes.json()) as { apiKey?: string };
   const apiKey = bootstrap.apiKey ?? "";
   if (!apiKey && !authEnabled) {
-    child.kill("SIGKILL");
+    killTree("SIGKILL");
     throw new Error(`bootstrap returned no API key (status ${bootstrapRes.status}):\n${output}`);
   }
 
@@ -192,7 +206,7 @@ export async function startEngine(
     },
     stop: async ({ keepHome = false }: { keepHome?: boolean } = {}) => {
       if (exited === null) {
-        child.kill("SIGKILL");
+        killTree("SIGKILL");
         await new Promise(r => setTimeout(r, 50));
       }
       if (!keepHome) {
@@ -203,7 +217,7 @@ export async function startEngine(
       }
     },
     signal: async (sig: NodeJS.Signals) => {
-      child.kill(sig);
+      killTree(sig);
     },
     waitForExit: async (timeoutMs = 15_000) => {
       const deadline = Date.now() + timeoutMs;
