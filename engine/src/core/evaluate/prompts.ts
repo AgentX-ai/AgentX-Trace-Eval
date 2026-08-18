@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { eq, and, gte, inArray, lt } from "drizzle-orm";
+import { eq, and, gte, inArray, lt, max } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
 import { getDataset } from "./datasets.js";
@@ -231,6 +231,19 @@ export async function listPromptsForSdk(db: Db) {
 // Headroom for real contention without spinning if something is genuinely wrong.
 const PUBLISH_MAX_ATTEMPTS = 8;
 
+// The next version has to come from the versions table, not from prompts.currentVersion: that
+// column is only updated after the insert, so a loser re-reading it computes the number it just
+// lost with and burns the whole budget without ever moving forward.
+async function nextFreeVersion(db: Db, promptId: string, atLeast: number): Promise<number> {
+  const cond = and(eq(db.schema.promptVersions.promptId, promptId), eq(db.schema.promptVersions.projectId, db.projectId));
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select({ latest: max(db.schema.promptVersions.version) }).from(db.schema.promptVersions).where(cond).all()
+      : await db.db.select({ latest: max(db.schema.promptVersions.version) }).from(db.schema.promptVersions).where(cond)
+  ) as { latest: number | null }[];
+  return Math.max(rows[0]?.latest ?? 0, atLeast) + 1;
+}
+
 export async function publishPromptVersion(
   db: Db,
   promptId: string,
@@ -239,11 +252,13 @@ export async function publishPromptVersion(
   // The version number comes from a separate read, so two simultaneous publishes compute the same
   // one. The unique index stops that becoming two rows claiming v4; this loop stops the loser being
   // told "Internal server error" and losing its edit. Re-read, take the next free number, retry.
+  let lastVersion = 0;
   for (let attempt = 0; attempt < PUBLISH_MAX_ATTEMPTS; attempt++) {
     const prompt = await getPromptRow(db, promptId);
     if (!prompt) return null;
     const now = new Date();
-    const nextVersion = prompt.currentVersion + 1;
+    const nextVersion = await nextFreeVersion(db, promptId, prompt.currentVersion);
+    lastVersion = nextVersion;
     const versionRow: PromptVersionRow = {
       id: nanoid(),
       projectId: db.projectId,
@@ -281,7 +296,12 @@ export async function publishPromptVersion(
       text: versionRow.text,
     };
   }
-  throw new Error(`Could not publish a new version of prompt ${promptId} - too many simultaneous publishes`);
+  // Losing a race is the caller's to retry, not a server fault - a 500 here would tell the
+  // dashboard the engine broke when it simply lost a scramble for the next number.
+  throw Object.assign(
+    new Error(`Could not publish a new version of prompt ${promptId} after ${PUBLISH_MAX_ATTEMPTS} attempts (last tried v${lastVersion})`),
+    { status: 409 }
+  );
 }
 
 export async function deletePrompt(db: Db, id: string): Promise<boolean> {
