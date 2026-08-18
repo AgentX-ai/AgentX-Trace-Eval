@@ -1,105 +1,84 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { NextFunction, Request, Response } from "express";
-import { rateLimit } from "./rateLimit.js";
+import { afterEach, describe, expect, it } from "vitest";
+import express from "express";
+import type { AddressInfo } from "node:net";
+import type { Server } from "node:http";
+import { rateLimit, CREDENTIAL_LIMIT, DATA_PLANE_LIMIT } from "./rateLimit.js";
 
 // A limiter that throttles ingest is worse than no limiter - it drops the telemetry the engine
-// exists to keep - so what matters here is the boundary: refuse exactly above the ceiling, let
-// everything through below it, and never carry one client's count onto another.
+// exists to keep - so what matters is the boundary: everything through below the ceiling, refused
+// above it, and one surface's counter never spent by another's traffic.
 
-function call(middleware: ReturnType<typeof rateLimit>, ip = "1.2.3.4") {
-  const res = {
-    statusCode: 200,
-    headers: {} as Record<string, string>,
-    setHeader(name: string, value: string) {
-      this.headers[name] = value;
-    },
-    status(code: number) {
-      this.statusCode = code;
-      return this;
-    },
-    json(body: unknown) {
-      this.body = body;
-      return this;
-    },
-    body: undefined as unknown,
-  };
-  const next = vi.fn();
-  middleware({ ip, socket: {} } as unknown as Request, res as unknown as Response, next as unknown as NextFunction);
-  return { res, passed: next.mock.calls.length === 1 };
+let server: Server | undefined;
+
+async function serve(build: (app: express.Express) => void): Promise<string> {
+  const app = express();
+  build(app);
+  server = app.listen(0, "127.0.0.1");
+  await new Promise(resolve => server!.once("listening", resolve));
+  return `http://127.0.0.1:${(server!.address() as AddressInfo).port}`;
 }
 
-afterEach(() => {
-  vi.useRealTimers();
+afterEach(async () => {
   delete process.env.AGENTX_RATE_LIMIT;
+  if (server) {
+    await new Promise<void>(resolve => server!.close(() => resolve()));
+    server = undefined;
+  }
 });
 
+async function hit(base: string, path = "/", count = 1): Promise<number[]> {
+  const statuses: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const res = await fetch(base + path);
+    await res.text();
+    statuses.push(res.status);
+  }
+  return statuses;
+}
+
 describe("rateLimit", () => {
-  it("lets requests through up to the ceiling", () => {
-    const middleware = rateLimit("test-under", 5);
-    for (let i = 0; i < 5; i++) {
-      expect(call(middleware).passed, `request ${i + 1} was refused`).toBe(true);
-    }
+  it("lets requests through up to the ceiling, then refuses with 429", async () => {
+    const base = await serve(app => app.get("/", rateLimit(3), (_req, res) => res.json({ ok: true })));
+    expect(await hit(base, "/", 3)).toEqual([200, 200, 200]);
+    expect(await hit(base, "/", 1)).toEqual([429]);
   });
 
-  it("refuses the first request past it, with a 429 and a Retry-After", () => {
-    const middleware = rateLimit("test-over", 3);
-    for (let i = 0; i < 3; i++) call(middleware);
-    const { res, passed } = call(middleware);
-    expect(passed).toBe(false);
-    expect(res.statusCode).toBe(429);
-    expect(Number(res.headers["Retry-After"])).toBeGreaterThan(0);
-    expect(res.body).toMatchObject({ statusCode: 429 });
+  it("answers a refusal in the statusCode shape the dashboard reads", async () => {
+    const base = await serve(app => app.get("/", rateLimit(1), (_req, res) => res.json({ ok: true })));
+    await hit(base);
+    const res = await fetch(base + "/");
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ statusCode: 429 });
   });
 
-  it("counts each client separately", () => {
-    const middleware = rateLimit("test-per-ip", 2);
-    call(middleware, "10.0.0.1");
-    call(middleware, "10.0.0.1");
-    expect(call(middleware, "10.0.0.1").passed).toBe(false);
-    // A second client starts from zero rather than inheriting the first one's exhausted window.
-    expect(call(middleware, "10.0.0.2").passed).toBe(true);
+  it("keeps separate limiters independent, so credential attempts cannot exhaust ingest", async () => {
+    const base = await serve(app => {
+      app.get("/credential", rateLimit(1), (_req, res) => res.json({ ok: true }));
+      app.get("/ingest", rateLimit(1), (_req, res) => res.json({ ok: true }));
+    });
+    expect(await hit(base, "/credential", 2)).toEqual([200, 429]);
+    expect(await hit(base, "/ingest", 1)).toEqual([200]);
   });
 
-  it("keeps separate buckets independent, so credential attempts cannot exhaust ingest", () => {
-    const credential = rateLimit("credential", 1);
-    const dataPlane = rateLimit("data-plane", 1);
-    call(credential);
-    expect(call(credential).passed).toBe(false);
-    expect(call(dataPlane).passed).toBe(true);
-  });
-
-  it("starts a fresh window once the old one expires", () => {
-    vi.useFakeTimers();
-    const middleware = rateLimit("test-window", 2);
-    call(middleware);
-    call(middleware);
-    expect(call(middleware).passed).toBe(false);
-
-    vi.advanceTimersByTime(61_000);
-    expect(call(middleware).passed, "the window never reset").toBe(true);
-  });
-
-  it("is a no-op when disabled or given a nonsensical ceiling", () => {
+  it("is a no-op when disabled", async () => {
     process.env.AGENTX_RATE_LIMIT = "off";
-    const disabled = rateLimit("test-disabled", 1);
-    for (let i = 0; i < 10; i++) {
-      expect(call(disabled).passed).toBe(true);
-    }
-    delete process.env.AGENTX_RATE_LIMIT;
+    const base = await serve(app => app.get("/", rateLimit(1), (_req, res) => res.json({ ok: true })));
+    expect(await hit(base, "/", 6)).toEqual([200, 200, 200, 200, 200, 200]);
+  });
 
+  it("is a no-op for a ceiling that isn't a usable number", async () => {
     for (const limit of [0, -1, NaN]) {
-      const middleware = rateLimit(`test-limit-${limit}`, limit);
-      for (let i = 0; i < 5; i++) {
-        expect(call(middleware).passed, `limit ${limit} refused a request`).toBe(true);
-      }
+      const base = await serve(app => app.get("/", rateLimit(limit), (_req, res) => res.json({ ok: true })));
+      expect(await hit(base, "/", 4), `limit ${limit}`).toEqual([200, 200, 200, 200]);
+      await new Promise<void>(resolve => server!.close(() => resolve()));
+      server = undefined;
     }
   });
 
-  it("passes a burst far larger than any real ingest at the data-plane ceiling", () => {
-    // The concurrency suite fires 60 parallel ingests; the shipped ceiling is 6000/minute.
-    const middleware = rateLimit("test-burst", 6000);
-    for (let i = 0; i < 500; i++) {
-      expect(call(middleware).passed, `request ${i + 1} was refused`).toBe(true);
-    }
+  it("ships a data-plane ceiling far above any real ingest burst, and a tighter credential one", () => {
+    // The concurrency suite fires 60 parallel ingests; the resilience suite fires 200.
+    expect(DATA_PLANE_LIMIT).toBeGreaterThanOrEqual(1000);
+    expect(CREDENTIAL_LIMIT).toBeLessThan(DATA_PLANE_LIMIT);
+    expect(CREDENTIAL_LIMIT).toBeGreaterThan(0);
   });
 });

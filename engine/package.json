@@ -21,6 +21,7 @@
     "better-sqlite3": "^11.3.0",
     "drizzle-orm": "^0.45.2",
     "express": "^4.19.2",
+    "express-rate-limit": "^8.6.2",
     "nanoid": "^5.0.7",
     "openai": "^4.58.1",
     "pg": "^8.12.0",

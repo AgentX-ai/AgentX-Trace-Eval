@@ -91,7 +91,7 @@ async function main() {
   }
   // Anything that hands out, or is guarded by, a credential (see auth/rateLimit.ts). One bucket
   // shared across these routes so a guesser cannot spread attempts over several of them.
-  const credentialLimit = rateLimit("credential", CREDENTIAL_LIMIT);
+  const credentialLimit = rateLimit(CREDENTIAL_LIMIT);
 
   app.get("/api/v1/auth/config", credentialLimit, asyncHandler(async (_req, res) => {
     const mode = authMode();
@@ -152,7 +152,7 @@ async function main() {
   // route handler can - see routes/asyncRouter.ts.
   // Far above any real SDK burst - throttling ingest would drop the telemetry this engine exists
   // to keep - and there only to bound a key-guessing loop against requireApiKey.
-  const dataPlaneLimit = rateLimit("data-plane", DATA_PLANE_LIMIT);
+  const dataPlaneLimit = rateLimit(DATA_PLANE_LIMIT);
   const apiKey = asyncHandler(requireApiKey());
 
   app.use("/api/v1/ingest", dataPlaneLimit, apiKey, ingestRouter);
