@@ -163,6 +163,19 @@ const PROBES: Probe[] = [
   { name: "GET /feedback/trace/:id for an unknown id", path: "/api/v1/feedback/trace/nope" },
   { name: "GET /monitor/signals?limit=abc", path: "/api/v1/monitor/signals?limit=abc" },
   {
+    name: "POST /ingest/traces with a body over the 10mb limit",
+    path: "/api/v1/ingest/traces",
+    init: json({ name: "n", input: "x".repeat(11 * 1024 * 1024) }),
+  },
+  {
+    name: "POST /otel/v1/traces with a protobuf body over the 10mb limit",
+    path: "/api/v1/otel/v1/traces",
+    init: { method: "POST", body: Buffer.alloc(11 * 1024 * 1024), headers: { "content-type": "application/x-protobuf" } },
+  },
+  { name: "GET an unimplemented /api route", path: "/api/v1/definitely-not-a-route" },
+  { name: "GET a non-API path with no dashboard bundle installed", path: "/governance?tab=observe" },
+  { name: "GET a path-traversal attempt", path: "/../../etc/passwd" },
+  {
     name: "POST /agent-monitoring/custom-evaluators with a sampleRate above 1",
     path: "/api/v1/agent-monitoring/custom-evaluators",
     init: json({ name: "over", url: "https://example.test/hook", sampleRate: 42 }),
@@ -250,4 +263,43 @@ describe("engine resilience to hostile-but-plausible requests", () => {
     },
     240_000
   );
+
+  it("answers an oversized body with 413 rather than dropping the connection", async () => {
+    if (!engine.alive()) {
+      await engine.stop();
+      engine = await startEngine();
+    }
+    const res = await engine.request("/api/v1/ingest/traces", {
+      method: "POST",
+      body: JSON.stringify({ name: "n", input: "x".repeat(11 * 1024 * 1024) }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(res.status).toBe(413);
+    await res.text();
+  }, 120_000);
+
+  it("answers an unimplemented /api route in the shape the dashboard's error handling expects", async () => {
+    if (!engine.alive()) {
+      await engine.stop();
+      engine = await startEngine();
+    }
+    // AgentX-web-front's axios interceptor only treats a 404 as safe-to-ignore when the body
+    // carries statusCode: 404 - Express's default HTML page surfaces an error toast instead, on
+    // every page load, for every hosted-only endpoint the bundle still calls.
+    const res = await engine.json("/api/v1/definitely-not-a-route");
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ statusCode: 404 });
+  }, 60_000);
+
+  it("never serves a file from outside the dashboard bundle", async () => {
+    if (!engine.alive()) {
+      await engine.stop();
+      engine = await startEngine();
+    }
+    for (const path of ["/../../etc/passwd", "/%2e%2e%2f%2e%2e%2fetc%2fpasswd", "/static/../../../etc/passwd"]) {
+      const res = await engine.request(path, { apiKey: null });
+      const body = await res.text();
+      expect(body, `${path} served something from the filesystem`).not.toContain("root:");
+    }
+  }, 60_000);
 });

@@ -62,6 +62,51 @@ describe("POST /api/v1/otel/v1/traces", () => {
     expect(res.body).toEqual({});
   });
 
+  it("rejects an export whose content type is neither of the two OTLP formats", async () => {
+    // The body is a perfectly good export; only the header is wrong. This used to answer 200 with
+    // an empty partial-success body while dropping every span, so a misconfigured exporter (or a
+    // proxy rewriting the header) produced an empty Observe tab and no error anywhere.
+    for (const contentType of ["text/plain", "application/x-www-form-urlencoded", "application/octet-stream"]) {
+      const res = await engine.json("/api/v1/otel/v1/traces", {
+        method: "POST",
+        body: JSON.stringify(exportRequest(goodSpan({ spanId: b64("dead0000beef0000") }))),
+        headers: { "content-type": contentType },
+      });
+      expect(res.status, contentType).toBe(415);
+      expect(JSON.stringify(res.body)).toContain("application/x-protobuf");
+    }
+  });
+
+  it("rejects an export sent with no content type at all", async () => {
+    const res = await engine.request("/api/v1/otel/v1/traces", {
+      method: "POST",
+      body: JSON.stringify(exportRequest(goodSpan())),
+    });
+    // fetch supplies text/plain for a string body when no header is set, which is equally wrong.
+    expect(res.status).toBe(415);
+    await res.text();
+  });
+
+  it("accepts application/json with a charset parameter", async () => {
+    const res = await engine.json("/api/v1/otel/v1/traces", {
+      method: "POST",
+      body: JSON.stringify(exportRequest(goodSpan({ spanId: b64("2222222222222222") }))),
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("does not silently drop a well-formed export", async () => {
+    // The counterpart to the 415 above: a correctly typed export really does land, so the check
+    // above cannot be satisfied by rejecting everything.
+    const spanId = b64("3333333333333333");
+    const res = await postOtlp(exportRequest(goodSpan({ spanId, name: "content-type-check" })));
+    expect(res.status).toBe(200);
+
+    const listed = await engine.json("/api/v1/ingest/traces?limit=100");
+    expect(JSON.stringify(listed.body)).toContain("content-type-check");
+  });
+
   it("rejects a body that isn't an object with 400, not 500", async () => {
     const res = await engine.json("/api/v1/otel/v1/traces", {
       method: "POST",
