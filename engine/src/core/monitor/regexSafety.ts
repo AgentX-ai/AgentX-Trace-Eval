@@ -96,6 +96,10 @@ export function validateUserRegex(source: string): RegexValidation {
   }
   try {
     // Same flags detection uses, so a flag-specific syntax error surfaces here, not at match time.
+    // Compiling an operator-supplied pattern is the entire point of this function - there is no
+    // sanitized form of "is this regex valid?" - and the ReDoS shape that makes an injected regex
+    // dangerous is rejected by hasNestedQuantifier above, before we ever get here.
+    // codeql[js/regex-injection]
     new RegExp(source, "i");
   } catch (err) {
     return { ok: false, error: `Invalid regular expression: ${err instanceof Error ? err.message : String(err)}` };

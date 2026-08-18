@@ -389,7 +389,7 @@ export async function appendResults(
           // anywhere except this one result's justification field, effectively invisible unless a
           // caller went looking at the exact result row. Surfacing it here at least gets it into
           // agentx-server's own logs.
-          console.error(`Evaluate: judge scoring failed for run ${runId} (${item.idempotencyKey}):`, scored.judgeError);
+          console.error("Evaluate: judge scoring failed for run %s (%s):", runId, item.idempotencyKey, scored.judgeError);
         } else {
           rating = scored.rating;
           justification = scored.justification;

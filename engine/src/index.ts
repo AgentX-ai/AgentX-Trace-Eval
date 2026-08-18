@@ -274,7 +274,9 @@ async function main() {
   // reads it). `next` is unused but must stay declared - Express detects error middleware by arity.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
-    console.error(`Unhandled error in ${req.method} ${req.originalUrl}:`, err);
+    // %s placeholders, not interpolation: a URL containing "%s" would otherwise be read as a
+    // format specifier and swallow the error argument that follows.
+    console.error("Unhandled error in %s %s:", req.method, req.originalUrl, err);
     // Handlers that respond and then keep working (routes/ingest.ts's POST /traces) can fail with
     // the response already on the wire - nothing left to send.
     if (res.headersSent) {
