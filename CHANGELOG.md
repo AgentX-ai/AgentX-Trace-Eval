@@ -666,3 +666,67 @@ were confirmed to fail against the old gate (200/200 and 20/20 monitored where ~
 expected) before the fix went in. `engine`'s `test` script drops `--passWithNoTests`, and `build`
 moves to a new `tsconfig.build.json` excluding `*.test.ts` so `dist/` stays shipping code while
 `yarn typecheck` and editors still cover the tests.
+
+That first suite then grew into a full one, written to find defects rather than to pin down
+current behaviour: 35 more vitest files for the engine (424 cases - unit tests for the pure
+helpers, plus integration suites that boot the real engine as a subprocess and drive it over HTTP
+the way an SDK would), similarity-metric tests for judge-core, and 20 Go tests for the CLI
+launcher. Twelve real defects came out of writing them, each fixed alongside the test that caught
+it. `tsconfig.build.json`'s exclude grew to cover `src/test/` as well as `*.test.ts`, because the
+integration harness lives there under names that are not `*.test.ts` and would otherwise have
+compiled into `dist/`.
+
+Four surfaced in the first pass. A malformed timestamp took the whole engine down rather than
+failing one request: every route handler is `async (req, res) => ...` on Express 4, which does not
+catch a rejected handler promise, so `started_at_unix_nano: "yesterday"` on a plain POST reached
+`BigInt()`, became an unhandled rejection, and exited Node for every project on the box, skipping
+the SIGTERM path entirely (reproduced end to end - the next request gets ECONNREFUSED). Fixed at
+the source in `core/shared/unixNano.ts` and closed off behind it: routers are built through
+`routes/asyncRouter.ts` so a rejected handler becomes `next(err)`, and `index.ts` turns that into a
+500 while passing body-parser's own 4xx through. A monitor pattern's regex could freeze the process
+indefinitely - operator-supplied, but matched against agent output, and `(a+)+$` against ~40
+characters already outruns any timeout with no way to interrupt a JS regex on a single-threaded
+process; `core/monitor/regexSafety.ts` now rejects nested unbounded quantifiers at save time, and
+`evaluateDetector` skips one already stored. A missing judge API key threw away scores that never
+needed one, because the judge call shared a `Promise.all` with the similarity metrics and code
+scorers, so one rejection dropped all of them. And `codeScorer.ts` claimed a sandbox it does not
+have: `node:vm` is not a security boundary, and a scorer reaches the real `process` through any
+object's prototype chain (checked, not assumed) - the trust model is a deliberate choice, but the
+comment stated the opposite.
+
+The most productive pattern by far was read-then-write races that SQLite structurally cannot show.
+`better-sqlite3` is synchronous, so a SELECT followed by an INSERT never interleaves; on Postgres
+every query yields, and five of these turned up once the suites ran against a real server. Trace
+ingest checked for an existing `span_id` and then inserted, so concurrent exports of the same span
+created duplicate traces. Agent auto-registration did the same on name, so one agent's traces
+split across two rows - fixed with a deterministic id, `sha256(projectId, name)`, rather than a
+lock. The prompt and tool-schema registries both read the current version and then wrote
+`version + 1`, so simultaneous publishes collided on the unique index or silently reused a number;
+both now retry against a `lt(currentVersion, nextVersion)` guard so a version only ever moves
+forward. Monitor signals lost detections outright: a concurrent first-sighting dropped one row and
+left the other's `occurrence_count` at 1, now an `onConflictDoNothing` plus a `count + 1` in SQL
+rather than in JS. All five are covered by tests that skip without `AGENTX_TEST_DB_URL`, and all
+five were confirmed to fail against the old code on Postgres and to pass on SQLite either way,
+which is exactly why they had survived.
+
+The rest: `AGENTX_AUTH=enabled` was broken outright against better-auth 1.7, which expects an
+`issuer` column on `auth_account` and `created_at` on `auth_invitations` that the DDL never
+created - added to both dialects with a backfill for existing installs, and a schema-parity test
+that reads `getAuthTables` from better-auth itself so the next version bump fails loudly instead of
+at runtime. An OTLP export sent with the wrong content type was answered 200 and dropped on the
+floor; it is a 415 now. Outbound webhooks had no timeout at all, so a hung endpoint pinned a
+monitor check until the OS gave up - `AbortSignal.timeout` at 8s. And `install.sh` deleted the
+installed dashboard before downloading its replacement, so a failed or interrupted download left
+the machine with no dashboard at all; it unpacks to a temporary directory and swaps in only after
+the download succeeds.
+
+Two things left honest rather than fixed. `appendResults` looks like the same race as the five
+above - a unique index on `(run_id, idempotency_key)` with a judge call sitting between the check
+and the insert - but it would not reproduce, because the code scorers block the event loop and
+therefore serialize; showing it needs a genuinely slow async judge, so it is unchanged and
+untested rather than quietly declared safe. And the CI workflow this branch adds
+(`.github/workflows/test.yml`, running both TypeScript workspaces, the Go CLI, and the engine again
+against a Postgres service container) has never executed: GitHub does not raise workflow runs for
+pushes made with an app installation token, and a workflow file only becomes dispatchable once it
+is on the default branch. Everything above was therefore verified locally, on both backends; the
+first post-merge run on GitHub's own runners is the real check.
