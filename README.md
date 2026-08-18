@@ -237,6 +237,16 @@ Local API key: agtx_local_...
 
 `--dev` opens the dashboard in your browser automatically.
 
+### Tests
+
+Unit and integration tests for the engine (vitest, run against a temporary SQLite database - no
+API keys or network needed):
+
+```bash
+yarn workspace @agentx/engine test
+yarn workspace @agentx/judge-core test
+```
+
 ### End-to-end smoke test
 
 Confirms everything actually works, including a real Python SDK round-trip:
