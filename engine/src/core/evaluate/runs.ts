@@ -409,6 +409,26 @@ async function getRunRow(db: Db, id: string) {
   return (await db.db.select().from(db.schema.evaluationRuns).where(cond))[0] as Row | undefined;
 }
 
+// Rating aggregate in the hosted SDK's liveStatistics shape ({averageRating, minRating,
+// maxRating, ratedCount}) - what AgentX-Python's run context reads for run.average_rating and
+// friends. Computed from stored results, so it reflects whatever judge scoring has already
+// written; returned from appendResults batches, finalize, and the run resource alike.
+export async function computeLiveStatistics(db: Db, runId: string) {
+  const cond = and(eq(db.schema.evaluationRunResults.runId, runId), eq(db.schema.evaluationRunResults.projectId, db.projectId));
+  const results = (
+    db.kind === "sqlite"
+      ? db.db.select({ rating: db.schema.evaluationRunResults.rating }).from(db.schema.evaluationRunResults).where(cond).all()
+      : await db.db.select({ rating: db.schema.evaluationRunResults.rating }).from(db.schema.evaluationRunResults).where(cond)
+  ) as { rating: number | null }[];
+  const rated = results.filter(r => r.rating != null).map(r => r.rating as number);
+  return {
+    averageRating: rated.length ? rated.reduce((a, b) => a + b, 0) / rated.length : null,
+    minRating: rated.length ? Math.min(...rated) : null,
+    maxRating: rated.length ? Math.max(...rated) : null,
+    ratedCount: rated.length,
+  };
+}
+
 export async function finalizeRun(db: Db, runId: string) {
   const run = await getRunRow(db, runId);
   if (!run) {
@@ -420,7 +440,7 @@ export async function finalizeRun(db: Db, runId: string) {
   } else {
     await db.db.update(db.schema.evaluationRuns).set({ status: "completed" }).where(updateCond);
   }
-  return { runId, status: "completed" };
+  return { runId, status: "completed", liveStatistics: await computeLiveStatistics(db, runId) };
 }
 
 // Sibling to finalizeRun above, for a run that never made it that far - used by
@@ -462,6 +482,12 @@ export async function getRun(db: Db, runId: string) {
     status: run.status,
     resultCount: results.length,
     averageRating,
+    liveStatistics: {
+      averageRating,
+      minRating: rated.length ? Math.min(...rated) : null,
+      maxRating: rated.length ? Math.max(...rated) : null,
+      ratedCount: rated.length,
+    },
   };
 }
 

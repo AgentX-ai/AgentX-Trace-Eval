@@ -7,16 +7,24 @@ import { getPatternRow } from "../monitor/patterns.js";
 import { llmSemanticJudge } from "../monitor/detect.js";
 import { getOnlineEvaluatorRow } from "../monitor/onlineEvaluators.js";
 import { getEvaluationSettingsRow } from "./evaluationSettings.js";
+import { callMcpToolOnce } from "./mcp.js";
 
 // A tool the model can call during a Playground run - self-host calls the real endpoint you run
 // (your actual local/hosted tool or RAG service), the same "call out, don't reimplement" shape
 // core/monitor/customEvaluators.ts's callCustomEvaluator already established for user-owned logic.
 // Request POSTed to `endpointUrl`: { tool: name, arguments }. Expected response: { result: <any> }.
+// EXCEPTION: a tool registered from a remote MCP server carries `mcpServer`; when the endpoint IS
+// that server (the picker's prefill), the call goes over the MCP protocol instead of the plain
+// POST contract - an MCP server doesn't speak {tool, arguments}.
 export type PlaygroundTool = {
   name: string;
   description?: string;
   parameters: Record<string, unknown>;
   endpointUrl: string;
+  mcpServer?: string;
+  // Handle of an authorized MCP OAuth session (the Playground's Connect flow) - lets the engine
+  // execute an OAuth-protected server's tools with the session's stored tokens.
+  mcpSessionId?: string;
 };
 
 // Same "one extraction helper, called at the route" convention as datasets.ts's
@@ -36,6 +44,8 @@ export function extractPlaygroundTools(body: Record<string, unknown>): Playgroun
       description: typeof t.description === "string" ? t.description : undefined,
       parameters: t.parameters && typeof t.parameters === "object" ? (t.parameters as Record<string, unknown>) : {},
       endpointUrl: typeof t.endpointUrl === "string" ? t.endpointUrl.trim() : "",
+      mcpServer: typeof t.mcpServer === "string" && t.mcpServer.trim() ? t.mcpServer.trim() : undefined,
+      mcpSessionId: typeof t.mcpSessionId === "string" && t.mcpSessionId.trim() ? t.mcpSessionId.trim() : undefined,
     }))
     .filter(t => t.name.length > 0);
   return tools.length > 0 ? tools : undefined;
@@ -59,6 +69,12 @@ export async function callPlaygroundTool(tools: PlaygroundTool[], name: string, 
     // explanation leaks into the final answer ("due to a simulated environment..."). The cell's
     // tool-call trace still shows `simulated: true` so the human knows nothing real ran.
     return { simulated: true, status: "ok", arguments: args };
+  }
+  // MCP-registered tool with its server as the endpoint (the picker's prefill): call over the
+  // MCP protocol. A user who replaces the prefill with their own URL gets the plain POST
+  // contract - their shim, their rules.
+  if (tool.mcpServer && tool.endpointUrl === tool.mcpServer) {
+    return callMcpToolOnce({ serverUrl: tool.mcpServer, name, args, sessionId: tool.mcpSessionId });
   }
   const res = await fetch(tool.endpointUrl, {
     method: "POST",

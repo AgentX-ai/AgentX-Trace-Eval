@@ -932,6 +932,8 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     ["app_settings", "ALTER TABLE app_settings ADD COLUMN auth_secret TEXT"],
     ["app_settings", "ALTER TABLE app_settings ADD COLUMN metric_pack_seeded_at INTEGER"],
     ["tool_schemas", "ALTER TABLE tool_schemas ADD COLUMN test_endpoint_url TEXT"],
+    ["tool_schemas", "ALTER TABLE tool_schemas ADD COLUMN resolved_evidence TEXT"],
+    ["playground_runs", "ALTER TABLE playground_runs ADD COLUMN kind TEXT"],
   ];
   for (const [, statement] of columnMigrations) {
     try {
@@ -1774,6 +1776,8 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS auth_secret TEXT;
     ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS metric_pack_seeded_at TIMESTAMP;
     ALTER TABLE tool_schemas ADD COLUMN IF NOT EXISTS test_endpoint_url TEXT;
+    ALTER TABLE tool_schemas ADD COLUMN IF NOT EXISTS resolved_evidence JSONB;
+    ALTER TABLE playground_runs ADD COLUMN IF NOT EXISTS kind TEXT;
 
     -- One-way Topics migration, see bootstrapSqlite's equivalent for the full comment (copy any
     -- enabled per-agent flag up to the project once, then clear the profile flags so a later

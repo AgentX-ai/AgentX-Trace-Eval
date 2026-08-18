@@ -170,6 +170,7 @@ export const evaluationSettingsVersions = pgTable("evaluation_settings_versions"
 // See schema.sqlite.ts's playgroundRuns for the full comment.
 export const playgroundRuns = pgTable("playground_runs", {
   id: text("id").primaryKey(),
+  kind: text("kind"),
   snapshot: jsonb("snapshot").notNull(),
   results: jsonb("results").notNull(),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
@@ -432,6 +433,7 @@ export const toolSchemas = pgTable("tool_schemas", {
   name: text("name").notNull(),
   description: text("description"),
   testEndpointUrl: text("test_endpoint_url"),
+  resolvedEvidence: jsonb("resolved_evidence"),
   currentVersion: integer("current_version").notNull().default(1),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
   updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),

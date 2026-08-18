@@ -11,6 +11,7 @@ import type { Db } from "../../storage/db.js";
 
 export type PlaygroundRunRow = {
   id: string;
+  kind: string | null;
   projectId: string | null;
   // Which prompt (prompts.id) this session was testing, when started from the prompt registry -
   // lets gatherPlaygroundExamples (prompts.ts) find every run that reviewed a given prompt. Null
@@ -24,36 +25,49 @@ export type PlaygroundRunRow = {
 
 export type PlaygroundRunSummary = {
   _id: string;
+  kind: "grid" | "simulation";
   createdAt: Date;
   modelCount: number;
   caseCount: number;
   doneCount: number;
+  // Simulation rows only - what the History list shows for them (goal + outcome + turn count).
+  goal?: string;
+  outcome?: string;
+  turnCount?: number;
 };
 
 function toSummary(row: PlaygroundRunRow): PlaygroundRunSummary {
-  const snapshot = row.snapshot as { models?: unknown[]; questions?: unknown[] } | null;
+  const snapshot = row.snapshot as { models?: unknown[]; questions?: unknown[]; goal?: unknown } | null;
   const resultCells = Object.values(row.results ?? {});
+  const simulation = (row.results as { simulation?: { outcome?: unknown; turns?: unknown[] } } | null)?.simulation;
   return {
     _id: row.id,
+    kind: row.kind === "simulation" ? "simulation" : "grid",
     createdAt: row.createdAt,
     modelCount: snapshot?.models?.length ?? 0,
     caseCount: snapshot?.questions?.length ?? 0,
     doneCount: resultCells.filter(cell => (cell as { status?: string })?.status === "done").length,
+    goal: typeof snapshot?.goal === "string" ? snapshot.goal : undefined,
+    outcome: typeof simulation?.outcome === "string" ? simulation.outcome : undefined,
+    turnCount: Array.isArray(simulation?.turns) ? simulation.turns.length : undefined,
   };
 }
 
 export async function createPlaygroundRun(
   db: Db,
   snapshot: unknown,
-  promptId?: string | null
+  promptId?: string | null,
+  kind: "grid" | "simulation" = "grid",
+  results: unknown = {}
 ): Promise<{ id: string; createdAt: Date }> {
   const now = new Date();
   const row = {
     id: nanoid(),
     projectId: db.projectId,
     promptId: promptId ?? null,
+    kind,
     snapshot,
-    results: {},
+    results,
     createdAt: now,
     updatedAt: now,
   };
@@ -92,6 +106,19 @@ export async function listPlaygroundRunsByPrompt(db: Db, promptId: string): Prom
       ? db.db.select().from(db.schema.playgroundRuns).where(cond).all()
       : await db.db.select().from(db.schema.playgroundRuns).where(cond)
   ) as PlaygroundRunRow[];
+}
+
+// Full rows across ALL runs - the read side of tool-schema evidence gathering
+// (core/evaluate/toolSchemas.ts's getToolFailureExamples), which scans each row's `results` JSON
+// for failed tool calls; unlike listPlaygroundRunsByPrompt's caller, that isn't prompt-scoped.
+export async function listPlaygroundRunRows(db: Db): Promise<PlaygroundRunRow[]> {
+  const cond = eq(db.schema.playgroundRuns.projectId, db.projectId);
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.playgroundRuns).where(cond).all()
+      : await db.db.select().from(db.schema.playgroundRuns).where(cond)
+  ) as PlaygroundRunRow[];
+  return rows.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }
 
 export async function listPlaygroundRuns(db: Db): Promise<PlaygroundRunSummary[]> {

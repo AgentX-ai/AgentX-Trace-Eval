@@ -55,6 +55,14 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
     return;
   }
 
+  // Explicit opt-out (tracer.trace(..., monitor=False)): skip every ingest-time check - pattern/
+  // built-in detection, online + custom evaluators, topics. Eval-run traces send this: the run's
+  // own evaluator already judges each case, so re-judging the trace would double every judge
+  // bill for zero information.
+  if (parsed.data.monitor === false) {
+    return;
+  }
+
   // Checked in the background, after responding: no background job queue in self-host (see plan
   // task #110), this is the same in-process fire-and-forget shape, just no longer blocking the
   // response the caller is actually waiting on. A caller polling client.monitor.signals or

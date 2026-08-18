@@ -4,6 +4,7 @@ import type { Db } from "../../storage/db.js";
 import { getTraceRow } from "../trace/ingest.js";
 import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
 import { extractText } from "../monitor/events.js";
+import { listPlaygroundRunRows } from "./playgroundRuns.js";
 
 // Tool/skill schema registry - the Prompt Registry's propose → human-approve → publish loop
 // applied to tool definitions (see schema.sqlite.ts's toolSchemas comment for the full design
@@ -21,6 +22,9 @@ export type ToolSchemaRow = {
   // Playground-only test endpoint default (see schema.sqlite.ts) - the engine never calls it
   // outside a Playground/simulation run.
   testEndpointUrl: string | null;
+  // Evidence example ids addressed by an adopted proposal (string[] JSON) - filtered out of
+  // future Suggest-improvement evidence below.
+  resolvedEvidence: unknown;
   currentVersion: number;
   createdAt: Date;
   updatedAt: Date;
@@ -73,6 +77,7 @@ export async function createToolSchema(
     name: input.name,
     description: input.description ?? null,
     testEndpointUrl: input.testEndpointUrl?.trim() || null,
+    resolvedEvidence: null,
     currentVersion: 1,
     createdAt: now,
     updatedAt: now,
@@ -96,6 +101,37 @@ export async function createToolSchema(
     await db.db.insert(db.schema.toolSchemaVersions).values(versionRow);
   }
   return { ...toolSchemaToWire(schemaRow), version: versionRow.version, definition: versionRow.definition };
+}
+
+function resolvedEvidenceIds(schema: ToolSchemaRow): string[] {
+  return Array.isArray(schema.resolvedEvidence)
+    ? (schema.resolvedEvidence as unknown[]).filter((id): id is string => typeof id === "string")
+    : [];
+}
+
+// Description / test endpoint edits from the tool detail dialog - metadata only, never touches
+// the version log (definition changes go through publishToolSchemaVersion).
+export async function updateToolSchemaMeta(
+  db: Db,
+  id: string,
+  input: { description?: string | null; testEndpointUrl?: string | null }
+): Promise<boolean> {
+  const schema = await getToolSchemaRow(db, id);
+  if (!schema) return false;
+  const patch: Record<string, unknown> = { updatedAt: new Date() };
+  if (input.description !== undefined) {
+    patch.description = input.description?.trim() || null;
+  }
+  if (input.testEndpointUrl !== undefined) {
+    patch.testEndpointUrl = input.testEndpointUrl?.trim() || null;
+  }
+  const cond = and(eq(db.schema.toolSchemas.id, id), eq(db.schema.toolSchemas.projectId, db.projectId));
+  if (db.kind === "sqlite") {
+    await db.db.update(db.schema.toolSchemas).set(patch).where(cond);
+  } else {
+    await db.db.update(db.schema.toolSchemas).set(patch).where(cond);
+  }
+  return true;
 }
 
 export async function getToolSchemaRow(db: Db, id: string): Promise<ToolSchemaRow | null> {
@@ -195,7 +231,15 @@ export async function getToolSchemaWithVersionsWire(db: Db, id: string) {
 export async function publishToolSchemaVersion(
   db: Db,
   toolSchemaId: string,
-  input: { definition: string; source?: string; reasoning?: string; basedOnVersion?: number }
+  input: {
+    definition: string;
+    source?: string;
+    reasoning?: string;
+    basedOnVersion?: number;
+    // Evidence example ids the adopted proposal was built from - marked resolved so the next
+    // Suggest improvement doesn't re-litigate already-fixed failures.
+    resolvedExampleIds?: string[];
+  }
 ) {
   const schema = await getToolSchemaRow(db, toolSchemaId);
   if (!schema) return null;
@@ -213,12 +257,23 @@ export async function publishToolSchemaVersion(
     createdAt: now,
   };
   const updateCond = and(eq(db.schema.toolSchemas.id, toolSchemaId), eq(db.schema.toolSchemas.projectId, db.projectId));
+  // Adopting a proposal resolves the evidence it was built from - merged (not replaced) so
+  // earlier adoptions stay resolved.
+  const resolvedEvidence =
+    input.resolvedExampleIds && input.resolvedExampleIds.length > 0
+      ? Array.from(new Set([...resolvedEvidenceIds(schema), ...input.resolvedExampleIds]))
+      : undefined;
+  const patch = {
+    currentVersion: nextVersion,
+    updatedAt: now,
+    ...(resolvedEvidence ? { resolvedEvidence } : {}),
+  };
   if (db.kind === "sqlite") {
     await db.db.insert(db.schema.toolSchemaVersions).values(versionRow);
-    await db.db.update(db.schema.toolSchemas).set({ currentVersion: nextVersion, updatedAt: now }).where(updateCond);
+    await db.db.update(db.schema.toolSchemas).set(patch).where(updateCond);
   } else {
     await db.db.insert(db.schema.toolSchemaVersions).values(versionRow);
-    await db.db.update(db.schema.toolSchemas).set({ currentVersion: nextVersion, updatedAt: now }).where(updateCond);
+    await db.db.update(db.schema.toolSchemas).set(patch).where(updateCond);
   }
   return {
     ...toolSchemaToWire({ ...schema, currentVersion: nextVersion, updatedAt: now }),
@@ -440,6 +495,9 @@ function buildFailureDetail(toolName: string, toolCalls: unknown): string {
 export async function getToolFailureExamples(db: Db, toolSchemaId: string, windowDays = 7) {
   const schema = await getToolSchemaRow(db, toolSchemaId);
   if (!schema) return null;
+  // Evidence an adopted proposal already addressed stays out of the list - re-showing it every
+  // time would make "did my fix land?" unreadable.
+  const resolved = new Set(resolvedEvidenceIds(schema));
 
   const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
   const cond = and(gte(db.schema.monitorEvents.createdAt, since), eq(db.schema.monitorEvents.projectId, db.projectId));
@@ -459,6 +517,7 @@ export async function getToolFailureExamples(db: Db, toolSchemaId: string, windo
       event.onlineEvaluatorId !== null && event.rating !== null && event.rating < LOW_RATING_THRESHOLD;
     if (!isToolFailure && !isLowRating) continue;
     if (!event.traceId) continue;
+    if (resolved.has(event.id)) continue;
 
     const trace = await getTraceRow(db, event.traceId);
     if (!trace) continue;
@@ -486,12 +545,78 @@ export async function getToolFailureExamples(db: Db, toolSchemaId: string, windo
     }
   }
 
+  // Playground runs are compute-and-return (no trace is ever ingested), but their persisted
+  // result grids still record every tool call - a failed call there is exactly the evidence this
+  // loop exists for, and "run it in the Playground, watch it fail, click Suggest improvement" is
+  // the natural workflow. One example per cell; traceId stays null (nothing to link).
+  const playgroundRows = await listPlaygroundRunRows(db);
+  for (const run of playgroundRows) {
+    if (examples.length >= MAX_EXAMPLES * 2) break;
+    if (run.updatedAt.getTime() < since.getTime()) continue;
+    const snapshot = (run.snapshot ?? {}) as { questions?: { index: number; query?: string }[] };
+    const cells = (run.results ?? {}) as Record<
+      string,
+      {
+        result?: {
+          output?: string | null;
+          toolCalls?: { name?: string; arguments?: unknown; result?: unknown; error?: string }[];
+        } | null;
+      }
+    >;
+    for (const [key, cell] of Object.entries(cells)) {
+      if (resolved.has(`pg:${run.id}:${key}`)) continue;
+      for (const call of cell.result?.toolCalls ?? []) {
+        if (!call || call.name !== schema.name) continue;
+        const errorText = toolCallErrorText(call);
+        if (!errorText) continue;
+        const questionIndex = Number(key.split("::")[1]);
+        const question = snapshot.questions?.find(q => q.index === questionIndex);
+        examples.push({
+          id: `pg:${run.id}:${key}`,
+          source: "tool-failure",
+          traceId: null,
+          input: question?.query ?? "",
+          output: extractText(cell.result?.output ?? ""),
+          detail: `Playground call ${schema.name}(${JSON.stringify(call.arguments ?? {})}) failed: ${errorText}`.slice(0, 600),
+          rating: null,
+          justification: null,
+          createdAt: run.updatedAt.toISOString(),
+        });
+        break;
+      }
+    }
+  }
+
   // Tool failures first (the direct evidence), then low ratings, newest first within each.
   examples.sort((a, b) => {
     if (a.source !== b.source) return a.source === "tool-failure" ? -1 : 1;
     return b.createdAt.localeCompare(a.createdAt);
   });
   return { name: schema.name, examples: examples.slice(0, MAX_EXAMPLES) };
+}
+
+// A tool call counts as failed when the executor recorded a hard error, OR the tool's own result
+// is an error envelope ({ "error": ... } object or JSON string) - remote APIs like PayPal's MCP
+// report failures as results, not protocol errors, and those are equally valid evidence.
+function toolCallErrorText(call: { result?: unknown; error?: string }): string | null {
+  if (typeof call.error === "string" && call.error) {
+    return call.error;
+  }
+  const result = call.result;
+  if (result && typeof result === "object" && typeof (result as { error?: unknown }).error === "string") {
+    return (result as { error: string }).error;
+  }
+  if (typeof result === "string") {
+    try {
+      const parsed = JSON.parse(result) as { error?: unknown };
+      if (parsed && typeof parsed === "object" && typeof parsed.error === "string") {
+        return parsed.error;
+      }
+    } catch {
+      // not JSON - not an error envelope
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

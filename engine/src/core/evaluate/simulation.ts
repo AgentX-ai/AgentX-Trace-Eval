@@ -131,7 +131,10 @@ export type SimulationResult = {
 export async function runConversationSimulation(
   db: Db,
   input: SimulationInput,
-  callTool: (tools: PlaygroundTool[], name: string, args: Record<string, unknown>) => Promise<unknown>
+  callTool: (tools: PlaygroundTool[], name: string, args: Record<string, unknown>) => Promise<unknown>,
+  // Live-progress hook: called the moment each turn completes (the streaming route forwards it
+  // to the dashboard as an SSE event, so the transcript renders turn by turn).
+  onTurn?: (turn: SimulationTurn, index: number) => void
 ): Promise<SimulationResult> {
   const maxTurns = Math.max(1, Math.min(MAX_TURNS_CAP, input.maxTurns ?? DEFAULT_MAX_TURNS));
   const userModel = input.userModel?.trim() || DEFAULT_JUDGE_MODEL;
@@ -206,6 +209,11 @@ export async function runConversationSimulation(
     } catch (err) {
       turn.error = err instanceof Error ? err.message : "Agent call failed";
       turns.push(turn);
+      try {
+        onTurn?.(turn, turns.length - 1);
+      } catch {
+        // A broken client stream must never abort the simulation itself.
+      }
       return {
         sessionId,
         turns,
@@ -217,6 +225,11 @@ export async function runConversationSimulation(
       };
     }
     turns.push(turn);
+    try {
+      onTurn?.(turn, turns.length - 1);
+    } catch {
+      // See above.
+    }
     history.push({ role: "user", content: turn.userMessage });
     history.push({ role: "assistant", content: turn.agentMessage ?? "" });
   }

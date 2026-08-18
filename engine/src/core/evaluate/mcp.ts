@@ -30,7 +30,9 @@ import type {
 // Nothing here executes MCP tools; the registered result is ordinary tool-schema rows.
 
 const CONNECT_TIMEOUT_MS = 15_000;
-const SESSION_TTL_MS = 15 * 60_000;
+// Sliding TTL: refreshed on every successful use, so a Playground session stays connected while
+// it's actually being exercised and evaporates an hour after the last call.
+const SESSION_TTL_MS = 60 * 60_000;
 
 export type McpToolInfo = {
   name: string;
@@ -39,7 +41,9 @@ export type McpToolInfo = {
 };
 
 export type McpLoadResult =
-  | { tools: McpToolInfo[] }
+  // sessionId present when an OAuth session with stored tokens survived the listing - the
+  // caller's handle for executing this server's tools (Playground's Connect flow).
+  | { tools: McpToolInfo[]; sessionId?: string }
   | { authRequired: true; authorizationUrl: string; sessionId: string }
   | { error: string };
 
@@ -208,6 +212,13 @@ export async function loadMcpTools(input: {
   for (const kind of kinds) {
     try {
       const tools = await listViaTransport(session, kind);
+      if (session.tokens) {
+        // OAuth session: KEEP it (sliding TTL) so Playground runs can execute this server's
+        // tools with the stored tokens - the returned sessionId is the handle they pass back.
+        session.transportKind = session.transportKind ?? kind;
+        session.createdAt = Date.now();
+        return { tools, sessionId: session.id };
+      }
       sessions.delete(session.id);
       return { tools };
     } catch (err) {
@@ -224,6 +235,84 @@ export async function loadMcpTools(input: {
   sessions.delete(session.id);
   const message = firstError instanceof Error ? firstError.message : "connection failed";
   return { error: `Could not load the MCP server: ${message.slice(0, 180)}${message.length > 180 ? "..." : ""}` };
+}
+
+// One-shot MCP tool EXECUTION for Playground/simulation runs (the registry itself stays
+// execution-free; this only runs when a Playground row's endpoint is an MCP server URL).
+// With a sessionId from the Connect flow, the stored OAuth session's tokens authenticate the
+// call; anonymously otherwise - so OAuth-challenged servers fail with a clear message pointing
+// at Connect instead of hanging.
+export async function callMcpToolOnce(input: {
+  serverUrl: string;
+  name: string;
+  args: Record<string, unknown>;
+  sessionId?: string;
+}): Promise<unknown> {
+  sweepSessions();
+  let url: URL;
+  try {
+    url = new URL(input.serverUrl.trim());
+  } catch {
+    throw new Error(`MCP server URL "${input.serverUrl}" is not a valid URL`);
+  }
+  const stored = input.sessionId ? sessions.get(input.sessionId) : undefined;
+  if (input.sessionId && !stored) {
+    throw new Error(
+      `MCP authorization for ${url.toString()} has expired - reconnect the tool (Connect on the tool row) and run again`
+    );
+  }
+  const session: McpSession = stored ?? {
+    id: randomUUID(),
+    serverUrl: url.toString(),
+    headers: {},
+    callbackUrl: "http://unused.invalid/callback",
+    transportKind: null,
+    createdAt: Date.now(),
+  };
+  if (stored) {
+    // Sliding TTL: an actively used session stays alive.
+    stored.createdAt = Date.now();
+  }
+  const kinds: TransportKind[] = session.transportKind
+    ? [session.transportKind]
+    : url.pathname.endsWith("/sse")
+      ? ["sse", "streamable"]
+      : ["streamable", "sse"];
+  let firstError: unknown = null;
+  for (const kind of kinds) {
+    const client = new Client({ name: "agentx-selfhost", version: "1.0.0" }, { jsonSchemaValidator: permissiveValidator });
+    const transport = buildTransport(session, kind);
+    try {
+      await withTimeout(client.connect(transport), "Connecting to the MCP server");
+      const result = (await withTimeout(
+        client.callTool({ name: input.name, arguments: input.args }),
+        `Calling MCP tool "${input.name}"`
+      )) as { content?: Array<{ type?: string; text?: string }>; structuredContent?: unknown; isError?: boolean };
+      const text = (result.content ?? [])
+        .map(part => (part.type === "text" && typeof part.text === "string" ? part.text : ""))
+        .filter(Boolean)
+        .join("\n");
+      if (result.isError) {
+        throw new Error(text || `MCP tool "${input.name}" returned an error`);
+      }
+      if (result.structuredContent !== undefined) {
+        return result.structuredContent;
+      }
+      return text || (result.content ?? null);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        throw new Error(
+          input.sessionId
+            ? `MCP authorization for ${session.serverUrl} was rejected - reconnect the tool (Connect on the tool row) and run again`
+            : `MCP server ${session.serverUrl} requires OAuth sign-in - click Connect on the tool row to authorize it, or use a test endpoint`
+        );
+      }
+      firstError = firstError ?? err;
+    } finally {
+      await client.close().catch(() => {});
+    }
+  }
+  throw firstError instanceof Error ? firstError : new Error("MCP tool call failed");
 }
 
 // The OAuth callback's half: exchange the authorization code against the session's transport

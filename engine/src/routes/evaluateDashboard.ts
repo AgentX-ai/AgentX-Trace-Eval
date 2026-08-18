@@ -65,6 +65,7 @@ import {
   listUnregisteredTools,
   deleteToolSchema,
   updateToolSchemaTestEndpoint,
+  updateToolSchemaMeta,
 } from "../core/evaluate/toolSchemas.js";
 import { runPlayground, extractPlaygroundTools, callPlaygroundTool } from "../core/evaluate/playground.js";
 import { runConversationSimulation } from "../core/evaluate/simulation.js";
@@ -86,6 +87,7 @@ import {
   getWorstRatedExamples,
   getFailureThemes,
   deletePrompt,
+  updatePromptMeta,
 } from "../core/evaluate/prompts.js";
 import {
   runEvaluationAnalysis,
@@ -559,27 +561,49 @@ evaluateDashboardRouter.post("/playground/simulate", async (req: Request, res: R
     res.status(400).json({ error: "messages must be an array" });
     return;
   }
-  const result = await runConversationSimulation(
-    scopedDb(req),
-    {
-      model: body.model,
-      messages: body.messages,
-      persona: body.persona,
-      goal: body.goal,
-      maxTurns: typeof body.maxTurns === "number" ? body.maxTurns : undefined,
-      userModel: typeof body.userModel === "string" ? body.userModel : undefined,
-      tools: extractPlaygroundTools(body),
-      evaluationSettingsId:
-        typeof body.evaluationSettingsId === "string" && body.evaluationSettingsId.trim()
-          ? body.evaluationSettingsId
-          : undefined,
-      agentName: typeof body.agentName === "string" ? body.agentName : undefined,
-      record: body.record !== false,
-      maxTokens: typeof body.maxTokens === "number" ? body.maxTokens : undefined,
-      temperature: typeof body.temperature === "number" ? body.temperature : undefined,
-    },
-    callPlaygroundTool
-  );
+  const simulationInput = {
+    model: body.model,
+    messages: body.messages,
+    persona: body.persona,
+    goal: body.goal,
+    maxTurns: typeof body.maxTurns === "number" ? body.maxTurns : undefined,
+    userModel: typeof body.userModel === "string" ? body.userModel : undefined,
+    tools: extractPlaygroundTools(body),
+    evaluationSettingsId:
+      typeof body.evaluationSettingsId === "string" && body.evaluationSettingsId.trim()
+        ? body.evaluationSettingsId
+        : undefined,
+    agentName: typeof body.agentName === "string" ? body.agentName : undefined,
+    record: body.record !== false,
+    maxTokens: typeof body.maxTokens === "number" ? body.maxTokens : undefined,
+    temperature: typeof body.temperature === "number" ? body.temperature : undefined,
+  };
+
+  // stream: true - Server-Sent Events so the dashboard renders the conversation turn by turn as
+  // it happens ({type:"turn"} per completed exchange, one final {type:"result"}). The plain JSON
+  // response below stays for the SDK/back-compat.
+  if (body.stream === true) {
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+    const send = (payload: unknown) => {
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    };
+    try {
+      const result = await runConversationSimulation(scopedDb(req), simulationInput, callPlaygroundTool, (turn, index) =>
+        send({ type: "turn", turn, index })
+      );
+      send({ type: "result", result });
+    } catch (err) {
+      send({ type: "error", error: err instanceof Error ? err.message.slice(0, 300) : "Simulation failed" });
+    }
+    res.end();
+    return;
+  }
+
+  const result = await runConversationSimulation(scopedDb(req), simulationInput, callPlaygroundTool);
   res.status(200).json(result);
 });
 
@@ -594,7 +618,11 @@ evaluateDashboardRouter.post("/playground/runs", async (req: Request, res: Respo
     return;
   }
   const promptId = typeof body.promptId === "string" && body.promptId.trim() ? body.promptId : null;
-  const created = await createPlaygroundRun(scopedDb(req), body.snapshot, promptId);
+  // kind "simulation" stores a Simulate-conversation transcript in the same history log; results
+  // may then be sent inline (a simulation is complete when saved, unlike a streaming grid).
+  const kind = body.kind === "simulation" ? ("simulation" as const) : ("grid" as const);
+  const results = body.results && typeof body.results === "object" ? body.results : {};
+  const created = await createPlaygroundRun(scopedDb(req), body.snapshot, promptId, kind, results);
   res.status(201).json({ _id: created.id, createdAt: created.createdAt });
 });
 
@@ -686,6 +714,29 @@ evaluateDashboardRouter.post("/tool-schemas", async (req: Request, res: Response
 
 // Set or clear a registered tool's Playground test endpoint - the one mutable field outside the
 // versioned definition. Null/empty clears it.
+// Metadata edits (description / test endpoint) from the tool detail dialog - never touches the
+// version log; definition changes go through POST /tool-schemas/:id/versions.
+evaluateDashboardRouter.patch("/tool-schemas/:id", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  const input: { description?: string | null; testEndpointUrl?: string | null } = {};
+  if ("description" in body) {
+    input.description = typeof body.description === "string" ? body.description : null;
+  }
+  if ("testEndpointUrl" in body) {
+    if (typeof body.testEndpointUrl === "string" && body.testEndpointUrl.trim() && !isHttpUrl(body.testEndpointUrl)) {
+      res.status(400).json({ error: "testEndpointUrl must be an http(s) URL" });
+      return;
+    }
+    input.testEndpointUrl = typeof body.testEndpointUrl === "string" ? body.testEndpointUrl : null;
+  }
+  const ok = await updateToolSchemaMeta(scopedDb(req), req.params.id!, input);
+  if (!ok) {
+    res.status(404).json({ error: "Tool schema not found" });
+    return;
+  }
+  res.status(200).json({ ok: true });
+});
+
 evaluateDashboardRouter.patch("/tool-schemas/:id/test-endpoint", async (req: Request, res: Response) => {
   const raw = req.body?.testEndpointUrl;
   if (raw !== undefined && raw !== null && raw !== "" && !isHttpUrl(raw)) {
@@ -762,7 +813,7 @@ evaluateDashboardRouter.get("/tool-schemas/:id", async (req: Request, res: Respo
 });
 
 evaluateDashboardRouter.post("/tool-schemas/:id/versions", async (req: Request, res: Response) => {
-  const { definition, source, reasoning, basedOnVersion } = req.body ?? {};
+  const { definition, source, reasoning, basedOnVersion, resolvedExampleIds } = req.body ?? {};
   if (typeof definition !== "string" || !definition.trim()) {
     res.status(400).json({ error: "definition is required" });
     return;
@@ -772,6 +823,9 @@ evaluateDashboardRouter.post("/tool-schemas/:id/versions", async (req: Request, 
     source: source === "proposed" ? "proposed" : "manual",
     reasoning: typeof reasoning === "string" ? reasoning : undefined,
     basedOnVersion: typeof basedOnVersion === "number" ? basedOnVersion : undefined,
+    resolvedExampleIds: Array.isArray(resolvedExampleIds)
+      ? resolvedExampleIds.filter((id: unknown): id is string => typeof id === "string")
+      : undefined,
   });
   if (!toolSchema) {
     res.status(404).json({ error: "Tool schema not found" });
@@ -849,6 +903,21 @@ evaluateDashboardRouter.delete("/tool-schemas/:id", async (req: Request, res: Re
     return;
   }
   res.status(200).json({ success: true });
+});
+
+// Metadata edits (description) from the prompt detail dialog - mirrors PATCH /tool-schemas/:id.
+evaluateDashboardRouter.patch("/prompts/:id", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  const input: { description?: string | null } = {};
+  if ("description" in body) {
+    input.description = typeof body.description === "string" ? body.description : null;
+  }
+  const ok = await updatePromptMeta(scopedDb(req), req.params.id!, input);
+  if (!ok) {
+    res.status(404).json({ error: "Prompt not found" });
+    return;
+  }
+  res.status(200).json({ ok: true });
 });
 
 evaluateDashboardRouter.get("/prompts/:id", async (req: Request, res: Response) => {

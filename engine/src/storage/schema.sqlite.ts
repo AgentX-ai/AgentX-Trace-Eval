@@ -256,6 +256,9 @@ export const evaluationSettingsVersions = sqliteTable("evaluation_settings_versi
 // insert (see prunePlaygroundRuns), so this never grows unbounded like a real persisted resource.
 export const playgroundRuns = sqliteTable("playground_runs", {
   id: text("id").primaryKey(),
+  // "grid" (the classic results grid, null treated as grid for pre-column rows) or "simulation"
+  // (a stored Simulate-conversation transcript) - the History view splits on this.
+  kind: text("kind"),
   // { models: PortabilityModel[]; questions: (TestCase & {index})[] } - the frontend's
   // RunSnapshot verbatim, no transformation either direction.
   snapshot: text("snapshot", { mode: "json" }).notNull(),
@@ -665,6 +668,9 @@ export const toolSchemas = sqliteTable("tool_schemas", {
   // tool's endpointUrl default. NEVER called by the engine outside a Playground/simulation run -
   // the registry itself stays execution-free (production tools run in the agent's own code).
   testEndpointUrl: text("test_endpoint_url"),
+  // Evidence example ids already addressed by an adopted proposal (JSON string[]) - filtered
+  // out of future Suggest-improvement evidence (core/evaluate/toolSchemas.ts).
+  resolvedEvidence: text("resolved_evidence", { mode: "json" }),
   currentVersion: integer("current_version").notNull().default(1),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),

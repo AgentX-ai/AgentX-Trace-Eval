@@ -2,7 +2,17 @@ import { Router, type Request, type Response } from "express";
 import { scopedDb } from "../auth/apiKey.js";
 import { createDataset, getDataset, listDatasets, extractSimilarityConfig, extractCodeScorers } from "../core/evaluate/datasets.js";
 import { createEvaluationSettings, getEvaluationSettings, listEvaluationSettings } from "../core/evaluate/evaluationSettings.js";
-import { initRun, appendResults, finalizeRun, getRun, listRuns, computeRunGate, recordGateResult, MAX_BATCH_SIZE } from "../core/evaluate/runs.js";
+import {
+  initRun,
+  appendResults,
+  finalizeRun,
+  getRun,
+  listRuns,
+  computeRunGate,
+  recordGateResult,
+  computeLiveStatistics,
+  MAX_BATCH_SIZE,
+} from "../core/evaluate/runs.js";
 import { createPrompt, getPromptForSdk, listPromptsForSdk } from "../core/evaluate/prompts.js";
 import { handleCasePreview, handleSuggestExpected, handleAddCase } from "./curationHandlers.js";
 
@@ -137,7 +147,9 @@ evaluationsRouter.post("/runs/:runId/results", async (req: Request, res: Respons
       res.status(404).json({ error: "Run not found" });
       return;
     }
-    res.status(200).json(outcome);
+    // liveStatistics per batch: the SDK's execute() reads it off every batch response, so
+    // run.average_rating updates as scoring lands, not only at finalize.
+    res.status(200).json({ ...outcome, liveStatistics: await computeLiveStatistics(scopedDb(req), req.params.runId!) });
   } catch (err) {
     res.status(409).json({ error: err instanceof Error ? err.message : "Unable to append results" });
   }

@@ -106,6 +106,24 @@ export async function createPrompt(db: Db, input: { name: string; text: string; 
   return { ...promptToWire(promptRow), version: versionRow.version, text: versionRow.text };
 }
 
+// Description edits from the prompt detail dialog - metadata only, never touches the version
+// log (text changes go through publishPromptVersion). Mirrors toolSchemas.ts's updateToolSchemaMeta.
+export async function updatePromptMeta(db: Db, id: string, input: { description?: string | null }): Promise<boolean> {
+  const prompt = await getPromptRow(db, id);
+  if (!prompt) return false;
+  const patch: Record<string, unknown> = { updatedAt: new Date() };
+  if (input.description !== undefined) {
+    patch.description = input.description?.trim() || null;
+  }
+  const cond = and(eq(db.schema.prompts.id, id), eq(db.schema.prompts.projectId, db.projectId));
+  if (db.kind === "sqlite") {
+    await db.db.update(db.schema.prompts).set(patch).where(cond);
+  } else {
+    await db.db.update(db.schema.prompts).set(patch).where(cond);
+  }
+  return true;
+}
+
 export async function getPromptRow(db: Db, id: string): Promise<PromptRow | null> {
   const cond = and(eq(db.schema.prompts.id, id), eq(db.schema.prompts.projectId, db.projectId));
   const row =
