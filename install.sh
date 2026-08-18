@@ -67,12 +67,17 @@ main() {
   else
     web_url="https://github.com/${REPO}/releases/download/${version}/agentx-web.tar.gz"
   fi
-  rm -rf "$INSTALL_DIR/web"
-  mkdir -p "$INSTALL_DIR/web"
+  # Unpacked into the temp directory first and only swapped in once that succeeded. Deleting
+  # $INSTALL_DIR/web up front meant a re-run on a flaky network - or against a release that has no
+  # dashboard asset yet - left an existing, working dashboard deleted and replaced with an empty
+  # directory, turning a failed upgrade into a broken install.
   if curl -fsSL "$web_url" -o "$tmp_dir/agentx-web.tar.gz"; then
-    tar -xzf "$tmp_dir/agentx-web.tar.gz" -C "$INSTALL_DIR/web"
+    mkdir -p "$tmp_dir/web"
+    tar -xzf "$tmp_dir/agentx-web.tar.gz" -C "$tmp_dir/web"
+    rm -rf "$INSTALL_DIR/web"
+    mv "$tmp_dir/web" "$INSTALL_DIR/web"
   else
-    echo "warning: no dashboard bundle found at $web_url, continuing without a dashboard" >&2
+    echo "warning: no dashboard bundle found at $web_url, keeping any previously installed dashboard" >&2
   fi
 
   echo "Installed to $INSTALL_DIR"

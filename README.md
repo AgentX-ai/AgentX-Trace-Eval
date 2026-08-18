@@ -218,6 +218,25 @@ Iterating on the engine's API doesn't need a `web/` rebuild; iterating on the da
 means re-running whichever step above got you `web/` in the first place - there's no hot-reload
 loop wired up between the two repos yet.
 
+### Tests
+
+```bash
+yarn test        # judge-core + engine (vitest) + the Go CLI
+yarn typecheck   # both TypeScript packages, tests included
+```
+
+The engine's integration suites boot the real engine as a subprocess against a throwaway SQLite
+database, so they need no configuration - but the ones that exercise Postgres skip unless you
+point them at a server:
+
+```bash
+docker run -d --name agentx-pg-test -e POSTGRES_PASSWORD=agentx -e POSTGRES_DB=agentx -p 55432:5432 postgres:16-alpine
+AGENTX_TEST_DB_URL=postgres://postgres:agentx@localhost:55432/agentx yarn workspace @agentx/engine test
+```
+
+That is worth running before anything touching `storage/db.ts` or an ingest path: Postgres is
+where concurrent writes actually interleave, so a race that SQLite hides shows up there.
+
 ### Full distribution build
 
 Compiles the engine to a Bun-compiled binary and builds the Go CLI, laid out exactly the way the

@@ -1,0 +1,111 @@
+name: Tests
+# There was no test workflow: the suites added alongside this file only prove anything if they
+# run on every change. Three jobs, matching the three things this repo actually ships - the
+# TypeScript engine and its shared judge-core package, the Go CLI, and the engine again against
+# Postgres, which is the backend where the concurrency behaviour differs (see
+# engine/src/test/dialect.integration.test.ts).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  typescript:
+    name: engine + judge-core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
+      - name: Set up Node.js
+        uses: actions/setup-node@3235b876344d2a9aa001b8d1453c930bba69e610
+        with:
+          node-version: 24.x
+          cache: yarn
+          cache-dependency-path: yarn.lock
+
+      - name: Install workspace dependencies
+        run: yarn install --frozen-lockfile
+
+      # The engine imports @agentx/judge-core through its "exports" map, so the workspace package
+      # has to be built before anything can import it.
+      - name: Build judge-core
+        run: yarn workspace @agentx/judge-core build
+
+      - name: Typecheck
+        run: |
+          yarn workspace @agentx/judge-core typecheck
+          yarn workspace @agentx/engine typecheck
+
+      - name: Test judge-core
+        run: yarn workspace @agentx/judge-core test
+
+      # The integration suites boot the real engine as a subprocess per file, so this is slower
+      # than a unit-only run and worth its own generous timeout rather than the job default.
+      - name: Test engine
+        run: yarn workspace @agentx/engine test
+        timeout-minutes: 15
+
+  postgres:
+    name: engine on Postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: agentx
+          POSTGRES_DB: agentx
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
+      - name: Set up Node.js
+        uses: actions/setup-node@3235b876344d2a9aa001b8d1453c930bba69e610
+        with:
+          node-version: 24.x
+          cache: yarn
+          cache-dependency-path: yarn.lock
+
+      - name: Install workspace dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build judge-core
+        run: yarn workspace @agentx/judge-core build
+
+      # AGENTX_TEST_DB_URL is what un-skips the Postgres suites; the tests create and drop their
+      # own throwaway databases on this connection, so it points at the default one.
+      - name: Test engine against Postgres
+        run: yarn workspace @agentx/engine test
+        timeout-minutes: 20
+        env:
+          AGENTX_TEST_DB_URL: postgres://postgres:agentx@localhost:5432/agentx
+
+  cli:
+    name: cli
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
+      # Tag rather than a pinned SHA like the actions above: those SHAs are carried over from this
+      # repo's existing workflows, and inventing one for an action they have never used would be a
+      # guess. No cache-dependency-path either - cli/ has no third-party dependencies and so no
+      # go.sum for setup-go to hash.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache: false
+
+      - name: Vet
+        working-directory: cli
+        run: go vet ./...
+
+      - name: Test
+        working-directory: cli
+        run: go test ./...
