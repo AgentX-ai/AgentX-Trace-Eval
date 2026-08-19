@@ -21,7 +21,17 @@ type SpanWire = {
   parentSpanId?: string;
   startedAt?: string;
   createdAt: string;
+  metadata?: unknown;
 };
+
+// A span is a retrieval if it says so (metadata.kind, stamped by the SDK's record_retrieval /
+// trace_retrieval and the LangChain handler) - the "Retrieval N" name test is only a fallback
+// for traces recorded before the marker existed, so custom names like "kb_search" still count.
+export function isRetrievalSpan(span: { name: string; metadata?: unknown }): boolean {
+  const kind = (span.metadata as { kind?: unknown } | null | undefined)?.kind;
+  if (typeof kind === "string") return kind === "retrieval";
+  return /^retriev/i.test(span.name);
+}
 
 const MAX_STEPS = 40;
 const MAX_FIELD = 300;
@@ -194,8 +204,9 @@ export function matchTrajectory(
 // Retrieval context extraction: what the agent actually retrieved for one interaction, rendered
 // for {context}-referencing judge prompts (the RAG metric pack). Sources, in order: the trace's
 // own metadata.retrievalContext (explicit opt-in, handled by callers), the subtree's recorded
-// retrieval spans (SDK integrations name them "Retrieval N" with the joined chunk contents as
-// output), and a performanceSummary retrieval_steps list from older flat traces.
+// retrieval spans (marked metadata.kind === "retrieval" by the SDK, "Retrieval N" names as a
+// legacy fallback - see isRetrievalSpan), and a performanceSummary retrieval_steps list from
+// older flat traces.
 // ---------------------------------------------------------------------------
 
 const MAX_CONTEXT_CHARS = 12_000;
@@ -237,7 +248,7 @@ export async function getTraceRetrievalContext(db: Db, traceId: string): Promise
     }
     for (const span of spans) {
       if (!span.spanId || !included.has(span.spanId) || !span.parentSpanId) continue;
-      if (!/^retriev/i.test(span.name)) continue;
+      if (!isRetrievalSpan(span)) continue;
       const text = chunkText(span.output);
       if (text) chunks.push(text);
     }
