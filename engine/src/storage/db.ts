@@ -278,12 +278,40 @@ type SqliteHandle = {
 // zero setup. Replace with real drizzle-kit migrations (`db:generate` script already wired in
 // package.json) once the schema stabilizes, see plan task #107. `exec()`/`prepare()` have the same
 // signature on both better-sqlite3's and bun:sqlite's Database, so this one function serves both.
+
+// Created at the END of bootstrap, not inline with the CREATE TABLEs that own them. All three key
+// on project_id, and on a pre-existing (pre-multi-project) install those tables already exist, so
+// CREATE TABLE IF NOT EXISTS no-ops and project_id only arrives via the ALTER TABLEs further down.
+// Creating these indexes any earlier fails the entire boot with "no such column: project_id" - a
+// fresh install never noticed, because there the CREATE TABLE really does run first.
+const PROJECT_SCOPED_UNIQUE_INDEXES = [
+  `CREATE UNIQUE INDEX IF NOT EXISTS monitor_profiles_agent_id ON monitor_profiles (project_id, agent_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS monitor_signals_pattern_key_agent_id ON monitor_signals (project_id, pattern_key, agent_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS prompt_versions_prompt_id_version ON prompt_versions (project_id, prompt_id, version)`,
+];
+
+// Same posture as ensureVersionUnique below: an install that somehow already collected duplicate
+// rows keeps booting (degraded, without the constraint) rather than being bricked at startup.
+function ensureProjectScopedUniqueIndexes(exec: (statement: string) => void): void {
+  for (const statement of PROJECT_SCOPED_UNIQUE_INDEXES) {
+    try {
+      exec(statement);
+    } catch (err) {
+      console.warn(
+        `Could not create the unique index from \`${statement}\`: ${err instanceof Error ? err.message : String(err)}\n` +
+          `  This usually means duplicate rows already exist for that key.`
+      );
+    }
+  }
+}
+
 function bootstrapSqlite(sqlite: SqliteHandle): void {
   // CREATE UNIQUE INDEX IF NOT EXISTS only checks the index *name* - on a pre-existing install
   // that already created these 3 with their old (pre-multi-project) column sets, the IF NOT
-  // EXISTS below would otherwise silently no-op and leave the old, narrower uniqueness constraint
-  // in place. Dropping first makes the recreation below actually pick up project_id. Cheap/no-op
-  // safe to run every boot (small dev-scale indexes).
+  // EXISTS in ensureProjectScopedUniqueIndexes (run at the end of this function) would otherwise
+  // silently no-op and leave the old, narrower uniqueness constraint in place. Dropping first
+  // makes that recreation actually pick up project_id. Cheap/no-op safe to run every boot (small
+  // dev-scale indexes).
   sqlite.exec(`
     DROP INDEX IF EXISTS monitor_profiles_agent_id;
     DROP INDEX IF EXISTS monitor_signals_pattern_key_agent_id;
@@ -481,8 +509,6 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       project_id TEXT
     );
 
-    CREATE UNIQUE INDEX IF NOT EXISTS monitor_profiles_agent_id ON monitor_profiles (project_id, agent_id);
-
     CREATE TABLE IF NOT EXISTS monitor_signals (
       id TEXT PRIMARY KEY,
       pattern_key TEXT NOT NULL,
@@ -502,9 +528,6 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       last_seen_at INTEGER NOT NULL,
       project_id TEXT
     );
-
-    CREATE UNIQUE INDEX IF NOT EXISTS monitor_signals_pattern_key_agent_id
-      ON monitor_signals (project_id, pattern_key, agent_id);
 
     CREATE TABLE IF NOT EXISTS monitor_signal_feedback (
       id TEXT PRIMARY KEY,
@@ -705,9 +728,6 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       created_at INTEGER NOT NULL,
       project_id TEXT
     );
-
-    CREATE UNIQUE INDEX IF NOT EXISTS prompt_versions_prompt_id_version
-      ON prompt_versions (project_id, prompt_id, version);
 
     CREATE TABLE IF NOT EXISTS portability_models (
       id TEXT PRIMARY KEY,
@@ -971,6 +991,8 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     );
     UPDATE monitor_profiles SET topics_enabled = 0 WHERE topics_enabled = 1;
   `);
+
+  ensureProjectScopedUniqueIndexes(statement => sqlite.exec(statement));
 }
 
 // prompt_versions has had this index since it shipped; tool_schema_versions never got the
@@ -1431,8 +1453,6 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       project_id TEXT
     );
 
-    CREATE UNIQUE INDEX IF NOT EXISTS monitor_profiles_agent_id ON monitor_profiles (project_id, agent_id);
-
     CREATE TABLE IF NOT EXISTS monitor_signals (
       id TEXT PRIMARY KEY,
       pattern_key TEXT NOT NULL,
@@ -1452,9 +1472,6 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       last_seen_at TIMESTAMP NOT NULL,
       project_id TEXT
     );
-
-    CREATE UNIQUE INDEX IF NOT EXISTS monitor_signals_pattern_key_agent_id
-      ON monitor_signals (project_id, pattern_key, agent_id);
 
     CREATE TABLE IF NOT EXISTS monitor_signal_feedback (
       id TEXT PRIMARY KEY,
@@ -1653,9 +1670,6 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       created_at TIMESTAMP NOT NULL,
       project_id TEXT
     );
-
-    CREATE UNIQUE INDEX IF NOT EXISTS prompt_versions_prompt_id_version
-      ON prompt_versions (project_id, prompt_id, version);
 
     CREATE TABLE IF NOT EXISTS portability_models (
       id TEXT PRIMARY KEY,
@@ -1881,6 +1895,17 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
   await migrateOnlineEvaluatorsToConfigsPostgres(pool);
   await backfillAgentsPostgres(pool);
   await backfillDefaultProjectPostgres(pool);
+
+  for (const statement of PROJECT_SCOPED_UNIQUE_INDEXES) {
+    try {
+      await pool.query(statement);
+    } catch (err) {
+      console.warn(
+        `Could not create the unique index from \`${statement}\`: ${err instanceof Error ? err.message : String(err)}\n` +
+          `  This usually means duplicate rows already exist for that key.`
+      );
+    }
+  }
 }
 
 // Postgres mirror of migrateOnlineEvaluatorsToConfigsSqlite above - see that function's comment

@@ -306,9 +306,13 @@ async function main() {
   console.log(`Point the SDK here with:`);
   console.log(`  AGENTX_API_BASE_URL=http://localhost:${PORT}/api/v1`);
   console.log(`  AGENTX_API_KEY=${defaultProject?.apiKey}`);
-  if (isDev && !webIndexHtml) {
-    console.log(`Dev mode: web UI not found (expected web/index.html next to this checkout).`);
-    console.log(`Fetch it manually with:`);
+  // Printed in both modes, not just dev: web/ isn't committed, so a source checkout started with
+  // `yarn start` (no --dev, hence no auto-download) serves the API fine and 404s every non-API
+  // GET. Without this the only symptom is a bare "Cannot GET /" in the browser and nothing at all
+  // in the log to explain it.
+  if (!webIndexHtml) {
+    console.log(`Web UI not found (expected web/index.html next to this checkout) - serving the API only.`);
+    console.log(isDev ? `Fetch it manually with:` : `Start with \`yarn dev --dev\` to fetch it automatically, or fetch it manually with:`);
     console.log(
       `  mkdir -p web && curl -fsSL https://github.com/AgentX-ai/AgentX-Trace-Eval/releases/latest/download/agentx-web.tar.gz | tar -xz -C web`
     );
