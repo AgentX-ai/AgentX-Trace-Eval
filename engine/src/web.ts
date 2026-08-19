@@ -45,9 +45,29 @@ const WEB_BUNDLE_URL = "https://github.com/AgentX-ai/AgentX-Trace-Eval/releases/
 // and a manual curl|tar step. Instead, fetch the released bundle into the repo's web/ once.
 // Best-effort by design: offline or a missing release just returns null and the caller falls
 // back to the old "not found" message with the manual command.
+// Where the bundle may be written. findWebIndexHtml documents the hazard above and this has to
+// respect it: under a compiled binary import.meta.url resolves inside Bun's virtual
+// /$bunfs/root/..., so "repo root" collapses to "/" and the bundle lands in /web. Confirmed
+// against a real `bun build --compile` binary before this existed - `agentx-engine --dev`
+// extracted 29MB into the filesystem root as root, and would fail with EACCES as anyone else, so
+// dev mode never actually got its dashboard from the binary either way. A genuine source checkout
+// is identified by its package.json; anything else falls back to the binary's own directory,
+// which is the installed layout findWebIndexHtml already looks in first.
+export function resolveWebBundleDir(
+  sourceDir: string,
+  execPath: string,
+  exists: (p: string) => boolean = fs.existsSync
+): string {
+  const repoRoot = path.join(sourceDir, "..", "..");
+  if (exists(path.join(repoRoot, "package.json"))) {
+    return path.join(repoRoot, "web");
+  }
+  return path.join(path.dirname(execPath), "web");
+}
+
 export async function downloadWebBundle(): Promise<string | null> {
   const sourceDir = path.dirname(fileURLToPath(import.meta.url));
-  const webDir = path.join(sourceDir, "..", "..", "web"); // repo root/web from engine/src|dist
+  const webDir = resolveWebBundleDir(sourceDir, process.execPath);
   const tarPath = path.join(os.tmpdir(), `agentx-web-${process.pid}.tar.gz`);
   try {
     console.log(`Dev mode: web UI not found - downloading the prebuilt dashboard bundle...`);
@@ -58,7 +78,8 @@ export async function downloadWebBundle(): Promise<string | null> {
     fs.writeFileSync(tarPath, Buffer.from(await resp.arrayBuffer()));
     fs.mkdirSync(webDir, { recursive: true });
     // System tar (macOS, Linux, and Windows 10+ all ship one) rather than an npm tarball dep.
-    execFileSync("tar", ["-xzf", tarPath, "-C", webDir]);
+    // --no-same-owner: extracting as root would otherwise restore the archive's own uid/gid.
+    execFileSync("tar", ["--no-same-owner", "-xzf", tarPath, "-C", webDir]);
     const indexHtml = path.join(webDir, "index.html");
     if (!fs.existsSync(indexHtml)) {
       throw new Error("bundle extracted but web/index.html is missing");
