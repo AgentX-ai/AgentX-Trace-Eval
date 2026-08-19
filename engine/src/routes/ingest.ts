@@ -1,4 +1,5 @@
-import { Router, type Request, type Response } from "express";
+import type { Request, Response } from "express";
+import { asyncRouter } from "./asyncRouter.js";
 import { scopedDb } from "../auth/apiKey.js";
 import {
   ingestTraceSchema,
@@ -17,7 +18,7 @@ import { runClassification } from "../core/monitor/topics.js";
 // f"{base_url}/ingest/traces" (agentx/tracing/ingest_client.py). Mounting this router at
 // /api/v1/ingest with a POST /traces route reproduces that exactly, so pointing the existing
 // SDK at AGENTX_API_BASE_URL=http://localhost:<port>/api/v1 works with zero SDK changes.
-export const ingestRouter = Router();
+export const ingestRouter = asyncRouter();
 
 // See routes/otlp.ts's identical constant for the full rationale (Braintrust/Langfuse both
 // default online scoring to the trace/root level, not per-span). Applies here too now that a

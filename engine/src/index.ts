@@ -1,7 +1,9 @@
 import path from "node:path";
 import type { Server } from "node:http";
-import express, { type Express } from "express";
+import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import { requireApiKey } from "./auth/apiKey.js";
+import { asyncHandler } from "./routes/asyncRouter.js";
+import { rateLimit, CREDENTIAL_LIMIT, DATA_PLANE_LIMIT } from "./auth/rateLimit.js";
 import { ingestRouter } from "./routes/ingest.js";
 import { evaluationsRouter } from "./routes/evaluations.js";
 import { monitorRouter } from "./routes/monitor.js";
@@ -74,6 +76,12 @@ async function main() {
 
   const app = express();
 
+  // Two ceilings, see auth/rateLimit.ts. credentialLimit covers anything that hands out or is
+  // guarded by a credential; dataPlaneLimit sits far above any real SDK burst, because throttling
+  // ingest would drop the telemetry this engine exists to keep.
+  const credentialLimit = rateLimit(CREDENTIAL_LIMIT);
+  const dataPlaneLimit = rateLimit(DATA_PLANE_LIMIT);
+
   // Dashboard auth (core/auth/betterAuth.ts): AGENTX_AUTH=enabled turns on users/orgs/sessions;
   // the default (disabled) keeps the zero-setup "reachable port = trusted" self-host posture with
   // none of this initialized. The auth handler is mounted BEFORE express.json - better-auth reads
@@ -87,15 +95,15 @@ async function main() {
       trustedOrigins: process.env.AGENTX_TRUSTED_ORIGINS?.split(",").map(o => o.trim()).filter(Boolean),
     });
   }
-  app.get("/api/v1/auth/config", async (_req, res) => {
+  app.get("/api/v1/auth/config", credentialLimit, asyncHandler(async (_req, res) => {
     const mode = authMode();
     res.status(200).json({
       mode,
       needsSetup: mode === "enabled" ? await needsSetup(getDb()) : false,
     });
-  });
+  }));
   if (authMode() === "enabled") {
-    app.all("/api/v1/auth/*", toNodeHandler(getAuth()));
+    app.all("/api/v1/auth/*", credentialLimit, toNodeHandler(getAuth()));
   }
 
   app.use(express.json({ limit: "10mb" }));
@@ -104,7 +112,7 @@ async function main() {
   // Unauthenticated by necessity - the MCP server's authorization server redirects the USER'S
   // BROWSER here with only code+state; state is the engine-minted session id, and the session
   // store (15-minute TTL, in-memory) is the actual authority on what the code can do.
-  app.get("/api/v1/mcp-oauth/callback", async (req, res) => {
+  app.get("/api/v1/mcp-oauth/callback", credentialLimit, asyncHandler(async (req, res) => {
     const code = typeof req.query.code === "string" ? req.query.code : "";
     const state = typeof req.query.state === "string" ? req.query.state : "";
     const fail = (message: string) =>
@@ -123,7 +131,7 @@ async function main() {
     res
       .status(200)
       .send(`<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;padding:40px"><h3>Authorized</h3><p>You can close this window - the dashboard will continue automatically.</p><script>setTimeout(function(){window.close()},800)</script></body>`);
-  });
+  }));
 
   // Access log (method, path, status, duration) for every request. No morgan dependency here -
   // engine/ compiles to a single Bun binary (see package.json's `compile` script), so this stays
@@ -140,23 +148,27 @@ async function main() {
 
   // Unauthenticated: lets `agentx-server --dev` (and the CLI's launch check) confirm the engine
   // is actually up without needing the API key.
-  app.get("/health", (_req, res) => res.status(200).json({ status: "ok" }));
+  app.get("/health", dataPlaneLimit, (_req, res) => res.status(200).json({ status: "ok" }));
 
-  app.use("/api/v1/ingest", requireApiKey(), ingestRouter);
-  app.use("/api/v1/custom-agent-evaluations", requireApiKey(), evaluationsRouter);
-  app.use("/api/v1/monitor", requireApiKey(), monitorRouter);
-  app.use("/api/v1/agents", requireApiKey(), agentsRouter);
-  app.use("/api/v1/outcomes", requireApiKey(), outcomesRouter);
-  app.use("/api/v1/feedback", requireApiKey(), feedbackRouter);
-  app.use("/api/v1/agent-monitoring", requireApiKey(), agentMonitoringDashboardRouter);
-  app.use("/api/v1/evaluate", requireApiKey(), evaluateDashboardRouter);
-  app.use("/api/v1/otel", requireApiKey(), otlpRouter);
+  // requireApiKey() is async too (it reads the projects table), so it can reject the same way a
+  // route handler can - see routes/asyncRouter.ts.
+  const apiKey = asyncHandler(requireApiKey());
+
+  app.use("/api/v1/ingest", dataPlaneLimit, apiKey, ingestRouter);
+  app.use("/api/v1/custom-agent-evaluations", dataPlaneLimit, apiKey, evaluationsRouter);
+  app.use("/api/v1/monitor", dataPlaneLimit, apiKey, monitorRouter);
+  app.use("/api/v1/agents", dataPlaneLimit, apiKey, agentsRouter);
+  app.use("/api/v1/outcomes", dataPlaneLimit, apiKey, outcomesRouter);
+  app.use("/api/v1/feedback", dataPlaneLimit, apiKey, feedbackRouter);
+  app.use("/api/v1/agent-monitoring", dataPlaneLimit, apiKey, agentMonitoringDashboardRouter);
+  app.use("/api/v1/evaluate", dataPlaneLimit, apiKey, evaluateDashboardRouter);
+  app.use("/api/v1/otel", dataPlaneLimit, apiKey, otlpRouter);
 
   // Guarded like GET /projects above: creating a project returns its key in full (the caller
   // has to learn it from somewhere), so it demands the same proof - a session in enabled-auth
   // mode, a valid existing project key in disabled mode. No rename/delete routes yet - full
   // project-management UI is still follow-up work.
-  app.post("/api/v1/projects", async (req, res) => {
+  app.post("/api/v1/projects", credentialLimit, asyncHandler(async (req, res) => {
     // Enabled-auth mode: creating a project requires a signed-in user, and the project is owned
     // by their organization from birth.
     let organizationId: string | null = null;
@@ -183,13 +195,12 @@ async function main() {
     await ensureSessionBaselineJudge(withProjectId(getDb(), project._id));
     await ensureMetricPackConfigs(withProjectId(getDb(), project._id));
     res.status(201).json({ project });
-  });
+  }));
 
-  // The frontend's project switcher's list source (AgentX-web-front's ProjectProvider) - same
-  // unauthenticated posture as the two routes above, deliberately includes every project's own
-  // apiKey so the switcher can hold each project's key up front and swap the x-api-key header on
-  // switch, with no separate per-project auth handshake.
-  app.get("/api/v1/projects", async (req, res) => {
+  // The frontend's project switcher's list source (AgentX-web-front's ProjectProvider). It
+  // deliberately includes every project's own apiKey so the switcher can hold each key up front
+  // and swap the x-api-key header on switch, with no separate per-project handshake.
+  app.get("/api/v1/projects", credentialLimit, asyncHandler(async (req, res) => {
     // This route hands out project API keys, so both modes guard it. Enabled-auth: session
     // scoped to the caller's organizations. Disabled: any valid project API key (the one the
     // operator pasted into the dashboard, or the one printed at engine startup) unlocks the
@@ -213,7 +224,7 @@ async function main() {
     }
     const projects = await listProjectsWire(getDb());
     res.status(200).json({ projects });
-  });
+  }));
 
   // The dashboard bundle is AgentX's real, full frontend (see README's "Open source scope"), so
   // it still calls a handful of hosted-SaaS-only endpoints this engine doesn't implement
@@ -245,6 +256,30 @@ async function main() {
     // only ever catches non-API GETs.
     app.get(/^(?!\/api).*/, (_req, res) => res.sendFile(webIndexHtml));
   }
+
+  // Last stop for anything a handler threw or rejected with. Registered after every route,
+  // because Express only reaches an error handler that comes AFTER the failing layer. Same
+  // statusCode-carrying JSON shape as the /api 404 above (AgentX-web-front's axios interceptor
+  // reads it). `next` is unused but must stay declared - Express detects error middleware by arity.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+    // %s placeholders, not interpolation: a URL containing "%s" would otherwise be read as a
+    // format specifier and swallow the error argument that follows.
+    console.error("Unhandled error in %s %s:", req.method, req.originalUrl, err);
+    // Handlers that respond and then keep working (routes/ingest.ts's POST /traces) can fail with
+    // the response already on the wire - nothing left to send.
+    if (res.headersSent) {
+      return;
+    }
+    // body-parser throws with its own 4xx status (400 parse.failed, 413 too.large, 415 charset).
+    // Flattening those to 500 would blame the server for the client's bad request.
+    const status = (err as { status?: unknown; statusCode?: unknown } | null)?.status ?? (err as { statusCode?: unknown } | null)?.statusCode;
+    if (typeof status === "number" && status >= 400 && status < 500) {
+      res.status(status).json({ statusCode: status, message: err instanceof Error ? err.message : "Bad request" });
+      return;
+    }
+    res.status(500).json({ statusCode: 500, message: "Internal server error" });
+  });
 
   const server = await listenWithRetry(app, PORT);
   // System evaluators, ensured per existing project before the sweeps start (a new project gets
@@ -334,6 +369,20 @@ async function main() {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 }
+
+// Defence in depth behind the per-request handling above. Node exits on an unhandled rejection,
+// which turns any one missed `await` - a background sweep, a detached check, a library's timer -
+// into an outage for every project on the box. Log it loudly and keep serving.
+process.on("unhandledRejection", reason => {
+  console.error("Unhandled promise rejection (engine kept running):", reason);
+});
+// An uncaught exception keeps Node's fatal default: it can leave whatever threw halfway through,
+// and carrying on from there is how a crash becomes silent corruption. This only adds the log
+// line. (SQLite is safe: WAL mode is crash-safe, it is the checkpoint that is skipped.)
+process.on("uncaughtException", err => {
+  console.error("Uncaught exception, exiting:", err);
+  process.exit(1);
+});
 
 main().catch(err => {
   console.error("agentx engine failed to start:", err);

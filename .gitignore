@@ -22,3 +22,4 @@ web/*
 # engine/web/: same prebuilt dashboard bundle as web/ above, staged next to the engine for the
 # tsx dev loop - a release asset, never repo content.
 engine/web/
+__pycache__/

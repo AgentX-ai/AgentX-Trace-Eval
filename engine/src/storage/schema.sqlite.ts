@@ -855,6 +855,11 @@ export const authSessions = sqliteTable("auth_session", {
 
 export const authAccounts = sqliteTable("auth_account", {
   id: text("id").primaryKey(),
+  // better-auth >= 1.7 scopes account identity by issuer ("local:credential" for the
+  // email/password accounts this engine creates) and REQUIRES the field - without it every
+  // sign-up fails. Nullable in the column definition only so an install that predates it can be
+  // backfilled on boot rather than refusing to start; better-auth always writes a value.
+  issuer: text("issuer"),
   accountId: text("account_id").notNull(),
   providerId: text("provider_id").notNull(),
   userId: text("user_id").notNull(),
@@ -902,6 +907,9 @@ export const authInvitations = sqliteTable("auth_invitation", {
   role: text("role"),
   status: text("status").notNull().default("pending"),
   expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+  // Part of better-auth's own invitation model; missing here, which would have failed the first
+  // time anyone actually invited a teammate.
+  createdAt: integer("created_at", { mode: "timestamp_ms" }),
   inviterId: text("inviter_id").notNull(),
 });
 

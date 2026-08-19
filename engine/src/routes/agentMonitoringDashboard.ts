@@ -1,8 +1,10 @@
-import { Router, type Request, type Response } from "express";
+import type { Request, Response } from "express";
+import { asyncRouter } from "./asyncRouter.js";
 import { getDb, type Db } from "../storage/db.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { createPattern, updatePattern, deletePattern, listPatternsWire, legacyPayloadToConditions } from "../core/monitor/patterns.js";
 import { builtInPatternsWire } from "../core/monitor/detect.js";
+import { validateConditionRegexes } from "../core/monitor/regexSafety.js";
 import { listSignals, getSignal, updateSignal } from "../core/monitor/signals.js";
 import { updateProfile, listProfilesWire } from "../core/monitor/profiles.js";
 import {
@@ -74,6 +76,7 @@ import {
 } from "../core/project/projects.js";
 import { maskSecret } from "../core/shared/maskSecret.js";
 import { validateSeverityParam } from "../core/shared/severity.js";
+import { validateSampleRateParam } from "../core/shared/sampleRate.js";
 
 // Mounted at /api/v1/agent-monitoring - the paths AgentX-web-front's dashboard actually calls
 // (src/data/apiPaths.ts's getMonitoring*/*MonitoringProfile/*MonitoringPattern), a different
@@ -88,7 +91,7 @@ import { validateSeverityParam } from "../core/shared/severity.js";
 // actual "online evals", distinct from pattern-matching; no dashboard UI for this yet, backend
 // only for now). Still out of scope: the autotune/"Improve" proposal system, tied to AgentX's
 // native agent config-branching, which self-host doesn't have. See README's Status section.
-export const agentMonitoringDashboardRouter = Router();
+export const agentMonitoringDashboardRouter = asyncRouter();
 
 // Reject invalid severities once for every mutating route on this router (pattern / online
 // evaluator / custom evaluator create+update, signal triage edits) - the dashboard's pickers
@@ -99,6 +102,13 @@ agentMonitoringDashboardRouter.use((req: Request, res: Response, next) => {
     const check = validateSeverityParam(req.body?.severity);
     if (!check.ok) {
       res.status(400).json({ error: check.error });
+      return;
+    }
+    // Same gap: routing.ts reads anything <= 0, or any non-number, as "never run" - a check that
+    // shows enabled and never fires. See core/shared/sampleRate.ts.
+    const sampleRate = validateSampleRateParam(req.body?.sampleRate);
+    if (!sampleRate.ok) {
+      res.status(400).json({ error: sampleRate.error });
       return;
     }
   }
@@ -137,6 +147,11 @@ agentMonitoringDashboardRouter.post("/patterns", async (req: Request, res: Respo
     res.status(400).json({ error: "Add at least one condition (includeTerms, regex, or semanticPrompt)" });
     return;
   }
+  const regexCheck = validateConditionRegexes(conditions);
+  if (!regexCheck.ok) {
+    res.status(400).json({ error: regexCheck.error });
+    return;
+  }
   const pattern = await createPattern(scopedDb(req), {
     name: body.name,
     description: body.description,
@@ -159,6 +174,11 @@ agentMonitoringDashboardRouter.put("/patterns/:patternId", async (req: Request, 
   // full replace, not a sparse patch), so conditions are re-derived the same way createPattern
   // derives them, from whatever shape (multi-condition builder or legacy fields) was submitted.
   const conditions = legacyPayloadToConditions(body);
+  const regexCheck = validateConditionRegexes(conditions);
+  if (!regexCheck.ok) {
+    res.status(400).json({ error: regexCheck.error });
+    return;
+  }
   const pattern = await updatePattern(scopedDb(req), req.params.patternId!, {
     name: body.name,
     description: body.description,

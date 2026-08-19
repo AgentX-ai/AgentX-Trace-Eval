@@ -145,6 +145,10 @@ export async function extractTraceToolSequence(db: Db, traceId: string): Promise
   return (root.toolCalls as { name?: unknown }[]).map(tc => String(tc.name ?? "unknown"));
 }
 
+function normalizeNames(names: string[]): string[] {
+  return names.map(t => t.trim()).filter(Boolean);
+}
+
 function multiset(names: string[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
@@ -160,24 +164,28 @@ export function matchTrajectory(
   actual: string[],
   mode: TrajectoryMatchMode
 ): { matched: boolean; reasoning: string } {
-  const exp = expected.map(t => t.trim()).filter(Boolean);
-  const summary = `expected [${exp.join(", ")}], actual [${actual.join(", ") || "no tool calls"}]`;
+  // Both sides get the same treatment. Trimming only `expected` made the verdict depend on which
+  // side the incidental whitespace was on: expected " search" vs actual "search" matched, while
+  // expected "search" vs actual " search" did not - the same pair, scored two different ways.
+  const exp = normalizeNames(expected);
+  const act = normalizeNames(actual);
+  const summary = `expected [${exp.join(", ")}], actual [${act.join(", ") || "no tool calls"}]`;
   if (mode === "strict") {
-    const matched = exp.length === actual.length && exp.every((t, i) => t === actual[i]);
+    const matched = exp.length === act.length && exp.every((t, i) => t === act[i]);
     return { matched, reasoning: `strict order match: ${summary}` };
   }
   if (mode === "unordered") {
     const a = multiset(exp);
-    const b = multiset(actual);
+    const b = multiset(act);
     const matched = a.size === b.size && [...a].every(([k, v]) => b.get(k) === v);
     return { matched, reasoning: `unordered match: ${summary}` };
   }
   if (mode === "superset") {
-    const b = multiset(actual);
+    const b = multiset(act);
     const matched = [...multiset(exp)].every(([k, v]) => (b.get(k) ?? 0) >= v);
     return { matched, reasoning: `superset match (all expected calls present, extras allowed): ${summary}` };
   }
   const allowed = new Set(exp);
-  const matched = actual.every(t => allowed.has(t));
+  const matched = act.every(t => allowed.has(t));
   return { matched, reasoning: `subset match (no unexpected calls, missing allowed): ${summary}` };
 }

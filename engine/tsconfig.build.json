@@ -1,6 +1,6 @@
 {
-  // Build-only: keeps *.test.ts out of dist/. The base config still includes them, so typecheck
-  // and editors cover the tests.
+  // Build-only: keeps tests and their harness out of dist/. The base config still includes them, so
+  // typecheck and editors cover them.
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/test/**"]
 }

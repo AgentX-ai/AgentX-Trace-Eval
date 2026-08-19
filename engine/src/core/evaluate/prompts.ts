@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { eq, and, gte, inArray } from "drizzle-orm";
+import { eq, and, gte, inArray, lt, max } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
 import { getDataset } from "./datasets.js";
@@ -228,35 +228,80 @@ export async function listPromptsForSdk(db: Db) {
 // The only write path for a version, used both for a manual edit and for accepting a proposal
 // (source: "proposed", reasoning/basedOnVersion set), keeping propose/publish as two separate
 // calls so a proposal never reaches storage without a human explicitly approving it.
+// Headroom for real contention without spinning if something is genuinely wrong.
+const PUBLISH_MAX_ATTEMPTS = 8;
+
+// The next version has to come from the versions table, not from prompts.currentVersion: that
+// column is only updated after the insert, so a loser re-reading it computes the number it just
+// lost with and burns the whole budget without ever moving forward.
+async function nextFreeVersion(db: Db, promptId: string, atLeast: number): Promise<number> {
+  const cond = and(eq(db.schema.promptVersions.promptId, promptId), eq(db.schema.promptVersions.projectId, db.projectId));
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select({ latest: max(db.schema.promptVersions.version) }).from(db.schema.promptVersions).where(cond).all()
+      : await db.db.select({ latest: max(db.schema.promptVersions.version) }).from(db.schema.promptVersions).where(cond)
+  ) as { latest: number | null }[];
+  return Math.max(rows[0]?.latest ?? 0, atLeast) + 1;
+}
+
 export async function publishPromptVersion(
   db: Db,
   promptId: string,
   input: { text: string; source?: string; reasoning?: string; basedOnVersion?: number }
 ) {
-  const prompt = await getPromptRow(db, promptId);
-  if (!prompt) return null;
-  const now = new Date();
-  const nextVersion = prompt.currentVersion + 1;
-  const versionRow: PromptVersionRow = {
-    id: nanoid(),
-    projectId: db.projectId,
-    promptId,
-    version: nextVersion,
-    text: input.text,
-    source: input.source ?? "manual",
-    reasoning: input.reasoning ?? null,
-    basedOnVersion: input.basedOnVersion ?? null,
-    createdAt: now,
-  };
-  const updateCond = and(eq(db.schema.prompts.id, promptId), eq(db.schema.prompts.projectId, db.projectId));
-  if (db.kind === "sqlite") {
-    await db.db.insert(db.schema.promptVersions).values(versionRow);
-    await db.db.update(db.schema.prompts).set({ currentVersion: nextVersion, updatedAt: now }).where(updateCond);
-  } else {
-    await db.db.insert(db.schema.promptVersions).values(versionRow);
-    await db.db.update(db.schema.prompts).set({ currentVersion: nextVersion, updatedAt: now }).where(updateCond);
+  // The version number comes from a separate read, so two simultaneous publishes compute the same
+  // one. The unique index stops that becoming two rows claiming v4; this loop stops the loser being
+  // told "Internal server error" and losing its edit. Re-read, take the next free number, retry.
+  let lastVersion = 0;
+  for (let attempt = 0; attempt < PUBLISH_MAX_ATTEMPTS; attempt++) {
+    const prompt = await getPromptRow(db, promptId);
+    if (!prompt) return null;
+    const now = new Date();
+    const nextVersion = await nextFreeVersion(db, promptId, prompt.currentVersion);
+    lastVersion = nextVersion;
+    const versionRow: PromptVersionRow = {
+      id: nanoid(),
+      projectId: db.projectId,
+      promptId,
+      version: nextVersion,
+      text: input.text,
+      source: input.source ?? "manual",
+      reasoning: input.reasoning ?? null,
+      basedOnVersion: input.basedOnVersion ?? null,
+      createdAt: now,
+    };
+    const inserted = (
+      db.kind === "sqlite"
+        ? db.db.insert(db.schema.promptVersions).values(versionRow).onConflictDoNothing().returning({ id: db.schema.promptVersions.id }).all()
+        : await db.db.insert(db.schema.promptVersions).values(versionRow).onConflictDoNothing().returning({ id: db.schema.promptVersions.id })
+    ) as { id: string }[];
+    if (!inserted[0]) {
+      continue;
+    }
+    // Only moves forward: a publish finishing second must not drag it back over a higher one.
+    const updateCond = and(
+      eq(db.schema.prompts.id, promptId),
+      eq(db.schema.prompts.projectId, db.projectId),
+      lt(db.schema.prompts.currentVersion, nextVersion)
+    );
+    if (db.kind === "sqlite") {
+      await db.db.update(db.schema.prompts).set({ currentVersion: nextVersion, updatedAt: now }).where(updateCond);
+    } else {
+      await db.db.update(db.schema.prompts).set({ currentVersion: nextVersion, updatedAt: now }).where(updateCond);
+    }
+    const current = await getPromptRow(db, promptId);
+    return {
+      ...promptToWire({ ...prompt, currentVersion: current?.currentVersion ?? nextVersion, updatedAt: now }),
+      version: versionRow.version,
+      text: versionRow.text,
+    };
   }
-  return { ...promptToWire({ ...prompt, currentVersion: nextVersion, updatedAt: now }), version: versionRow.version, text: versionRow.text };
+  // Losing a race is the caller's to retry, not a server fault - a 500 here would tell the
+  // dashboard the engine broke when it simply lost a scramble for the next number.
+  throw Object.assign(
+    new Error(`Could not publish a new version of prompt ${promptId} after ${PUBLISH_MAX_ATTEMPTS} attempts (last tried v${lastVersion})`),
+    { status: 409 }
+  );
 }
 
 export async function deletePrompt(db: Db, id: string): Promise<boolean> {

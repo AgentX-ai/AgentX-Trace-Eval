@@ -556,6 +556,8 @@ export const authSessions = pgTable("auth_session", {
 
 export const authAccounts = pgTable("auth_account", {
   id: text("id").primaryKey(),
+  // See schema.sqlite.ts's authAccounts.issuer for why this exists and why it is nullable.
+  issuer: text("issuer"),
   accountId: text("account_id").notNull(),
   providerId: text("provider_id").notNull(),
   userId: text("user_id").notNull(),
@@ -603,6 +605,8 @@ export const authInvitations = pgTable("auth_invitation", {
   role: text("role"),
   status: text("status").notNull().default("pending"),
   expiresAt: timestamp("expires_at", { mode: "date" }).notNull(),
+  // See schema.sqlite.ts's authInvitations.createdAt.
+  createdAt: timestamp("created_at"),
   inviterId: text("inviter_id").notNull(),
 });
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { nanoid } from "nanoid";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
@@ -82,8 +83,33 @@ export async function resolveAgentId(db: Db, input: string): Promise<string> {
   if (existing) {
     return existing.id;
   }
-  const created = await createAgent(db, input);
-  return created._id;
+  return autoRegisterAgent(db, input);
+}
+
+// Auto-registration is find-or-create across two statements, so a burst of first-ever traces for
+// one new name registered it once per request - twenty rows in the Agents tab, and those traces
+// split across twenty agent ids. A unique index on (project_id, name) would be wrong: two agents
+// deliberately sharing a display name is supported (see this file's header). Deriving the id
+// instead lets the PRIMARY KEY settle it for this path alone, while explicit registrations keep
+// their random nanoid. Never reached for a name already registered - findOldestAgentByName wins.
+function autoRegisteredAgentId(projectId: string, name: string): string {
+  return createHash("sha256").update(`${projectId}\u0000${name}`).digest("base64url").slice(0, 21);
+}
+
+async function autoRegisterAgent(db: Db, name: string): Promise<string> {
+  const row: AgentRow = { id: autoRegisteredAgentId(db.projectId, name), name, createdAt: new Date(), projectId: db.projectId };
+  const inserted = (
+    db.kind === "sqlite"
+      ? db.db.insert(db.schema.agents).values(row).onConflictDoNothing().returning({ id: db.schema.agents.id }).all()
+      : await db.db.insert(db.schema.agents).values(row).onConflictDoNothing().returning({ id: db.schema.agents.id })
+  ) as { id: string }[];
+  if (inserted[0]) {
+    return inserted[0].id;
+  }
+  // Lost the race. Re-read by name rather than assuming the derived id, so a pre-existing row
+  // under a different id still wins.
+  const winner = await findOldestAgentByName(db, name);
+  return winner?.id ?? row.id;
 }
 
 // Array counterpart of resolveAgentId, for pattern/online-evaluator agentIds scope arrays

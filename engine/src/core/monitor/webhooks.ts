@@ -19,6 +19,11 @@ export type WebhookSignal = {
   rootCause?: string | null;
 };
 
+// Matches customEvaluators.ts's own budget. Without a deadline a target that accepts the
+// connection and never answers holds a socket for undici's multi-minute default, and signals
+// arrive as fast as traffic does.
+const WEBHOOK_TIMEOUT_MS = 8000;
+
 // Fire-and-forget, non-blocking: a webhook target being slow or down must never delay trace
 // ingest. No retry queue (self-host has none) - a failed delivery is logged and dropped, matching
 // this engine's general shrug-and-log posture toward best-effort side effects (e.g. suggestion
@@ -43,8 +48,17 @@ export function notifyWebhooks(urls: string[], signal: WebhookSignal): void {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-    }).catch(err => {
-      console.error(`Monitor webhook delivery failed (${url}):`, err instanceof Error ? err.message : err);
-    });
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
+    })
+      .then(res => {
+        // fetch only rejects on transport failure, so a 404 from a mistyped Slack URL was
+        // indistinguishable from a delivered notification.
+        if (!res.ok) {
+          console.error(`Monitor webhook delivery failed (${url}): responded ${res.status}`);
+        }
+      })
+      .catch(err => {
+        console.error(`Monitor webhook delivery failed (${url}):`, err instanceof Error ? err.message : err);
+      });
   }
 }

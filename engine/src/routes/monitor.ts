@@ -1,8 +1,11 @@
-import { Router, type Request, type Response } from "express";
+import type { Request, Response } from "express";
+import { asyncRouter } from "./asyncRouter.js";
 import { validateSeverityParam } from "../core/shared/severity.js";
+import { validateSampleRateParam } from "../core/shared/sampleRate.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { createPattern, getPattern, listPatternsWire, legacyPayloadToConditions } from "../core/monitor/patterns.js";
 import { builtInPatternsWire } from "../core/monitor/detect.js";
+import { validateConditionRegexes } from "../core/monitor/regexSafety.js";
 import { getProfile, updateProfile } from "../core/monitor/profiles.js";
 import { resolveAgentId, resolveExistingAgentId, resolveAgentIds } from "../core/monitor/agents.js";
 import { listSignals, getSignal } from "../core/monitor/signals.js";
@@ -18,7 +21,7 @@ import { getOnlineEvaluatorRatings, getOnlineEvaluatorEvents, type MonitoringWin
 
 // Mounted at /api/v1/monitor, matching AgentX-Python's MonitorClient base URL
 // (agentx/monitor/client.py appends "/monitor" to AGENTX_API_BASE_URL if not already present).
-export const monitorRouter = Router();
+export const monitorRouter = asyncRouter();
 
 // Reject invalid severities once for every mutating route on this router (pattern / online
 // evaluator / custom evaluator create+update, signal triage edits) - the dashboard's pickers
@@ -29,6 +32,13 @@ monitorRouter.use((req: Request, res: Response, next) => {
     const check = validateSeverityParam(req.body?.severity);
     if (!check.ok) {
       res.status(400).json({ error: check.error });
+      return;
+    }
+    // Same gap: routing.ts reads anything <= 0, or any non-number, as "never run" - a check that
+    // shows enabled and never fires. See core/shared/sampleRate.ts.
+    const sampleRate = validateSampleRateParam(req.body?.sampleRate);
+    if (!sampleRate.ok) {
+      res.status(400).json({ error: sampleRate.error });
       return;
     }
   }
@@ -45,6 +55,11 @@ monitorRouter.post("/patterns", async (req: Request, res: Response) => {
   const conditions = legacyPayloadToConditions(body);
   if (conditions.length === 0) {
     res.status(400).json({ error: "Add at least one condition (includeTerms, regex, or semanticPrompt)" });
+    return;
+  }
+  const regexCheck = validateConditionRegexes(conditions);
+  if (!regexCheck.ok) {
+    res.status(400).json({ error: regexCheck.error });
     return;
   }
   const pattern = await createPattern(scopedDb(req), {

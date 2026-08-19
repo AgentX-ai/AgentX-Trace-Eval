@@ -2,7 +2,9 @@
 // AgentX-web-api/src/helpers/agentMonitoringConditions.ts: pure, dependency-free multi-condition
 // evaluation for custom monitor patterns. The semantic detector is injected as a callback so this
 // module never imports the LLM layer; core/monitor/detect.ts passes the real judge, tests can pass
-// the fast heuristic below.
+// the fast heuristic below. (regexSafety.js is the one import, and is itself pure.)
+import { compileUserRegex, hasNestedQuantifier } from "./regexSafety.js";
+
 export type PatternMatchTarget = "response" | "userMessage" | "trace";
 
 export type PatternCondition = {
@@ -73,11 +75,25 @@ async function evaluateDetector(condition: PatternCondition, text: string, seman
     return { matched: false };
   }
   if (condition.detector === "regex") {
-    try {
-      return { matched: new RegExp(value, condition.caseSensitive ? "" : "i").test(text) };
-    } catch {
+    // Rejected at save time now (regexSafety.ts), but a row stored before that would still reach
+    // here. RE2 below would run it in linear time anyway; the skip stays so the operator is told
+    // the pattern is wrong rather than left wondering why it never fires.
+    if (hasNestedQuantifier(value)) {
+      console.error(
+        "Skipping monitor regex %s: nested unbounded quantifiers can take exponential time. Edit the pattern to remove the nesting.",
+        JSON.stringify(value)
+      );
       return { matched: false };
     }
+    // Matched against agent output, which end users influence - see compileUserRegex.
+    const compiled = compileUserRegex(value, { caseSensitive: condition.caseSensitive });
+    if (!compiled.ok) {
+      // Reaches here only for a row stored before save-time validation, or one using syntax RE2
+      // does not accept (lookaround, backreferences). Silence would look like "never matches".
+      console.error("Skipping monitor regex %s: %s", JSON.stringify(value), compiled.error);
+      return { matched: false };
+    }
+    return { matched: compiled.regex.test(text) };
   }
   if (condition.detector === "semantic") {
     return semanticJudge(value, text);

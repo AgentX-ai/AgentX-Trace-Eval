@@ -7,5 +7,10 @@
   ],
   "resolutions": {
     "**/tsup/esbuild": "^0.28.1"
+  },
+  "scripts": {
+    "test": "yarn workspace @agentx/judge-core build && yarn workspace @agentx/judge-core test && yarn workspace @agentx/engine test && yarn test:cli",
+    "typecheck": "yarn workspace @agentx/judge-core build && yarn workspace @agentx/judge-core typecheck && yarn workspace @agentx/engine typecheck",
+    "test:cli": "cd cli && go test ./..."
   }
 }

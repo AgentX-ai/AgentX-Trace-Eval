@@ -1,0 +1,142 @@
+name: Tests
+# The engine and judge-core, the Go CLI, and the engine again against Postgres - the backend where
+# concurrent writes actually interleave (engine/src/test/dialect.integration.test.ts).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+# Read-only: nothing here publishes. Same explicit block release.yml and publish-judge-core.yml
+# already set, and what CodeQL's workflow-permissions check asks for.
+permissions:
+  contents: read
+
+jobs:
+  typescript:
+    name: engine + judge-core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
+      - name: Set up Node.js
+        uses: actions/setup-node@3235b876344d2a9aa001b8d1453c930bba69e610
+        with:
+          node-version: 24.x
+          cache: yarn
+          cache-dependency-path: yarn.lock
+
+      - name: Install workspace dependencies
+        run: yarn install --frozen-lockfile
+
+      # The engine imports judge-core through its "exports" map, so it has to be built first.
+      - name: Build judge-core
+        run: yarn workspace @agentx/judge-core build
+
+      - name: Typecheck
+        run: |
+          yarn workspace @agentx/judge-core typecheck
+          yarn workspace @agentx/engine typecheck
+
+      - name: Test judge-core
+        run: yarn workspace @agentx/judge-core test
+
+      # The integration suites boot the real engine per file, so this outruns the job default.
+      - name: Test engine
+        run: yarn workspace @agentx/engine test
+        timeout-minutes: 15
+
+  postgres:
+    name: engine on Postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: agentx
+          POSTGRES_DB: agentx
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
+      - name: Set up Node.js
+        uses: actions/setup-node@3235b876344d2a9aa001b8d1453c930bba69e610
+        with:
+          node-version: 24.x
+          cache: yarn
+          cache-dependency-path: yarn.lock
+
+      - name: Install workspace dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build judge-core
+        run: yarn workspace @agentx/judge-core build
+
+      # AGENTX_TEST_DB_URL un-skips the Postgres suites; they create and drop their own databases.
+      - name: Test engine against Postgres
+        run: yarn workspace @agentx/engine test
+        timeout-minutes: 20
+        env:
+          AGENTX_TEST_DB_URL: postgres://postgres:agentx@localhost:5432/agentx
+
+  cli:
+    name: cli
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
+      # Tag, not a pinned SHA: the SHAs above are carried over from this repo's other workflows,
+      # and this action is new here. cli/ has no dependencies, so there is no go.sum to cache on.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache: false
+
+      - name: Vet
+        working-directory: cli
+        run: go vet ./...
+
+      - name: Test
+        working-directory: cli
+        run: go test ./...
+
+  binary:
+    name: compiled binary
+    # The suites above run under tsx, which storage/db.ts serves with better-sqlite3. The artifact
+    # release.yml ships is `bun build --compile`, which takes the bun:sqlite branch instead - a
+    # driver nothing else here covers. Smoke-only: boot, write, read, shut down.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
+      - name: Set up Node.js
+        uses: actions/setup-node@3235b876344d2a9aa001b8d1453c930bba69e610
+        with:
+          node-version: 24.x
+          cache: yarn
+          cache-dependency-path: yarn.lock
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install workspace dependencies
+        run: yarn install --frozen-lockfile
+
+      # `bun build` resolves @agentx/judge-core through its dist/, which a fresh checkout lacks.
+      - name: Build judge-core
+        run: yarn workspace @agentx/judge-core build
+
+      - name: Compile the engine
+        run: bun build engine/src/index.ts --compile --outfile /tmp/agentx-engine
+
+      - name: Smoke-test the binary
+        run: ./scripts/smoke-binary.sh /tmp/agentx-engine

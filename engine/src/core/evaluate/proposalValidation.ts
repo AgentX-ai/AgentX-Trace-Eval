@@ -4,6 +4,7 @@ import { resolveRunConfig } from "./runs.js";
 import { getPromptRow, getPromptVersionRow } from "./prompts.js";
 import { getToolSchemaRow, getToolSchemaVersionRow, getToolFailureExamples } from "./toolSchemas.js";
 import { callModelWithTools, scoreAgainstCriteria, DEFAULT_JUDGE_PROMPT, DEFAULT_JUDGE_MODEL, type ToolDefinition } from "./judge.js";
+import { compileUserRegex } from "../monitor/regexSafety.js";
 
 // Propose -> VALIDATE -> publish: runs a proposal's candidate against the same golden dataset the
 // current version would be graded on, so the human approving a rewrite approves a measured claim
@@ -277,13 +278,15 @@ function checkValueAgainstProperty(key: string, value: unknown, property: Record
     problems.push(`argument "${key}" must be one of ${JSON.stringify(property.enum)} (got ${JSON.stringify(value)})`);
   }
   if (typeof property.pattern === "string" && typeof value === "string") {
-    try {
-      if (!new RegExp(property.pattern).test(value)) {
-        problems.push(`argument "${key}" should match pattern ${property.pattern} (got ${JSON.stringify(value)})`);
-      }
-    } catch {
-      // An invalid regex in the definition is the definition's bug, not the model's - skip.
+    // `pattern` rides in on an operator-supplied tool definition, so it is as untrusted as a
+    // monitor regex and goes to RE2 for the same reason. JSON Schema wants an unanchored,
+    // case-sensitive search, which is what compileUserRegex does.
+    const compiled = compileUserRegex(property.pattern, { caseSensitive: true });
+    if (compiled.ok && !compiled.regex.test(value)) {
+      problems.push(`argument "${key}" should match pattern ${property.pattern} (got ${JSON.stringify(value)})`);
     }
+    // An invalid or RE2-unsupported regex in the definition is the definition's bug, not the
+    // model's - skip the check rather than failing the argument.
   }
   return problems;
 }

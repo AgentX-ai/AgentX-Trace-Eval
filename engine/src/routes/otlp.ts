@@ -1,5 +1,6 @@
-import { Router, type Request, type Response } from "express";
+import type { Request, Response } from "express";
 import express from "express";
+import { asyncRouter } from "./asyncRouter.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { ingestTraceSchema, ingestTrace, type IngestTraceInput } from "../core/trace/ingest.js";
 import { runMonitorCheck } from "../core/monitor/detect.js";
@@ -24,7 +25,7 @@ import { otelSpanToIngestInput, reconstructParentToolCalls } from "../otel/mappi
 // clients). One incoming span becomes one AgentX trace row (core/trace/ingest.ts's existing
 // ingestTrace, reused unchanged) - see otel/mapping.ts for the GenAI/OpenLLMetry/OpenInference
 // attribute-to-field mapping and its disclosed limitations.
-export const otlpRouter = Router();
+export const otlpRouter = asyncRouter();
 
 // Scoped to this router (only activates for this content-type) so it can coexist with the
 // app-level express.json() already mounted in index.ts - body-parser middlewares pass through
@@ -49,6 +50,18 @@ const MONITOR_CHILD_SPANS = process.env.AGENTX_MONITOR_CHILD_SPANS === "true";
 
 otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   const isProtobuf = Boolean(req.is("application/x-protobuf"));
+  // Any other content type leaves req.body an empty object, which reads here as a valid export of
+  // zero spans - so a proxy rewriting the header, or a client defaulting to form-urlencoded, got a
+  // 200 while every span was dropped. OTLP/HTTP specifies exactly these two.
+  const isJson = Boolean(req.is("application/json"));
+  if (!isProtobuf && !isJson) {
+    res.status(415).json({
+      error: `OTLP/HTTP requires Content-Type: application/x-protobuf or application/json (received ${
+        req.headers["content-type"] ? `"${req.headers["content-type"]}"` : "none"
+      })`,
+    });
+    return;
+  }
   let parsed: Record<string, unknown>;
 
   try {

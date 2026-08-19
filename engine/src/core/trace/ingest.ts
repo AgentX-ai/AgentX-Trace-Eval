@@ -5,6 +5,7 @@ import type { Db } from "../../storage/db.js";
 import { resolveAgentId } from "../monitor/agents.js";
 import { listPortabilityModels, estimateCostUSD } from "../evaluate/models.js";
 import { getClassificationForTrace } from "../monitor/topics.js";
+import { unixNanosToDate } from "../shared/unixNano.js";
 
 // Mirrors the wire payload agentx.tracing.tracer.Tracer._send builds in the Python SDK
 // (agentx/tracing/tracer.py); see AgentX-Python for the exact field list this was checked
@@ -68,14 +69,9 @@ export async function ingestTrace(
   // replayed span was already checked and judged when it first arrived, and re-running them
   // double-bills every judge call and double-counts every event.
   if (payload.span_id) {
-    const dupCond = and(eq(db.schema.traces.spanId, payload.span_id), eq(db.schema.traces.projectId, db.projectId));
-    const existing = (
-      db.kind === "sqlite"
-        ? db.db.select({ id: db.schema.traces.id, agentId: db.schema.traces.agentId }).from(db.schema.traces).where(dupCond).limit(1).all()
-        : await db.db.select({ id: db.schema.traces.id, agentId: db.schema.traces.agentId }).from(db.schema.traces).where(dupCond).limit(1)
-    ) as { id: string; agentId: string | null }[];
-    if (existing[0]) {
-      return { traceId: existing[0].id, agentId: existing[0].agentId, deduped: true };
+    const existing = await findTraceBySpanId(db, payload.span_id);
+    if (existing) {
+      return { traceId: existing.id, agentId: existing.agentId, deduped: true };
     }
   }
   const id = nanoid();
@@ -88,6 +84,12 @@ export async function ingestTrace(
   // applied here too. Root traces are unaffected; the vast majority of ingested traces (anything
   // not using span_tree=True/OTel multi-span) have no parent_span_id at all.
   const agentId = payload.parent_span_id ? null : await resolveAgentId(db, payload.agent_id || payload.name);
+  // Dropped, not fatal: losing a whole span over one bad field hides exactly the traffic an
+  // operator is trying to debug. The warning is what surfaces the client-side bug.
+  const startedAt = unixNanosToDate(payload.started_at_unix_nano);
+  if (payload.started_at_unix_nano && !startedAt) {
+    console.warn(`Ignoring unparseable started_at_unix_nano "${payload.started_at_unix_nano}" on trace "${payload.name}"`);
+  }
   const row = {
     id,
     name: payload.name,
@@ -107,25 +109,44 @@ export async function ingestTrace(
     cacheWriteTokens: payload.cache_write_tokens ?? null,
     spanId: payload.span_id ?? null,
     parentSpanId: payload.parent_span_id ?? null,
-    startedAt: payload.started_at_unix_nano ? new Date(Number(BigInt(payload.started_at_unix_nano) / 1_000_000n)) : null,
+    startedAt,
     // Historical imports (Moveworks Data API sync and any future backfill) send real past
     // start times; createdAt drives every window-based view (cost chart, sessions, top failing),
     // so it must reflect when the traffic HAPPENED, not when it was imported. Live traffic's
     // startedAt is "now" anyway, so this is byte-identical for the normal path.
-    createdAt: payload.started_at_unix_nano
-      ? new Date(Number(BigInt(payload.started_at_unix_nano) / 1_000_000n))
-      : new Date(),
+    createdAt: startedAt ?? new Date(),
     agentId,
     projectId: db.projectId,
   };
 
-  if (db.kind === "sqlite") {
-    await db.db.insert(db.schema.traces).values(row);
-  } else {
-    await db.db.insert(db.schema.traces).values(row);
+  // The check above is a fast path, not a guarantee: on Postgres concurrent replays of one span -
+  // the exact traffic it exists for - all get past it. ON CONFLICT against the
+  // traces(project_id, span_id) index decides the winner; an empty RETURNING means this call lost,
+  // so report the row the winner wrote. Traces with no span_id never conflict.
+  const inserted = (
+    db.kind === "sqlite"
+      ? db.db.insert(db.schema.traces).values(row).onConflictDoNothing().returning({ id: db.schema.traces.id }).all()
+      : await db.db.insert(db.schema.traces).values(row).onConflictDoNothing().returning({ id: db.schema.traces.id })
+  ) as { id: string }[];
+
+  if (!inserted[0] && payload.span_id) {
+    const winner = await findTraceBySpanId(db, payload.span_id);
+    if (winner) {
+      return { traceId: winner.id, agentId: winner.agentId, deduped: true };
+    }
   }
 
   return { traceId: id, agentId, deduped: false };
+}
+
+async function findTraceBySpanId(db: Db, spanId: string): Promise<{ id: string; agentId: string | null } | null> {
+  const cond = and(eq(db.schema.traces.spanId, spanId), eq(db.schema.traces.projectId, db.projectId));
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select({ id: db.schema.traces.id, agentId: db.schema.traces.agentId }).from(db.schema.traces).where(cond).limit(1).all()
+      : await db.db.select({ id: db.schema.traces.id, agentId: db.schema.traces.agentId }).from(db.schema.traces).where(cond).limit(1)
+  ) as { id: string; agentId: string | null }[];
+  return rows[0] ?? null;
 }
 
 export type TraceRow = {

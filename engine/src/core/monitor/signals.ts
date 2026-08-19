@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { listOccurrencesForSignal, extractText, type EventRow } from "./events.js";
 import { getTraceRow } from "../trace/ingest.js";
@@ -148,42 +148,66 @@ export async function upsertSignal(
       firstSeenAt: now,
       lastSeenAt: now,
     };
-    if (db.kind === "sqlite") {
-      await db.db.insert(db.schema.monitorSignals).values(row);
-    } else {
-      await db.db.insert(db.schema.monitorSignals).values(row);
+    // The SELECT above and this INSERT are two statements, so a burst of traces raising the same
+    // signal all arrive having seen no row; on Postgres one then violated
+    // monitor_signals_pattern_key_agent_id and that detection was lost to a log line. Losing the
+    // insert just means someone else created the row - fall through and count against theirs.
+    // Signals with no agentId still dedup through the SELECT alone (NULL never conflicts with
+    // NULL), unchanged; every signal raised for a real trace has an agent.
+    const inserted = (
+      db.kind === "sqlite"
+        ? db.db.insert(db.schema.monitorSignals).values(row).onConflictDoNothing().returning({ id: db.schema.monitorSignals.id }).all()
+        : await db.db.insert(db.schema.monitorSignals).values(row).onConflictDoNothing().returning({ id: db.schema.monitorSignals.id })
+    ) as { id: string }[];
+    if (inserted[0]) {
+      return toWire(row, [], undefined, await getAgentNamesById(db, [row.agentId]));
     }
-    return toWire(row, [], undefined, await getAgentNamesById(db, [row.agentId]));
   }
 
-  const updated: SignalRow = {
-    ...existing,
+  // Incremented by the database, not written back from a number read a moment ago: twelve
+  // concurrent detections were reported as five, and that count is what operators triage by.
+  // RETURNING gives the post-update row without a second read.
+  const setValues = {
     summary: detected.summary,
     severity: detected.severity,
-    traceId: ctx.traceId ?? existing.traceId,
-    evidence: ctx.evidence ?? existing.evidence,
-    occurrenceCount: existing.occurrenceCount + 1,
+    ...(ctx.traceId ? { traceId: ctx.traceId } : {}),
+    ...(ctx.evidence ? { evidence: ctx.evidence } : {}),
+    // Incremented by the database, not read-modify-written here: two checks detecting the same
+    // signal at once would otherwise both write the same count and lose one sighting.
+    occurrenceCount: sql`${db.schema.monitorSignals.occurrenceCount} + 1`,
     lastSeenAt: now,
-    // An archived signal is a shelf, not a grave: the dashboard hides it from every filter
-    // except "Archived", so a recurrence bumping only counts would be invisible. Re-firing
-    // reopens it back into the active list; every other status keeps the operator's triage
-    // decision untouched, exactly as before.
-    status: existing.status === "archived" ? "reopened" : existing.status,
+    // An archived signal is a shelf, not a grave: the dashboard hides it from every filter except
+    // "Archived", so a recurrence bumping only counts would be invisible. Re-firing reopens it
+    // into the active list; every other status keeps the operator's triage decision untouched.
+    status: existing?.status === "archived" ? "reopened" : (existing?.status ?? "open"),
   };
-  const setValues = {
-    summary: updated.summary,
-    severity: updated.severity,
-    traceId: updated.traceId,
-    evidence: updated.evidence,
-    occurrenceCount: updated.occurrenceCount,
-    lastSeenAt: updated.lastSeenAt,
-    status: updated.status,
+  const updatedRows = (
+    db.kind === "sqlite"
+      ? db.db.update(db.schema.monitorSignals).set(setValues).where(cond).returning().all()
+      : await db.db.update(db.schema.monitorSignals).set(setValues).where(cond).returning()
+  ) as SignalRow[];
+
+  // A row existed a statement ago, so an empty RETURNING means something deleted it in between.
+  // Report what this call knows rather than throwing inside a background check nobody awaits.
+  const updated: SignalRow = updatedRows[0] ?? {
+    id: existing?.id ?? nanoid(),
+    projectId: db.projectId,
+    patternKey: detected.patternKey,
+    type: detected.type,
+    severity: detected.severity,
+    polarity: detected.polarity ?? "failure",
+    status: existing?.status === "archived" ? "reopened" : (existing?.status ?? "open"),
+    reviewStatus: existing?.reviewStatus ?? null,
+    recommendedActions: existing?.recommendedActions ?? null,
+    summary: detected.summary,
+    rootCause: detected.rootCause ?? existing?.rootCause ?? null,
+    agentId,
+    traceId: ctx.traceId ?? existing?.traceId ?? null,
+    evidence: ctx.evidence ?? existing?.evidence ?? null,
+    occurrenceCount: (existing?.occurrenceCount ?? 0) + 1,
+    firstSeenAt: existing?.firstSeenAt ?? now,
+    lastSeenAt: now,
   };
-  if (db.kind === "sqlite") {
-    await db.db.update(db.schema.monitorSignals).set(setValues).where(cond);
-  } else {
-    await db.db.update(db.schema.monitorSignals).set(setValues).where(cond);
-  }
   return toWire(updated, [], undefined, await getAgentNamesById(db, [updated.agentId]));
 }
 

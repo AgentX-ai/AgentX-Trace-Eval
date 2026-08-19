@@ -35,12 +35,15 @@ type ScorerArgs = { input: string; output: string; expected?: string; toolCalls?
 // node:vm rather than shelling out to python3/node on PATH - the engine ships as a single
 // Bun-compiled native executable specifically so end users never need a runtime installed, and
 // vm is already embedded in that binary. Synchronous only: vm.Script's timeout option only
-// interrupts synchronous execution, so an async scorer awaiting a hung fetch() would sail past
-// it - the sandboxed context below exposes no require/fetch/process/filesystem, so a scorer can't
-// reach the network or disk even if it tried to go async. This is a lighter security bar than a
-// hardened isolate (isolated-vm, a subprocess with OS-level limits), reasonable for self-host's
-// single-tenant, operator-trusted deployment model - the same trust assumption
-// core/monitor/customEvaluators.ts's callCustomEvaluator() already makes for user-supplied logic.
+// interrupts synchronous execution, so an async scorer awaiting a hung fetch() sails straight
+// past it and the timeout below bounds nothing.
+//
+// node:vm is NOT a security boundary. The context has no require/fetch/process binding of its own,
+// but that only stops the obvious spelling: any object carries a prototype chain back to this
+// realm, so `this.constructor.constructor("return process")()` hands a scorer the real `process`
+// (checked, not assumed). Treat scorer code as code the operator chose to run on their own machine
+// and do not expose dataset creation to anyone who should not have that. Real sandboxing needs an
+// isolate or a subprocess, neither of which survives `bun build --compile`.
 //
 // Every failure (syntax error, thrown error, timeout, bad return shape) is caught here and folded
 // into { score: null, error } rather than propagated - one broken/timed-out scorer must not take

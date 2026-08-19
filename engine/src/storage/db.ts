@@ -769,6 +769,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
 
     CREATE TABLE IF NOT EXISTS auth_account (
       id TEXT PRIMARY KEY,
+      issuer TEXT,
       account_id TEXT NOT NULL,
       provider_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
@@ -816,6 +817,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       role TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       expires_at INTEGER NOT NULL,
+      created_at INTEGER,
       inviter_id TEXT NOT NULL
     );
   `);
@@ -825,6 +827,11 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
   // added explicitly. SQLite has no ADD COLUMN IF NOT EXISTS, so each is tried individually and a
   // "duplicate column" failure (already applied) is swallowed; anything else rethrows.
   const columnMigrations: Array<[string, string]> = [
+    // better-auth 1.7 added `issuer` to its account model and `created_at` to invitations; the
+    // hand-written tables above predate it, and without these an install that upgrades
+    // better-auth 500s on every single sign-up (see the backfill below).
+    ["auth_account", "ALTER TABLE auth_account ADD COLUMN issuer TEXT"],
+    ["auth_invitation", "ALTER TABLE auth_invitation ADD COLUMN created_at INTEGER"],
     ["monitor_patterns", "ALTER TABLE monitor_patterns ADD COLUMN sample_rate REAL NOT NULL DEFAULT 1"],
     ["monitor_patterns", "ALTER TABLE monitor_patterns ADD COLUMN scope_mode TEXT NOT NULL DEFAULT 'all'"],
     ["monitor_patterns", "ALTER TABLE monitor_patterns ADD COLUMN agent_ids TEXT"],
@@ -945,6 +952,10 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     }
   }
 
+  ensureTraceSpanIdUnique(statement => sqlite.exec(statement));
+  ensureVersionUnique(statement => sqlite.exec(statement));
+  sqlite.exec(BACKFILL_AUTH_ACCOUNT_ISSUER);
+
   migrateOnlineEvaluatorsToConfigsSqlite(sqlite);
   backfillAgentsSqlite(sqlite);
   backfillDefaultProjectSqlite(sqlite);
@@ -960,6 +971,79 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     );
     UPDATE monitor_profiles SET topics_enabled = 0 WHERE topics_enabled = 1;
   `);
+}
+
+// prompt_versions has had this index since it shipped; tool_schema_versions never got the
+// matching one. Version numbers on both are derived (read currentVersion, add one), so two
+// publishes racing produce the same number - and without the index the tool-schema history just
+// ends up with two different definitions both calling themselves v4, silently.
+const TOOL_SCHEMA_VERSION_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS tool_schema_versions_tool_schema_id_version ON tool_schema_versions (project_id, tool_schema_id, version)`;
+
+// Same posture as the traces index above: an install that already collected duplicates keeps
+// booting, with the query to find them.
+function warnVersionIndexFailed(err: unknown): void {
+  console.warn(
+    `Could not create the tool_schema_versions(project_id, tool_schema_id, version) unique index: ${err instanceof Error ? err.message : String(err)}\n` +
+      `  This usually means duplicate version numbers already exist. Find them with:\n` +
+      `    SELECT project_id, tool_schema_id, version, count(*) FROM tool_schema_versions\n` +
+      `    GROUP BY project_id, tool_schema_id, version HAVING count(*) > 1;`
+  );
+}
+
+function ensureVersionUnique(exec: (statement: string) => void): void {
+  try {
+    exec(TOOL_SCHEMA_VERSION_INDEX);
+  } catch (err) {
+    warnVersionIndexFailed(err);
+  }
+}
+
+async function ensureVersionUniqueAsync(exec: (statement: string) => Promise<void>): Promise<void> {
+  try {
+    await exec(TOOL_SCHEMA_VERSION_INDEX);
+  } catch (err) {
+    warnVersionIndexFailed(err);
+  }
+}
+
+// Accounts written before better-auth 1.7 have no issuer, and 1.7 looks accounts up scoped by it -
+// so without this an existing user's password silently stops working on upgrade. Every account
+// here is local email/password, which better-auth spells "local:<providerId>".
+const BACKFILL_AUTH_ACCOUNT_ISSUER = `UPDATE auth_account SET issuer = 'local:' || provider_id WHERE issuer IS NULL`;
+
+// ingestTrace has always assumed span_id is unique within a project - it just never said so to
+// the database. That held on SQLite by accident (better-sqlite3 is synchronous, so its existence
+// check and INSERT never interleave); on Postgres ten concurrent replays of one span all passed
+// the check and all inserted, billing ten sets of monitor and judge calls for one interaction.
+// NULL span_ids - most traces - are exempt for free: NULL never equals NULL in a unique index.
+const TRACE_SPAN_ID_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS traces_project_id_span_id ON traces (project_id, span_id)`;
+
+// An install that already accumulated duplicates cannot create the index until they are cleaned
+// up. That is the operator's data, so warn with the query rather than deleting rows for them.
+function warnTraceSpanIdIndexFailed(err: unknown): void {
+  console.warn(
+    `Could not create the traces(project_id, span_id) unique index: ${err instanceof Error ? err.message : String(err)}\n` +
+      `  This usually means duplicate spans already exist. Find them with:\n` +
+      `    SELECT project_id, span_id, count(*) FROM traces WHERE span_id IS NOT NULL\n` +
+      `    GROUP BY project_id, span_id HAVING count(*) > 1;\n` +
+      `  Ingestion still works; concurrent replays of the same span may duplicate until it is resolved.`
+  );
+}
+
+function ensureTraceSpanIdUnique(exec: (statement: string) => void): void {
+  try {
+    exec(TRACE_SPAN_ID_INDEX);
+  } catch (err) {
+    warnTraceSpanIdIndexFailed(err);
+  }
+}
+
+async function ensureTraceSpanIdUniqueAsync(exec: (statement: string) => Promise<void>): Promise<void> {
+  try {
+    await exec(TRACE_SPAN_ID_INDEX);
+  } catch (err) {
+    warnTraceSpanIdIndexFailed(err);
+  }
 }
 
 // One-time backfill: online evaluators used to store their own acceptance_criteria/
@@ -1633,6 +1717,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
 
     CREATE TABLE IF NOT EXISTS auth_account (
       id TEXT PRIMARY KEY,
+      issuer TEXT,
       account_id TEXT NOT NULL,
       provider_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
@@ -1680,6 +1765,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       role TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP,
       inviter_id TEXT NOT NULL
     );
 
@@ -1787,6 +1873,10 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     );
     UPDATE monitor_profiles SET topics_enabled = false WHERE topics_enabled = true;
   `);
+
+  await ensureTraceSpanIdUniqueAsync(statement => pool.query(statement).then(() => undefined));
+  await ensureVersionUniqueAsync(statement => pool.query(statement).then(() => undefined));
+  await pool.query(BACKFILL_AUTH_ACCOUNT_ISSUER);
 
   await migrateOnlineEvaluatorsToConfigsPostgres(pool);
   await backfillAgentsPostgres(pool);

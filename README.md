@@ -226,6 +226,43 @@ Iterating on the engine's API doesn't need a `web/` rebuild; iterating on the da
 means re-running whichever step above got you `web/` in the first place - there's no hot-reload
 loop wired up between the two repos yet.
 
+### Tests
+
+Unit and integration tests (vitest for the engine and judge-core, `go test` for the CLI). They run
+against a temporary SQLite database - no API keys or network needed:
+
+```bash
+yarn test        # judge-core + engine + the Go CLI
+yarn typecheck   # both TypeScript packages, tests included
+```
+
+Or one workspace at a time:
+
+```bash
+yarn workspace @agentx/engine test
+yarn workspace @agentx/judge-core test
+```
+
+The engine's integration suites boot the real engine as a subprocess. The ones that exercise
+Postgres skip unless you point them at a server:
+
+```bash
+docker run -d --name agentx-pg-test -e POSTGRES_PASSWORD=agentx -e POSTGRES_DB=agentx -p 55432:5432 postgres:16-alpine
+AGENTX_TEST_DB_URL=postgres://postgres:agentx@localhost:55432/agentx yarn workspace @agentx/engine test
+```
+
+That is worth running before anything touching `storage/db.ts` or an ingest path: Postgres is
+where concurrent writes actually interleave, so a race that SQLite hides shows up there.
+
+Both suites run under `tsx`, which `storage/db.ts` serves with `better-sqlite3`. The released
+binary takes its `bun:sqlite` branch instead, so nothing above says anything about it - smoke-test
+that separately before touching either branch, `web.ts`, or the shutdown path:
+
+```bash
+bun build engine/src/index.ts --compile --outfile /tmp/agentx-engine
+./scripts/smoke-binary.sh /tmp/agentx-engine
+```
+
 ### Full distribution build
 
 Compiles the engine to a Bun-compiled binary and builds the Go CLI, laid out exactly the way the
@@ -244,16 +281,6 @@ Local API key: agtx_local_...
 ```
 
 `--dev` opens the dashboard in your browser automatically.
-
-### Tests
-
-Unit and integration tests for the engine (vitest, run against a temporary SQLite database - no
-API keys or network needed):
-
-```bash
-yarn workspace @agentx/engine test
-yarn workspace @agentx/judge-core test
-```
 
 ### End-to-end smoke test
 
