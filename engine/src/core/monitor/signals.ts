@@ -164,6 +164,11 @@ export async function upsertSignal(
     evidence: ctx.evidence ?? existing.evidence,
     occurrenceCount: existing.occurrenceCount + 1,
     lastSeenAt: now,
+    // An archived signal is a shelf, not a grave: the dashboard hides it from every filter
+    // except "Archived", so a recurrence bumping only counts would be invisible. Re-firing
+    // reopens it back into the active list; every other status keeps the operator's triage
+    // decision untouched, exactly as before.
+    status: existing.status === "archived" ? "reopened" : existing.status,
   };
   const setValues = {
     summary: updated.summary,
@@ -172,6 +177,7 @@ export async function upsertSignal(
     evidence: updated.evidence,
     occurrenceCount: updated.occurrenceCount,
     lastSeenAt: updated.lastSeenAt,
+    status: updated.status,
   };
   if (db.kind === "sqlite") {
     await db.db.update(db.schema.monitorSignals).set(setValues).where(cond);

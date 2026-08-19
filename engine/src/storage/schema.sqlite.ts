@@ -11,9 +11,9 @@ export const projects = sqliteTable("projects", {
   name: text("name").notNull(),
   apiKey: text("api_key").notNull(),
   // The auto-created project an existing single-project install migrates into (see storage/db.ts's
-  // backfillDefaultProjectSqlite) - always exactly one true row. Used by the unauthenticated
-  // /dev/bootstrap endpoint to know which project's key to hand back for the zero-setup dev
-  // experience, same isDefault convention already used by evaluationSettings/portabilityModels.
+  // backfillDefaultProjectSqlite) - always exactly one true row. Its key is the one printed at
+  // engine startup for the operator to copy into the dashboard/SDK, same isDefault convention
+  // already used by evaluationSettings/portabilityModels.
   isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
   // Project-level monitoring defaults (formerly per-agent AgentMonitoringProfile fields - see
   // core/monitor/profiles.ts's toWire comment): apply uniformly to every agent in this project.

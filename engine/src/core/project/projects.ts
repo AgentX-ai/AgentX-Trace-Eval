@@ -121,10 +121,10 @@ export async function resolveProjectByApiKey(db: Db, apiKey: string): Promise<Pr
   return row ?? null;
 }
 
-// The unauthenticated GET /dev/bootstrap endpoint's key source (same "zero setup, no login step"
-// UX the single-key model always had) - whichever project the one-time migration created first
-// (storage/db.ts's backfillDefaultProjectSqlite/Postgres). Any additional project's key is only
-// ever visible via its own (project-scoped) Settings once you've switched to it.
+// The startup log's "Default project API key" source - whichever project the one-time migration
+// created first (storage/db.ts's backfillDefaultProjectSqlite/Postgres). That printed key is what
+// the operator copies into the dashboard's connect screen and the SDK; there is no endpoint that
+// hands it out anymore.
 export async function getDefaultProject(db: Db): Promise<ProjectRow | null> {
   let row: ProjectRow | undefined;
   if (db.kind === "sqlite") {
@@ -145,10 +145,10 @@ export async function listProjectRows(db: Db): Promise<ProjectRow[]> {
   return rows as ProjectRow[];
 }
 
-// GET /api/v1/projects' source - deliberately includes each project's own apiKey (same
-// unauthenticated "if you can reach this port, you're trusted" posture as /dev/bootstrap and
-// POST /api/v1/projects), so a project switcher can populate a dropdown with every project's key
-// already in hand, no separate per-project auth handshake needed.
+// GET /api/v1/projects' source - deliberately includes each project's own apiKey so a project
+// switcher can populate a dropdown with every project's key already in hand, no separate
+// per-project auth handshake needed. The route itself is guarded (session in enabled-auth mode,
+// a valid existing project key in disabled mode) - there is no anonymous key handout anymore.
 export async function listProjectsWire(db: Db) {
   return (await listProjectRows(db)).map(toWire);
 }

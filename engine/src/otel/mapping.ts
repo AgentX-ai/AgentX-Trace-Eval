@@ -100,6 +100,24 @@ function renderIndexedAttrs(attributes: Record<string, unknown>, prefix: "gen_ai
     .join("\n");
 }
 
+// MLflow Tracing's native attributes (mlflow.spanInputs / mlflow.spanOutputs / mlflow.spanType)
+// carry JSON-encoded values - '"TOOL"' with embedded quotes, objects as JSON text. One unwrap
+// makes them readable; anything unparsable passes through as-is. Only consulted as a fallback
+// when neither semconv (gen_ai.*) nor OpenInference (input.value) attributes are present, so
+// MLFLOW_ENABLE_OTEL_GENAI_SEMCONV=true traffic never hits this path.
+function mlflowAttr(v: unknown): string | undefined {
+  const raw = strAttr(v);
+  if (raw === undefined) {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === "string" ? parsed : JSON.stringify(parsed);
+  } catch {
+    return raw;
+  }
+}
+
 function extractInput(attributes: Record<string, unknown>): string | undefined {
   const messages = renderMessages(coerceToArray(attributes["gen_ai.input.messages"]));
   const systemInstructions = renderMessages(coerceToArray(attributes["gen_ai.system_instructions"]));
@@ -111,7 +129,7 @@ function extractInput(attributes: Record<string, unknown>): string | undefined {
     return legacy;
   }
   // OpenInference (Arize): a single raw (often already-JSON) string, no structured schema.
-  return strAttr(attributes["input.value"]);
+  return strAttr(attributes["input.value"]) ?? mlflowAttr(attributes["mlflow.spanInputs"]);
 }
 
 function extractOutput(attributes: Record<string, unknown>): string | undefined {
@@ -123,7 +141,7 @@ function extractOutput(attributes: Record<string, unknown>): string | undefined 
   if (legacy) {
     return legacy;
   }
-  return strAttr(attributes["output.value"]);
+  return strAttr(attributes["output.value"]) ?? mlflowAttr(attributes["mlflow.spanOutputs"]);
 }
 
 function extractError(span: NormalizedSpan): string | undefined {
@@ -145,9 +163,24 @@ function extractError(span: NormalizedSpan): string | undefined {
 // reconstructParentToolCalls below.
 function extractToolCalls(span: NormalizedSpan) {
   const attributes = span.attributes;
-  const name = strAttr(attributes["gen_ai.tool.name"]);
+  // MLflow without the semconv flag has no gen_ai.tool.name - a TOOL-typed span's own name IS
+  // the tool name, and its inputs/outputs are the call's arguments/result.
+  const isMlflowTool = mlflowAttr(attributes["mlflow.spanType"]) === "TOOL";
+  const name = strAttr(attributes["gen_ai.tool.name"]) ?? (isMlflowTool ? span.name : undefined);
   if (!name) {
     return undefined;
+  }
+  if (isMlflowTool && !strAttr(attributes["gen_ai.tool.name"])) {
+    const error = extractError(span);
+    return [
+      {
+        name,
+        input: mlflowAttr(attributes["mlflow.spanInputs"]) ?? null,
+        output: mlflowAttr(attributes["mlflow.spanOutputs"]) ?? null,
+        success: !error,
+        ...(error ? { error } : {}),
+      },
+    ];
   }
   const error = extractError(span);
   return [
