@@ -172,8 +172,14 @@ export async function upsertSignal(
     severity: detected.severity,
     ...(ctx.traceId ? { traceId: ctx.traceId } : {}),
     ...(ctx.evidence ? { evidence: ctx.evidence } : {}),
+    // Incremented by the database, not read-modify-written here: two checks detecting the same
+    // signal at once would otherwise both write the same count and lose one sighting.
     occurrenceCount: sql`${db.schema.monitorSignals.occurrenceCount} + 1`,
     lastSeenAt: now,
+    // An archived signal is a shelf, not a grave: the dashboard hides it from every filter except
+    // "Archived", so a recurrence bumping only counts would be invisible. Re-firing reopens it
+    // into the active list; every other status keeps the operator's triage decision untouched.
+    status: existing?.status === "archived" ? "reopened" : (existing?.status ?? "open"),
   };
   const updatedRows = (
     db.kind === "sqlite"
@@ -190,7 +196,7 @@ export async function upsertSignal(
     type: detected.type,
     severity: detected.severity,
     polarity: detected.polarity ?? "failure",
-    status: existing?.status ?? "open",
+    status: existing?.status === "archived" ? "reopened" : (existing?.status ?? "open"),
     reviewStatus: existing?.reviewStatus ?? null,
     recommendedActions: existing?.recommendedActions ?? null,
     summary: detected.summary,

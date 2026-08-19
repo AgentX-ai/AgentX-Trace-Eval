@@ -14,7 +14,7 @@ import { agentMonitoringDashboardRouter } from "./routes/agentMonitoringDashboar
 import { evaluateDashboardRouter } from "./routes/evaluateDashboard.js";
 import { otlpRouter } from "./routes/otlp.js";
 import { initDb, closeDb, getDb, withProjectId } from "./storage/db.js";
-import { getDefaultProject, createProject, listProjectsWire, listProjectsWireForOrgs, listProjectRows } from "./core/project/projects.js";
+import { getDefaultProject, createProject, listProjectsWire, listProjectsWireForOrgs, listProjectRows, resolveProjectByApiKey } from "./core/project/projects.js";
 import { ensureSessionBaselineJudge } from "./core/monitor/builtinEvaluators.js";
 import { ensureMetricPackConfigs, metricPackBackfillDone, markMetricPackBackfillDone } from "./core/evaluate/metricPack.js";
 import { finishMcpAuth } from "./core/evaluate/mcp.js";
@@ -164,33 +164,10 @@ async function main() {
   app.use("/api/v1/evaluate", dataPlaneLimit, apiKey, evaluateDashboardRouter);
   app.use("/api/v1/otel", dataPlaneLimit, apiKey, otlpRouter);
 
-  // Unauthenticated on purpose, same "skip a login step entirely" zero-setup UX the single-key
-  // model always had - now specifically hands back the *Default* project's key (whichever project
-  // the one-time migration created first, core/project/projects.ts's getDefaultProject). Any
-  // additional project you register is only reachable via its own key from then on; this endpoint
-  // never lists or exposes every project's key, only the one a fresh/never-configured client
-  // should bootstrap into.
-  app.get("/api/v1/dev/bootstrap", credentialLimit, asyncHandler(async (_req, res) => {
-    // Enabled-auth mode has no anonymous key handout - that's the whole point of the mode. The
-    // dashboard gets keys via the session-guarded /projects route instead.
-    if (authMode() === "enabled") {
-      res.status(403).json({ error: "Disabled while AGENTX_AUTH=enabled - sign in and use /api/v1/projects" });
-      return;
-    }
-    const defaultProject = await getDefaultProject(getDb());
-    if (!defaultProject) {
-      res.status(500).json({ error: "No default project - this shouldn't happen after initDb() has run" });
-      return;
-    }
-    res.status(200).json({ apiKey: defaultProject.apiKey });
-  }));
-
-  // Unauthenticated for the same reason /dev/bootstrap is: self-host's whole security model is
-  // "if you can reach this local port, you're trusted" (one machine, one operator) - gatekeeping
-  // *creating* a new project specifically wouldn't protect anything /dev/bootstrap's already-open
-  // key doesn't already expose. No rename/delete routes yet - full project-management UI is still
-  // follow-up work. Returns the new project's key in full since the caller just created it and has
-  // to learn it from somewhere.
+  // Guarded like GET /projects above: creating a project returns its key in full (the caller
+  // has to learn it from somewhere), so it demands the same proof - a session in enabled-auth
+  // mode, a valid existing project key in disabled mode. No rename/delete routes yet - full
+  // project-management UI is still follow-up work.
   app.post("/api/v1/projects", credentialLimit, asyncHandler(async (req, res) => {
     // Enabled-auth mode: creating a project requires a signed-in user, and the project is owned
     // by their organization from birth.
@@ -220,14 +197,15 @@ async function main() {
     res.status(201).json({ project });
   }));
 
-  // The frontend's project switcher's list source (AgentX-web-front's ProjectProvider) - same
-  // unauthenticated posture as the two routes above, deliberately includes every project's own
-  // apiKey so the switcher can hold each project's key up front and swap the x-api-key header on
-  // switch, with no separate per-project auth handshake.
+  // The frontend's project switcher's list source (AgentX-web-front's ProjectProvider). It
+  // deliberately includes every project's own apiKey so the switcher can hold each key up front
+  // and swap the x-api-key header on switch, with no separate per-project handshake.
   app.get("/api/v1/projects", credentialLimit, asyncHandler(async (req, res) => {
-    // Enabled-auth mode: this route hands out project API keys, so it's the one the session
-    // strictly guards - keys are scoped to the caller's organizations. Disabled mode keeps the
-    // original unauthenticated listing.
+    // This route hands out project API keys, so both modes guard it. Enabled-auth: session
+    // scoped to the caller's organizations. Disabled: any valid project API key (the one the
+    // operator pasted into the dashboard, or the one printed at engine startup) unlocks the
+    // full listing - single-operator model, but no more anonymous key handout (the old
+    // /dev/bootstrap posture is gone; keys are copy-pasted, not fetched).
     if (authMode() === "enabled") {
       const user = await getSessionUser(req);
       if (!user) {
@@ -236,6 +214,12 @@ async function main() {
       }
       const projects = await listProjectsWireForOrgs(getDb(), await getUserOrganizationIds(user.id));
       res.status(200).json({ projects });
+      return;
+    }
+    const provided = req.header("x-api-key");
+    const caller = provided ? await resolveProjectByApiKey(getDb(), provided) : null;
+    if (!caller) {
+      res.status(401).json({ error: "Provide a valid project API key (printed at engine startup)" });
       return;
     }
     const projects = await listProjectsWire(getDb());

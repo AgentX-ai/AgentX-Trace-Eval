@@ -57,9 +57,12 @@ describe("AGENTX_AUTH=enabled", () => {
     expect(config.body).toEqual({ mode: "enabled", needsSetup: true });
   });
 
-  it("closes the anonymous API-key handout", async () => {
+  it("has no anonymous API-key handout at all", async () => {
+    // /dev/bootstrap used to return the default project's key to any caller. It is gone rather
+    // than merely guarded, so this pins its absence - a reintroduction would be a silent regression
+    // in exactly the mode that exists to stop it.
     const bootstrap = await engine.json("/api/v1/dev/bootstrap", { apiKey: null });
-    expect(bootstrap.status).toBe(403);
+    expect(bootstrap.status).toBe(404);
     expect(JSON.stringify(bootstrap.body)).not.toMatch(/agtx_local_/);
   });
 
@@ -221,7 +224,7 @@ describe.skipIf(!postgresAvailable)("AGENTX_AUTH=enabled on Postgres", () => {
   }, 60_000);
 
   it("still refuses anonymous access to keys", async () => {
-    expect((await pgEngine.json("/api/v1/dev/bootstrap", { apiKey: null })).status).toBe(403);
+    expect((await pgEngine.json("/api/v1/dev/bootstrap", { apiKey: null })).status).toBe(404);
     expect((await pgEngine.json("/api/v1/projects", { apiKey: null })).status).toBe(401);
   });
 });

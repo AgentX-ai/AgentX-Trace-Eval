@@ -313,11 +313,11 @@ describe("engine resilience to hostile-but-plausible requests", () => {
     // Sequential, since the point is the count rather than the concurrency.
     let refused = 0;
     for (let i = 0; i < 200; i++) {
-      const res = await engine.request("/api/v1/dev/bootstrap", { apiKey: null });
+      const res = await engine.request("/api/v1/projects", { apiKey: null });
       await res.text();
       if (res.status === 429) refused++;
     }
-    expect(refused, "an unauthenticated key handout could be hit unboundedly").toBeGreaterThan(0);
+    expect(refused, "a key-guarded route could be probed unboundedly").toBeGreaterThan(0);
   }, 120_000);
 
   it("never serves a file from outside the dashboard bundle", async () => {
