@@ -778,11 +778,27 @@ the error argument and the failure disappears from the line whose whole job is t
 choosing of whoever shaped the request path. `runs.ts` had the same shape around a caller-supplied
 `idempotencyKey`. Both now pass the user data as `%s` arguments instead of interpolating it in.
 
-One alert from that batch is left open rather than papered over: `js/regex-injection` on
-`validateUserRegex`. The flow is real - the pattern is operator-supplied - but compiling it is what
-the function is for, and the ReDoS shape is rejected a few lines above. Clearing it in code means a
-non-backtracking engine (RE2) and different matching semantics, so it is a maintainer's call, and
-an inline `codeql[...]` suppression turned out not to be honoured here.
+The last alert from that batch, `js/regex-injection` on `validateUserRegex`, is fixed properly
+rather than dismissed. Operator-supplied patterns are compiled and matched by RE2 (`re2js`, a pure
+JS port - a native `re2` addon would have hit the same Bun problem `storage/db.ts` already works
+around), which has no backtracking, so match time is linear whatever the pattern's shape. The
+numbers on this box: the built-in engine needs 5.5s for `(a+)+$` against 26 characters, doubling
+per character, while RE2 answers the same pattern against 46 in 2ms.
+
+Doing only the flagged line would have cleared the alert and fixed nothing, because the flagged
+line is the *validation* compile - construction is cheap, and the damage happens at match time in
+`conditions.ts`, which CodeQL never flagged because the pattern reaches it through the database and
+that breaks its dataflow. The same unflagged shape turned up a third time in
+`proposalValidation.ts`, where a tool definition's JSON Schema `pattern` - also operator-supplied,
+also arriving via the database - was compiled with the built-in engine and matched against
+arguments. All three now go through one `compileUserRegex`.
+
+`hasNestedQuantifier` stays in front of the compile even though RE2 makes nesting harmless: it is
+the documented save-time behaviour, and telling an author their `(a+)+` is probably a mistake is
+worth more than the blowup it used to prevent. The trade for RE2 is Perl-only syntax - lookaround
+and backreferences are refused. Nothing shipped uses either (the one lookahead in the tree is an
+Express route, which is a constant and stays on the built-in engine), and a pattern needing them is
+now refused at save time with RE2's own message instead of being stored and silently never firing.
 
 With those in, CI is green on Node 24: 442 passed on SQLite, and 442 passed again against the
 Postgres service container with nothing skipped.

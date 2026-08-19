@@ -3,7 +3,7 @@
 // evaluation for custom monitor patterns. The semantic detector is injected as a callback so this
 // module never imports the LLM layer; core/monitor/detect.ts passes the real judge, tests can pass
 // the fast heuristic below. (regexSafety.js is the one import, and is itself pure.)
-import { hasNestedQuantifier } from "./regexSafety.js";
+import { compileUserRegex, hasNestedQuantifier } from "./regexSafety.js";
 
 export type PatternMatchTarget = "response" | "userMessage" | "trace";
 
@@ -76,19 +76,25 @@ async function evaluateDetector(condition: PatternCondition, text: string, seman
   }
   if (condition.detector === "regex") {
     // Rejected at save time now (regexSafety.ts), but a row stored before that would still reach
-    // here - and a JS regex cannot be interrupted, so one backtracker pins the engine's only
-    // thread. A logged skip is the better failure.
+    // here. RE2 below would run it in linear time anyway; the skip stays so the operator is told
+    // the pattern is wrong rather than left wondering why it never fires.
     if (hasNestedQuantifier(value)) {
       console.error(
-        `Skipping monitor regex "${value}": nested unbounded quantifiers can take exponential time. Edit the pattern to remove the nesting.`
+        "Skipping monitor regex %s: nested unbounded quantifiers can take exponential time. Edit the pattern to remove the nesting.",
+        JSON.stringify(value)
       );
       return { matched: false };
     }
-    try {
-      return { matched: new RegExp(value, condition.caseSensitive ? "" : "i").test(text) };
-    } catch {
+    // RE2, not the built-in engine: this runs against agent output, which end users influence, and
+    // a built-in regex cannot be interrupted once it starts backtracking on this single thread.
+    const compiled = compileUserRegex(value, { caseSensitive: condition.caseSensitive });
+    if (!compiled.ok) {
+      // Reaches here only for a row stored before save-time validation, or one using syntax RE2
+      // does not accept (lookaround, backreferences). Silence would look like "never matches".
+      console.error("Skipping monitor regex %s: %s", JSON.stringify(value), compiled.error);
       return { matched: false };
     }
+    return { matched: compiled.regex.test(text) };
   }
   if (condition.detector === "semantic") {
     return semanticJudge(value, text);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasNestedQuantifier, validateConditionRegexes, validateUserRegex } from "./regexSafety.js";
+import { compileUserRegex, hasNestedQuantifier, validateConditionRegexes, validateUserRegex } from "./regexSafety.js";
 
 describe("validateUserRegex", () => {
   it("accepts the kinds of regex an operator actually writes", () => {
@@ -96,5 +96,41 @@ describe("validateConditionRegexes", () => {
 
   it("ignores a blank regex value", () => {
     expect(validateConditionRegexes([{ detector: "regex", value: "   " }])).toEqual({ ok: true });
+  });
+});
+
+describe("compileUserRegex", () => {
+  it("matches without anchoring, case-insensitively by default", () => {
+    const compiled = compileUserRegex("HeLLo");
+    expect(compiled.ok && compiled.regex.test("well hello there")).toBe(true);
+  });
+
+  it("respects caseSensitive", () => {
+    const compiled = compileUserRegex("HeLLo", { caseSensitive: true });
+    expect(compiled.ok && compiled.regex.test("well hello there")).toBe(false);
+  });
+
+  it("reports a regex that does not compile rather than throwing", () => {
+    const compiled = compileUserRegex("(unclosed");
+    expect(compiled.ok).toBe(false);
+    if (!compiled.ok) expect(compiled.error).toMatch(/Invalid regular expression/);
+  });
+
+  it("refuses lookaround rather than accepting a pattern it would not honour", () => {
+    // RE2 has no lookaround. Saying so beats compiling something that silently never matches.
+    const compiled = compileUserRegex("(?=foo)bar");
+    expect(compiled.ok).toBe(false);
+  });
+
+  // The point of RE2 here. The built-in engine needs about 5.5s for this pattern against 26
+  // characters, and each extra character doubles it - 40 would outlast the process. Anything
+  // under the bound below means no backtracking is happening at all.
+  it("answers a catastrophic pattern in linear time", () => {
+    const compiled = compileUserRegex("(a+)+$");
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const started = Date.now();
+    expect(compiled.regex.test(`${"a".repeat(40)}!`)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 });

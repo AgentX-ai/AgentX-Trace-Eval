@@ -4,6 +4,7 @@ import { resolveRunConfig } from "./runs.js";
 import { getPromptRow, getPromptVersionRow } from "./prompts.js";
 import { getToolSchemaRow, getToolSchemaVersionRow, getToolFailureExamples } from "./toolSchemas.js";
 import { callModelWithTools, scoreAgainstCriteria, DEFAULT_JUDGE_PROMPT, DEFAULT_JUDGE_MODEL, type ToolDefinition } from "./judge.js";
+import { compileUserRegex } from "../monitor/regexSafety.js";
 
 // Propose -> VALIDATE -> publish: runs a proposal's candidate against the same golden dataset the
 // current version would be graded on, so the human approving a rewrite approves a measured claim
@@ -277,13 +278,18 @@ function checkValueAgainstProperty(key: string, value: unknown, property: Record
     problems.push(`argument "${key}" must be one of ${JSON.stringify(property.enum)} (got ${JSON.stringify(value)})`);
   }
   if (typeof property.pattern === "string" && typeof value === "string") {
-    try {
-      if (!new RegExp(property.pattern).test(value)) {
-        problems.push(`argument "${key}" should match pattern ${property.pattern} (got ${JSON.stringify(value)})`);
-      }
-    } catch {
-      // An invalid regex in the definition is the definition's bug, not the model's - skip.
+    // Same hazard as a monitor pattern's regex, and same fix: `pattern` arrives inside an
+    // operator-supplied tool definition, so a nested quantifier in it would pin this thread while
+    // validating arguments. RE2 keeps that linear. CodeQL does not flag this one because the
+    // definition reaches here through the database, which breaks its dataflow - the exposure is
+    // the same either way. JSON Schema `pattern` is an unanchored, case-sensitive search, which is
+    // what compileUserRegex + find() already do.
+    const compiled = compileUserRegex(property.pattern, { caseSensitive: true });
+    if (compiled.ok && !compiled.regex.test(value)) {
+      problems.push(`argument "${key}" should match pattern ${property.pattern} (got ${JSON.stringify(value)})`);
     }
+    // An invalid or RE2-unsupported regex in the definition is the definition's bug, not the
+    // model's - skip the check rather than failing the argument.
   }
   return problems;
 }
