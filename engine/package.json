@@ -1,6 +1,6 @@
 {
   "name": "@agentx/engine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "AgentX self-host governance engine: Evaluate, Monitor, and Trace as a local HTTP API.",
   "type": "module",
