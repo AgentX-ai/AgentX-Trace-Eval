@@ -278,12 +278,9 @@ function checkValueAgainstProperty(key: string, value: unknown, property: Record
     problems.push(`argument "${key}" must be one of ${JSON.stringify(property.enum)} (got ${JSON.stringify(value)})`);
   }
   if (typeof property.pattern === "string" && typeof value === "string") {
-    // Same hazard as a monitor pattern's regex, and same fix: `pattern` arrives inside an
-    // operator-supplied tool definition, so a nested quantifier in it would pin this thread while
-    // validating arguments. RE2 keeps that linear. CodeQL does not flag this one because the
-    // definition reaches here through the database, which breaks its dataflow - the exposure is
-    // the same either way. JSON Schema `pattern` is an unanchored, case-sensitive search, which is
-    // what compileUserRegex + find() already do.
+    // `pattern` rides in on an operator-supplied tool definition, so it is as untrusted as a
+    // monitor regex and goes to RE2 for the same reason. JSON Schema wants an unanchored,
+    // case-sensitive search, which is what compileUserRegex does.
     const compiled = compileUserRegex(property.pattern, { caseSensitive: true });
     if (compiled.ok && !compiled.regex.test(value)) {
       problems.push(`argument "${key}" should match pattern ${property.pattern} (got ${JSON.stringify(value)})`);

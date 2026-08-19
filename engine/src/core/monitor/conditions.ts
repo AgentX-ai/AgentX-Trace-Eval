@@ -85,8 +85,7 @@ async function evaluateDetector(condition: PatternCondition, text: string, seman
       );
       return { matched: false };
     }
-    // RE2, not the built-in engine: this runs against agent output, which end users influence, and
-    // a built-in regex cannot be interrupted once it starts backtracking on this single thread.
+    // Matched against agent output, which end users influence - see compileUserRegex.
     const compiled = compileUserRegex(value, { caseSensitive: condition.caseSensitive });
     if (!compiled.ok) {
       // Reaches here only for a row stored before save-time validation, or one using syntax RE2

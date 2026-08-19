@@ -118,9 +118,8 @@ export async function startEngine(
         ...env,
       },
       stdio: ["ignore", "pipe", "pipe"],
-      // tsx runs the engine in a grandchild process, so killing `child` only removes the wrapper
-      // and leaves the engine orphaned - 130-odd of them accumulated over a few runs before this
-      // was noticed. Its own process group makes the whole tree killable in one signal.
+      // tsx runs the engine in a grandchild, so signalling `child` only removes the wrapper and
+      // leaves the engine orphaned on its port. Its own group makes the tree killable in one go.
       detached: true,
     }
   );

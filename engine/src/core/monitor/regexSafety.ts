@@ -86,15 +86,13 @@ export function hasNestedQuantifier(source: string): boolean {
   return false;
 }
 
-// Operator-supplied patterns are compiled and run by RE2, never by the built-in engine. RE2 has no
-// backtracking, so match time is linear in the subject regardless of how the pattern is shaped -
-// which is the actual fix for a hostile regex, not just for the shapes hasNestedQuantifier knows to
-// look for. Measured on this box: the built-in engine takes 5.5s on `(a+)+$` against 26 characters,
-// while RE2 answers the same pattern against 46 characters in 2ms.
+// Operator-supplied patterns go to RE2, never the built-in engine: RE2 does not backtrack, so match
+// time stays linear whatever shape the pattern is - covering every catastrophic pattern rather than
+// only the ones hasNestedQuantifier recognises.
 //
-// The trade is Perl-only syntax: RE2 rejects lookaround and backreferences. Nothing shipped uses
-// either, and a pattern that needs them is refused at save time with RE2's own message rather than
-// silently never matching.
+// The trade is Perl-only syntax: RE2 refuses lookaround and backreferences. Nothing shipped uses
+// either, and a pattern needing them is now rejected at save time instead of stored and never
+// firing.
 export type CompiledUserRegex = { test(text: string): boolean };
 
 export function compileUserRegex(

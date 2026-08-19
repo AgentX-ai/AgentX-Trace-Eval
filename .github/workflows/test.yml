@@ -109,11 +109,9 @@ jobs:
 
   binary:
     name: compiled binary
-    # The suites above all run under tsx/Node, which storage/db.ts serves with better-sqlite3. The
-    # artifact release.yml ships is `bun build --compile`, and that takes the bun:sqlite branch
-    # instead - a driver nothing else here covers. Two defects came from exactly that blind spot:
-    # the dashboard bundle extracting into /web, and better-sqlite3's Node 24 abort being invisible
-    # from the binary. Smoke-only: boot, write, read, shut down.
+    # The suites above run under tsx, which storage/db.ts serves with better-sqlite3. The artifact
+    # release.yml ships is `bun build --compile`, which takes the bun:sqlite branch instead - a
+    # driver nothing else here covers. Smoke-only: boot, write, read, shut down.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955

@@ -40,19 +40,10 @@ export function findWebIndexHtml(): string | null {
 // install.sh, build.sh's fallback, and the Dockerfile's dashboard stage all consume.
 const WEB_BUNDLE_URL = "https://github.com/AgentX-ai/AgentX-Trace-Eval/releases/latest/download/agentx-web.tar.gz";
 
-// Dev-mode convenience: a fresh `git clone && yarn && yarn dev --dev` has no web/ directory
-// (it isn't committed - see README's "Fastest dev loop"), which used to mean an API-only boot
-// and a manual curl|tar step. Instead, fetch the released bundle into the repo's web/ once.
-// Best-effort by design: offline or a missing release just returns null and the caller falls
-// back to the old "not found" message with the manual command.
-// Where the bundle may be written. findWebIndexHtml documents the hazard above and this has to
-// respect it: under a compiled binary import.meta.url resolves inside Bun's virtual
-// /$bunfs/root/..., so "repo root" collapses to "/" and the bundle lands in /web. Confirmed
-// against a real `bun build --compile` binary before this existed - `agentx-engine --dev`
-// extracted 29MB into the filesystem root as root, and would fail with EACCES as anyone else, so
-// dev mode never actually got its dashboard from the binary either way. A genuine source checkout
-// is identified by its package.json; anything else falls back to the binary's own directory,
-// which is the installed layout findWebIndexHtml already looks in first.
+// Same trap findWebIndexHtml documents above: under a compiled binary import.meta.url resolves
+// inside Bun's virtual /$bunfs/root/..., so a repo-relative "../../web" collapses to /web. A real
+// checkout is identified by its package.json; anything else writes beside the binary, which is
+// where findWebIndexHtml looks first.
 export function resolveWebBundleDir(
   sourceDir: string,
   execPath: string,
@@ -65,6 +56,11 @@ export function resolveWebBundleDir(
   return path.join(path.dirname(execPath), "web");
 }
 
+// Dev-mode convenience: a fresh `git clone && yarn && yarn dev --dev` has no web/ directory
+// (it isn't committed - see README's "Fastest dev loop"), which used to mean an API-only boot
+// and a manual curl|tar step. Instead, fetch the released bundle into the repo's web/ once.
+// Best-effort by design: offline or a missing release just returns null and the caller falls
+// back to the old "not found" message with the manual command.
 export async function downloadWebBundle(): Promise<string | null> {
   const sourceDir = path.dirname(fileURLToPath(import.meta.url));
   const webDir = resolveWebBundleDir(sourceDir, process.execPath);
