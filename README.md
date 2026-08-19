@@ -93,7 +93,7 @@ The build downloads the latest dashboard release (see
 download layer is an `ADD` from the release URL, which the builder revalidates against the remote
 file, so a newly published dashboard bundle is picked up automatically with no `--no-cache`
 needed. Pin a specific dashboard build instead with
-`--build-arg AGENTX_WEB_URL=https://github.com/AgentX-ai/AgentX-trace-eval/releases/download/v0.1.6/agentx-web.tar.gz`.
+`--build-arg AGENTX_WEB_URL=https://github.com/AgentX-ai/AgentX-trace-eval/releases/download/v0.2.0/agentx-web.tar.gz`.
 
 ## Configuration
 
