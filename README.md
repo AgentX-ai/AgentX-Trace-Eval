@@ -254,6 +254,15 @@ AGENTX_TEST_DB_URL=postgres://postgres:agentx@localhost:55432/agentx yarn worksp
 That is worth running before anything touching `storage/db.ts` or an ingest path: Postgres is
 where concurrent writes actually interleave, so a race that SQLite hides shows up there.
 
+Both suites run under `tsx`, which `storage/db.ts` serves with `better-sqlite3`. The released
+binary takes its `bun:sqlite` branch instead, so nothing above says anything about it - smoke-test
+that separately before touching either branch, `web.ts`, or the shutdown path:
+
+```bash
+bun build engine/src/index.ts --compile --outfile /tmp/agentx-engine
+./scripts/smoke-binary.sh /tmp/agentx-engine
+```
+
 ### Full distribution build
 
 Compiles the engine to a Bun-compiled binary and builds the Go CLI, laid out exactly the way the
