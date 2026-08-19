@@ -820,6 +820,10 @@ export const appSettings = sqliteTable("app_settings", {
   // One-time metric-pack backfill marker (core/evaluate/metricPack.ts): set after pre-existing
   // projects get the built-in RAG/safety configs, so a user deleting one stays deleted.
   metricPackSeededAt: integer("metric_pack_seeded_at", { mode: "timestamp_ms" }),
+  // Highest metric-pack version this instance has been seeded with (see core/evaluate/
+  // metricPack.ts) - lets later releases add NEW pack configs without resurrecting ones the
+  // operator deleted from an earlier version.
+  metricPackVersion: integer("metric_pack_version"),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
 

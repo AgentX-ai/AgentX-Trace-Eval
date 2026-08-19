@@ -3,10 +3,35 @@ import { eq, and, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import {
   renderTraceTrajectory,
+  getTraceRetrievalContext,
   extractTraceToolSequence,
   matchTrajectory,
   type TrajectoryMatchMode,
 } from "../trace/trajectory.js";
+
+// A submitted result's retrievalContext may be a plain string or a list of chunk strings -
+// rendered the same "[chunk N]" way onlineEvaluators' extractRetrievalContext renders the
+// metadata form, so every judge sees one consistent context format.
+function renderSubmittedRetrievalContext(raw: unknown): string | undefined {
+  if (typeof raw === "string" && raw.trim()) return raw;
+  if (Array.isArray(raw)) {
+    const chunks = raw.filter((c): c is string => typeof c === "string" && c.trim().length > 0);
+    if (chunks.length > 0) return chunks.map((c, i) => `[chunk ${i + 1}] ${c}`).join("\n\n");
+  }
+  return undefined;
+}
+
+// Context as plain text for the deterministic Jaccard comparison - no "[chunk N]" labels
+// (those are judge-prompt formatting; here they'd count as shared tokens on both sides and
+// inflate every score).
+function plainContextText(raw: unknown): string | null {
+  if (typeof raw === "string" && raw.trim()) return raw;
+  if (Array.isArray(raw)) {
+    const chunks = raw.filter((c): c is string => typeof c === "string" && c.trim().length > 0);
+    if (chunks.length > 0) return chunks.join("\n\n");
+  }
+  return null;
+}
 import { getEvaluationSettingsRow, type EvaluationSettingsRow } from "./evaluationSettings.js";
 import type { SimilarityConfig } from "./datasets.js";
 import { runCodeScorer, type CodeScorerConfig, type CodeScorerResult } from "./codeScorer.js";
@@ -48,6 +73,10 @@ type ResolvedRunConfig = {
       expectedResults?: string;
       judgeGuideline?: string;
       retrievalContext?: string;
+      // Reference retrieval for this case: what a correct retriever should have fetched.
+      // Compared deterministically (token Jaccard) against the actual retrieved context -
+      // no judge call involved.
+      expectedRetrievalContext?: string | string[];
       // Agent-native expectation: the tool calls this case should make, matched against the
       // linked trace's actual tool sequence (core/trace/trajectory.ts's matchTrajectory).
       expectedTrajectory?: { tools?: string[]; mode?: string };
@@ -209,6 +238,9 @@ type SubmittedResult = {
   output?: { text?: string };
   error?: { type: string; message: string };
   traceId?: string;
+  // What the agent actually retrieved for this case - string or chunk list (AgentX-Python's
+  // EvaluationResult.retrieval_context). Feeds {context}-referencing judge prompts.
+  retrievalContext?: unknown;
   isSmokeTestVariant?: boolean;
   smokeTestVariantText?: string;
   // AgentX-Python's normalize_result nests these under `timings` (top-level input_tokens/
@@ -266,6 +298,15 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
   // judge scores HOW the answer was produced (tool choice, order, failures), not just the answer.
   const trajectory = item.traceId ? await renderTraceTrajectory(db, item.traceId).catch(() => null) : null;
 
+  // Retrieval context precedence for the {context}-referencing judges (RAG metric pack):
+  // 1. what the result itself carried (the agent's actual dynamic retrieval for this case),
+  // 2. the linked trace's recorded retrieval spans,
+  // 3. the case's statically pinned retrievalContext.
+  const resultContext = renderSubmittedRetrievalContext(item.retrievalContext);
+  const traceContext =
+    !resultContext && item.traceId ? await getTraceRetrievalContext(db, item.traceId).catch(() => null) : null;
+  const retrievalContext = resultContext ?? traceContext ?? mainQ?.retrievalContext;
+
   const [judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore, codeScorerResults] = await Promise.all([
     // Resolved, never rejected - the same isolation the code scorers below already have.
     scoreAgainstCriteria(config, {
@@ -273,9 +314,9 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
       output: actual || "",
       expected,
       judgeGuideline: mainQ?.judgeGuideline,
-      // For {context}-referencing judge prompts (the RAG metric pack) - a case can pin the
-      // retrieved chunks it was answered from.
-      context: mainQ?.retrievalContext,
+      // For {context}-referencing judge prompts (the RAG metric pack) - dynamic per-result
+      // context first, then linked-trace retrievals, then the case's pinned chunks.
+      context: retrievalContext,
       trajectory: trajectory ?? undefined,
     }).then(
       result => ({ ...result, judgeError: null as Error | null }),
@@ -325,6 +366,41 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
         name: `Trajectory match (${mode})`,
         score: match.matched ? 1 : 0,
         reasoning: match.reasoning,
+      });
+    }
+  }
+
+  // Context match: a case that pins expectedRetrievalContext gets the actually-retrieved
+  // context scored against it by token-level Jaccard similarity - a deterministic retriever
+  // regression check that costs no judge call. Same actual-context precedence the judges use
+  // (result's own retrieval_context, else the linked trace's retrieval spans), minus the
+  // case-pin fallback: comparing the expected context against a pinned copy of itself would
+  // always score 1.
+  const expectedRaw = mainQ?.expectedRetrievalContext;
+  const expectedContext = plainContextText(expectedRaw);
+  if (expectedContext) {
+    // getTraceRetrievalContext labels each chunk "[retrieval N]" for judge prompts; strip
+    // the labels so their tokens don't count toward the comparison.
+    const actualContext =
+      plainContextText(item.retrievalContext) ??
+      (traceContext ? traceContext.replace(/^\[retrieval \d+\] /gm, "") : null);
+    if (!actualContext) {
+      codeScorerResults.push({
+        name: "Context match (jaccard)",
+        score: null,
+        error:
+          "No retrieved context on this result - return retrieval_context from the agent function, or link a trace that recorded retrieval spans",
+      });
+    } else {
+      const similarity = computeJaccardSimilarity(expectedContext, actualContext);
+      const expectedChunks = Array.isArray(expectedRaw) ? expectedRaw.length : 1;
+      codeScorerResults.push({
+        name: "Context match (jaccard)",
+        score: similarity,
+        reasoning:
+          similarity == null
+            ? "Expected or retrieved context was empty after tokenization"
+            : `Token-level Jaccard similarity ${similarity.toFixed(2)} between the retrieved context and the ${expectedChunks} expected chunk(s)`,
       });
     }
   }

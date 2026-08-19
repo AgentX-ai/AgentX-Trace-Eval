@@ -189,3 +189,71 @@ export function matchTrajectory(
   const matched = act.every(t => allowed.has(t));
   return { matched, reasoning: `subset match (no unexpected calls, missing allowed): ${summary}` };
 }
+
+// ---------------------------------------------------------------------------
+// Retrieval context extraction: what the agent actually retrieved for one interaction, rendered
+// for {context}-referencing judge prompts (the RAG metric pack). Sources, in order: the trace's
+// own metadata.retrievalContext (explicit opt-in, handled by callers), the subtree's recorded
+// retrieval spans (SDK integrations name them "Retrieval N" with the joined chunk contents as
+// output), and a performanceSummary retrieval_steps list from older flat traces.
+// ---------------------------------------------------------------------------
+
+const MAX_CONTEXT_CHARS = 12_000;
+
+function chunkText(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value;
+  if (value != null && typeof value === "object") {
+    const text = JSON.stringify(value);
+    return text.length > 2 ? text : null;
+  }
+  return null;
+}
+
+export async function getTraceRetrievalContext(db: Db, traceId: string): Promise<string | null> {
+  const cond = and(eq(db.schema.traces.id, traceId), eq(db.schema.traces.projectId, db.projectId));
+  const rows =
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.traces).where(cond).all()
+      : await db.db.select().from(db.schema.traces).where(cond);
+  const root = rows[0] as
+    | { spanId: string | null; sessionId: string | null; performanceSummary: unknown }
+    | undefined;
+  if (!root) return null;
+
+  const chunks: string[] = [];
+
+  if (root.spanId && root.sessionId) {
+    const spans = (await listSessionSpans(db, root.sessionId)) as SpanWire[];
+    const included = new Set<string>([root.spanId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const span of spans) {
+        if (span.spanId && span.parentSpanId && !included.has(span.spanId) && included.has(span.parentSpanId)) {
+          included.add(span.spanId);
+          changed = true;
+        }
+      }
+    }
+    for (const span of spans) {
+      if (!span.spanId || !included.has(span.spanId) || !span.parentSpanId) continue;
+      if (!/^retriev/i.test(span.name)) continue;
+      const text = chunkText(span.output);
+      if (text) chunks.push(text);
+    }
+  }
+
+  // Older flat traces: retrieval steps folded into performanceSummary instead of child spans.
+  const summary = root.performanceSummary as { retrieval_steps?: unknown; retrievalSteps?: unknown } | null;
+  for (const list of [summary?.retrieval_steps, summary?.retrievalSteps]) {
+    if (!Array.isArray(list)) continue;
+    for (const step of list) {
+      const text = chunkText((step as { output?: unknown })?.output);
+      if (text) chunks.push(text);
+    }
+  }
+
+  if (chunks.length === 0) return null;
+  const joined = chunks.map((c, i) => `[retrieval ${i + 1}] ${c}`).join("\n\n");
+  return joined.length > MAX_CONTEXT_CHARS ? `${joined.slice(0, MAX_CONTEXT_CHARS)}\n... (truncated)` : joined;
+}

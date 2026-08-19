@@ -527,6 +527,7 @@ export const appSettings = pgTable("app_settings", {
   geminiApiKey: text("gemini_api_key"),
   authSecret: text("auth_secret"),
   metricPackSeededAt: timestamp("metric_pack_seeded_at", { mode: "date" }),
+  metricPackVersion: integer("metric_pack_version"),
   updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
 });
 

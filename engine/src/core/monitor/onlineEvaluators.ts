@@ -6,7 +6,7 @@ import { matchesAgentScope, passesSampleRate } from "./routing.js";
 import { recordEvent } from "./events.js";
 import { upsertSignal } from "./signals.js";
 import { getEvaluationSettingsRow } from "../evaluate/evaluationSettings.js";
-import { renderTraceTrajectory } from "../trace/trajectory.js";
+import { renderTraceTrajectory, getTraceRetrievalContext } from "../trace/trajectory.js";
 
 // LangSmith's actual "online evals": a real judge scoring sampled live traffic continuously,
 // producing a rating over time - distinct from core/monitor/detect.ts's pattern-matching (a
@@ -257,6 +257,19 @@ export async function runOnlineEvaluators(
     }
     return trajectoryPromise;
   };
+  // {context}-referencing judges (the RAG metric pack): explicit metadata.retrievalContext wins,
+  // else fall back to what the trace actually recorded retrieving (SDK/LangChain/LlamaIndex
+  // retrieval spans) - so RAG scoring works on real traffic with zero caller changes.
+  const explicitContext = extractRetrievalContext(trace.metadata);
+  let recordedContextPromise: Promise<string | null> | null = null;
+  const getContext = () => {
+    if (explicitContext) return Promise.resolve(explicitContext);
+    if (!ctx.traceId) return Promise.resolve(null);
+    if (!recordedContextPromise) {
+      recordedContextPromise = getTraceRetrievalContext(db, ctx.traceId).catch(() => null);
+    }
+    return recordedContextPromise;
+  };
 
   for (const evaluator of evaluators) {
     if (!evaluator.enabled) continue;
@@ -291,7 +304,7 @@ export async function runOnlineEvaluators(
         {
           input: inputText,
           output: outputText,
-          context: extractRetrievalContext(trace.metadata),
+          context: (await getContext()) ?? undefined,
           trajectory: (await getTrajectory()) ?? undefined,
         }
       ));
