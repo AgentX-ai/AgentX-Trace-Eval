@@ -671,8 +671,9 @@ That first suite then grew into a full one, written to find defects rather than 
 current behaviour: 35 more vitest files for the engine (424 cases - unit tests for the pure
 helpers, plus integration suites that boot the real engine as a subprocess and drive it over HTTP
 the way an SDK would), similarity-metric tests for judge-core, and 20 Go tests for the CLI
-launcher. Fifteen real defects came out of writing them, each fixed alongside the test that
-caught it - the last few only once the suite was running in CI. `tsconfig.build.json`'s exclude grew to cover `src/test/` as well as `*.test.ts`, because the
+launcher. Seventeen real defects came out of writing them, each fixed alongside the test that
+caught it - the last few only once the suite was running in CI, and the last two only once the
+compiled release binary was exercised rather than the source tree. `tsconfig.build.json`'s exclude grew to cover `src/test/` as well as `*.test.ts`, because the
 integration harness lives there under names that are not `*.test.ts` and would otherwise have
 compiled into `dist/`.
 
@@ -780,3 +781,23 @@ an inline `codeql[...]` suppression turned out not to be honoured here.
 
 With those in, CI is green on Node 24: 442 passed on SQLite, and 442 passed again against the
 Postgres service container with nothing skipped.
+
+Two more came out of running the artifact this actually ships - `bun build --compile` - rather than
+the source tree, which no test had done. `agentx-engine --dev` on a machine without a web/
+directory extracted the prebuilt dashboard into `/web`: 29MB written to the filesystem root, as
+root, silently. `web.ts`'s own `findWebIndexHtml` documents precisely why - under a compiled binary
+`import.meta.url` resolves inside Bun's virtual `/$bunfs/root/...`, which is why that function uses
+`process.execPath` - but `downloadWebBundle` still derived its target from `import.meta.url`, and
+`sourceDir/../../web` collapses to `/web` once sourceDir is a virtual path. As any other user it
+fails with EACCES and falls back to API-only, so the convenience had never once worked from the
+binary. It now resolves a real checkout by its `package.json` and otherwise writes beside the
+binary, which is the installed layout `findWebIndexHtml` looks in first - so the bundle now lands
+where the next boot finds it, verified end to end (dashboard served, client-routed `/governance`
+200). `tar` also gains `--no-same-owner`, having been restoring the archive's own uid/gid when run
+as root.
+
+And `matchTrajectory` scored a tool name differently depending on which side carried stray
+whitespace: `expected` was trimmed and filtered, `actual` was not, so `[" search"]` vs `["search"]`
+matched while `["search"]` vs `[" search"]` did not. `actual` comes from the trace's own
+`tool_calls`, so the padding can just as easily sit there, and the outcome is a quietly flipped
+eval verdict rather than anything that looks like a failure. Both sides now normalize identically.
