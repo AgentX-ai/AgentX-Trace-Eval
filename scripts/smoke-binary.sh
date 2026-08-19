@@ -76,6 +76,17 @@ if [ -e /web ]; then
   rm -rf /web
   fail "dev mode wrote the dashboard bundle to the filesystem root"
 fi
-echo "ok: dev mode does not write to /"
+# The download is best-effort by design, so "/web absent" alone proves nothing - offline, the
+# whole path is skipped and this check passes without having run. Say which case happened rather
+# than reporting a pass either way.
+if [ -e "$BINDIR/web/index.html" ]; then
+  echo "ok: dev mode downloaded beside the binary, not to /"
+  rm -rf "$BINDIR/web"
+elif grep -q "dashboard download failed" "$WORK/dev.log" 2>/dev/null; then
+  echo "INCONCLUSIVE: the bundle download did not succeed here, so the /-write path never ran"
+  sed -n 's/^/  dev.log: /p' "$WORK/dev.log" | grep -i dashboard | head -3
+else
+  echo "INCONCLUSIVE: dev mode neither downloaded nor reported a failure; /-write path unverified"
+fi
 
 echo "compiled binary smoke test passed"
