@@ -742,9 +742,14 @@ failing suites, four of them dying before their engine finished booting, all SIG
 better-sqlite3 11 finalizes a prepared statement after its Node environment is gone, which Node 24
 asserts on where earlier versions no-oped. It is GC-timing dependent, so only some processes died -
 which is what made it read as flakiness rather than a version problem. Nothing local could have
-caught it: this box runs Node 22, where all 442 pass, while `release.yml` and
-`publish-judge-core.yml` both build on 24. Fixed by moving to better-sqlite3 12, whose prebuilds
-cover Node 24.
+caught it, because this box runs Node 22, where all 442 pass. Fixed by moving to better-sqlite3 12,
+whose prebuilds cover Node 24.
+
+Worth being precise about the blast radius, having first written it down too broadly: this reaches
+anything running the engine *under Node* - `yarn dev` through tsx, `yarn start` against `dist/`,
+and CI. It does not reach the released binary. `release.yml` ships `bun build --compile` output
+only, and `storage/db.ts` sends Bun down its `bun:sqlite` branch, which never loads better-sqlite3
+at all; the Node 24 in that workflow only runs tsup to build judge-core's `dist/`.
 
 That same run caught the registry race fix above being incomplete. Its retry loop recomputed the
 next version from `currentVersion` - a column the winner updates *after* its insert - so a loser
@@ -801,3 +806,11 @@ whitespace: `expected` was trimmed and filtered, `actual` was not, so `[" search
 matched while `["search"]` vs `[" search"]` did not. `actual` comes from the trace's own
 `tool_calls`, so the padding can just as easily sit there, and the outcome is a quietly flipped
 eval verdict rather than anything that looks like a failure. Both sides now normalize identically.
+
+The wider point behind both: the shipped binary takes `storage/db.ts`'s `bun:sqlite` branch, while
+every suite here runs under tsx and therefore exercises better-sqlite3. The driver the release
+actually uses had no coverage at all. `.github/workflows/test.yml` gains a `compiled binary` job
+that runs `bun build --compile` and `scripts/smoke-binary.sh` against the result - boot, a write
+and a read back over bun:sqlite, a malformed timestamp, a clean SIGTERM, and an assertion that dev
+mode does not write to `/`. Checked both ways: it passes on the fixed binary and fails on the
+pre-fix one with `dev mode wrote the dashboard bundle to the filesystem root`.
