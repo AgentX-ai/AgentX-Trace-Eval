@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
 from agentx import AgentX
@@ -129,8 +130,21 @@ def main() -> None:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read())
 
-    bootstrap = get_json("/api/v1/dev/bootstrap")
-    check("bootstrap endpoint returns this instance's api key", bootstrap.get("apiKey") == api_key)
+    def status_of(path: str, headers: dict | None = None) -> int:
+        req = urllib.request.Request(f"{engine_root}{path}", headers=headers or {})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status
+        except urllib.error.HTTPError as err:
+            return err.code
+
+    projects_resp = get_json("/api/v1/projects", headers=auth_headers)
+    check(
+        "projects route returns this instance's api key",
+        any(p.get("apiKey") == api_key for p in projects_resp.get("projects", [])),
+    )
+    check("projects route refuses an unauthenticated caller", status_of("/api/v1/projects") == 401)
+    check("the anonymous key handout is gone", status_of("/api/v1/dev/bootstrap") == 404)
 
     traces_resp = get_json("/api/v1/ingest/traces?limit=20", headers=auth_headers)
     check(
