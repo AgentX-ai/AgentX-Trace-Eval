@@ -10,14 +10,17 @@ import { startEngine, type TestEngine } from "./server.js";
 // of those differently is how a working install breaks on upgrade.
 
 let home: string | undefined;
+let legacyHome: string | undefined;
 const engines: TestEngine[] = [];
 
 afterAll(async () => {
   for (const engine of engines) {
     await engine.stop({ keepHome: true });
   }
-  if (home) {
-    fs.rmSync(home, { recursive: true, force: true });
+  for (const dir of [home, legacyHome]) {
+    if (dir) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
 });
 
@@ -108,4 +111,52 @@ describe("restarting against an existing database", () => {
     expect((await third.json("/api/v1/ingest/traces")).status).toBe(200);
     expect(third.log()).not.toContain("Unhandled promise rejection");
   }, 120_000);
+
+  // Multi-project shipped project_id on these three tables by adding it to their CREATE TABLE
+  // statements *and* to columnMigrations. On an install predating it the CREATE TABLE is a no-op,
+  // so only the ALTER puts the column there - and the ALTERs run after the whole CREATE TABLE
+  // block. Building the indexes inline therefore killed the boot outright with "no such column:
+  // project_id" on every upgraded database, while every fresh one was fine.
+  it("boots against a database whose tables predate project_id", async () => {
+    const first = await startEngine();
+    legacyHome = first.home;
+    await first.signal("SIGTERM");
+    expect(await first.waitForExit()).toBe(0);
+
+    // Rewind those three tables to their pre-multi-project shape: no project_id, and the narrower
+    // unique indexes that shipped alongside it.
+    const db = new Database(path.join(legacyHome, "agentx.db"));
+    db.exec(`
+      DROP INDEX IF EXISTS monitor_profiles_agent_id;
+      DROP INDEX IF EXISTS monitor_signals_pattern_key_agent_id;
+      DROP INDEX IF EXISTS prompt_versions_prompt_id_version;
+      ALTER TABLE monitor_profiles DROP COLUMN project_id;
+      ALTER TABLE monitor_signals DROP COLUMN project_id;
+      ALTER TABLE prompt_versions DROP COLUMN project_id;
+      CREATE UNIQUE INDEX monitor_profiles_agent_id ON monitor_profiles (agent_id);
+      CREATE UNIQUE INDEX monitor_signals_pattern_key_agent_id ON monitor_signals (pattern_key, agent_id);
+      CREATE UNIQUE INDEX prompt_versions_prompt_id_version ON prompt_versions (prompt_id, version);
+    `);
+    db.close();
+
+    const upgraded = await startEngine({}, { home: legacyHome });
+    engines.push(upgraded);
+    expect(upgraded.alive(), `engine died on the upgrade path:\n${upgraded.log().slice(-3000)}`).toBe(true);
+    expect(upgraded.log()).not.toContain("no such column: project_id");
+    expect((await upgraded.json("/api/v1/ingest/traces")).status).toBe(200);
+
+    // And the narrow indexes were actually widened, not left in place by a name-only IF NOT EXISTS.
+    const check = new Database(path.join(legacyHome, "agentx.db"), { readonly: true });
+    const widened = [
+      ["monitor_profiles_agent_id", 2],
+      ["monitor_signals_pattern_key_agent_id", 3],
+      ["prompt_versions_prompt_id_version", 3],
+    ] as const;
+    for (const [index, columnCount] of widened) {
+      const columns = check.prepare(`SELECT name FROM pragma_index_info(?)`).all(index) as { name: string }[];
+      expect(columns.map(c => c.name), index).toContain("project_id");
+      expect(columns.length, index).toBe(columnCount);
+    }
+    check.close();
+  }, 180_000);
 });
