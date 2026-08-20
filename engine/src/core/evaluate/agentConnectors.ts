@@ -133,7 +133,21 @@ export type AgentConnectorRequest = {
   conversationHistory?: { role: "user" | "assistant"; content: string }[];
 };
 
-export type AgentConnectorResponse = { output: string; toolCalls?: unknown; error?: string };
+// `traceId` and the token counts are optional, and everything works without them - but a
+// connector that returns them gets the same result rows an SDK-pushed run produces. Without a
+// traceId the engine cannot render the agent's execution path into the judge prompt
+// (core/evaluate/runs.ts) or link the result to its trace in the dashboard, so a connector-driven
+// run was judged blind to tool use and showed blank latency/token columns, purely because the
+// contract had nowhere to put values the caller already had.
+export type AgentConnectorResponse = {
+  output: string;
+  toolCalls?: unknown;
+  error?: string;
+  traceId?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  latencyMs?: number;
+};
 
 // Throws on any failure (network error, timeout, non-2xx, missing string `output`) - same posture
 // as callCustomEvaluator; callers (runDatasetAgainstConnector, the dashboard's test-connection
@@ -151,14 +165,39 @@ export async function callAgentConnector(
   if (!res.ok) {
     throw new Error(`Agent connector ${connector.url} responded ${res.status}`);
   }
-  const body = (await res.json()) as { output?: unknown; toolCalls?: unknown; error?: unknown };
+  const body = (await res.json()) as {
+    output?: unknown;
+    toolCalls?: unknown;
+    error?: unknown;
+    traceId?: unknown;
+    trace_id?: unknown;
+    inputTokens?: unknown;
+    input_tokens?: unknown;
+    outputTokens?: unknown;
+    output_tokens?: unknown;
+    latencyMs?: unknown;
+    latency_ms?: unknown;
+  };
   if (typeof body.output !== "string") {
     throw new Error(`Agent connector ${connector.url} response missing a string "output" field`);
   }
+  // snake_case accepted alongside camelCase: a connector is usually somebody's Python or Go
+  // service, and rejecting `trace_id` would make the field unusable for exactly the callers most
+  // likely to send it.
+  const num = (a: unknown, b: unknown): number | undefined => {
+    const v = typeof a === "number" ? a : typeof b === "number" ? b : undefined;
+    return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  };
+  const str = (a: unknown, b: unknown): string | undefined =>
+    typeof a === "string" && a ? a : typeof b === "string" && b ? b : undefined;
   return {
     output: body.output,
     toolCalls: body.toolCalls,
     error: typeof body.error === "string" ? body.error : undefined,
+    traceId: str(body.traceId, body.trace_id),
+    inputTokens: num(body.inputTokens, body.input_tokens),
+    outputTokens: num(body.outputTokens, body.output_tokens),
+    latencyMs: num(body.latencyMs, body.latency_ms),
   };
 }
 
