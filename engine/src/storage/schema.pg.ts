@@ -15,6 +15,7 @@ export const projects = pgTable("projects", {
   latencyThresholdMs: integer("latency_threshold_ms").notNull().default(20000),
   topicsEnabled: boolean("topics_enabled").notNull().default(false),
   coherenceSweepEnabled: boolean("coherence_sweep_enabled").notNull().default(true),
+  disabledBuiltinPatterns: jsonb("disabled_builtin_patterns"),
   organizationId: text("organization_id"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
 });

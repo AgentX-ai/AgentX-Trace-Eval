@@ -17,6 +17,7 @@ import {
   resolveAgentIds,
 } from "../core/monitor/agents.js";
 import { getPerformance } from "../core/monitor/performance.js";
+import { getAttentionDigest } from "../core/monitor/attention.js";
 import { createFeedback, listFeedbackForSignal } from "../core/monitor/feedback.js";
 import { generateRegex, suggestHumanFeedback, suggestExpectedResults } from "../core/monitor/suggestions.js";
 import {
@@ -131,9 +132,17 @@ agentMonitoringDashboardRouter.get("/signals", async (req: Request, res: Respons
   res.status(200).json({ signals });
 });
 
+// Overview's "Needs attention" digest - see core/monitor/attention.ts.
+agentMonitoringDashboardRouter.get("/overview/attention", async (req: Request, res: Response) => {
+  res.status(200).json(await getAttentionDigest(scopedDb(req)));
+});
+
 agentMonitoringDashboardRouter.get("/patterns", async (req: Request, res: Response) => {
-  const custom = await listPatternsWire(scopedDb(req));
-  res.status(200).json({ patterns: [...builtInPatternsWire(), ...custom] });
+  const [custom, defaults] = await Promise.all([
+    listPatternsWire(scopedDb(req)),
+    getMonitoringDefaults(scopedDb(req)),
+  ]);
+  res.status(200).json({ patterns: [...builtInPatternsWire(defaults.disabledBuiltinPatterns), ...custom] });
 });
 
 agentMonitoringDashboardRouter.post("/patterns", async (req: Request, res: Response) => {
@@ -1084,6 +1093,7 @@ agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: 
     latencyThresholdMs?: number;
     topicsEnabled?: boolean;
     coherenceSweepEnabled?: boolean;
+    disabledBuiltinPatterns?: string[];
   } = {};
   if (typeof body.coverageMode === "string") patch.coverageMode = body.coverageMode;
   if (typeof body.sampleRate === "number") patch.sampleRate = body.sampleRate;
@@ -1092,6 +1102,11 @@ agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: 
   if (typeof body.latencyThresholdMs === "number") patch.latencyThresholdMs = body.latencyThresholdMs;
   if (typeof body.topicsEnabled === "boolean") patch.topicsEnabled = body.topicsEnabled;
   if (typeof body.coherenceSweepEnabled === "boolean") patch.coherenceSweepEnabled = body.coherenceSweepEnabled;
+  if (Array.isArray(body.disabledBuiltinPatterns)) {
+    patch.disabledBuiltinPatterns = (body.disabledBuiltinPatterns as unknown[]).filter(
+      (k): k is string => typeof k === "string"
+    );
+  }
   const monitoringDefaults = await updateMonitoringDefaults(scopedDb(req), patch);
   res.status(200).json({ monitoringDefaults });
 });

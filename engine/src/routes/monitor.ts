@@ -5,6 +5,7 @@ import { validateSampleRateParam } from "../core/shared/sampleRate.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { createPattern, getPattern, listPatternsWire, legacyPayloadToConditions } from "../core/monitor/patterns.js";
 import { builtInPatternsWire } from "../core/monitor/detect.js";
+import { getMonitoringDefaults } from "../core/project/projects.js";
 import { validateConditionRegexes } from "../core/monitor/regexSafety.js";
 import { getProfile, updateProfile } from "../core/monitor/profiles.js";
 import { resolveAgentId, resolveExistingAgentId, resolveAgentIds } from "../core/monitor/agents.js";
@@ -76,8 +77,11 @@ monitorRouter.post("/patterns", async (req: Request, res: Response) => {
 });
 
 monitorRouter.get("/patterns", async (req: Request, res: Response) => {
-  const custom = await listPatternsWire(scopedDb(req));
-  res.status(200).json({ patterns: [...builtInPatternsWire(), ...custom] });
+  const [custom, defaults] = await Promise.all([
+    listPatternsWire(scopedDb(req)),
+    getMonitoringDefaults(scopedDb(req)),
+  ]);
+  res.status(200).json({ patterns: [...builtInPatternsWire(defaults.disabledBuiltinPatterns), ...custom] });
 });
 
 monitorRouter.get("/patterns/:id", async (req: Request, res: Response) => {

@@ -27,7 +27,8 @@ export const BUILT_IN_MONITOR_PATTERNS = [
 // Shared by the SDK-facing GET /monitor/patterns (routes/monitor.ts) and the dashboard-facing
 // GET /agent-monitoring/patterns (routes/agentMonitoringDashboard.ts), so the built-in list's
 // wire shape has one definition, not two hand-written copies drifting apart.
-export function builtInPatternsWire() {
+export function builtInPatternsWire(disabledKeys: string[] = []) {
+  const disabled = new Set(disabledKeys);
   return BUILT_IN_MONITOR_PATTERNS.map(p => ({
     _id: p.key,
     workspaceId: "local",
@@ -43,7 +44,9 @@ export function builtInPatternsWire() {
     excludeTerms: [] as string[],
     severity: p.severity,
     polarity: "failure" as const,
-    enabled: true,
+    // Toggleable project-wide via PUT /settings/monitoring-defaults' disabledBuiltinPatterns -
+    // readOnly refers to the pattern's definition (name/detector/severity), not its enablement.
+    enabled: !disabled.has(p.key),
     sampleRate: 1,
     readOnly: true,
   }));
@@ -66,14 +69,20 @@ function detectPiiKinds(text: string): string[] {
   return PII_CHECKS.filter(check => check.pattern.test(text)).map(check => check.kind);
 }
 
-function detectBuiltIn(trace: TraceLike & { latencyMs?: number | null }, latencyThresholdMs: number): DetectedSignal | null {
+function detectBuiltIn(
+  trace: TraceLike & { latencyMs?: number | null },
+  latencyThresholdMs: number,
+  disabledKeys: Set<string>
+): DetectedSignal | null {
   // Checked BEFORE the generic trace-error case: when a tool call fails and its exception
   // escapes the agent loop, the SDK records both (success:false on the call AND the span's own
   // error), and "which tool failed" is the more specific, actionable classification - it names
   // the root cause and feeds the tool-schema improvement loop's evidence gathering
   // (core/evaluate/toolSchemas.ts joins on this patternKey). agent-trace-error remains the
   // classification for errors with no failed tool call recorded.
-  const failedCall = (trace.toolCalls ?? []).find(call => call.success === false);
+  const failedCall = disabledKeys.has("agent-tool-failure")
+    ? undefined
+    : (trace.toolCalls ?? []).find(call => call.success === false);
   if (failedCall) {
     return {
       type: "agent_tool_failure",
@@ -84,7 +93,7 @@ function detectBuiltIn(trace: TraceLike & { latencyMs?: number | null }, latency
     };
   }
 
-  if (trace.error) {
+  if (trace.error && !disabledKeys.has("agent-trace-error")) {
     return {
       type: "agent_trace_error",
       severity: "high",
@@ -95,7 +104,7 @@ function detectBuiltIn(trace: TraceLike & { latencyMs?: number | null }, latency
   }
 
   const responseText = typeof trace.output === "string" ? trace.output.trim() : trace.output ? JSON.stringify(trace.output) : "";
-  if (!responseText) {
+  if (!responseText && !disabledKeys.has("empty-agent-response")) {
     return {
       type: "empty_agent_response",
       severity: "medium",
@@ -108,7 +117,7 @@ function detectBuiltIn(trace: TraceLike & { latencyMs?: number | null }, latency
   // numbers, separator-required phone numbers) so ids/timestamps in agent output don't
   // false-positive. An agent legitimately ECHOING data the user just provided still flags:
   // whether that's acceptable is a triage decision, not a detection one.
-  const piiKinds = detectPiiKinds(responseText);
+  const piiKinds = disabledKeys.has("pii-in-response") ? [] : detectPiiKinds(responseText);
   if (piiKinds.length > 0) {
     return {
       type: "pii_in_response",
@@ -120,7 +129,7 @@ function detectBuiltIn(trace: TraceLike & { latencyMs?: number | null }, latency
   }
 
   const latencyMs = trace.latencyMs;
-  if (latencyMs && latencyMs > latencyThresholdMs) {
+  if (latencyMs && latencyMs > latencyThresholdMs && !disabledKeys.has("latency-regression")) {
     return {
       type: "latency_regression",
       severity: "medium",
@@ -257,7 +266,10 @@ export async function runMonitorCheck(
       }
     }
   } else {
-    const builtIn = profile?.failureDetectionEnabled === false ? null : detectBuiltIn(trace, defaults.latencyThresholdMs);
+    const builtIn =
+      profile?.failureDetectionEnabled === false
+        ? null
+        : detectBuiltIn(trace, defaults.latencyThresholdMs, new Set(defaults.disabledBuiltinPatterns));
     detected = builtIn ?? (await detectCustomPatterns(db, trace, agentId, ctx.traceId ?? null));
   }
 

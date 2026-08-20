@@ -37,6 +37,10 @@ export const projects = sqliteTable("projects", {
   // manual re-run. Default true unlike topicsEnabled: coherence is bounded by the sweep's own
   // per-tick judge budget, so on-by-default doesn't risk unbounded spend.
   coherenceSweepEnabled: integer("coherence_sweep_enabled", { mode: "boolean" }).notNull().default(true),
+  // Built-in pattern keys (core/monitor/detect.ts's BUILT_IN_MONITOR_PATTERNS) this project has
+  // switched off - the pattern catalog's enable toggle for builtIn rows writes here. Empty/null
+  // means all built-ins run (the default).
+  disabledBuiltinPatterns: text("disabled_builtin_patterns", { mode: "json" }),
   // Which auth organization owns this project (AGENTX_AUTH=enabled mode). Null in disabled mode
   // and for pre-auth rows; the first owner signup claims all orgless projects.
   organizationId: text("organization_id"),

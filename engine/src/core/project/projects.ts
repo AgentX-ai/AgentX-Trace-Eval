@@ -23,6 +23,8 @@ export type ProjectRow = {
   latencyThresholdMs: number;
   topicsEnabled: boolean;
   coherenceSweepEnabled: boolean;
+  // Built-in pattern keys this project switched off (pattern catalog toggle) - null/empty = all run.
+  disabledBuiltinPatterns: string[] | null;
   // Owning auth organization (AGENTX_AUTH=enabled mode) - null in disabled mode and for pre-auth
   // rows until the first owner signup claims them (core/auth/betterAuth.ts's onUserCreated).
   organizationId: string | null;
@@ -45,6 +47,9 @@ export type MonitoringDefaults = {
   // Idle-session coherence sweep opt-OUT (default on) - see schema.sqlite.ts's
   // projects.coherenceSweepEnabled comment.
   coherenceSweepEnabled: boolean;
+  // Built-in pattern keys (detect.ts's BUILT_IN_MONITOR_PATTERNS) this project switched off via
+  // the pattern catalog's enable toggle. Everything not listed runs on all incoming traffic.
+  disabledBuiltinPatterns: string[];
 };
 
 function toMonitoringDefaultsWire(row: ProjectRow): MonitoringDefaults {
@@ -56,6 +61,7 @@ function toMonitoringDefaultsWire(row: ProjectRow): MonitoringDefaults {
     latencyThresholdMs: row.latencyThresholdMs,
     topicsEnabled: row.topicsEnabled,
     coherenceSweepEnabled: row.coherenceSweepEnabled,
+    disabledBuiltinPatterns: Array.isArray(row.disabledBuiltinPatterns) ? row.disabledBuiltinPatterns : [],
   };
 }
 
@@ -76,6 +82,7 @@ export async function createProject(db: Db, name: string, organizationId: string
     latencyThresholdMs: 20000,
     topicsEnabled: false,
     coherenceSweepEnabled: true,
+    disabledBuiltinPatterns: null,
     organizationId,
     createdAt: new Date(),
   };
@@ -185,6 +192,7 @@ export async function updateMonitoringDefaults(db: Db, patch: UpdateMonitoringDe
     latencyThresholdMs: patch.latencyThresholdMs ?? existing.latencyThresholdMs,
     topicsEnabled: patch.topicsEnabled ?? existing.topicsEnabled,
     coherenceSweepEnabled: patch.coherenceSweepEnabled ?? existing.coherenceSweepEnabled,
+    disabledBuiltinPatterns: patch.disabledBuiltinPatterns ?? existing.disabledBuiltinPatterns,
   };
   const cond = eq(db.schema.projects.id, db.projectId);
   if (db.kind === "sqlite") {
