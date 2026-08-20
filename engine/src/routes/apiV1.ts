@@ -14,6 +14,7 @@ import { otlpRouter } from "./otlp.js";
 import { getDb, withProjectId } from "../storage/db.js";
 import {
   createProject,
+  getDefaultProject,
   listProjectsWire,
   listProjectsWireForOrgs,
   resolveProjectByApiKey,
@@ -39,9 +40,17 @@ export function registerAuthRoutes(app: Express, credentialLimit: RequestHandler
 
   app.get("/api/v1/auth/config", credentialLimit, asyncHandler(async (_req, res) => {
     const mode = authMode();
+    // Disabled mode hands the default project's key straight to the dashboard so a fresh
+    // install lands on a working screen with zero setup (no paste-the-key stop). Deliberate
+    // tradeoff, documented in the README: in disabled mode anyone who can reach this port
+    // already owns the instance in practice, so gating the dashboard behind a key the same
+    // port would print anyway added a step without adding protection. Multi-user or exposed
+    // deployments use AGENTX_AUTH=enabled, where no key is ever handed out.
+    const defaultProject = mode === "disabled" ? await getDefaultProject(getDb()) : null;
     res.status(200).json({
       mode,
       needsSetup: mode === "enabled" ? await needsSetup(getDb()) : false,
+      ...(defaultProject ? { apiKey: defaultProject.apiKey } : {}),
     });
   }));
   if (authMode() === "enabled") {

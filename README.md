@@ -80,11 +80,15 @@ browser, and prints a local API key for the SDK. Prefer a container? See [Docker
 ```bash
 docker build -t agentx-selfhost .
 docker run -d -p 4700:4700 -v agentx-data:/data agentx-selfhost
-docker logs $(docker ps -lq) 2>&1 | grep "API key"   # the dashboard asks for this key
+docker logs $(docker ps -lq) 2>&1 | grep "API key"   # the key your SDK/scripts will use
 ```
 
-The dashboard (http://localhost:4700) asks for the **Default project API key** on first visit -
-the engine prints it on every start, so with a detached (`-d`) container it's in `docker logs`.
+The dashboard (http://localhost:4700) connects itself - in the default auth-disabled mode the
+engine hands the browser the Default project's API key, so there is nothing to paste. The
+`docker logs` key is what you point the SDK at (`AGENTX_API_KEY`). Deliberate tradeoff: in
+disabled mode, anyone who can reach the port gets the key, which is appropriate for local
+testing - set `AGENTX_AUTH=enabled` for multi-user or network-exposed deployments, where
+sign-in is required and no key is handed out.
 
 `/data` is where the default SQLite database and config live (`AGENTX_HOME`, see
 [Configuration](#configuration)) - mount a named volume so state survives a container recreate, or
