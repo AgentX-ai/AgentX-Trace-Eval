@@ -79,12 +79,23 @@ async function driveConnectorRun(
           // Isolated per-question, same posture as runCustomEvaluators/runOnlineEvaluators - a
           // failing connector call becomes this one question's {error}, never aborts the run.
           try {
+            const startedAt = Date.now();
             const response = await callAgentConnector(connector, { query });
+            // Everything below is optional on the wire - a connector returning only `output`
+            // behaves exactly as before. When it does return a traceId, the result links its
+            // trace like an SDK-pushed one, so the judge sees the agent's real execution path.
+            const timings = {
+              latencyMs: response.latencyMs ?? Date.now() - startedAt,
+              inputTokens: response.inputTokens,
+              outputTokens: response.outputTokens,
+            };
             return {
               idempotencyKey: nanoid(),
               questionIndex,
               input: { query },
               output: { text: response.output },
+              traceId: response.traceId,
+              timings,
             };
           } catch (err) {
             return {
