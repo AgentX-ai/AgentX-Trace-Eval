@@ -35,11 +35,8 @@ export type ApiV1Deps = {
   apiKey: RequestHandler;
 };
 
-// Auth routes mount on the app BEFORE express.json — better-auth reads the raw body itself.
 export function registerAuthRoutes(app: Express, credentialLimit: RequestHandler): void {
 
-  // /auth/config stays OURS (registered first so the wildcard never swallows it) and exists in
-  // both modes: it's how the SPA decides between login, owner setup, and no-auth.
   app.get("/api/v1/auth/config", credentialLimit, asyncHandler(async (_req, res) => {
     const mode = authMode();
     res.status(200).json({
