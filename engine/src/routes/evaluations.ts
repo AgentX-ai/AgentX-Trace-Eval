@@ -15,17 +15,20 @@ import {
   MAX_BATCH_SIZE,
 } from "../core/evaluate/runs.js";
 import { createPrompt, getPromptForSdk, listPromptsForSdk } from "../core/evaluate/prompts.js";
+import { runEvaluationAnalysis, getEvaluationAnalysisStatus, getEvaluationAnalysisRow } from "../core/evaluate/analysis.js";
 import { handleCasePreview, handleSuggestExpected, handleAddCase } from "./curationHandlers.js";
 
 // Mounted at /api/v1/custom-agent-evaluations, matching AgentX-Python's
 // EvaluationsClient._DEFAULT_BASE_URL (agentx/evaluations/client.py) so pointing the SDK at a
 // self-host instance via AGENTX_API_BASE_URL works unmodified.
 //
-// Scope for this pass (plan task #109): dataset/evaluation-settings CRUD, and the synchronous
-// per-result judge-scoring loop (init_run -> append_results -> finalize_run -> get_run). The
-// hosted SaaS's async whole-run LLM analysis (analyze_run/get_analysis_status/get_report),
-// list_models, and get_missing_results are not ported: a materially larger, separate feature
-// (durable job queue, richer report schema) left for a future pass.
+// Scope: dataset/evaluation-settings CRUD, the synchronous per-result judge-scoring loop
+// (init_run -> append_results -> finalize_run -> get_run), and whole-run analysis
+// (analyze_run/get_analysis_status/get_report), which delegates to the same core/evaluate/
+// analysis.ts as the dashboard's /evaluate/analyze routes rather than reimplementing it.
+// Synchronous here where hosted AgentX queues a durable job; see the analyze route below.
+//
+// Still not ported: list_models and get_missing_results.
 export const evaluationsRouter = asyncRouter();
 
 evaluationsRouter.post("/datasets", async (req: Request, res: Response) => {
@@ -167,6 +170,67 @@ evaluationsRouter.post("/runs/:runId/finalize", async (req: Request, res: Respon
 
 evaluationsRouter.get("/runs", async (req: Request, res: Response) => {
   res.status(200).json({ runs: await listRuns(scopedDb(req)) });
+});
+
+// Whole-run LLM analysis, on the paths AgentX-Python calls: analyze_run, get_analysis_status
+// and get_report (agentx/evaluations/client.py). These delegate to the same core/evaluate/
+// analysis.ts the dashboard's /evaluate/analyze/:id routes use - the two surfaces share one
+// implementation and one stored row, so an analysis started from the SDK is the same object the
+// Evaluate tab renders, and vice versa.
+//
+// Hosted AgentX runs this as a durable queued job: analyze returns {status: "pending"} and the
+// caller polls analyze-status. Here it is synchronous, so analyze returns only once the judges
+// are done and the first poll already reads a terminal status. The SDK's poll loop handles that
+// correctly - it checks is_terminal before sleeping - so the same client code works against
+// both. The response carries mode:"sync" to say which one answered.
+evaluationsRouter.post("/runs/:runId/analyze", async (req: Request, res: Response) => {
+  const { judges, qualityMode } = req.body ?? {};
+  const result = await runEvaluationAnalysis(scopedDb(req), req.params.runId!, {
+    judges: Array.isArray(judges)
+      ? judges.filter((j: unknown): j is { model: string } => !!j && typeof (j as { model?: unknown }).model === "string")
+      : undefined,
+    qualityMode: qualityMode === "quality_first" ? "quality_first" : "balanced",
+  });
+  if (!result) {
+    res.status(404).json({ error: "Run not found" });
+    return;
+  }
+  res.status(200).json({
+    evaluationId: result.evaluationId,
+    jobId: result.evaluationId,
+    status: result.status,
+    mode: "sync",
+    qualityMode: qualityMode === "quality_first" ? "quality_first" : "balanced",
+  });
+});
+
+evaluationsRouter.get("/runs/:runId/analyze-status", async (req: Request, res: Response) => {
+  res.status(200).json(await getEvaluationAnalysisStatus(scopedDb(req), req.params.runId!));
+});
+
+// The SDK's Report: the analysis body hoisted to the top level, alongside the run's identifiers
+// and the statistics computed when the analysis ran. 404 rather than an empty report when
+// nothing has analyzed this run - an empty report is indistinguishable from a run that scored
+// nothing, and the SDK surfaces the distinction to the caller.
+evaluationsRouter.get("/runs/:runId/report", async (req: Request, res: Response) => {
+  const db = scopedDb(req);
+  const runId = req.params.runId!;
+  const [run, row] = await Promise.all([getRun(db, runId), getEvaluationAnalysisRow(db, runId)]);
+  if (!run) {
+    res.status(404).json({ error: "Run not found" });
+    return;
+  }
+  if (!row) {
+    res.status(404).json({ error: "No analysis found for this run. POST /runs/:runId/analyze first." });
+    return;
+  }
+  res.status(200).json({
+    ...(row.analysis ?? {}),
+    runId,
+    datasetId: run.datasetId,
+    status: row.status,
+    statistics: row.statistics ?? null,
+  });
 });
 
 evaluationsRouter.get("/runs/:runId", async (req: Request, res: Response) => {

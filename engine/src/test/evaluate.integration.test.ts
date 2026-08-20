@@ -193,6 +193,49 @@ describe("evaluation run loop", () => {
     const runs = await engine.json("/api/v1/custom-agent-evaluations/runs");
     expect(JSON.stringify(runs.body)).toContain(runId);
   });
+
+  // The SDK calls analyze_run / get_analysis_status / get_report on the
+  // custom-agent-evaluations router. These lived only on /evaluate for a while, so the SDK's
+  // calls 404'd - and because the SDK swallows analyze failures and falls back to an empty
+  // report, the symptom was a run that looked like it had scored nothing rather than an error.
+  // These assertions exist to keep the three paths mounted; the judging itself is covered
+  // elsewhere and needs an API key this engine deliberately does not have.
+  describe("the SDK's analysis endpoints", () => {
+    it("serves analyze-status before anything has analyzed the run", async () => {
+      const status = await engine.json(`/api/v1/custom-agent-evaluations/runs/${runId}/analyze-status`);
+      expect(status.status, JSON.stringify(status.body)).toBe(200);
+      expect(status.body).toMatchObject({ evaluationId: runId, status: "not_started" });
+      // The SDK polls until is_terminal and reads progress.overallPercentage on the way.
+      expect(status.body).toHaveProperty("progress.overallPercentage");
+    });
+
+    it("404s the report with a reason, not the router's generic miss", async () => {
+      const report = await engine.json(`/api/v1/custom-agent-evaluations/runs/${runId}/report`);
+      expect(report.status).toBe(404);
+      // "Not found" is what an unmounted path returns. Distinguishing the two is the point:
+      // one means "analyze first", the other means the route regressed.
+      expect((report.body as { error?: string }).error).toMatch(/analyze/i);
+    });
+
+    it("404s analysis calls for a run that does not exist", async () => {
+      const analyze = await engine.json(
+        "/api/v1/custom-agent-evaluations/runs/no-such-run/analyze",
+        post({ judges: [{ model: "gpt-5.5" }] })
+      );
+      expect(analyze.status).toBe(404);
+      expect((analyze.body as { error?: string }).error).toMatch(/run not found/i);
+
+      expect((await engine.json("/api/v1/custom-agent-evaluations/runs/no-such-run/report")).status).toBe(404);
+    });
+
+    it("reports the same analysis state as the dashboard router", async () => {
+      // One implementation behind two routers: an analysis started from the SDK has to be the
+      // row the Evaluate tab renders, or the two surfaces drift.
+      const viaSdk = await engine.json(`/api/v1/custom-agent-evaluations/runs/${runId}/analyze-status`);
+      const viaDashboard = await engine.json(`/api/v1/evaluate/analyze/${runId}/status`);
+      expect(viaSdk.body).toEqual(viaDashboard.body);
+    });
+  });
 });
 
 describe("curating production traffic into a dataset", () => {
