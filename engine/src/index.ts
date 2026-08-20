@@ -4,30 +4,12 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import { requireApiKey } from "./auth/apiKey.js";
 import { asyncHandler } from "./routes/asyncRouter.js";
 import { rateLimit, CREDENTIAL_LIMIT, DATA_PLANE_LIMIT } from "./auth/rateLimit.js";
-import { ingestRouter } from "./routes/ingest.js";
-import { evaluationsRouter } from "./routes/evaluations.js";
-import { monitorRouter } from "./routes/monitor.js";
-import { agentsRouter } from "./routes/agents.js";
-import { outcomesRouter } from "./routes/outcomes.js";
-import { feedbackRouter } from "./routes/feedback.js";
-import { agentMonitoringDashboardRouter } from "./routes/agentMonitoringDashboard.js";
-import { evaluateDashboardRouter } from "./routes/evaluateDashboard.js";
-import { otlpRouter } from "./routes/otlp.js";
 import { initDb, closeDb, getDb, withProjectId } from "./storage/db.js";
-import { getDefaultProject, createProject, listProjectsWire, listProjectsWireForOrgs, listProjectRows, resolveProjectByApiKey } from "./core/project/projects.js";
+import { getDefaultProject, listProjectRows } from "./core/project/projects.js";
 import { ensureSessionBaselineJudge } from "./core/monitor/builtinEvaluators.js";
 import { ensureMetricPackConfigs, metricPackBackfillDone, markMetricPackBackfillDone } from "./core/evaluate/metricPack.js";
-import { finishMcpAuth } from "./core/evaluate/mcp.js";
-import {
-  authMode,
-  initAuth,
-  getAuth,
-  getSessionUser,
-  getUserOrganizationIds,
-  needsSetup,
-  resolveAuthSecret,
-} from "./auth/betterAuth.js";
-import { toNodeHandler } from "better-auth/node";
+import { authMode, initAuth, resolveAuthSecret } from "./auth/betterAuth.js";
+import { registerAuthRoutes, registerApiV1 } from "./routes/apiV1.js";
 import { findWebIndexHtml, downloadWebBundle } from "./web.js";
 import { startSessionSweep } from "./core/monitor/sessionSweep.js";
 import { startImprovementSweep } from "./core/evaluate/improvementSweep.js";
@@ -95,50 +77,11 @@ async function main() {
       trustedOrigins: process.env.AGENTX_TRUSTED_ORIGINS?.split(",").map(o => o.trim()).filter(Boolean),
     });
   }
-  app.get("/api/v1/auth/config", credentialLimit, asyncHandler(async (_req, res) => {
-    const mode = authMode();
-    res.status(200).json({
-      mode,
-      needsSetup: mode === "enabled" ? await needsSetup(getDb()) : false,
-    });
-  }));
-  if (authMode() === "enabled") {
-    app.all("/api/v1/auth/*", credentialLimit, toNodeHandler(getAuth()));
-  }
+
+  registerAuthRoutes(app, credentialLimit);
 
   app.use(express.json({ limit: "10mb" }));
 
-  // Remote-MCP OAuth callback (core/evaluate/mcp.ts): the consent popup's redirect target.
-  // Unauthenticated by necessity - the MCP server's authorization server redirects the USER'S
-  // BROWSER here with only code+state; state is the engine-minted session id, and the session
-  // store (15-minute TTL, in-memory) is the actual authority on what the code can do.
-  app.get("/api/v1/mcp-oauth/callback", credentialLimit, asyncHandler(async (req, res) => {
-    const code = typeof req.query.code === "string" ? req.query.code : "";
-    const state = typeof req.query.state === "string" ? req.query.state : "";
-    const fail = (message: string) =>
-      res
-        .status(400)
-        .send(`<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;padding:40px"><h3>Authorization failed</h3><p>${message.replace(/</g, "&lt;")}</p><p>Close this window and try again.</p></body>`);
-    if (!code || !state) {
-      fail(typeof req.query.error_description === "string" ? req.query.error_description : "Missing code or state");
-      return;
-    }
-    const result = await finishMcpAuth(state, code);
-    if ("error" in result) {
-      fail(result.error);
-      return;
-    }
-    res
-      .status(200)
-      .send(`<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;padding:40px"><h3>Authorized</h3><p>You can close this window - the dashboard will continue automatically.</p><script>setTimeout(function(){window.close()},800)</script></body>`);
-  }));
-
-  // Access log (method, path, status, duration) for every request. Paths in ACCESS_LOG_IGNORE
-  // are omitted so Docker/`agentx-server` health probes don't spam the log. No morgan dependency
-  // here - engine/ compiles to a single Bun binary (see package.json's `compile` script), so this
-  // stays a few plain lines instead of pulling in a package, matching every other log line in this
-  // repo (console.log/console.error, no logging framework). Registered first so it covers every
-  // request, including ones the catch-all 404 handler below ends up serving.
   const ACCESS_LOG_IGNORE = ["/health"];
   app.use((req, res, next) => {
     const start = Date.now();
@@ -149,85 +92,11 @@ async function main() {
     next();
   });
 
-  // Unauthenticated: lets `agentx-server --dev` (and the CLI's launch check) confirm the engine
-  // is actually up without needing the API key.
   app.get("/health", dataPlaneLimit, (_req, res) => res.status(200).json({ status: "ok" }));
 
-  // requireApiKey() is async too (it reads the projects table), so it can reject the same way a
-  // route handler can - see routes/asyncRouter.ts.
   const apiKey = asyncHandler(requireApiKey());
 
-  app.use("/api/v1/ingest", dataPlaneLimit, apiKey, ingestRouter);
-  app.use("/api/v1/custom-agent-evaluations", dataPlaneLimit, apiKey, evaluationsRouter);
-  app.use("/api/v1/monitor", dataPlaneLimit, apiKey, monitorRouter);
-  app.use("/api/v1/agents", dataPlaneLimit, apiKey, agentsRouter);
-  app.use("/api/v1/outcomes", dataPlaneLimit, apiKey, outcomesRouter);
-  app.use("/api/v1/feedback", dataPlaneLimit, apiKey, feedbackRouter);
-  app.use("/api/v1/agent-monitoring", dataPlaneLimit, apiKey, agentMonitoringDashboardRouter);
-  app.use("/api/v1/evaluate", dataPlaneLimit, apiKey, evaluateDashboardRouter);
-  app.use("/api/v1/otel", dataPlaneLimit, apiKey, otlpRouter);
-
-  // Guarded like GET /projects above: creating a project returns its key in full (the caller
-  // has to learn it from somewhere), so it demands the same proof - a session in enabled-auth
-  // mode, a valid existing project key in disabled mode. No rename/delete routes yet - full
-  // project-management UI is still follow-up work.
-  app.post("/api/v1/projects", credentialLimit, asyncHandler(async (req, res) => {
-    // Enabled-auth mode: creating a project requires a signed-in user, and the project is owned
-    // by their organization from birth.
-    let organizationId: string | null = null;
-    if (authMode() === "enabled") {
-      const user = await getSessionUser(req);
-      if (!user) {
-        res.status(401).json({ error: "Sign in to create a project" });
-        return;
-      }
-      const orgs = await getUserOrganizationIds(user.id);
-      if (orgs.length === 0) {
-        res.status(403).json({ error: "No organization membership" });
-        return;
-      }
-      organizationId = orgs[0] ?? null;
-    }
-    const body = req.body ?? {};
-    if (typeof body.name !== "string" || !body.name.trim()) {
-      res.status(400).json({ error: "name is required" });
-      return;
-    }
-    const project = await createProject(getDb(), body.name.trim(), organizationId);
-    // Every project ships with its system evaluators and metric-pack configs from birth.
-    await ensureSessionBaselineJudge(withProjectId(getDb(), project._id));
-    await ensureMetricPackConfigs(withProjectId(getDb(), project._id));
-    res.status(201).json({ project });
-  }));
-
-  // The frontend's project switcher's list source (AgentX-web-front's ProjectProvider). It
-  // deliberately includes every project's own apiKey so the switcher can hold each key up front
-  // and swap the x-api-key header on switch, with no separate per-project handshake.
-  app.get("/api/v1/projects", credentialLimit, asyncHandler(async (req, res) => {
-    // This route hands out project API keys, so both modes guard it. Enabled-auth: session
-    // scoped to the caller's organizations. Disabled: any valid project API key (the one the
-    // operator pasted into the dashboard, or the one printed at engine startup) unlocks the
-    // full listing - single-operator model, but no more anonymous key handout (the old
-    // /dev/bootstrap posture is gone; keys are copy-pasted, not fetched).
-    if (authMode() === "enabled") {
-      const user = await getSessionUser(req);
-      if (!user) {
-        res.status(401).json({ error: "Sign in to list projects" });
-        return;
-      }
-      const projects = await listProjectsWireForOrgs(getDb(), await getUserOrganizationIds(user.id));
-      res.status(200).json({ projects });
-      return;
-    }
-    const provided = req.header("x-api-key");
-    const caller = provided ? await resolveProjectByApiKey(getDb(), provided) : null;
-    if (!caller) {
-      res.status(401).json({ error: "Provide a valid project API key (printed at engine startup)" });
-      return;
-    }
-    const projects = await listProjectsWire(getDb());
-    res.status(200).json({ projects });
-  }));
+  registerApiV1(app, { credentialLimit, dataPlaneLimit, apiKey });
 
   // The dashboard bundle is AgentX's real, full frontend (see README's "Open source scope"), so
   // it still calls a handful of hosted-SaaS-only endpoints this engine doesn't implement
@@ -250,13 +119,7 @@ async function main() {
   }
   if (webIndexHtml) {
     const webDir = path.dirname(webIndexHtml);
-    // express.static serves real built assets (JS/CSS bundles, etc.) and calls next() for
-    // anything it doesn't find, falling through to the catch-all below.
     app.use(express.static(webDir));
-    // AgentX-web-front uses client-side routing (React Router), so a direct load of e.g.
-    // /governance?tab=observe has to still serve index.html, not 404, and let the app's own
-    // router take over from there. Registered last, after every /api/v1/* route above, so it
-    // only ever catches non-API GETs.
     app.get(/^(?!\/api).*/, (_req, res) => res.sendFile(webIndexHtml));
   }
 
