@@ -9,7 +9,7 @@ data:
   PORT: "4700"
   AGENTX_DB_URL: "postgres://postgres:postgres@postgres-trace-eval:5432/agentx"
   AGENTX_OTEL_MONITOR: "true"
-  AGENTX_MONITOR_CHILD_SPANS: "false"
+  AGENTX_MONITOR_CHILD_SPANS: "true"
   AGENTX_IMPROVEMENT_SWEEP: "true"
   AGENTX_SESSION_SWEEP: "true"
   AGENTX_AUTH: "disabled"
