@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentx-trace-eval
+  labels:
+    app.kubernetes.io/name: agentx-trace-eval
+    app.kubernetes.io/component: engine
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: agentx-trace-eval
+    app.kubernetes.io/component: engine
+  ports:
+    - name: http
+      port: 4700
+      targetPort: http
+      protocol: TCP

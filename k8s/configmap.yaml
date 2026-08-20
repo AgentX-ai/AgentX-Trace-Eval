@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentx-trace-eval-config
+  labels:
+    app.kubernetes.io/name: agentx-trace-eval
+    app.kubernetes.io/component: engine
+data:
+  PORT: "4700"
+  AGENTX_DB_URL: "postgres://postgres:postgres@postgres-trace-eval:5432/agentx"
+  AGENTX_OTEL_MONITOR: "true"
+  AGENTX_MONITOR_CHILD_SPANS: "false"
+  AGENTX_IMPROVEMENT_SWEEP: "true"
+  AGENTX_SESSION_SWEEP: "true"
+  AGENTX_AUTH: "disabled"
+  OPENAI_API_KEY: ""
+  ANTHROPIC_API_KEY: ""
+  GEMINI_API_KEY: ""
