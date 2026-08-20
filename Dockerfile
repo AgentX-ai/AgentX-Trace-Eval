@@ -50,7 +50,7 @@ RUN cd engine && bun build src/index.ts --compile --outfile /out/agentx-engine
 # an API-only image.
 #
 # Pin a specific dashboard build instead of latest:
-#   --build-arg AGENTX_WEB_URL=https://github.com/AgentX-ai/AgentX-trace-eval/releases/download/v0.1.6/agentx-web.tar.gz
+#   --build-arg AGENTX_WEB_URL=https://github.com/AgentX-ai/AgentX-trace-eval/releases/download/v0.2.0/agentx-web.tar.gz
 FROM debian:bookworm-slim AS dashboard
 ARG AGENTX_WEB_URL=https://github.com/AgentX-ai/AgentX-trace-eval/releases/latest/download/agentx-web.tar.gz
 ADD ${AGENTX_WEB_URL} /tmp/agentx-web.tar.gz
