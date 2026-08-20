@@ -133,14 +133,17 @@ async function main() {
       .send(`<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;padding:40px"><h3>Authorized</h3><p>You can close this window - the dashboard will continue automatically.</p><script>setTimeout(function(){window.close()},800)</script></body>`);
   }));
 
-  // Access log (method, path, status, duration) for every request. No morgan dependency here -
-  // engine/ compiles to a single Bun binary (see package.json's `compile` script), so this stays
-  // a few plain lines instead of pulling in a package, matching every other log line in this repo
-  // (console.log/console.error, no logging framework). Registered first so it covers every
+  // Access log (method, path, status, duration) for every request. Paths in ACCESS_LOG_IGNORE
+  // are omitted so Docker/`agentx-server` health probes don't spam the log. No morgan dependency
+  // here - engine/ compiles to a single Bun binary (see package.json's `compile` script), so this
+  // stays a few plain lines instead of pulling in a package, matching every other log line in this
+  // repo (console.log/console.error, no logging framework). Registered first so it covers every
   // request, including ones the catch-all 404 handler below ends up serving.
+  const ACCESS_LOG_IGNORE = ["/health"];
   app.use((req, res, next) => {
     const start = Date.now();
     res.on("finish", () => {
+      if (ACCESS_LOG_IGNORE.includes(req.path)) return;
       console.log(`${req.method} ${req.originalUrl} ${res.statusCode} ${Date.now() - start}ms`);
     });
     next();
