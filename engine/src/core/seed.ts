@@ -43,8 +43,9 @@ async function seedExampleMonitorDataIfEmpty(db: Db): Promise<void> {
   // example traces):
   //   1. an agentic tool-use trace: root -> LLM planning call -> tool call -> LLM answer,
   //   2. a RAG trace: root -> retrieval (kind-marked, chunk outputs) -> LLM answer,
-  //   3. a minimal flat failure trace that trips the built-in "Empty agent response" check,
-  //      so Monitor starts with one real signal in the triage queue.
+  //   3. a failure trace: the escalation tool times out and the agent returns nothing -
+  //      trips the built-in Tool-failure and Empty-agent-response checks, so Monitor starts
+  //      with real signals pointing at a trace whose timeline shows the broken step.
   // Children are sent before their root, the same order the SDK emits.
   const base = Date.now() - 10 * 60 * 1000;
   const nano = (offsetMs: number) => String((base + offsetMs) * 1_000_000);
@@ -165,19 +166,66 @@ async function seedExampleMonitorDataIfEmpty(db: Db): Promise<void> {
     );
   }
 
-  // 3. Failure: deliberately trips the built-in "Empty agent response" check. Kept flat on
-  // purpose - a minimal integration sends exactly this shape, and the point of this one is the
-  // signal it raises, not its timeline.
+  // 3. Failure: the escalation tool times out and the agent gives up with an empty response -
+  // one incident that trips two built-in checks (Tool failure + Empty agent response), the
+  // shape a real bad trace has: a full timeline showing exactly which step broke, not a bare
+  // input/output row.
   {
+    const sessionId = nanoid();
+    const root = nanoid();
+    const toolError = "Connection to helpdesk API timed out after 2000ms";
+    await ingestTrace(db, {
+      name: "LLM Call 1",
+      input: "The user asks for a human agent. Decide which tool to call.",
+      output: 'Call escalate_to_human with {"reason": "customer requested human support"}.',
+      latency_ms: 380,
+      model: "gpt-4o-mini",
+      input_tokens: 180,
+      output_tokens: 22,
+      session_id: sessionId,
+      span_id: nanoid(),
+      parent_span_id: root,
+      started_at_unix_nano: nano(120_000),
+    });
+    await ingestTrace(db, {
+      name: "escalate_to_human",
+      input: { reason: "customer requested human support" },
+      output: { error: toolError },
+      error: toolError,
+      latency_ms: 2000,
+      session_id: sessionId,
+      span_id: nanoid(),
+      parent_span_id: root,
+      started_at_unix_nano: nano(120_390),
+    });
+    const failedToolCalls = [
+      {
+        name: "escalate_to_human",
+        input: { reason: "customer requested human support" },
+        output: { error: toolError },
+        latency_ms: 2000,
+        success: false,
+      },
+    ];
     const { traceId } = await ingestTrace(db, {
       name: agent.name,
       agent_id: agent._id,
       input: "Can I speak to a human agent?",
       output: "",
-      latency_ms: 400,
+      latency_ms: 2400,
+      model: "gpt-4o-mini",
+      input_tokens: 180,
+      output_tokens: 22,
+      session_id: sessionId,
+      span_id: root,
       started_at_unix_nano: nano(120_000),
+      tool_calls: failedToolCalls,
     });
-    await runMonitorCheck(db, { input: "Can I speak to a human agent?", output: "", latencyMs: 400 }, { agentId: agent._id, traceId });
+    await runMonitorCheck(
+      db,
+      { input: "Can I speak to a human agent?", output: "", latencyMs: 2400, toolCalls: failedToolCalls },
+      { agentId: agent._id, traceId }
+    );
   }
 }
 
