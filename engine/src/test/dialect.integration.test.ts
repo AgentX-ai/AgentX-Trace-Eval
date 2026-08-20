@@ -32,6 +32,12 @@ const VOLATILE_KEYS = new Set([
   "monitoringAgentId",
   "firstSeenAt",
   "lastSeenAt",
+  // The sessions surface names the same concept firstAt/lastAt rather than firstSeenAt/
+  // lastSeenAt, so it was never masked. The two engines are started in parallel and each
+  // stamps its own wall clock, which put a few hundred milliseconds between otherwise
+  // identical sessions and failed the parity assertion at random.
+  "firstAt",
+  "lastAt",
   "seenAt",
   "evaluationSettingsId",
   "patternId",
