@@ -175,6 +175,14 @@ async function main() {
     console.log(`Dashboard sign-in is required (AGENTX_AUTH=enabled) - open the dashboard to create the first account.`);
     console.log(`Each user copies their own project's API key from the dashboard; none is printed here.`);
   } else {
+    // Yes, a credential in the log - deliberately, and only on this branch. Auth-disabled mode is
+    // single-tenant local use, where the README already says anyone who can reach the port gets
+    // this key. This banner is the ONLY place a fresh caller learns it (/api/v1/dev/bootstrap is
+    // gone), and README's `docker logs | grep "API key"`, scripts/smoke-test.sh,
+    // scripts/smoke-binary.sh and test/server.ts all read it from here. AGENTX_AUTH=enabled - the
+    // mode where a logged credential would actually matter - prints none, see the branch above.
+    // A CodeQL "clear-text logging" autofix that drops it takes CI and the documented onboarding
+    // with it; dismiss the alert instead.
     const defaultProject = await getDefaultProject(getDb());
     console.log(`Default project API key: ${defaultProject?.apiKey}`);
     console.log(`Point the SDK here with:`);

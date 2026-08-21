@@ -254,6 +254,18 @@ export AGENTX_API_BASE_URL=http://localhost:4700/api/v1
 export AGENTX_API_KEY=<printed by agentx-server on first run>
 ```
 
+Trace, Evaluate and Monitor all answer here, including the parts with no hosted equivalent yet:
+`client.evaluations.prompts`, `client.monitor.online_evaluators`, `client.outcomes`,
+`client.feedback`, and the CI gate (`run.gate(...)`).
+
+The SDK is written against the hosted API, though, so a few of its calls have no route here and
+404: `client.evaluations.list_models()`, `client.tracer.evaluate_trace()`, and the CI-run surface
+behind `client.tracer.run_eval()` (`create_ci_run`, `submit_result`, `finalize_ci_run`,
+`get_ci_run`, `get_dataset_test_cases`). Gate a self-host CI job with
+`run.gate(fail_under=..., no_regression=True)` instead - that path is fully supported. The hosted
+platform surface (`client.get_agent()`, `list_workforces()`, conversations) is out of scope here
+entirely.
+
 **OpenTelemetry** - Trace also accepts real OTLP/HTTP traces directly, no AgentX SDK required:
 
 ```bash
@@ -437,7 +449,9 @@ end-user feedback).
   fundamentally tied to AgentX's native agent config-branching system, which self-host doesn't
   have. The version-comparison and Prompt Registry features are the self-host analogs.
 - Guardrail hasn't been started.
-- Evaluate's async whole-run analysis (`analyze_run`/`get_report`) is out of scope for now.
+- Evaluate's whole-run analysis (`analyze_run`/`get_report`) works, but runs synchronously where
+  hosted AgentX queues a durable job: `analyze` returns only once the judges are done, and the
+  SDK's poll loop sees a terminal status on its first check. Long runs hold the request open.
 
 See [CHANGELOG.md](CHANGELOG.md) for the detailed, narrative build/verification history behind
 every feature above.

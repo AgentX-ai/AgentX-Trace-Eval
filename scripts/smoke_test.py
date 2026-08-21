@@ -65,14 +65,15 @@ def main() -> None:
     ).execute(answer)
     ctx.finalize()
 
-    # ctx.average_rating (public) needs liveStatistics on the finalize response, which self-host
-    # doesn't compute yet (see engine/src/routes/evaluations.ts's scope note); GET /runs/:id
-    # (also not yet SDK-public, no list_runs()/get_run() beyond the internal client) is what this
-    # engine actually returns the average on, so that's what this test checks against instead.
+    # ctx.average_rating and friends read liveStatistics off the finalize response - this engine
+    # computes it (core/evaluate/runs.ts), so the public accessors are what a real user would read.
+    check("result scored", ctx.rated_count == 1)
+    check("correct answer scored highly", ctx.average_rating is not None and ctx.average_rating >= 8)
+
+    # Run status itself has no public accessor (no list_runs()/get_run() beyond the internal
+    # client), so this one still goes through GET /runs/:id.
     info = client.evaluations._client.get_run(ctx._run.run_id)
     check("run finalized", info["status"] == "completed")
-    check("result scored", info["resultCount"] == 1)
-    check("correct answer scored highly", info["averageRating"] is not None and info["averageRating"] >= 8)
 
     print("Monitor")
     with client.tracer.trace("smoke-test-agent", monitor=True) as span2:
