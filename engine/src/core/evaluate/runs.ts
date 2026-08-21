@@ -618,6 +618,33 @@ export async function getRun(db: Db, runId: string) {
   const rated = (results as { rating: number | null }[]).filter(r => r.rating != null).map(r => r.rating as number);
   const averageRating = rated.length ? rated.reduce((a, b) => a + b, 0) / rated.length : null;
 
+  // Per-result rows for the SDK (EvaluationRunContext.results() / get_run): the scores the run
+  // produced, with questionText resolved from the dataset so a consumer doesn't need a second
+  // lookup. Additive - existing consumers of this payload only read the summary fields above.
+  const dataset = await getDatasetRow(db, run.datasetId);
+  const questions = (dataset?.questions as Array<{ main_question?: { query?: string } }> | null) ?? [];
+  const resultRows = (results as Array<Record<string, unknown>>).map(r => ({
+    questionIndex: r.questionIndex ?? null,
+    questionText:
+      typeof r.questionIndex === "number" ? questions[r.questionIndex]?.main_question?.query ?? null : null,
+    runNumber: r.runNumber ?? null,
+    input: r.input ?? null,
+    output: r.output ?? null,
+    rating: r.rating ?? null,
+    justification: r.justification ?? null,
+    traceId: r.traceId ?? null,
+    latencyMs: r.latencyMs ?? null,
+    inputTokens: r.inputTokens ?? null,
+    outputTokens: r.outputTokens ?? null,
+    vectorSimilarity: r.vectorSimilarity ?? null,
+    jaccardSimilarity: r.jaccardSimilarity ?? null,
+    bleuScore: r.bleuScore ?? null,
+    rougeScore: r.rougeScore ?? null,
+    codeScorerResults: r.codeScorerResults ?? null,
+    isSmokeTestVariant: r.isSmokeTestVariant ?? false,
+    error: r.error ?? null,
+  }));
+
   return {
     runId: run.id,
     datasetId: run.datasetId,
@@ -631,6 +658,7 @@ export async function getRun(db: Db, runId: string) {
       maxRating: rated.length ? Math.max(...rated) : null,
       ratedCount: rated.length,
     },
+    results: resultRows,
   };
 }
 
