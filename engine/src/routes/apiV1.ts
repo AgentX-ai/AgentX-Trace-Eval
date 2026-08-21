@@ -1,6 +1,7 @@
 import type { Express, RequestHandler } from "express";
 import { Router } from "express";
 import { toNodeHandler } from "better-auth/node";
+import rateLimit from "express-rate-limit";
 import { asyncHandler } from "./asyncRouter.js";
 import { ingestRouter } from "./ingest.js";
 import { evaluationsRouter } from "./evaluations.js";
@@ -76,6 +77,10 @@ export function registerAuthRoutes(app: Express, credentialLimit: RequestHandler
 }
 
 export function registerApiV1(app: Express, deps: ApiV1Deps): void {
+  const projectMutationLimit = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+  });
   const { credentialLimit, dataPlaneLimit, apiKey } = deps;
   const router = Router();
 
@@ -152,7 +157,7 @@ export function registerApiV1(app: Express, deps: ApiV1Deps): void {
   // outright rather than left to the caller's judgement: the default project, whose key is what
   // the startup log prints and the SDK docs reference, and the last remaining project, which
   // would leave the instance with no key that resolves at all.
-  router.delete("/projects/:id", credentialLimit, asyncHandler(async (req, res) => {
+  router.delete("/projects/:id", projectMutationLimit, credentialLimit, asyncHandler(async (req, res) => {
     const id = req.params.id ?? "";
     const target = id ? await getProjectRow(getDb(), id) : null;
     if (!target) {
