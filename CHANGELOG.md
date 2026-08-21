@@ -830,3 +830,68 @@ that runs `bun build --compile` and `scripts/smoke-binary.sh` against the result
 and a read back over bun:sqlite, a malformed timestamp, a clean SIGTERM, and an assertion that dev
 mode does not write to `/`. Checked both ways: it passes on the fixed binary and fails on the
 pre-fix one with `dev mode wrote the dashboard bundle to the filesystem root`.
+
+`AGENTX_AUTH=enabled` turned out to have login without tenancy. Every signup after the first was
+inserted into the first user's organization as a member, and `GET /projects` returns each project's
+raw API key so the switcher can populate itself - so the second person to sign up on a shared
+instance received working credentials for the first person's traces, datasets, evaluations and
+prompts. Nothing was misrouted at the storage layer: every domain is properly scoped by
+`db.projectId` and always was. The leak was entirely in who is allowed to *list* projects, which is
+also where keys are handed out. The suite had the behaviour pinned as correct
+(`joins a later signup to the same organization as a member`), which is why it survived.
+
+`AGENTX_TENANCY` now decides what a second signup means, and defaults to `isolated`: its own
+organization, its own starter project, no view of anyone else's. `shared` restores the old
+single-organization team server for operators who actually want it. The first signup is unchanged in
+both modes - it becomes an owner and claims every orgless project, which is what keeps enabling auth
+on a populated instance from stranding its data. Existing rows are untouched on upgrade; only new
+signups follow the setting, so an instance relying on the old behaviour sets `AGENTX_TENANCY=shared`.
+
+The starter project matters more than it looks: an organization that owns nothing has no API key,
+and the key is the only data-plane credential, so an isolated signup without one lands on a dashboard
+it cannot use. It is seeded exactly the way `POST /projects` seeds (system evaluators, metric packs)
+rather than approximately.
+
+Isolation then exposed a second-order problem the schema comments had already flagged as
+"revisit if that turns out wrong in practice": two tables are deliberately instance-wide, and both
+are written by routes that authenticate with a *project key*, not a session. Any tenant could
+therefore rewrite the shared provider keys every other tenant's judges spend against, and - the
+sharper one - rewrite a `portability_models` row's `baseUrl`, which Model Portability replays
+captured trace input against, redirecting another tenant's prompts to an endpoint of the writer's
+choosing. Writes to both are now `instanceOwnerOnly`; reads stay open, and already masked every
+stored key. The instance owner is derived rather than stored: it is the organization that owns the
+default project, which is the one row the first signup is guaranteed to have claimed, so there is no
+second source of truth and no migration.
+
+`POST /projects` also stopped picking `orgs[0]` out of an unordered membership query - the
+better-auth organization plugin lets a user create further organizations, so that would scatter
+their projects across them. It now takes the signup organization (oldest membership, ownership as
+tiebreak).
+
+The boot banner stopped printing a key when auth is enabled. It printed the default project's key
+unconditionally, which is right for the zero-setup local mode and wrong the moment the instance is
+shared: `docker logs`, a pod log or a log shipper would hand anyone who can read it a working
+data-plane credential for the instance owner's project. Disabled mode is unchanged - that printed
+key is what makes the local flow work - and `test/server.ts` already documented the enabled-mode
+behaviour as "prints no key", which had simply never been true.
+
+Verified against the real engine: a second signup gets a project list that shares neither an id nor
+a key with the first's, cannot see the first's ingested trace through its own key, and is refused
+(403) on both instance-wide write surfaces while the owner is allowed and the catalog row is checked
+afterwards to confirm nothing moved. A separate engine boots with `AGENTX_TENANCY=shared` and pins
+the opposite result, since the two modes differ only in what the second signup means and that is
+exactly the branch that rots once the default stops exercising it. 444 passed on SQLite; the
+Postgres-gated suites need `AGENTX_TEST_DB_URL` and were not run locally, so the isolated path -
+which writes more per signup than the shared one - has a Postgres case added for CI to run.
+
+Then the same thing again through the actual dashboard, because the fix is worthless if a second
+person cannot reach a sign-up form: three engines booted (isolated, shared, disabled) and driven
+over HTTP for 34 checks, then a browser against a real instance where the owner already existed.
+The visitor gets the Sign in / Create account screen, creates an account, and lands on a working
+dashboard with its own seeded starter project (7 patterns, 1 online evaluator) and its own key in
+Platform Settings; the owner's project list does not grow; clicking Clear on the instance-wide
+OpenAI key as the non-owner leaves it configured. Two strings in the dashboard bundle are now stale
+and belong to AgentX-web-front, not here: the sign-up screen still says "New accounts join this
+instance's organization as members", and the API-key panel still says self-host "has no multi-tenant
+boundary this key protects". `GET /api/v1/auth/config` now carries `tenancy` so the first of those
+can be fixed by reading it rather than by picking a different hardcoded sentence.

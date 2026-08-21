@@ -166,12 +166,21 @@ async function main() {
   // unref'd interval, so it never blocks shutdown. AGENTX_SESSION_SWEEP=false disables.
   startSessionSweep();
   startImprovementSweep();
-  const defaultProject = await getDefaultProject(getDb());
   console.log(`AgentX self-host engine listening on http://localhost:${PORT}`);
-  console.log(`Default project API key: ${defaultProject?.apiKey}`);
-  console.log(`Point the SDK here with:`);
-  console.log(`  AGENTX_API_BASE_URL=http://localhost:${PORT}/api/v1`);
-  console.log(`  AGENTX_API_KEY=${defaultProject?.apiKey}`);
+  if (authMode() === "enabled") {
+    // No key in the banner in this mode. Everyone signs in and copies their OWN project's key from
+    // the dashboard, and on a shared instance the log is not a private channel - anyone with
+    // `docker logs`, a kubectl pod log, or a log aggregator would otherwise be holding a working
+    // data-plane credential for the instance owner's project.
+    console.log(`Dashboard sign-in is required (AGENTX_AUTH=enabled) - open the dashboard to create the first account.`);
+    console.log(`Each user copies their own project's API key from the dashboard; none is printed here.`);
+  } else {
+    const defaultProject = await getDefaultProject(getDb());
+    console.log(`Default project API key: ${defaultProject?.apiKey}`);
+    console.log(`Point the SDK here with:`);
+    console.log(`  AGENTX_API_BASE_URL=http://localhost:${PORT}/api/v1`);
+    console.log(`  AGENTX_API_KEY=${defaultProject?.apiKey}`);
+  }
   // Printed in both modes, not just dev: web/ isn't committed, so a source checkout started with
   // `yarn start` (no --dev, hence no auto-download) serves the API fine and 404s every non-API
   // GET. Without this the only symptom is a bare "Cannot GET /" in the browser and nothing at all
