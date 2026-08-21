@@ -176,10 +176,10 @@ async function main() {
     console.log(`Each user copies their own project's API key from the dashboard; none is printed here.`);
   } else {
     const defaultProject = await getDefaultProject(getDb());
-    console.log(`Default project API key: ${defaultProject?.apiKey}`);
+    console.log(`Default project is ready${defaultProject ? "" : " (not found yet)"}. API keys are not printed to logs.`);
     console.log(`Point the SDK here with:`);
     console.log(`  AGENTX_API_BASE_URL=http://localhost:${PORT}/api/v1`);
-    console.log(`  AGENTX_API_KEY=${defaultProject?.apiKey}`);
+    console.log(`Retrieve the API key from the dashboard instead of logs.`);
   }
   // Printed in both modes, not just dev: web/ isn't committed, so a source checkout started with
   // `yarn start` (no --dev, hence no auto-download) serves the API fine and 404s every non-API
