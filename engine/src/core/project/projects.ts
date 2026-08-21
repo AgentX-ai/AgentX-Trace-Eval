@@ -1,7 +1,11 @@
 import { nanoid } from "nanoid";
 import { randomBytes } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, getTableColumns, is, Table } from "drizzle-orm";
+import type { AnyColumn } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+
+// Any schema table carrying a projectId - the shape deleteProject cascades over.
+type AnyProjectScopedTable = Table & { _: { columns: { projectId: AnyColumn } } };
 
 // Self-host's project registry. A project's own apiKey IS what selects it on every request - see
 // auth/apiKey.ts's requireApiKey, which resolves the incoming x-api-key against this table and
@@ -144,6 +148,29 @@ export async function getDefaultProject(db: Db): Promise<ProjectRow | null> {
       | undefined;
   }
   return row ?? null;
+}
+
+// Deleting a project must clear every project-scoped table, not just the projects row: those rows
+// are only ever reachable by project id, so anything left behind is unreachable storage that still
+// counts toward usage. The table list is read off the schema (anything with a projectId column)
+// rather than hand-maintained, so a table added later cascades without a code change here.
+export async function deleteProject(db: Db, id: string): Promise<void> {
+  const scoped = Object.values(db.schema).filter(
+    (value): value is AnyProjectScopedTable => is(value, Table) && "projectId" in getTableColumns(value)
+  );
+  for (const table of scoped) {
+    const { projectId } = getTableColumns(table);
+    if (db.kind === "sqlite") {
+      await db.db.delete(table).where(eq(projectId, id));
+    } else {
+      await db.db.delete(table).where(eq(projectId, id));
+    }
+  }
+  if (db.kind === "sqlite") {
+    await db.db.delete(db.schema.projects).where(eq(db.schema.projects.id, id));
+  } else {
+    await db.db.delete(db.schema.projects).where(eq(db.schema.projects.id, id));
+  }
 }
 
 export async function listProjectRows(db: Db): Promise<ProjectRow[]> {

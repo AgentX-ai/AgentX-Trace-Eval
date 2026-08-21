@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import Database from "better-sqlite3";
+import path from "node:path";
 import { startEngine, type TestEngine } from "./server.js";
 
 // Self-host went from one API key per instance to one key per project, and the key alone is what
@@ -127,5 +129,90 @@ describe("project isolation", () => {
     const res = await engine.request("/api/v1/ingest/traces", { apiKey: null });
     expect(res.status).toBe(401);
     await res.text();
+  });
+});
+
+// Deleting a project is the one destructive project operation, and the rows it has to clear are
+// only reachable by project id - so a miss is invisible through the API and only shows up as
+// storage that never goes away. These assert against the database file, not just the response.
+describe("project deletion", () => {
+  const projectsDb = () => new Database(path.join(engine.home, "agentx.db"), { readonly: true });
+
+  const createProject = async (name: string) => {
+    const created = await engine.json("/api/v1/projects", post({ name }, null));
+    expect(created.status).toBe(201);
+    return (created.body as { project: { _id: string; apiKey: string } }).project;
+  };
+
+  it("removes the project and every row scoped to it", async () => {
+    const doomed = await createProject("Doomed project");
+    const ingested = await engine.json(
+      "/api/v1/ingest/traces",
+      post({ name: "doomed-agent", input: "q", output: "a" }, doomed.apiKey)
+    );
+    expect(ingested.status).toBe(200);
+
+    const before = projectsDb();
+    const countIn = (db: InstanceType<typeof Database>, table: string) =>
+      (db.prepare(`select count(*) as n from ${table} where project_id = ?`).get(doomed._id) as { n: number }).n;
+    expect(countIn(before, "traces")).toBeGreaterThan(0);
+    // The engine seeds a baseline judge + metric-pack configs on create, so this is non-empty too.
+    expect(countIn(before, "evaluation_settings")).toBeGreaterThan(0);
+    before.close();
+
+    const deleted = await engine.request(`/api/v1/projects/${doomed._id}`, { method: "DELETE", apiKey: keyA });
+    expect(deleted.status).toBe(204);
+    await deleted.text();
+
+    const after = projectsDb();
+    for (const table of ["traces", "evaluation_settings", "monitor_online_evaluators", "agents"]) {
+      expect(countIn(after, table), `${table} kept rows for a deleted project`).toBe(0);
+    }
+    expect((after.prepare("select count(*) as n from projects where id = ?").get(doomed._id) as { n: number }).n).toBe(
+      0
+    );
+    after.close();
+  });
+
+  it("stops accepting the deleted project's API key", async () => {
+    const doomed = await createProject("Key revoked on delete");
+    expect((await engine.json("/api/v1/ingest/traces", { apiKey: doomed.apiKey })).status).toBe(200);
+
+    const deleted = await engine.request(`/api/v1/projects/${doomed._id}`, { method: "DELETE", apiKey: keyA });
+    expect(deleted.status).toBe(204);
+    await deleted.text();
+
+    const res = await engine.request("/api/v1/ingest/traces", { apiKey: doomed.apiKey });
+    expect(res.status).toBe(401);
+    await res.text();
+  });
+
+  it("refuses to delete the default project", async () => {
+    const list = await engine.json("/api/v1/projects", { apiKey: keyA });
+    const projects = (list.body as { projects: { _id: string; isDefault?: boolean }[] }).projects;
+    const fallback = projects.find(p => p.isDefault);
+    expect(fallback, "no default project to test against").toBeTruthy();
+
+    const res = await engine.json(`/api/v1/projects/${fallback!._id}`, { method: "DELETE", apiKey: keyA });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toContain("default project");
+
+    const still = await engine.json("/api/v1/projects", { apiKey: keyA });
+    expect((still.body as { projects: { _id: string }[] }).projects.map(p => p._id)).toContain(fallback!._id);
+  });
+
+  it("404s an unknown project id", async () => {
+    const res = await engine.json("/api/v1/projects/not-a-real-project", { method: "DELETE", apiKey: keyA });
+    expect(res.status).toBe(404);
+  });
+
+  it("refuses an unauthenticated delete", async () => {
+    const doomed = await createProject("Needs a key to delete");
+    const res = await engine.request(`/api/v1/projects/${doomed._id}`, { method: "DELETE", apiKey: null });
+    expect(res.status).toBe(401);
+    await res.text();
+
+    const list = await engine.json("/api/v1/projects", { apiKey: keyA });
+    expect((list.body as { projects: { _id: string }[] }).projects.map(p => p._id)).toContain(doomed._id);
   });
 });

@@ -14,7 +14,10 @@ import { otlpRouter } from "./otlp.js";
 import { getDb, withProjectId } from "../storage/db.js";
 import {
   createProject,
+  deleteProject,
   getDefaultProject,
+  getProjectRow,
+  listProjectRows,
   listProjectsWire,
   listProjectsWireForOrgs,
   resolveProjectByApiKey,
@@ -142,6 +145,49 @@ export function registerApiV1(app: Express, deps: ApiV1Deps): void {
     }
     const projects = await listProjectsWire(getDb());
     res.status(200).json({ projects });
+  }));
+
+  // Destructive and irreversible - every trace, agent, dataset, prompt and evaluation scoped to
+  // the project goes with it (core/project/projects.ts's deleteProject). Two rows are refused
+  // outright rather than left to the caller's judgement: the default project, whose key is what
+  // the startup log prints and the SDK docs reference, and the last remaining project, which
+  // would leave the instance with no key that resolves at all.
+  router.delete("/projects/:id", credentialLimit, asyncHandler(async (req, res) => {
+    const id = req.params.id ?? "";
+    const target = id ? await getProjectRow(getDb(), id) : null;
+    if (!target) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    if (authMode() === "enabled") {
+      const user = await getSessionUser(req);
+      if (!user) {
+        res.status(401).json({ error: "Sign in to delete a project" });
+        return;
+      }
+      const orgs = await getUserOrganizationIds(user.id);
+      if (!target.organizationId || !orgs.includes(target.organizationId)) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+    } else {
+      const provided = req.header("x-api-key");
+      const caller = provided ? await resolveProjectByApiKey(getDb(), provided) : null;
+      if (!caller) {
+        res.status(401).json({ error: "Provide a valid project API key (printed at engine startup)" });
+        return;
+      }
+    }
+    if (target.isDefault) {
+      res.status(400).json({ error: "The default project cannot be deleted" });
+      return;
+    }
+    if ((await listProjectRows(getDb())).length <= 1) {
+      res.status(400).json({ error: "Cannot delete the only remaining project" });
+      return;
+    }
+    await deleteProject(getDb(), id);
+    res.status(204).end();
   }));
 
   router.use("/ingest", dataPlaneLimit, apiKey, ingestRouter);

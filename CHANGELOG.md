@@ -830,3 +830,30 @@ that runs `bun build --compile` and `scripts/smoke-binary.sh` against the result
 and a read back over bun:sqlite, a malformed timestamp, a clean SIGTERM, and an assertion that dev
 mode does not write to `/`. Checked both ways: it passes on the fixed binary and fails on the
 pre-fix one with `dev mode wrote the dashboard bundle to the filesystem root`.
+
+---
+
+Projects could be created and switched between but never removed - the API had `GET` and `POST
+/api/v1/projects` and nothing else, so a mistyped project was permanent. `DELETE
+/api/v1/projects/:id` closes that gap.
+
+The interesting part is the cascade. A project's rows live across 29 tables and are only ever
+reachable by project id, so deleting just the `projects` row leaves storage that nothing can read
+and nothing will ever collect. Rather than hand-listing those tables (a list that silently rots the
+next time one is added), `deleteProject` derives them from the schema itself - every table with a
+`projectId` column - so a new table cascades without anyone remembering this function exists.
+
+Two deletions are refused outright: the default project, whose key is what the startup log prints
+and the SDK docs reference, and the last remaining project, which would leave no key that resolves
+at all. The second is defensive rather than routine - the default guard normally fires first - but
+it is reachable on an instance whose `is_default` flag was never set, which is a state
+`getDefaultProject` already contemplates by returning null.
+
+Verified in `projects.integration.test.ts` against the real engine and its real SQLite file, not
+just the API surface: a project is created, a trace ingested into it, then deleted, and the test
+asserts directly against the database that `traces`, `evaluation_settings`,
+`monitor_online_evaluators` and `agents` all dropped to zero rows for that id - plus that the
+deleted project's API key stops authenticating, that the default project is refused with a 400,
+that an unknown id 404s, and that an unauthenticated delete is rejected without removing anything.
+The cascade assertion was checked both ways: with the table loop disabled it fails with `traces
+kept rows for a deleted project: expected 1 to be +0`.
