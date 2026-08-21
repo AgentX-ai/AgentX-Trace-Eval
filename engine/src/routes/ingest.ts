@@ -11,6 +11,24 @@ import {
 } from "../core/trace/ingest.js";
 import { runMonitorCheck } from "../core/monitor/detect.js";
 import { evaluateTraceAgainst } from "../core/evaluate/runs.js";
+import { traceQuota } from "../core/shared/usage.js";
+import { and, eq, gte, isNull, sql } from "drizzle-orm";
+import type { Db } from "../storage/db.js";
+
+async function countTracesToday(db: Db): Promise<number> {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const cond = and(
+    eq(db.schema.traces.projectId, db.projectId),
+    gte(db.schema.traces.createdAt, dayStart),
+    isNull(db.schema.traces.parentSpanId)
+  );
+  const rows =
+    db.kind === "sqlite"
+      ? db.db.select({ n: sql<number>`count(*)` }).from(db.schema.traces).where(cond).all()
+      : await db.db.select({ n: sql<number>`count(*)` }).from(db.schema.traces).where(cond);
+  return Number(rows[0]?.n ?? 0);
+}
 import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
 import { runCustomEvaluators } from "../core/monitor/customEvaluators.js";
 import { runClassification } from "../core/monitor/topics.js";
@@ -32,6 +50,19 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
     res.status(422).json({ error: "Invalid trace payload", details: parsed.error.flatten() });
     return;
   }
+  // Daily trace quota (unset = unlimited; see core/shared/usage.ts). Child spans of an
+  // already-counted interaction ride free - the quota is about interactions, not tree size.
+  const quota = traceQuota();
+  if (quota !== null && !parsed.data.parent_span_id) {
+    const used = await countTracesToday(scopedDb(req));
+    if (used >= quota) {
+      res.status(429).json({
+        error: `Daily trace quota reached (${quota}/day for this project). Quota resets at midnight; raise AGENTX_QUOTA_TRACES_PER_DAY to change the ceiling.`,
+      });
+      return;
+    }
+  }
+
   const { traceId, agentId, deduped } = await ingestTrace(scopedDb(req), parsed.data);
 
   // trace_id is the one field send_trace_sync() reads; `deduped` lets a re-sync importer

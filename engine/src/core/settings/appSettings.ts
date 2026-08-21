@@ -1,10 +1,23 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { isMultiTenant } from "../../auth/mode.js";
+import { currentTenancy } from "../../auth/requestContext.js";
 
-// Singleton row (LLM provider keys today) - one instance-wide config, not per-user/per-workspace,
-// matching self-host's single-tenant model everywhere else. Plaintext (see schema.sqlite.ts's
-// appSettings comment for why that's not a gap here).
+// LLM provider keys. Single-tenant modes use one instance-wide row ("default"). Multi-tenant
+// (AGENTX_MULTI_TENANT=true, the cloud posture) resolves a per-organization row instead -
+// id "org:<orgId>", the org coming from the request's tenancy context (auth/requestContext.ts)
+// - so every tenant brings its own keys and one tenant's judge spend can never ride another's.
+// The "default" row also carries instance-wide bookkeeping (auth secret, metric-pack markers)
+// via its own accessors; only the key get/update below is org-resolved.
 const SETTINGS_ROW_ID = "default";
+
+function settingsRowId(): string {
+  if (isMultiTenant()) {
+    const { organizationId } = currentTenancy();
+    if (organizationId) return `org:${organizationId}`;
+  }
+  return SETTINGS_ROW_ID;
+}
 
 export type AppSettings = {
   openaiApiKey: string | null;
@@ -15,7 +28,7 @@ export type AppSettings = {
 type AppSettingsRow = AppSettings & { id: string; updatedAt: Date };
 
 async function getRow(db: Db): Promise<AppSettingsRow | undefined> {
-  const cond = eq(db.schema.appSettings.id, SETTINGS_ROW_ID);
+  const cond = eq(db.schema.appSettings.id, settingsRowId());
   return db.kind === "sqlite"
     ? (db.db.select().from(db.schema.appSettings).where(cond).all()[0] as AppSettingsRow | undefined)
     : ((await db.db.select().from(db.schema.appSettings).where(cond))[0] as AppSettingsRow | undefined);
@@ -42,10 +55,10 @@ export async function updateAppSettings(
     anthropicApiKey: "anthropicApiKey" in patch ? patch.anthropicApiKey || null : (existing?.anthropicApiKey ?? null),
     geminiApiKey: "geminiApiKey" in patch ? patch.geminiApiKey || null : (existing?.geminiApiKey ?? null),
   };
-  const row = { id: SETTINGS_ROW_ID, ...next, updatedAt: new Date() };
+  const row = { id: settingsRowId(), ...next, updatedAt: new Date() };
 
   if (existing) {
-    const cond = eq(db.schema.appSettings.id, SETTINGS_ROW_ID);
+    const cond = eq(db.schema.appSettings.id, settingsRowId());
     if (db.kind === "sqlite") {
       await db.db.update(db.schema.appSettings).set(row).where(cond);
     } else {

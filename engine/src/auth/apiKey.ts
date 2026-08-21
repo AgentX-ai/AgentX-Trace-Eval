@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { getDb, withProjectId } from "../storage/db.js";
 import { resolveProjectByApiKey } from "../core/project/projects.js";
+import { runWithTenancy } from "./requestContext.js";
 
 // Multi-project support (core/project/projects.ts): self-host used to have exactly one API key
 // for the whole instance (no login, no workspace model - deliberately simple). Now each project
@@ -31,7 +32,10 @@ export function requireApiKey() {
       return;
     }
     req.projectId = project.id;
-    next();
+    // Tenancy context for everything downstream of this request, including the async passes
+    // that outlive the response (see requestContext.ts). next() runs inside the ALS scope so
+    // the whole continuation inherits it.
+    runWithTenancy({ projectId: project.id, organizationId: project.organizationId ?? null }, () => next());
   };
 }
 

@@ -22,13 +22,18 @@ import {
 import { ensureSessionBaselineJudge } from "../core/monitor/builtinEvaluators.js";
 import { ensureMetricPackConfigs } from "../core/evaluate/metricPack.js";
 import { finishMcpAuth } from "../core/evaluate/mcp.js";
+import { authOrgRouter } from "./authOrg.js";
+import { adminRouter } from "./admin.js";
 import {
   authMode,
+  enabledSocialProviders,
   getAuth,
   getSessionUser,
   getUserOrganizationIds,
   needsSetup,
+  verificationRequired,
 } from "../auth/betterAuth.js";
+import { mailerConfigured } from "../auth/mailer.js";
 
 export type ApiV1Deps = {
   credentialLimit: RequestHandler;
@@ -51,6 +56,15 @@ export function registerAuthRoutes(app: Express, credentialLimit: RequestHandler
       mode,
       needsSetup: mode === "enabled" ? await needsSetup(getDb()) : false,
       ...(defaultProject ? { apiKey: defaultProject.apiKey } : {}),
+      // Enabled-mode capabilities the auth screens render from: which social buttons to show,
+      // whether "Forgot password?" works (needs a mailer), whether signup requires verification.
+      ...(mode === "enabled"
+        ? {
+            socialProviders: enabledSocialProviders(),
+            emailEnabled: mailerConfigured(),
+            verificationRequired: verificationRequired(),
+          }
+        : {}),
     });
   }));
   if (authMode() === "enabled") {
@@ -136,6 +150,13 @@ export function registerApiV1(app: Express, deps: ApiV1Deps): void {
   router.use("/agents", dataPlaneLimit, apiKey, agentsRouter);
   router.use("/outcomes", dataPlaneLimit, apiKey, outcomesRouter);
   router.use("/feedback", dataPlaneLimit, apiKey, feedbackRouter);
+  // Account-plane org/membership routes: session-authenticated, enabled mode only (mounting in
+  // disabled mode would just 401 everything - there are no sessions to authenticate).
+  if (authMode() === "enabled") {
+    router.use("/auth-org", credentialLimit, authOrgRouter);
+  }
+  // Operator admin (inert without AGENTX_ADMIN_TOKEN - see routes/admin.ts).
+  router.use("/admin", credentialLimit, adminRouter);
   router.use("/agent-monitoring", dataPlaneLimit, apiKey, agentMonitoringDashboardRouter);
   router.use("/evaluate", dataPlaneLimit, apiKey, evaluateDashboardRouter);
   router.use("/otel", dataPlaneLimit, apiKey, otlpRouter);

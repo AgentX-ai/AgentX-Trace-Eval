@@ -54,7 +54,7 @@ describe("AGENTX_AUTH=enabled", () => {
   it("reports the mode and that setup is still pending", async () => {
     const config = await engine.json("/api/v1/auth/config", { apiKey: null });
     expect(config.status).toBe(200);
-    expect(config.body).toEqual({ mode: "enabled", needsSetup: true });
+    expect(config.body).toMatchObject({ mode: "enabled", needsSetup: true });
   });
 
   it("has no anonymous API-key handout at all", async () => {
@@ -85,7 +85,7 @@ describe("AGENTX_AUTH=enabled", () => {
     ownerCookie = result.cookie;
 
     const config = await engine.json("/api/v1/auth/config", { apiKey: null });
-    expect(config.body).toEqual({ mode: "enabled", needsSetup: false });
+    expect(config.body).toMatchObject({ mode: "enabled", needsSetup: false });
 
     // The project that existed before auth was turned on is claimed by the new org, rather than
     // being stranded with no owner and therefore invisible to everyone.

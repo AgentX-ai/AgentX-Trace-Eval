@@ -4,6 +4,44 @@ import { eq, isNull } from "drizzle-orm";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { organization } from "better-auth/plugins";
+import { mailerConfigured, sendMailInBackground } from "./mailer.js";
+
+// Verification is an explicit opt-in on top of a working mailer.
+export function verificationRequired(): boolean {
+  return mailerConfigured() && process.env.AGENTX_REQUIRE_EMAIL_VERIFICATION === "true";
+}
+
+// Google/GitHub sign-in appear automatically when their credentials are configured - the
+// standard SaaS front door, entirely env-driven so the OSS default stays credential-free.
+export function enabledSocialProviders(): string[] {
+  const providers: string[] = [];
+  if (process.env.AGENTX_GOOGLE_CLIENT_ID && process.env.AGENTX_GOOGLE_CLIENT_SECRET) providers.push("google");
+  if (process.env.AGENTX_GITHUB_CLIENT_ID && process.env.AGENTX_GITHUB_CLIENT_SECRET) providers.push("github");
+  return providers;
+}
+
+function socialProvidersFromEnv() {
+  const providers: Record<string, { clientId: string; clientSecret: string }> = {};
+  if (process.env.AGENTX_GOOGLE_CLIENT_ID && process.env.AGENTX_GOOGLE_CLIENT_SECRET) {
+    providers.google = {
+      clientId: process.env.AGENTX_GOOGLE_CLIENT_ID,
+      clientSecret: process.env.AGENTX_GOOGLE_CLIENT_SECRET,
+    };
+  }
+  if (process.env.AGENTX_GITHUB_CLIENT_ID && process.env.AGENTX_GITHUB_CLIENT_SECRET) {
+    providers.github = {
+      clientId: process.env.AGENTX_GITHUB_CLIENT_ID,
+      clientSecret: process.env.AGENTX_GITHUB_CLIENT_SECRET,
+    };
+  }
+  return providers;
+}
+import { isMultiTenant } from "./mode.js";
+import { withProjectId } from "../storage/db.js";
+import { createProject } from "../core/project/projects.js";
+import { ensureSessionBaselineJudge } from "../core/monitor/builtinEvaluators.js";
+import { ensureMetricPackConfigs } from "../core/evaluate/metricPack.js";
+import { seedExampleDataIfEmpty } from "../core/seed.js";
 import { fromNodeHeaders } from "better-auth/node";
 import type { Request } from "express";
 import type { Db } from "../storage/db.js";
@@ -18,25 +56,61 @@ import type { Db } from "../storage/db.js";
 // Self-host default (AGENTX_AUTH unset/disabled) never touches any of this: initAuth simply
 // isn't called, and every route keeps today's "reachable port = trusted" posture.
 
-export type AuthMode = "enabled" | "disabled";
+export type { AuthMode } from "./mode.js";
 
-export function authMode(): AuthMode {
-  return process.env.AGENTX_AUTH === "enabled" ? "enabled" : "disabled";
-}
+export { authMode } from "./mode.js";
 
 // Typed off the concrete builder below (the generic Auth<BetterAuthOptions> and the inferred
 // instance type aren't mutually assignable in better-auth's typings).
 let authInstance: BetterAuthInstance | null = null;
 let authDb: Db | null = null;
 
-// First-user-becomes-owner (the Grafana/n8n/Portainer pattern): the first signup creates the
-// default organization, becomes its owner, and CLAIMS every orgless project - including the
-// default project an existing install migrated in with, so enabling auth on a populated instance
-// hands its data to the person who runs the setup screen, not to whoever signs up second. Later
-// signups join that same org as plain members (the single-org self-host model; cloud can layer
-// org-per-signup on top later).
-async function onUserCreated(db: Db, userId: string): Promise<void> {
+// Two tenancy models, selected by AGENTX_MULTI_TENANT (auth/mode.ts):
+//
+// Single-org (default for AGENTX_AUTH=enabled - a self-host team): first-user-becomes-owner
+// (the Grafana/n8n/Portainer pattern). The first signup creates the default organization,
+// becomes its owner, and CLAIMS every orgless project - including the default project an
+// existing install migrated in with, so enabling auth on a populated instance hands its data
+// to the person who runs the setup screen, not to whoever signs up second. Later signups join
+// that same org as plain members.
+//
+// Multi-tenant (AGENTX_MULTI_TENANT=true - the cloud/SaaS posture): EVERY signup creates its
+// own organization plus a seeded default project. Nobody ever lands in someone else's org by
+// signing up; teammates arrive only through invitations (routes/authOrg.ts).
+async function onUserCreated(db: Db, userId: string, userName?: string | null): Promise<void> {
   const now = new Date();
+
+  if (isMultiTenant()) {
+    const orgId = nanoid();
+    const display = (userName ?? "").trim();
+    const orgRow = {
+      id: orgId,
+      name: display ? `${display}'s Workspace` : "My Workspace",
+      slug: `ws-${nanoid(10).toLowerCase()}`,
+      logo: null,
+      createdAt: now,
+      metadata: null,
+    };
+    const memberRow = { id: nanoid(), organizationId: orgId, userId, role: "owner", createdAt: now };
+    if (db.kind === "sqlite") {
+      await db.db.insert(db.schema.authOrganizations).values(orgRow);
+      await db.db.insert(db.schema.authMembers).values(memberRow);
+    } else {
+      await db.db.insert(db.schema.authOrganizations).values(orgRow);
+      await db.db.insert(db.schema.authMembers).values(memberRow);
+    }
+    // A tenant's first screen should look like a working product, not four empty tabs: same
+    // per-project seeding the POST /projects route does, plus the example starter content
+    // (whose per-table "only if empty" checks are project-scoped, so each tenant gets one).
+    const project = await createProject(db, "Default", orgId);
+    const scoped = withProjectId(db, project._id);
+    // Examples first (their only-if-empty checks must see empty tables), then the system
+    // evaluators - the same order a fresh instance boots in.
+    await seedExampleDataIfEmpty(scoped).catch(() => undefined);
+    await ensureSessionBaselineJudge(scoped).catch(() => undefined);
+    await ensureMetricPackConfigs(scoped).catch(() => undefined);
+    return;
+  }
   const anyMember =
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.authMembers).limit(1).all()[0]
@@ -97,10 +171,28 @@ function buildAuth(db: Db, opts: InitAuthOpts) {
     trustedOrigins: opts.trustedOrigins,
     emailAndPassword: {
       enabled: true,
-      // Self-host has no mail transport; cloud layers verification on via its own deployment
-      // config rather than this open-source default blocking every install on SMTP setup.
-      requireEmailVerification: false,
+      // Verification only turns on when a mailer exists AND the operator opts in - the
+      // open-source default never blocks an install on SMTP setup.
+      requireEmailVerification: verificationRequired(),
+      sendResetPassword: async ({ user, url }) => {
+        sendMailInBackground({
+          to: user.email,
+          subject: "Reset your AgentX password",
+          text: `Someone (hopefully you) asked to reset the password for ${user.email}.\n\nReset it here: ${url}\n\nIf this wasn't you, ignore this email.`,
+        });
+      },
     },
+    emailVerification: {
+      sendVerificationEmail: async ({ user, url }) => {
+        sendMailInBackground({
+          to: user.email,
+          subject: "Verify your AgentX email",
+          text: `Welcome to AgentX. Confirm this address to activate your account:\n\n${url}`,
+        });
+      },
+      sendOnSignUp: verificationRequired(),
+    },
+    socialProviders: socialProvidersFromEnv(),
     user: { modelName: "auth_user" },
     session: { modelName: "auth_session" },
     account: { modelName: "auth_account" },
@@ -109,7 +201,7 @@ function buildAuth(db: Db, opts: InitAuthOpts) {
       user: {
         create: {
           after: async user => {
-            await onUserCreated(db, user.id);
+            await onUserCreated(db, user.id, (user as { name?: string | null }).name);
           },
         },
       },

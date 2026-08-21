@@ -2,6 +2,13 @@ import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { getDb } from "../../storage/db.js";
 import { getAppSettings } from "../settings/appSettings.js";
+import { isMultiTenant } from "../../auth/mode.js";
+import { checkAndRecordJudgeCall } from "../shared/usage.js";
+
+// Multi-tenant hard rule: provider keys come only from the org's own settings row - the
+// process env belongs to the operator, and letting a tenant's judge calls fall back to it
+// would bill one party's key for another party's usage.
+const envKey = (name: string): string | null => (isMultiTenant() ? null : process.env[name] || null);
 import { getPortabilityModelRaw, type PortabilityModelRow } from "./models.js";
 import {
   callJudgeJson as callJudgeJsonShared,
@@ -44,7 +51,7 @@ let cachedOpenAIKey: string | null = null;
 let cachedOpenAIClient: OpenAI | null = null;
 async function getOpenAI(): Promise<OpenAI | null> {
   const settings = await getAppSettings(getDb());
-  const key = settings.openaiApiKey || process.env.OPENAI_API_KEY || null;
+  const key = settings.openaiApiKey || envKey("OPENAI_API_KEY");
   if (key !== cachedOpenAIKey) {
     cachedOpenAIKey = key;
     cachedOpenAIClient = key ? new OpenAI({ apiKey: key }) : null;
@@ -56,7 +63,7 @@ let cachedAnthropicKey: string | null = null;
 let cachedAnthropicClient: Anthropic | null = null;
 async function getAnthropic(): Promise<Anthropic | null> {
   const settings = await getAppSettings(getDb());
-  const key = settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY || null;
+  const key = settings.anthropicApiKey || envKey("ANTHROPIC_API_KEY");
   if (key !== cachedAnthropicKey) {
     cachedAnthropicKey = key;
     cachedAnthropicClient = key ? new Anthropic({ apiKey: key }) : null;
@@ -74,7 +81,7 @@ let cachedGeminiKey: string | null = null;
 let cachedGeminiClient: OpenAI | null = null;
 async function getGemini(): Promise<OpenAI | null> {
   const settings = await getAppSettings(getDb());
-  const key = settings.geminiApiKey || process.env.GEMINI_API_KEY || null;
+  const key = settings.geminiApiKey || envKey("GEMINI_API_KEY");
   if (key !== cachedGeminiKey) {
     cachedGeminiKey = key;
     cachedGeminiClient = key ? new OpenAI({ apiKey: key, baseURL: GEMINI_OPENAI_COMPAT_BASE_URL }) : null;
@@ -229,6 +236,9 @@ export async function callJudgeJson({
   jsonSchema: object;
   maxTokens?: number;
 }): Promise<JudgeCallResult> {
+  // Metering + daily quota, both scoped by the request's tenancy context (see
+  // core/shared/usage.ts). Every judge path in the engine funnels through here.
+  await checkAndRecordJudgeCall(model);
   const { provider, openaiClient, keyLabel, envVar } = await resolveModelRouting(model);
   if (provider === "anthropic" && !(await getAnthropic())) {
     throw new Error(

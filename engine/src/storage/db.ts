@@ -652,6 +652,16 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       project_id TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS usage_events (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      model TEXT,
+      organization_id TEXT,
+      project_id TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS usage_events_created_at ON usage_events (created_at);
+
     CREATE TABLE IF NOT EXISTS gate_results (
       id TEXT PRIMARY KEY,
       run_id TEXT NOT NULL,
@@ -891,6 +901,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN input_tokens INTEGER"],
     ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN output_tokens INTEGER"],
     ["portability_models", "ALTER TABLE portability_models ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0"],
+    ["portability_models", "ALTER TABLE portability_models ADD COLUMN organization_id TEXT"],
     ["portability_models", "ALTER TABLE portability_models ADD COLUMN base_url TEXT"],
     ["portability_models", "ALTER TABLE portability_models ADD COLUMN api_key TEXT"],
     ["evaluation_analyses", "ALTER TABLE evaluation_analyses ADD COLUMN judge_models TEXT"],
@@ -1596,6 +1607,16 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       project_id TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS usage_events (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      model TEXT,
+      organization_id TEXT,
+      project_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS usage_events_created_at ON usage_events (created_at);
+
     CREATE TABLE IF NOT EXISTS gate_results (
       id TEXT PRIMARY KEY,
       run_id TEXT NOT NULL,
@@ -1871,6 +1892,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS topics_enabled BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS coherence_sweep_enabled BOOLEAN NOT NULL DEFAULT true;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS disabled_builtin_patterns JSONB;
+    ALTER TABLE portability_models ADD COLUMN IF NOT EXISTS organization_id TEXT;
     ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'trace';
     ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS idle_seconds INTEGER NOT NULL DEFAULT 120;
     ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS builtin_key TEXT;

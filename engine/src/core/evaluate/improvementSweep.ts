@@ -2,6 +2,7 @@ import { nanoid } from "nanoid";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { getDb, withProjectId } from "../../storage/db.js";
+import { runWithTenancy } from "../../auth/requestContext.js";
 import { listProjectRows } from "../project/projects.js";
 import {
   listPromptRows,
@@ -193,10 +194,14 @@ export async function sweepImprovementsOnce(scoped?: Db): Promise<{ created: num
   let created = 0;
   const base = getDb();
   const projects = scoped ? null : await listProjectRows(base);
+  const orgByProject = new Map((projects ?? []).map(p => [p.id, (p as { organizationId?: string | null }).organizationId ?? null]));
   const dbs: Db[] = scoped ? [scoped] : (projects ?? []).map(p => withProjectId(base, p.id));
 
   for (const db of dbs) {
     if (created >= MAX_NEW_PROPOSALS_PER_SWEEP) break;
+    // Tenancy context for judge calls made below - same reason sessionSweep.ts wraps its
+    // per-project body (multi-tenant key resolution happens outside any request here).
+    await runWithTenancy({ projectId: db.projectId, organizationId: orgByProject.get(db.projectId) ?? null }, async () => {
     const existing = (await listImprovementProposals(db)).map(w => ({
       ...w,
       createdAt: new Date(w.createdAt),
@@ -293,6 +298,7 @@ export async function sweepImprovementsOnce(scoped?: Db): Promise<{ created: num
         console.error(`Improvement sweep (prompt ${prompt.name}) failed:`, err instanceof Error ? err.message : err);
       }
     }
+    });
   }
   return { created };
 }

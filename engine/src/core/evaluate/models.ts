@@ -1,6 +1,16 @@
 import { and, eq, ne } from "drizzle-orm";
 import OpenAI from "openai";
 import type { Db } from "../../storage/db.js";
+import { isMultiTenant } from "../../auth/mode.js";
+import { currentTenancy } from "../../auth/requestContext.js";
+
+// Multi-tenant visibility: the global seeded catalog (organizationId null) is shared read-only
+// defaults; each org additionally sees and manages its own rows. Single-tenant modes see and
+// manage everything (org is null everywhere).
+function tenantOrgId(): string | null {
+  if (!isMultiTenant()) return null;
+  return currentTenancy().organizationId ?? null;
+}
 import { maskSecret } from "../shared/maskSecret.js";
 
 // Model Portability's candidate models + $/M-token pricing - dashboard-editable
@@ -34,6 +44,7 @@ export type PortabilityModel = {
 
 export type PortabilityModelRow = {
   id: string;
+  organizationId?: string | null;
   provider: "openai" | "anthropic" | "gemini" | "custom";
   label: string;
   pricePerMInputTokens: number;
@@ -65,11 +76,15 @@ function toWire(row: PortabilityModelRow): PortabilityModel {
 // Default row first (judge-model dropdowns preselect index 0 - see CreateEvaluationSettingsConfigDialog.tsx's
 // selfHostDefaultJudgeModel and AgentEvaluationAnalysisPanel.tsx's pickDiverseJudgeModel), alphabetical after that.
 export async function listPortabilityModels(db: Db): Promise<PortabilityModel[]> {
-  const rows = (
+  let rows = (
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.portabilityModels).all()
       : await db.db.select().from(db.schema.portabilityModels)
   ) as PortabilityModelRow[];
+  if (isMultiTenant()) {
+    const org = tenantOrgId();
+    rows = rows.filter(r => r.organizationId == null || r.organizationId === org);
+  }
   rows.sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.id.localeCompare(b.id));
   return rows.map(toWire);
 }
@@ -111,9 +126,14 @@ export type SavePortabilityModelInput = {
 // existing default before a create/update sets a new one. Same pattern as
 // evaluationSettings.ts's clearDefaultEvaluationSettings.
 async function clearDefaultPortabilityModel(db: Db, exceptId?: string): Promise<void> {
-  const cond = exceptId
+  let cond = exceptId
     ? and(eq(db.schema.portabilityModels.isDefault, true), ne(db.schema.portabilityModels.id, exceptId))
     : eq(db.schema.portabilityModels.isDefault, true);
+  // Multi-tenant: a tenant's default only competes with its own rows, never the global seed's.
+  if (isMultiTenant()) {
+    const org = tenantOrgId();
+    cond = org ? and(cond, eq(db.schema.portabilityModels.organizationId, org)) : cond;
+  }
   if (db.kind === "sqlite") {
     await db.db.update(db.schema.portabilityModels).set({ isDefault: false }).where(cond);
   } else {
@@ -125,6 +145,7 @@ export async function createPortabilityModel(db: Db, input: SavePortabilityModel
   const now = new Date();
   const row: PortabilityModelRow = {
     id: input.id,
+    organizationId: tenantOrgId(),
     provider: input.provider,
     label: input.label,
     pricePerMInputTokens: input.pricePerMInputTokens,
@@ -176,6 +197,10 @@ export async function updatePortabilityModel(
   if (!existingRow) {
     return null;
   }
+  // Multi-tenant: global seeded rows are read-only defaults; a tenant edits only its own.
+  if (isMultiTenant() && existingRow.organizationId !== tenantOrgId()) {
+    return null;
+  }
   const isDefault = input.isDefault ?? existingRow.isDefault;
   if (isDefault) {
     await clearDefaultPortabilityModel(db, id);
@@ -183,6 +208,7 @@ export async function updatePortabilityModel(
   const apiKey = "apiKey" in input ? input.apiKey || null : existingRow.apiKey;
   const row: PortabilityModelRow = {
     id,
+    organizationId: existingRow.organizationId ?? null,
     provider: input.provider,
     label: input.label,
     pricePerMInputTokens: input.pricePerMInputTokens,
@@ -206,6 +232,9 @@ export async function updatePortabilityModel(
 export async function deletePortabilityModel(db: Db, id: string): Promise<boolean> {
   const existing = await getPortabilityModelRaw(db, id);
   if (!existing) {
+    return false;
+  }
+  if (isMultiTenant() && existing.organizationId !== tenantOrgId()) {
     return false;
   }
   if (db.kind === "sqlite") {

@@ -1,5 +1,6 @@
 import type { Db } from "../../storage/db.js";
 import { getDb, withProjectId } from "../../storage/db.js";
+import { runWithTenancy } from "../../auth/requestContext.js";
 import { listProjectRows } from "../project/projects.js";
 import { listSessions } from "./sessions.js";
 import {
@@ -257,12 +258,18 @@ export async function sweepSessionsOnce(): Promise<{ judged: number }> {
   for (const project of projects) {
     if (judged >= MAX_JUDGED_PER_SWEEP) break;
     const db = withProjectId(baseDb, project.id);
+    // Tenancy context for the judge calls below: multi-tenant instances resolve LLM keys from
+    // the project's org settings (core/settings/appSettings.ts), and a sweep runs outside any
+    // request, so the context has to be set explicitly here.
+    await runWithTenancy(
+      { projectId: project.id, organizationId: (project as { organizationId?: string | null }).organizationId ?? null },
+      async () => {
 
     // The Session Baseline Judge (builtinEvaluators.ts) is just one of these rows now - its
     // enabled toggle replaced the old project-level coherence switch, and pausing it stops the
     // baseline judging like pausing any evaluator.
     const evaluators = (await listOnlineEvaluatorRows(db)).filter(e => e.enabled && e.scope === "session");
-    if (evaluators.length === 0) continue;
+    if (evaluators.length === 0) return;
 
     const { sessions } = await listSessions(db, CANDIDATE_WINDOW);
     const now = Date.now();
@@ -358,6 +365,8 @@ export async function sweepSessionsOnce(): Promise<{ judged: number }> {
         }
       }
     }
+      }
+    );
   }
   return { judged };
 }

@@ -391,6 +391,16 @@ export const improvementProposals = pgTable("improvement_proposals", {
   projectId: text("project_id"),
 });
 
+// See schema.sqlite.ts's usageEvents for the full comment.
+export const usageEvents = pgTable("usage_events", {
+  id: text("id").primaryKey(),
+  kind: text("kind").notNull(),
+  model: text("model"),
+  organizationId: text("organization_id"),
+  projectId: text("project_id"),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+});
+
 // See schema.sqlite.ts's gateResults for the full comment.
 export const gateResults = pgTable("gate_results", {
   id: text("id").primaryKey(),
@@ -490,6 +500,7 @@ export const promptVersions = pgTable(
 // project-scoped.
 export const portabilityModels = pgTable("portability_models", {
   id: text("id").primaryKey(),
+  organizationId: text("organization_id"),
   provider: text("provider").notNull(),
   label: text("label").notNull(),
   pricePerMInputTokens: doublePrecision("price_per_m_input_tokens").notNull(),

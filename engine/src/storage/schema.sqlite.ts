@@ -625,6 +625,18 @@ export const gateResults = sqliteTable("gate_results", {
   projectId: text("project_id"),
 });
 
+// Judge-spend ledger (core/shared/usage.ts): one row per judge LLM call, the metering unit
+// quotas and (later) billing read. Traces are deliberately NOT mirrored here - the traces
+// table already carries project_id + created_at, so trace quotas count it directly.
+export const usageEvents = sqliteTable("usage_events", {
+  id: text("id").primaryKey(),
+  kind: text("kind").notNull(),
+  model: text("model"),
+  organizationId: text("organization_id"),
+  projectId: text("project_id"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
 // One row per background sweep name (core/shared/sweepLease.ts): the multi-replica guard that
 // keeps N engine replicas sharing one database from each running the same sweep every tick.
 // Global on purpose - no project_id, a sweep iterates every project itself.
@@ -750,6 +762,9 @@ export const promptVersions = sqliteTable(
 // instance; revisit if that turns out wrong in practice.)
 export const portabilityModels = sqliteTable("portability_models", {
   id: text("id").primaryKey(),
+  // Multi-tenant scoping: null = a global seeded default (read-only for tenants); set = one
+  // organization's own catalog entry. Single-tenant modes leave this null everywhere.
+  organizationId: text("organization_id"),
   // "openai" | "anthropic" | "custom" - a custom row is any bring-your-own OpenAI-compatible
   // endpoint (vLLM, Ollama, LM Studio, ...), routed through the same "openai" call path in
   // core/evaluate/judge.ts's resolveModelRouting, just with a per-model client instead of the
