@@ -129,3 +129,17 @@ describe("project isolation", () => {
     await res.text();
   });
 });
+
+describe("where the key comes from with auth disabled", () => {
+  // A boot log is not the terminal it was written for - it gets redirected to a file, scraped by a
+  // log shipper and pasted into bug reports - so the banner prints no key even on a single-tenant
+  // instance. Disabled mode serves it to anything that can reach the port instead, which is what
+  // keeps the zero-setup flow to one line, and is where the dashboard, the SDK snippets in the
+  // README, both smoke scripts and this suite's own harness all read it from.
+  it("keeps the key out of the boot banner but still serves it on /auth/config", async () => {
+    expect(engine.log()).not.toMatch(/agtx_local_/);
+    const config = await engine.json("/api/v1/auth/config", { apiKey: null });
+    expect(config.status).toBe(200);
+    expect((config.body as { apiKey?: string }).apiKey).toBe(keyA);
+  });
+});

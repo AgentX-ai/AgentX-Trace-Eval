@@ -196,12 +196,11 @@ Then, in the browser:
 
    ```bash
    export AGENTX_API_BASE_URL=https://agentx.example.com/api/v1
-   export AGENTX_API_KEY=agtx_local_...   # this user's own project, not the boot-log key
+   export AGENTX_API_KEY=agtx_local_...   # this user's own project
    ```
 
-   With auth enabled the boot log prints no API key at all - not even the instance owner's. Keys
-   only ever come from the dashboard, to the signed-in user they belong to. (Auth-disabled mode
-   still prints the `Default` project's key, which is what makes the zero-setup local flow work.)
+   The boot log prints no API key in either mode - not even the instance owner's. With auth
+   enabled, keys only ever come from the dashboard, to the signed-in user they belong to.
 
 To verify isolation on your own instance: sign up a second throwaway account and confirm its
 project list has nothing in common with the first's.
@@ -251,14 +250,14 @@ a self-host instance:
 
 ```bash
 export AGENTX_API_BASE_URL=http://localhost:4700/api/v1
-export AGENTX_API_KEY=<printed by agentx-server on first run>
+export AGENTX_API_KEY=$(curl -s http://localhost:4700/api/v1/auth/config | jq -r .apiKey)
 ```
 
 **OpenTelemetry** - Trace also accepts real OTLP/HTTP traces directly, no AgentX SDK required:
 
 ```bash
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4700/api/v1/otel
-export OTEL_EXPORTER_OTLP_HEADERS="x-api-key=<printed by agentx-server on first run>"
+export OTEL_EXPORTER_OTLP_HEADERS="x-api-key=$(curl -s http://localhost:4700/api/v1/auth/config | jq -r .apiKey)"
 ```
 
 Both OTLP/HTTP wire formats are supported (protobuf and `application/json`, via
@@ -384,10 +383,15 @@ Once it's up:
 
 ```
 AgentX self-host engine listening on http://localhost:4700
-Local API key: agtx_local_...
+Point the SDK here with:
+  AGENTX_API_BASE_URL=http://localhost:4700/api/v1
+  AGENTX_API_KEY=$(curl -s http://localhost:4700/api/v1/auth/config | jq -r .apiKey)
+The default project's key is not printed here - Platform Settings shows the same value.
 ```
 
-`--dev` opens the dashboard in your browser automatically.
+`--dev` opens the dashboard in your browser automatically. The key is kept out of the log because
+logs get redirected, shipped and pasted into bug reports; with auth disabled the engine still
+serves it to anything that can reach the port, so the line above is all the setup there is.
 
 ### End-to-end smoke test
 

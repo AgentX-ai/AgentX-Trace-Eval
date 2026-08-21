@@ -52,7 +52,14 @@ if ! curl -fsS "http://localhost:$PORT/health" > /dev/null 2>&1; then
   exit 1
 fi
 
-API_KEY="$(grep 'Local API key' "$LOG_FILE" | awk '{print $NF}')"
+# From the endpoint, not the log: the boot banner prints no key. (This previously grepped for a
+# "Local API key" line the engine has never printed, so API_KEY silently came out empty.)
+API_KEY="$(curl -fsS "http://localhost:$PORT/api/v1/auth/config" | grep -oE 'agtx_local_[A-Za-z0-9_-]+' | head -1)"
+if [ -z "$API_KEY" ]; then
+  echo "could not read the default project API key from /api/v1/auth/config. Log:" >&2
+  cat "$LOG_FILE" >&2
+  exit 1
+fi
 
 echo "Running smoke test against http://localhost:$PORT ..."
 AGENTX_API_BASE_URL="http://localhost:$PORT/api/v1" \

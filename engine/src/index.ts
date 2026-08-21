@@ -5,7 +5,7 @@ import { requireApiKey } from "./auth/apiKey.js";
 import { asyncHandler } from "./routes/asyncRouter.js";
 import { rateLimit, CREDENTIAL_LIMIT, DATA_PLANE_LIMIT } from "./auth/rateLimit.js";
 import { initDb, closeDb, getDb, withProjectId } from "./storage/db.js";
-import { getDefaultProject, listProjectRows } from "./core/project/projects.js";
+import { listProjectRows } from "./core/project/projects.js";
 import { ensureSessionBaselineJudge } from "./core/monitor/builtinEvaluators.js";
 import { ensureMetricPackConfigs, metricPackBackfillDone, markMetricPackBackfillDone } from "./core/evaluate/metricPack.js";
 import { authMode, initAuth, resolveAuthSecret } from "./auth/betterAuth.js";
@@ -175,11 +175,15 @@ async function main() {
     console.log(`Dashboard sign-in is required (AGENTX_AUTH=enabled) - open the dashboard to create the first account.`);
     console.log(`Each user copies their own project's API key from the dashboard; none is printed here.`);
   } else {
-    const defaultProject = await getDefaultProject(getDb());
-    console.log(`Default project is ready${defaultProject ? "" : " (not found yet)"}. API keys are not printed to logs.`);
+    // No key here either, even though this mode is single-tenant by definition. A boot log is not
+    // the terminal it was written for: it gets redirected to a file, scraped by an aggregator and
+    // pasted into bug reports. Disabled mode still hands the key to any caller that can reach this
+    // port - GET /api/v1/auth/config, the same endpoint the dashboard loads it from - so the
+    // zero-setup flow survives as a one-liner rather than a copy-paste out of the scrollback.
     console.log(`Point the SDK here with:`);
     console.log(`  AGENTX_API_BASE_URL=http://localhost:${PORT}/api/v1`);
-    console.log(`Retrieve the API key from the dashboard instead of logs.`);
+    console.log(`  AGENTX_API_KEY=$(curl -s http://localhost:${PORT}/api/v1/auth/config | jq -r .apiKey)`);
+    console.log(`The default project's key is not printed here - Platform Settings shows the same value.`);
   }
   // Printed in both modes, not just dev: web/ isn't committed, so a source checkout started with
   // `yarn start` (no --dev, hence no auto-download) serves the API fine and 404s every non-API

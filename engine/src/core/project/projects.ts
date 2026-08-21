@@ -128,7 +128,7 @@ export async function resolveProjectByApiKey(db: Db, apiKey: string): Promise<Pr
   return row ?? null;
 }
 
-// The startup log's "Default project API key" source - whichever project the one-time migration
+// What GET /api/v1/auth/config serves the dashboard and the SDK in auth-disabled mode - whichever project the one-time migration
 // created first (storage/db.ts's backfillDefaultProjectSqlite/Postgres). That printed key is what
 // the operator copies into the dashboard's connect screen and the SDK; there is no endpoint that
 // hands it out anymore.

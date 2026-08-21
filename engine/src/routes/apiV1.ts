@@ -128,7 +128,7 @@ export function registerApiV1(app: Express, deps: ApiV1Deps): void {
     const provided = req.header("x-api-key");
     const caller = provided ? await resolveProjectByApiKey(getDb(), provided) : null;
     if (!caller) {
-      res.status(401).json({ error: "Provide a valid project API key (printed at engine startup)" });
+      res.status(401).json({ error: "Provide a valid project API key (see GET /api/v1/auth/config, or Platform Settings)" });
       return;
     }
     const projects = await listProjectsWire(getDb());

@@ -27,8 +27,10 @@ done
 curl -sf -o /dev/null "http://127.0.0.1:$PORT/health" || fail "never became healthy"
 echo "ok: boots and serves /health"
 
-KEY="$(grep -oE 'agtx_local_[A-Za-z0-9_-]+' "$WORK/engine.log" | head -1)"
-[ -n "$KEY" ] || fail "no API key in the boot output"
+# Not from the log - the banner deliberately prints no key. Auth-disabled mode serves it to any
+# caller on this port, which is also how the dashboard gets it.
+KEY="$(curl -sf "http://127.0.0.1:$PORT/api/v1/auth/config" | grep -oE 'agtx_local_[A-Za-z0-9_-]+' | head -1)"
+[ -n "$KEY" ] || fail "no API key from /api/v1/auth/config"
 
 # A real write through bun:sqlite, including the timestamp parsing that used to kill the process.
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/api/v1/ingest/traces" \

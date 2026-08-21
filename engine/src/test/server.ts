@@ -161,22 +161,27 @@ export async function startEngine(
     throw new Error(`engine never became healthy:\n${output}`);
   }
 
-  // Read from the boot banner rather than an endpoint: /api/v1/dev/bootstrap handed out the
-  // default key anonymously and is gone, so the startup log is now the only place a fresh caller
-  // learns it - the same thing the README tells an operator to copy.
-  // AGENTX_AUTH=enabled prints no key, and that suite signs in instead of using an ambient one.
+  // The boot banner prints no key in either mode, so read it where the dashboard does: disabled
+  // mode answers GET /api/v1/auth/config with the default project's key for any caller on this
+  // port. No polling needed - the route is registered before listen(), so /health answering above
+  // already means this one is mounted.
+  // AGENTX_AUTH=enabled returns no key there, and that suite signs in instead of using an ambient
+  // one.
   const authEnabled = env.AGENTX_AUTH === "enabled";
-  // The banner is printed after listen(), so /health can answer before it lands - wait for the
-  // line rather than reading whatever happens to be buffered.
-  const keyOf = () => /Default project API key: (agtx_[A-Za-z0-9_-]+)/.exec(output)?.[1] ?? "";
-  const keyDeadline = Date.now() + 10_000;
-  while (!keyOf() && !authEnabled && Date.now() < keyDeadline) {
-    await new Promise(r => setTimeout(r, 50));
-  }
-  const apiKey = keyOf();
-  if (!apiKey && !authEnabled) {
-    killTree("SIGKILL");
-    throw new Error(`no API key in the engine's boot output:\n${output}`);
+  let apiKey = "";
+  if (!authEnabled) {
+    // `connection: close` on purpose. The global fetch pools keep-alive sockets, and an idle one
+    // left against the engine delays its server.close() - long enough that the SIGTERM killTree
+    // sends to the whole process group takes the tsx wrapper down first, so
+    // restart.integration.test.ts reads the wrapper's 143 rather than the engine's own clean 0.
+    // That race already exists and loses occasionally under full-suite load; keeping the socket
+    // out of the pool is what stops it losing every time.
+    const res = await fetch(`${baseUrl}/api/v1/auth/config`, { headers: { connection: "close" } });
+    apiKey = res.ok ? ((await res.json()) as { apiKey?: string }).apiKey ?? "" : "";
+    if (!apiKey) {
+      killTree("SIGKILL");
+      throw new Error(`no API key from /api/v1/auth/config (HTTP ${res.status}):\n${output}`);
+    }
   }
 
   const request: TestEngine["request"] = (pathname, init = {}) => {

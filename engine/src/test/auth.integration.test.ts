@@ -91,9 +91,9 @@ describe("AGENTX_AUTH=enabled", () => {
   });
 
   it("prints no project API key in the boot banner", async () => {
-    // Disabled mode prints the default project's key for the operator to copy. Here the log is not
-    // a private channel - `docker logs`, a pod log, or a log shipper would hand a working
-    // data-plane credential for the instance owner's project to anyone who can read it.
+    // Neither mode prints one, but it matters most here: the log is not a private channel -
+    // `docker logs`, a pod log, or a log shipper would otherwise hand a working data-plane
+    // credential for the instance owner's project to anyone who can read it.
     expect(engine.log()).not.toMatch(/agtx_local_/);
   });
 

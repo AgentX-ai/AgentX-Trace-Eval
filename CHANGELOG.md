@@ -868,19 +868,39 @@ better-auth organization plugin lets a user create further organizations, so tha
 their projects across them. It now takes the signup organization (oldest membership, ownership as
 tiebreak).
 
-The boot banner stopped printing a key when auth is enabled. It printed the default project's key
-unconditionally, which is right for the zero-setup local mode and wrong the moment the instance is
-shared: `docker logs`, a pod log or a log shipper would hand anyone who can read it a working
-data-plane credential for the instance owner's project. Disabled mode is unchanged - that printed
-key is what makes the local flow work - and `test/server.ts` already documented the enabled-mode
-behaviour as "prints no key", which had simply never been true.
+The boot banner stopped printing a key at all. It printed the default project's key
+unconditionally, which is wrong the moment the instance is shared: `docker logs`, a pod log or a log
+shipper would hand anyone who can read it a working data-plane credential for the instance owner's
+project. `test/server.ts` already documented the enabled-mode behaviour as "prints no key", which
+had simply never been true.
+
+Disabled mode was left printing it at first, on the grounds that the zero-setup local flow needs it
+- but CodeQL flags the line as clear-text logging of a credential either way, and the reasoning does
+not really survive contact: a boot log is not the terminal it was written for, since it gets
+redirected to a file, scraped by an aggregator and pasted into bug reports. What makes dropping it
+cheap is that disabled mode already serves the same key to anything that can reach the port, over
+`GET /api/v1/auth/config` - that is how the dashboard loads it - so the flow stays a one-liner
+(`AGENTX_API_KEY=$(curl -s .../auth/config | jq -r .apiKey)`) instead of a copy-paste out of the
+scrollback. That endpoint is now the single source for the key everywhere it was previously scraped
+out of stdout: `test/server.ts`, `scripts/smoke-binary.sh`, `scripts/smoke-test.sh` and the README's
+SDK and OTLP snippets. `scripts/smoke-test.sh` turned out to have been broken all along - it grepped
+for a `Local API key` line the engine has never printed, so its `API_KEY` had always been empty.
+
+Two things worth recording from that switch. The harness now fetches the key with
+`connection: close`; without it the pooled keep-alive socket left against the engine delays
+`server.close()` past the point where the SIGTERM `killTree` sends to the whole process group has
+already taken the tsx wrapper down, and `restart.integration.test.ts` reads the wrapper's 143 instead
+of the engine's own clean 0. That race pre-dates this change and still loses about one full-suite run
+in three on a loaded laptop; closing the socket is only what stops it losing every time. And a disabled-mode case in `projects.integration.test.ts` now pins
+both halves at once - no key in the banner, the same key still served by `/auth/config` - since the
+banner assertion alone would pass just as well if the key stopped being reachable entirely.
 
 Verified against the real engine: a second signup gets a project list that shares neither an id nor
 a key with the first's, cannot see the first's ingested trace through its own key, and is refused
 (403) on both instance-wide write surfaces while the owner is allowed and the catalog row is checked
 afterwards to confirm nothing moved. A separate engine boots with `AGENTX_TENANCY=shared` and pins
 the opposite result, since the two modes differ only in what the second signup means and that is
-exactly the branch that rots once the default stops exercising it. 444 passed on SQLite; the
+exactly the branch that rots once the default stops exercising it. 445 passed on SQLite; the
 Postgres-gated suites need `AGENTX_TEST_DB_URL` and were not run locally, so the isolated path -
 which writes more per signup than the shared one - has a Postgres case added for CI to run.
 

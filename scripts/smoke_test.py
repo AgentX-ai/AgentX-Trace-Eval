@@ -10,7 +10,7 @@ be set. Run via scripts/smoke-test.sh, which starts and stops agentx-server arou
 
 Usage:
     AGENTX_API_BASE_URL=http://localhost:4700/api/v1 \\
-    AGENTX_API_KEY=<printed by agentx-server> \\
+    AGENTX_API_KEY=$(curl -s http://localhost:4700/api/v1/auth/config | jq -r .apiKey) \\
     python3 scripts/smoke_test.py
 """
 
