@@ -173,16 +173,6 @@
       "selfHost": true
     },
     {
-      "sdk": "client.evaluations._client.get_missing_results(run_id)",
-      "method": "GET",
-      "path": "/custom-agent-evaluations/runs/{runId}/missing-results",
-      "probe": "/custom-agent-evaluations/runs/contract-probe/missing-results",
-      "cloud": true,
-      "selfHost": false,
-      "gap": "not-ported",
-      "note": "Reached on every run: EvaluationRunContext._fetch_submitted_keys() calls it from execute()."
-    },
-    {
       "sdk": "run.gate(...) / client.evaluations.gate_run(run_id, ...)",
       "method": "GET",
       "path": "/custom-agent-evaluations/runs/{runId}/gate",
