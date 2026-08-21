@@ -13,6 +13,9 @@ data:
   AGENTX_IMPROVEMENT_SWEEP: "true"
   AGENTX_SESSION_SWEEP: "true"
   AGENTX_AUTH: "disabled"
+  # Only read when AGENTX_AUTH is "enabled": "isolated" gives every signup its own organization
+  # and projects, "shared" puts every signup in the first user's organization.
+  AGENTX_TENANCY: "isolated"
   OPENAI_API_KEY: ""
   ANTHROPIC_API_KEY: ""
   GEMINI_API_KEY: ""

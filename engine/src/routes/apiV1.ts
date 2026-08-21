@@ -25,9 +25,11 @@ import { finishMcpAuth } from "../core/evaluate/mcp.js";
 import {
   authMode,
   getAuth,
+  getPrimaryOrganizationId,
   getSessionUser,
   getUserOrganizationIds,
   needsSetup,
+  tenancyMode,
 } from "../auth/betterAuth.js";
 
 export type ApiV1Deps = {
@@ -50,6 +52,10 @@ export function registerAuthRoutes(app: Express, credentialLimit: RequestHandler
     res.status(200).json({
       mode,
       needsSetup: mode === "enabled" ? await needsSetup(getDb()) : false,
+      // Only in enabled mode, where it means something: it is what the sign-up screen needs to say
+      // truthfully what a new account gets - its own workspace, or membership of the existing one.
+      // Disabled mode's response shape is left byte-identical.
+      ...(mode === "enabled" ? { tenancy: tenancyMode() } : {}),
       ...(defaultProject ? { apiKey: defaultProject.apiKey } : {}),
     });
   }));
@@ -91,12 +97,11 @@ export function registerApiV1(app: Express, deps: ApiV1Deps): void {
         res.status(401).json({ error: "Sign in to create a project" });
         return;
       }
-      const orgs = await getUserOrganizationIds(user.id);
-      if (orgs.length === 0) {
+      organizationId = await getPrimaryOrganizationId(user.id);
+      if (!organizationId) {
         res.status(403).json({ error: "No organization membership" });
         return;
       }
-      organizationId = orgs[0] ?? null;
     }
     const body = req.body ?? {};
     if (typeof body.name !== "string" || !body.name.trim()) {

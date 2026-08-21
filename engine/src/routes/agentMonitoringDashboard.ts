@@ -1,4 +1,4 @@
-import type { Request, Response } from "express";
+import type { NextFunction, Request, Response } from "express";
 import { asyncRouter } from "./asyncRouter.js";
 import { getDb, type Db } from "../storage/db.js";
 import { scopedDb } from "../auth/apiKey.js";
@@ -69,6 +69,7 @@ import {
   testCustomModelConnection,
 } from "../core/evaluate/models.js";
 import { getAppSettings, updateAppSettings } from "../core/settings/appSettings.js";
+import { canWriteInstanceSettings } from "../auth/betterAuth.js";
 import {
   getProject,
   regenerateProjectApiKey,
@@ -926,6 +927,21 @@ agentMonitoringDashboardRouter.post("/estimate", async (req: Request, res: Respo
   res.status(200).json({ action: req.body?.action, estimatedCredits: 0 });
 });
 
+// Instance-wide rows - the shared model catalog below and the shared provider keys further down -
+// sit outside any project's scope, so with AGENTX_TENANCY=isolated a valid project key alone is not
+// enough to WRITE them: see betterAuth.ts's canWriteInstanceSettings for the reasoning. The sharp
+// edge is a catalog row's baseUrl, which Model Portability replays trace input against - rewriting
+// one would redirect another tenant's captured prompts to an endpoint of the writer's choosing.
+// Reads stay open in both cases: shared reference pricing is the point, and the wire shapes already
+// mask every stored key. A no-op outside AGENTX_AUTH=enabled, and in shared tenancy.
+const instanceOwnerOnly = async (req: Request, res: Response, next: NextFunction) => {
+  if (await canWriteInstanceSettings(getDb(), req.projectId!)) {
+    next();
+    return;
+  }
+  res.status(403).json({ error: "Instance-wide settings are managed by the instance owner" });
+};
+
 // Model portability (core/evaluate/portability.ts) - an input-only replay of a captured trace
 // against alternative models, not a full agent re-run (self-host doesn't own the agent). Explicit,
 // per-trace, user-triggered only: never runs automatically, and nothing about the *comparison
@@ -945,7 +961,7 @@ agentMonitoringDashboardRouter.get("/portability/models/unpriced", async (req: R
 
 const VALID_PROVIDERS = ["openai", "anthropic", "gemini", "custom"];
 
-agentMonitoringDashboardRouter.post("/portability/models", async (req: Request, res: Response) => {
+agentMonitoringDashboardRouter.post("/portability/models", instanceOwnerOnly, async (req: Request, res: Response) => {
   const body = req.body ?? {};
   if (typeof body.id !== "string" || !body.id.trim()) {
     res.status(400).json({ error: "id is required (the exact model string sent to the provider's API)" });
@@ -987,7 +1003,7 @@ agentMonitoringDashboardRouter.post("/portability/models", async (req: Request, 
   res.status(201).json({ model });
 });
 
-agentMonitoringDashboardRouter.put("/portability/models/:id", async (req: Request, res: Response) => {
+agentMonitoringDashboardRouter.put("/portability/models/:id", instanceOwnerOnly, async (req: Request, res: Response) => {
   const body = req.body ?? {};
   if (!VALID_PROVIDERS.includes(body.provider)) {
     res.status(400).json({ error: 'provider must be "openai", "anthropic", "gemini", or "custom"' });
@@ -1025,7 +1041,7 @@ agentMonitoringDashboardRouter.put("/portability/models/:id", async (req: Reques
   res.status(200).json({ model });
 });
 
-agentMonitoringDashboardRouter.delete("/portability/models/:id", async (req: Request, res: Response) => {
+agentMonitoringDashboardRouter.delete("/portability/models/:id", instanceOwnerOnly, async (req: Request, res: Response) => {
   const deleted = await deletePortabilityModel(scopedDb(req), req.params.id!);
   if (!deleted) {
     res.status(404).json({ error: "Model not found" });
@@ -1111,7 +1127,9 @@ agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: 
   res.status(200).json({ monitoringDefaults });
 });
 
-agentMonitoringDashboardRouter.put("/settings/llm-keys", async (req: Request, res: Response) => {
+// instanceOwnerOnly: these credentials are one row the whole instance spends against, so an
+// isolated tenant holding its own valid project key still must not be able to swap them out.
+agentMonitoringDashboardRouter.put("/settings/llm-keys", instanceOwnerOnly, async (req: Request, res: Response) => {
   const body = req.body ?? {};
   const patch: { openaiApiKey?: string | null; anthropicApiKey?: string | null; geminiApiKey?: string | null } = {};
   if ("openaiApiKey" in body) {

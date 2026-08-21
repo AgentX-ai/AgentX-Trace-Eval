@@ -20,6 +20,7 @@ browser, and prints a local API key for the SDK. Prefer a container? See [Docker
 - [Features](#features)
 - [Docker](#docker)
 - [Configuration](#configuration)
+- [Multi-user setup](#setting-up-a-multi-user-instance)
 - [SDK & OpenTelemetry](#sdk--opentelemetry)
 - [What's in this repo](#whats-in-this-repo)
 - [Building from source](#building-from-source)
@@ -120,6 +121,7 @@ Set these in the environment before starting `agentx-server`:
 | `AGENTX_IMPROVEMENT_SWEEP` | `true` | Set to `false` to disable the background sweep that auto-generates and validates improvement proposals when failure evidence crosses a threshold (the Improvement Inbox). `POST /evaluate/improve/inbox/sweep/run` still triggers one manually. |
 | `AGENTX_SESSION_SWEEP` | `true` | Set to `false` to disable the background sweep that judges idle multi-turn sessions (session-scoped Online Evaluators). `POST /agent-monitoring/session-sweep/run` still triggers one manually. |
 | `AGENTX_AUTH` | `disabled` | Set to `enabled` to require dashboard sign-in (see "Dashboard authentication" below). The default keeps the zero-setup local posture. |
+| `AGENTX_TENANCY` | `isolated` | What a *second* signup gets when `AGENTX_AUTH=enabled`. `isolated`: its own organization and its own starter project, invisible to everyone else. `shared`: it joins the first user's organization and sees its projects (the team-server posture). Ignored when auth is disabled. |
 | `AGENTX_AUTH_SECRET` | (auto-generated) | Session-signing secret for `AGENTX_AUTH=enabled`. Generated and persisted on first enabled boot if unset; set explicitly when running multiple replicas. |
 | `AGENTX_PUBLIC_URL` | - | The externally reachable base URL when running behind a proxy/domain with auth enabled (used for auth callbacks/cookies). |
 | `AGENTX_TRUSTED_ORIGINS` | - | Comma-separated extra origins allowed to make authenticated browser requests (e.g. a dev dashboard on another port). |
@@ -136,14 +138,111 @@ one operator), and the dashboard bootstraps its API key automatically. That stay
 hosting the dashboard on the internet):
 
 - The first visit shows an owner-setup screen. The first account created becomes the owner of a
-  default organization and takes over every existing project on the instance. Later signups join
-  that organization as members.
+  default organization and takes over every existing project on the instance - so enabling auth on
+  an install that already has data hands that data to whoever runs setup, not to whoever signs up
+  second.
 - Signing in is what grants the dashboard its project list (and each project's API key); the
   unauthenticated bootstrap endpoint is disabled in this mode.
 - SDK ingest is unchanged in both modes: it authenticates with project API keys, never sessions.
   Enabling or disabling auth never breaks a deployed integration.
 - Identity is standard [better-auth](https://better-auth.com) (email/password out of the box),
   stored in the same database as everything else - works on both SQLite and Postgres.
+
+#### Setting up a multi-user instance
+
+Four things to decide, then one boot. Only the first is required.
+
+| | Why |
+| --- | --- |
+| `AGENTX_AUTH=enabled` | Required. Turns on sign-in. Without it the engine hands its API key to anyone who can reach the port. |
+| `AGENTX_TENANCY` | `isolated` (default) gives every signup its own workspace; `shared` puts everyone in one. See [below](#who-sees-what-agentx_tenancy). |
+| `AGENTX_AUTH_SECRET` | Auto-generated and persisted on first boot. Set it explicitly if you run more than one replica, or sessions issued by one are rejected by the next. Any 32+ random bytes: `openssl rand -hex 32`. |
+| `AGENTX_PUBLIC_URL` | The URL people actually type, when that is not `http://localhost:4700` - behind a proxy or a domain, auth cookies and callbacks need it. |
+
+**Docker**
+
+```bash
+docker run -d -p 4700:4700 -v agentx-data:/data \
+  -e AGENTX_AUTH=enabled \
+  -e AGENTX_AUTH_SECRET="$(openssl rand -hex 32)" \
+  -e AGENTX_PUBLIC_URL=https://agentx.example.com \
+  -e OPENAI_API_KEY=sk-... \
+  agentx-selfhost
+```
+
+**Binary**
+
+```bash
+AGENTX_AUTH=enabled AGENTX_PUBLIC_URL=https://agentx.example.com agentx-server
+```
+
+**Kubernetes** - the keys are already in [`k8s/configmap.yaml`](k8s/configmap.yaml); flip
+`AGENTX_AUTH` to `"enabled"` and move `AGENTX_AUTH_SECRET` into a Secret rather than the ConfigMap.
+
+Then, in the browser:
+
+1. **Open the dashboard and create the first account.** The first visit shows an owner-setup
+   screen rather than a login form. This account becomes the **instance owner**: it owns the
+   pre-existing `Default` project, and - under isolated tenancy - it is the only account that can
+   change the instance-wide provider keys and pricing catalog. Create it yourself, before handing
+   the URL out; whoever fills this screen in gets the instance.
+2. **Set the provider keys** under Platform Settings (or pass them as env vars above). Judge
+   scoring and semantic pattern detection need them; trace ingest and phrase/regex patterns do not.
+3. **Hand out the URL.** Everyone else signs up through the same screen, which now offers *Sign in*
+   and *Create account*. Under the default isolated tenancy each new account lands in its own
+   workspace with its own starter project, and sees nothing of anyone else's.
+4. **Each person points their SDK at their own project key**, copied from Platform Settings (or
+   the project switcher) once signed in:
+
+   ```bash
+   export AGENTX_API_BASE_URL=https://agentx.example.com/api/v1
+   export AGENTX_API_KEY=agtx_local_...   # this user's own project, not the boot-log key
+   ```
+
+   With auth enabled the boot log prints no API key at all - not even the instance owner's. Keys
+   only ever come from the dashboard, to the signed-in user they belong to. (Auth-disabled mode
+   still prints the `Default` project's key, which is what makes the zero-setup local flow work.)
+
+To verify isolation on your own instance: sign up a second throwaway account and confirm its
+project list has nothing in common with the first's.
+
+Nothing about the SDK changes between auth modes - ingest authenticates with a project API key and
+never does a login flow, so turning auth on does not break an already-deployed integration.
+
+#### Who sees what: `AGENTX_TENANCY`
+
+Everything a project owns - traces, agents, datasets, evaluations, prompts, patterns - is scoped to
+that project, and a project's API key is what selects it. So the only question that decides
+isolation is which projects a signed-in user can *list*, because the project list carries each
+project's key.
+
+**`AGENTX_TENANCY=isolated` (the default)** - every signup gets its own organization and its own
+starter project. Users cannot see, or obtain a key for, anyone else's projects. This is what to run
+for a hosted deployment, or a self-host instance several people sign up on independently.
+
+**`AGENTX_TENANCY=shared`** - every signup joins the first user's organization and shares its
+projects. Choose this deliberately for a team server whose members are meant to see the same data.
+
+Two things stay instance-wide in both modes, because one machine has one of each: the provider keys
+in Platform Settings (what judge scoring spends against) and the Model Portability pricing catalog.
+Everyone can read them - the keys only ever as a masked value - but with isolated tenancy only the
+instance owner's own projects can write them. The instance owner is the organization that claimed
+the default project on first signup.
+
+`GET /api/v1/auth/config` reports the active mode (`{ mode, needsSetup, tenancy }` when auth is
+enabled), so the sign-up screen can say truthfully what a new account gets.
+
+Roles (`owner`/`member`) exist on organization membership and govern the organization surface.
+Inside an organization they are not a permission boundary: any member of an organization can use
+any of its projects, which is the point of `shared`. Isolation between *tenants* is the
+organization, not the role.
+
+#### Upgrading an instance that already ran with auth enabled
+
+Existing users, organizations, and projects are untouched - nobody loses access to anything. Only
+signups from this version onward follow `AGENTX_TENANCY`, so an instance that was relying on the old
+"everyone lands in one organization" behaviour should set `AGENTX_TENANCY=shared` explicitly to keep
+new teammates joining the existing organization.
 
 ## SDK & OpenTelemetry
 
