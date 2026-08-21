@@ -78,9 +78,9 @@ def main() -> None:
     with client.tracer.trace("smoke-test-agent", monitor=True) as span2:
         span2.input = "do the thing"
         span2.output = "done, but a tool failed"
-        span2.tool_calls = [
-            {"name": "lookup_thing", "input": "x", "output": "error: timeout", "latency_ms": 50, "success": False}
-        ]
+        span2.add_tool_call(
+            "lookup_thing", input="x", output="error: timeout", success=False, error="timeout", latency_ms=50
+        )
 
     signal = None
     for _ in range(10):
