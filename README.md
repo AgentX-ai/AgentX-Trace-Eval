@@ -159,8 +159,8 @@ Trace, Evaluate and Monitor all answer here, and five parts of the SDK are self-
 hosted equivalent yet: `client.evaluations.prompts`, `client.monitor.online_evaluators`,
 `client.outcomes`, `client.feedback`, and the CI gate (`run.gate(...)`).
 
-Eight SDK calls go the other way and 404 here rather than degrade:
-`client.evaluations.list_models()` and `get_missing_results()`, `client.tracer.evaluate_trace()`,
+Seven SDK calls go the other way and 404 here rather than degrade:
+`client.evaluations.list_models()`, `client.tracer.evaluate_trace()`,
 and the CI-run surface behind `client.tracer.run_eval()` - `create_ci_run`, `submit_result`,
 `finalize_ci_run`, `get_ci_run`, `get_dataset_test_cases`. Gate a self-host CI job with
 `run.gate(fail_under=..., no_regression=True)` instead; that path is fully supported. The hosted
