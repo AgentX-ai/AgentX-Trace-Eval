@@ -21,8 +21,10 @@
     "cloud/selfHost record what is TRUE TODAY, not what is desirable - a false is a gap, and the",
     "`gap` field says which. Closing one means flipping the flag here in the same change.",
     "",
-    "Routing only. Auth is not modelled: the hosted API answers some of these on session auth and",
-    "some on an API key, and a row being routed there does not mean an SDK key can call it (see the",
+    "Every `cloud` row is also asserted reachable with an SDK API key: the hosted API mounts these",
+    "behind authenticateUser / authenticateApiKey / authenticateAgent, and all three accept an",
+    "x-api-key header. A route moved behind an auth that doesn't (authenticateAdmin, say) would 401",
+    "an SDK caller while still looking correctly routed, so hostedApiContract.test.ts checks both.",
     "analyze-fallback rows)."
   ],
   "apiRoot": "/api/v1",
@@ -189,7 +191,7 @@
       "probe": "/evaluate/analyze/contract-probe",
       "cloud": true,
       "selfHost": true,
-      "note": "Only after the /custom-agent-evaluations/runs/:runId/analyze row 404s. Routed on the hosted API but behind session auth, so an SDK key cannot reach it there - harmless, since the primary route answers there."
+      "note": "Only after the /custom-agent-evaluations/runs/:runId/analyze row 404s, which is why the hosted API never serves it in practice - the primary route answers there."
     },
     {
       "sdk": "client.evaluations._client.get_analysis_status(run_id) [dashboard-router fallback]",
@@ -271,7 +273,7 @@
       "cloud": false,
       "selfHost": true,
       "gap": "self-host-only",
-      "note": "The hosted API has online evaluators only under /agent-monitoring with session auth, not on this API-key surface."
+      "note": "The hosted API has online evaluators only under /agent-monitoring, which is a different path than the one the SDK calls - not an auth difference; that surface takes an API key too."
     },
     {
       "sdk": "client.monitor.online_evaluators.list()",

@@ -40,8 +40,23 @@ function resolveModule(fromDir: string, specifier: string): string {
   return "";
 }
 
-/** Every "VERB /mount/path" the hosted API's /api/v1 router mounts, normalized. */
-function hostedRoutes(): Set<string> {
+/** Auth middlewares live one file each under src/config/auth - that's how a route's are found. */
+function isAuthMiddleware(ident: string): boolean {
+  return fs.existsSync(path.join(apiRoot, "src", "config", "auth", `${ident}.ts`));
+}
+
+/**
+ * Whether a middleware admits an `x-api-key` header, read from its own source rather than a
+ * hardcoded list. authenticateUser, authenticateApiKey and authenticateAgent all do; the
+ * session/admin-only ones don't, and a route moved behind one of those would 401 every SDK
+ * caller while still looking correctly routed.
+ */
+function acceptsApiKey(ident: string): boolean {
+  return readIfPresent(path.join(apiRoot, "src", "config", "auth", `${ident}.ts`)).includes("x-api-key");
+}
+
+/** Every "VERB /mount/path" the hosted API's /api/v1 router mounts, with the auth guarding it. */
+function hostedRoutes(): Map<string, string[]> {
   const indexFile = path.join(apiRoot, "src", "routes", "api_v1", "index.ts");
   const source = readIfPresent(indexFile);
   const indexDir = path.dirname(indexFile);
@@ -56,15 +71,21 @@ function hostedRoutes(): Set<string> {
     imports.set(match[1]!, match[2]!);
   }
 
-  const routes = new Set<string>();
+  const routes = new Map<string, string[]>();
   for (const mounted of source.matchAll(/router\.use\(\s*"([^"]*)"\s*,\s*(\w+)\s*\)/g)) {
     const mount = mounted[1]!;
     const specifier = imports.get(mounted[2]!);
     if (!specifier) continue;
     const moduleFile = resolveModule(indexDir, specifier);
     if (!moduleFile) continue;
-    for (const route of readIfPresent(moduleFile).matchAll(/router\.(get|post|put|patch|delete)\(\s*"([^"]*)"/g)) {
-      routes.add(`${route[1]!.toUpperCase()} ${normalize(`${mount}${route[2]!}`)}`);
+    const body = readIfPresent(moduleFile);
+    // A module can guard every one of its routes at once - customAgentEvaluations.ts does.
+    const wholeRouter = [...body.matchAll(/router\.use\(\s*(\w+)\s*\)/g)].map(m => m[1]!).filter(isAuthMiddleware);
+    for (const route of body.matchAll(/router\.(get|post|put|patch|delete)\(\s*"([^"]*)"([^\n]*)/g)) {
+      const perRoute = [...route[3]!.matchAll(/(\w+)/g)].map(m => m[1]!).filter(isAuthMiddleware);
+      routes.set(`${route[1]!.toUpperCase()} ${normalize(`${mount}${route[2]!}`)}`, [
+        ...new Set([...perRoute, ...wholeRouter]),
+      ]);
     }
   }
   return routes;
@@ -101,6 +122,23 @@ describeHosted(`hosted API contract (agentx-python ${contract.sdkVersion})`, () 
           `still calls it a "${endpoint.gap}" gap. Flip cloud to true there, and drop the "self-host only" ` +
           `note from the SDK docs for ${endpoint.sdk}.`
       ).toBe(false);
+    }
+  );
+
+  // Routing alone isn't reachability. An endpoint the SDK calls has to accept the only credential
+  // the SDK has, and the two are set independently - this repo's own contract notes claimed the
+  // analyze-fallback rows were session-only until this check said otherwise.
+  it.each(cloudEndpoints.map(e => [`${e.method} ${e.path}`, e] as const))(
+    "lets an SDK API key reach %s",
+    (_label, endpoint) => {
+      const auth = routes.get(`${endpoint.method} ${normalize(endpoint.path)}`) ?? [];
+      expect(auth, `no auth middleware resolved for ${endpoint.method} ${endpoint.path}`).not.toEqual([]);
+      expect(
+        auth.some(acceptsApiKey),
+        `${endpoint.sdk} calls ${endpoint.method} ${endpoint.path}, which AgentX-web-api now guards with ` +
+          `${auth.join(" + ")} - none of which reads an x-api-key header. The route is mounted, so the ` +
+          `routing check above still passes, but every SDK caller gets a 401.`
+      ).toBe(true);
     }
   );
 });

@@ -45,10 +45,18 @@ export function loadContract(): Contract {
  * it skips rather than failing a clone that only has this repo.
  */
 export function hostedApiRoot(): string {
-  const candidates = [
-    process.env.AGENTX_WEB_API_PATH ?? "",
-    path.resolve(repoRoot, "../AgentX-web-api-ts/AgentX-web-api"),
-    path.resolve(repoRoot, "../AgentX-web-api"),
-  ].filter(Boolean);
-  return candidates.find(candidate => fs.existsSync(path.join(candidate, "src", "routes"))) ?? "";
+  const explicit = process.env.AGENTX_WEB_API_PATH ?? "";
+  if (explicit) {
+    return fs.existsSync(path.join(explicit, "src", "routes")) ? explicit : "";
+  }
+  // Walk up rather than checking one fixed sibling: in a git worktree (.claude/worktrees/<name>)
+  // repoRoot is several levels below the directory the checkouts actually sit in, and a fixed
+  // "../" lookup silently finds nothing and skips the whole suite.
+  for (let dir = repoRoot; ; dir = path.dirname(dir)) {
+    for (const rel of ["AgentX-web-api-ts/AgentX-web-api", "AgentX-web-api"]) {
+      const candidate = path.join(dir, rel);
+      if (fs.existsSync(path.join(candidate, "src", "routes"))) return candidate;
+    }
+    if (dir === path.dirname(dir)) return "";
+  }
 }
