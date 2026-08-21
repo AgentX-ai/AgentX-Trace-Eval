@@ -572,6 +572,78 @@ export async function computeLiveStatistics(db: Db, runId: string) {
   };
 }
 
+
+// One-trace offline evaluation: grade a previously-ingested trace's recorded input/output
+// against a dataset's (or standalone config's) criteria - the self-host implementation of the
+// SDK's tracer.evaluate_trace() / the Moveworks importer's --evaluate-against. Reuses the full
+// run-scoring stack (judge, retrieval context, trajectory, code scorers) by creating a real
+// one-result run, so the verdict is visible in Evaluate -> Runs like any other.
+export async function evaluateTraceAgainst(
+  db: Db,
+  traceId: string,
+  targetId: string
+): Promise<
+  | { error: string; status: number }
+  | { run_id: string; trace_id: string; rating: number | null; justification: string | null; status: string }
+> {
+  const traceCond = and(eq(db.schema.traces.id, traceId), eq(db.schema.traces.projectId, db.projectId));
+  const trace = (
+    db.kind === "sqlite"
+      ? (db.db.select().from(db.schema.traces).where(traceCond).all()[0] as Record<string, unknown> | undefined)
+      : ((await db.db.select().from(db.schema.traces).where(traceCond))[0] as Record<string, unknown> | undefined)
+  );
+  if (!trace) {
+    return { error: "Trace not found", status: 404 };
+  }
+  const [dataset, settings] = await Promise.all([
+    getDatasetRow(db, targetId),
+    getEvaluationSettingsRow(db, targetId),
+  ]);
+  if (!dataset && !settings) {
+    return { error: "Dataset or evaluator config not found", status: 404 };
+  }
+
+  const runId = nanoid();
+  const runRow = {
+    id: runId,
+    projectId: db.projectId,
+    datasetId: targetId,
+    evaluationSettingsId: settings ? targetId : null,
+    evaluationSubject: { kind: "trace_evaluation", traceId },
+    version: null,
+    runSource: "trace-eval",
+    sdkInfo: null,
+    smokeTestVariants: null,
+    status: "in_progress",
+    createdAt: new Date(),
+  };
+  if (db.kind === "sqlite") {
+    await db.db.insert(db.schema.evaluationRuns).values(runRow);
+  } else {
+    await db.db.insert(db.schema.evaluationRuns).values(runRow);
+  }
+
+  const asText = (value: unknown): string =>
+    typeof value === "string" ? value : value == null ? "" : JSON.stringify(value);
+  const appended = await appendResults(db, runId, "trace-eval", [
+    {
+      idempotencyKey: `trace:${traceId}`,
+      input: { query: asText(trace.input) },
+      output: { text: asText(trace.output) },
+      traceId,
+    },
+  ]);
+  await finalizeRun(db, runId);
+  const scored = appended?.scoredResults?.[0];
+  return {
+    run_id: runId,
+    trace_id: traceId,
+    rating: scored?.rating ?? null,
+    justification: scored?.justification ?? null,
+    status: "completed",
+  };
+}
+
 export async function finalizeRun(db: Db, runId: string) {
   const run = await getRunRow(db, runId);
   if (!run) {

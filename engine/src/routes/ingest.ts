@@ -10,6 +10,7 @@ import {
   listSessionSpans,
 } from "../core/trace/ingest.js";
 import { runMonitorCheck } from "../core/monitor/detect.js";
+import { evaluateTraceAgainst } from "../core/evaluate/runs.js";
 import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
 import { runCustomEvaluators } from "../core/monitor/customEvaluators.js";
 import { runClassification } from "../core/monitor/topics.js";
@@ -33,14 +34,15 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
   }
   const { traceId, agentId, deduped } = await ingestTrace(scopedDb(req), parsed.data);
 
-  // trace_id is the one field send_trace_sync() reads (see ingest_client.py); the fire-and-forget
+  // trace_id is the one field send_trace_sync() reads; `deduped` lets a re-sync importer
+  // (agentx-moveworks) skip re-evaluating spans the engine already had. The fire-and-forget
   // enqueue() path used by default doesn't inspect the body at all, so this shape covers both.
   // Sent as soon as the trace itself is durably stored, not after the checks below finish: those
   // used to be awaited here too, so a workspace with several online evaluators (each check is a
   // real judge call) routinely pushed this response past the SDK's sync=True 10-second timeout,
   // the client gave up and returned trace_id=None even though ingestion itself had already
   // succeeded and the real id was about to be sent.
-  res.status(200).json({ trace_id: traceId });
+  res.status(200).json({ trace_id: traceId, deduped });
 
   // Root spans only by default (see the MONITOR_CHILD_SPANS constant above) - a child span from a
   // span_tree-enabled trace skips Monitor/online-evaluator/classification entirely rather than
@@ -157,6 +159,25 @@ ingestRouter.get("/traces/:traceId", async (req: Request, res: Response) => {
     return;
   }
   res.status(200).json(await toTraceDetailWireWithCost(scopedDb(req), row));
+});
+
+// One-trace offline evaluation - the self-host backend for the SDK's
+// tracer.evaluate_trace(trace_id, dataset_id) and the Moveworks importer's --evaluate-against:
+// grade the trace's recorded input/output against the dataset/config's criteria as a real
+// one-result run. See core/evaluate/runs.ts's evaluateTraceAgainst.
+ingestRouter.post("/traces/:traceId/evaluate", async (req: Request, res: Response) => {
+  const { traceId } = req.params;
+  const targetId = typeof req.body?.datasetId === "string" ? req.body.datasetId : "";
+  if (!traceId || !targetId) {
+    res.status(400).json({ error: "traceId and datasetId are required" });
+    return;
+  }
+  const outcome = await evaluateTraceAgainst(scopedDb(req), traceId, targetId);
+  if ("error" in outcome) {
+    res.status(outcome.status).json({ error: outcome.error });
+    return;
+  }
+  res.status(200).json(outcome);
 });
 
 // Every span belonging to one OTel trace (sessionId = the OTel traceId, see otel/mapping.ts's
