@@ -1,0 +1,532 @@
+{
+  "$comment": [
+    "Canonical HTTP contract between the AgentX Python SDK (AgentX-ai/AgentX-Python) and the two",
+    "backends that answer it: the hosted API (AgentX-web-api) and this self-host engine.",
+    "",
+    "Every row is one endpoint the SDK actually calls, with which backend implements it. Three",
+    "test suites read this file and each one checks a different side of it, so a change on any",
+    "side that isn't reflected here fails somewhere:",
+    "",
+    "  engine/src/test/sdkContract.integration.test.ts  boots this engine and asserts selfHost",
+    "                                                   rows are mounted and !selfHost rows are not",
+    "  engine/src/test/hostedApiContract.test.ts        parses AgentX-web-api's route files and",
+    "                                                   asserts the same for `cloud`",
+    "  AgentX-Python tests/test_endpoint_contract.py    drives every public SDK method through a",
+    "                                                   recording transport and asserts the paths",
+    "                                                   it emits are exactly the rows below",
+    "",
+    "The two cross-repo suites resolve this file via $AGENTX_SDK_CONTRACT, else a sibling checkout,",
+    "and skip when neither is present. `path` is relative to the API root (/api/v1).",
+    "",
+    "cloud/selfHost record what is TRUE TODAY, not what is desirable - a false is a gap, and the",
+    "`gap` field says which. Closing one means flipping the flag here in the same change.",
+    "",
+    "Routing only. Auth is not modelled: the hosted API answers some of these on session auth and",
+    "some on an API key, and a row being routed there does not mean an SDK key can call it (see the",
+    "analyze-fallback rows)."
+  ],
+  "apiRoot": "/api/v1",
+  "gapKinds": {
+    "not-ported": "Implemented on the hosted API; deliberately or not-yet ported to self-host.",
+    "self-host-only": "Self-host feature with no hosted-SaaS equivalent yet (documented as such in the SDK).",
+    "platform-only": "Hosted agent/team/conversation platform. Out of scope for the governance engine."
+  },
+  "endpoints": [
+    {
+      "sdk": "client.evaluations.list_models()",
+      "method": "GET",
+      "path": "/custom-agent-evaluations/models",
+      "probe": "/custom-agent-evaluations/models",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "not-ported"
+    },
+    {
+      "sdk": "client.evaluations.datasets.builder(...).publish()",
+      "method": "POST",
+      "path": "/custom-agent-evaluations/datasets",
+      "probe": "/custom-agent-evaluations/datasets",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.evaluations.datasets.list()",
+      "method": "GET",
+      "path": "/custom-agent-evaluations/datasets",
+      "probe": "/custom-agent-evaluations/datasets",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.evaluations.datasets.get(dataset_id)",
+      "method": "GET",
+      "path": "/custom-agent-evaluations/datasets/{datasetId}",
+      "probe": "/custom-agent-evaluations/datasets/contract-probe",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.evaluations.settings.builder(...).publish()",
+      "method": "POST",
+      "path": "/custom-agent-evaluations/evaluation-settings",
+      "probe": "/custom-agent-evaluations/evaluation-settings",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.evaluations.settings.list()",
+      "method": "GET",
+      "path": "/custom-agent-evaluations/evaluation-settings",
+      "probe": "/custom-agent-evaluations/evaluation-settings",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.evaluations.settings.get(evaluation_settings_id)",
+      "method": "GET",
+      "path": "/custom-agent-evaluations/evaluation-settings/{evaluationSettingsId}",
+      "probe": "/custom-agent-evaluations/evaluation-settings/contract-probe",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.evaluations.prompts.create(name, text)",
+      "method": "POST",
+      "path": "/custom-agent-evaluations/prompts",
+      "probe": "/custom-agent-evaluations/prompts",
+      "cloud": false,
+      "selfHost": true,
+      "gap": "self-host-only"
+    },
+    {
+      "sdk": "client.evaluations.prompts.list()",
+      "method": "GET",
+      "path": "/custom-agent-evaluations/prompts",
+      "probe": "/custom-agent-evaluations/prompts",
+      "cloud": false,
+      "selfHost": true,
+      "gap": "self-host-only"
+    },
+    {
+      "sdk": "client.evaluations.prompts.get(name)",
+      "method": "GET",
+      "path": "/custom-agent-evaluations/prompts/{identifier}",
+      "probe": "/custom-agent-evaluations/prompts/contract-probe",
+      "cloud": false,
+      "selfHost": true,
+      "gap": "self-host-only"
+    },
+    {
+      "sdk": "client.evaluations.run(dataset_id, subject)",
+      "method": "POST",
+      "path": "/custom-agent-evaluations/runs",
+      "probe": "/custom-agent-evaluations/runs",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "run.execute(adapter)",
+      "method": "POST",
+      "path": "/custom-agent-evaluations/runs/{runId}/results",
+      "probe": "/custom-agent-evaluations/runs/contract-probe/results",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "run.finalize()",
+      "method": "POST",
+      "path": "/custom-agent-evaluations/runs/{runId}/finalize",
+      "probe": "/custom-agent-evaluations/runs/contract-probe/finalize",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "run.analyze()",
+      "method": "POST",
+      "path": "/custom-agent-evaluations/runs/{runId}/analyze",
+      "probe": "/custom-agent-evaluations/runs/contract-probe/analyze",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.evaluations.get_analysis_status(run_id)",
+      "method": "GET",
+      "path": "/custom-agent-evaluations/runs/{runId}/analyze-status",
+      "probe": "/custom-agent-evaluations/runs/contract-probe/analyze-status",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.evaluations._client.get_report(run_id)",
+      "method": "GET",
+      "path": "/custom-agent-evaluations/runs/{runId}/report",
+      "probe": "/custom-agent-evaluations/runs/contract-probe/report",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.evaluations._client.get_run(run_id)",
+      "method": "GET",
+      "path": "/custom-agent-evaluations/runs/{runId}",
+      "probe": "/custom-agent-evaluations/runs/contract-probe",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.evaluations._client.get_missing_results(run_id)",
+      "method": "GET",
+      "path": "/custom-agent-evaluations/runs/{runId}/missing-results",
+      "probe": "/custom-agent-evaluations/runs/contract-probe/missing-results",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "not-ported",
+      "note": "Reached on every run: EvaluationRunContext._fetch_submitted_keys() calls it from execute()."
+    },
+    {
+      "sdk": "run.gate(...) / client.evaluations.gate_run(run_id, ...)",
+      "method": "GET",
+      "path": "/custom-agent-evaluations/runs/{runId}/gate",
+      "probe": "/custom-agent-evaluations/runs/contract-probe/gate",
+      "cloud": false,
+      "selfHost": true,
+      "gap": "self-host-only",
+      "note": "Pass/fail a finalized run in CI. The hosted API's CI story is the /ingest/ci-runs rows instead."
+    },
+    {
+      "sdk": "client.evaluations._client.analyze_run(run_id) [dashboard-router fallback]",
+      "method": "POST",
+      "path": "/evaluate/analyze/{runId}",
+      "probe": "/evaluate/analyze/contract-probe",
+      "cloud": true,
+      "selfHost": true,
+      "note": "Only after the /custom-agent-evaluations/runs/:runId/analyze row 404s. Routed on the hosted API but behind session auth, so an SDK key cannot reach it there - harmless, since the primary route answers there."
+    },
+    {
+      "sdk": "client.evaluations._client.get_analysis_status(run_id) [dashboard-router fallback]",
+      "method": "GET",
+      "path": "/evaluate/analyze/{runId}/status",
+      "probe": "/evaluate/analyze/contract-probe/status",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.evaluations._client.get_report(run_id) [dashboard-router fallback]",
+      "method": "GET",
+      "path": "/evaluate/{runId}",
+      "probe": "/evaluate/contract-probe",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.monitor.patterns.builder(...).publish()",
+      "method": "POST",
+      "path": "/monitor/patterns",
+      "probe": "/monitor/patterns",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.monitor.patterns.list()",
+      "method": "GET",
+      "path": "/monitor/patterns",
+      "probe": "/monitor/patterns",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.monitor.patterns.get(pattern_id)",
+      "method": "GET",
+      "path": "/monitor/patterns/{patternId}",
+      "probe": "/monitor/patterns/contract-probe",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.monitor.signals.list()",
+      "method": "GET",
+      "path": "/monitor/signals",
+      "probe": "/monitor/signals",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.monitor.signals.get(signal_id)",
+      "method": "GET",
+      "path": "/monitor/signals/{signalId}",
+      "probe": "/monitor/signals/contract-probe",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.monitor.profile.get(agent_id)",
+      "method": "GET",
+      "path": "/monitor/profiles/{agentId}",
+      "probe": "/monitor/profiles/contract-probe",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.monitor.profile.update(agent_id, ...)",
+      "method": "PUT",
+      "path": "/monitor/profiles/{agentId}",
+      "probe": "/monitor/profiles/contract-probe",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.monitor.online_evaluators.builder(...).publish()",
+      "method": "POST",
+      "path": "/monitor/online-evaluators",
+      "probe": "/monitor/online-evaluators",
+      "cloud": false,
+      "selfHost": true,
+      "gap": "self-host-only",
+      "note": "The hosted API has online evaluators only under /agent-monitoring with session auth, not on this API-key surface."
+    },
+    {
+      "sdk": "client.monitor.online_evaluators.list()",
+      "method": "GET",
+      "path": "/monitor/online-evaluators",
+      "probe": "/monitor/online-evaluators",
+      "cloud": false,
+      "selfHost": true,
+      "gap": "self-host-only"
+    },
+    {
+      "sdk": "client.monitor.online_evaluators.get(evaluator_id)",
+      "method": "GET",
+      "path": "/monitor/online-evaluators/{evaluatorId}",
+      "probe": "/monitor/online-evaluators/contract-probe",
+      "cloud": false,
+      "selfHost": true,
+      "gap": "self-host-only"
+    },
+    {
+      "sdk": "client.monitor.online_evaluators.update(evaluator_id, ...)",
+      "method": "PUT",
+      "path": "/monitor/online-evaluators/{evaluatorId}",
+      "probe": "/monitor/online-evaluators/contract-probe",
+      "cloud": false,
+      "selfHost": true,
+      "gap": "self-host-only"
+    },
+    {
+      "sdk": "client.monitor.online_evaluators.delete(evaluator_id)",
+      "method": "DELETE",
+      "path": "/monitor/online-evaluators/{evaluatorId}",
+      "probe": "/monitor/online-evaluators/contract-probe",
+      "cloud": false,
+      "selfHost": true,
+      "gap": "self-host-only"
+    },
+    {
+      "sdk": "client.monitor.online_evaluators.ratings(evaluator_id)",
+      "method": "GET",
+      "path": "/monitor/online-evaluators/{evaluatorId}/ratings",
+      "probe": "/monitor/online-evaluators/contract-probe/ratings",
+      "cloud": false,
+      "selfHost": true,
+      "gap": "self-host-only"
+    },
+    {
+      "sdk": "client.monitor.online_evaluators.events(evaluator_id)",
+      "method": "GET",
+      "path": "/monitor/online-evaluators/{evaluatorId}/events",
+      "probe": "/monitor/online-evaluators/contract-probe/events",
+      "cloud": false,
+      "selfHost": true,
+      "gap": "self-host-only"
+    },
+    {
+      "sdk": "client.tracer.trace(...)",
+      "method": "POST",
+      "path": "/ingest/traces",
+      "probe": "/ingest/traces",
+      "cloud": true,
+      "selfHost": true
+    },
+    {
+      "sdk": "client.tracer.evaluate_trace(trace_id, dataset_id)",
+      "method": "POST",
+      "path": "/ingest/traces/{traceId}/evaluate",
+      "probe": "/ingest/traces/contract-probe/evaluate",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "not-ported"
+    },
+    {
+      "sdk": "client.tracer.create_ci_run(dataset_id)",
+      "method": "POST",
+      "path": "/ingest/ci-runs",
+      "probe": "/ingest/ci-runs",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "not-ported",
+      "note": "Self-host records gate history via GET /custom-agent-evaluations/runs/{runId}/gate, which the SDK does not call."
+    },
+    {
+      "sdk": "client.tracer.submit_result(run_id, ...)",
+      "method": "POST",
+      "path": "/ingest/ci-runs/{runId}/results",
+      "probe": "/ingest/ci-runs/contract-probe/results",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "not-ported"
+    },
+    {
+      "sdk": "client.tracer.finalize_ci_run(run_id)",
+      "method": "POST",
+      "path": "/ingest/ci-runs/{runId}/finalize",
+      "probe": "/ingest/ci-runs/contract-probe/finalize",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "not-ported"
+    },
+    {
+      "sdk": "client.tracer.get_ci_run(run_id)",
+      "method": "GET",
+      "path": "/ingest/ci-runs/{runId}",
+      "probe": "/ingest/ci-runs/contract-probe",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "not-ported"
+    },
+    {
+      "sdk": "client.tracer._client.get_dataset_test_cases(dataset_id)",
+      "method": "GET",
+      "path": "/ingest/datasets/{datasetId}/test-cases",
+      "probe": "/ingest/datasets/contract-probe/test-cases",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "not-ported"
+    },
+    {
+      "sdk": "client.outcomes.report(...)",
+      "method": "POST",
+      "path": "/outcomes",
+      "probe": "/outcomes",
+      "cloud": false,
+      "selfHost": true,
+      "gap": "self-host-only",
+      "note": "Ground truth for the dashboard's Judge Calibration card."
+    },
+    {
+      "sdk": "client.feedback.report(trace_id, rating)",
+      "method": "POST",
+      "path": "/feedback",
+      "probe": "/feedback",
+      "cloud": false,
+      "selfHost": true,
+      "gap": "self-host-only"
+    },
+    {
+      "sdk": "AgentX.list_agents()",
+      "method": "GET",
+      "path": "/access/agents",
+      "probe": "/access/agents",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "platform-only"
+    },
+    {
+      "sdk": "AgentX.get_agent(id)",
+      "method": "GET",
+      "path": "/access/agents/{agentId}",
+      "probe": "/access/agents/contract-probe",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "platform-only"
+    },
+    {
+      "sdk": "AgentX.list_workforces()",
+      "method": "GET",
+      "path": "/access/teams",
+      "probe": "/access/teams",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "platform-only"
+    },
+    {
+      "sdk": "AgentX.get_profile()",
+      "method": "GET",
+      "path": "/access/getProfile",
+      "probe": "/access/getProfile",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "platform-only"
+    },
+    {
+      "sdk": "Agent.new_conversation()",
+      "method": "POST",
+      "path": "/access/agents/{agentId}/conversations/new",
+      "probe": "/access/agents/contract-probe/conversations/new",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "platform-only"
+    },
+    {
+      "sdk": "Agent.list_conversations()",
+      "method": "GET",
+      "path": "/access/agents/{agentId}/conversations",
+      "probe": "/access/agents/contract-probe/conversations",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "platform-only"
+    },
+    {
+      "sdk": "Conversation.list_messages()",
+      "method": "GET",
+      "path": "/access/agents/{agentId}/conversations/{conversationId}",
+      "probe": "/access/agents/contract-probe/conversations/contract-probe",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "platform-only"
+    },
+    {
+      "sdk": "Conversation.chat(message)",
+      "method": "POST",
+      "path": "/access/conversations/{conversationId}/message",
+      "probe": "/access/conversations/contract-probe/message",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "platform-only"
+    },
+    {
+      "sdk": "Conversation.chat_stream(message)",
+      "method": "POST",
+      "path": "/access/conversations/{conversationId}/jsonmessagesse",
+      "probe": "/access/conversations/contract-probe/jsonmessagesse",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "platform-only"
+    },
+    {
+      "sdk": "Workforce.new_conversation()",
+      "method": "POST",
+      "path": "/access/teams/{teamId}/conversations/new",
+      "probe": "/access/teams/contract-probe/conversations/new",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "platform-only"
+    },
+    {
+      "sdk": "Workforce.list_conversations()",
+      "method": "GET",
+      "path": "/access/teams/{teamId}/conversations",
+      "probe": "/access/teams/contract-probe/conversations",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "platform-only"
+    },
+    {
+      "sdk": "Workforce.chat_stream(conversation_id, message)",
+      "method": "POST",
+      "path": "/access/teams/conversations/{conversationId}/jsonmessagesse",
+      "probe": "/access/teams/conversations/contract-probe/jsonmessagesse",
+      "cloud": true,
+      "selfHost": false,
+      "gap": "platform-only"
+    }
+  ],
+  "verifiedAgainstSdk": "0.6.28"
+}

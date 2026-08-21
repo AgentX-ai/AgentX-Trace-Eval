@@ -155,6 +155,21 @@ export AGENTX_API_BASE_URL=http://localhost:4700/api/v1
 export AGENTX_API_KEY=<printed by agentx-server on first run>
 ```
 
+Trace, Evaluate and Monitor all answer here, and five parts of the SDK are self-host-only, with no
+hosted equivalent yet: `client.evaluations.prompts`, `client.monitor.online_evaluators`,
+`client.outcomes`, `client.feedback`, and the CI gate (`run.gate(...)`).
+
+Eight SDK calls go the other way and 404 here rather than degrade:
+`client.evaluations.list_models()` and `get_missing_results()`, `client.tracer.evaluate_trace()`,
+and the CI-run surface behind `client.tracer.run_eval()` - `create_ci_run`, `submit_result`,
+`finalize_ci_run`, `get_ci_run`, `get_dataset_test_cases`. Gate a self-host CI job with
+`run.gate(fail_under=..., no_regression=True)` instead; that path is fully supported. The hosted
+platform surface (`client.get_agent()`, `list_workforces()`, conversations) is out of scope here
+entirely.
+
+The full table, and the three test suites that keep it true, are in
+[`contracts/sdk-endpoints.json`](contracts/sdk-endpoints.json).
+
 **OpenTelemetry** - Trace also accepts real OTLP/HTTP traces directly, no AgentX SDK required:
 
 ```bash
@@ -251,6 +266,24 @@ yarn workspace @agentx/engine test
 yarn workspace @agentx/judge-core test
 ```
 
+### SDK contract
+
+[`contracts/sdk-endpoints.json`](contracts/sdk-endpoints.json) lists every endpoint the Python SDK
+calls and which backend implements it - this engine, AgentX's hosted API, or (for the gaps above)
+only one of the two. Three suites read that one file, so a rename or a new call can't quietly 404
+for half the users:
+
+| Suite | Repo | Checks |
+| --- | --- | --- |
+| `engine/src/test/sdkContract.integration.test.ts` | here | boots the engine; `selfHost` rows are mounted, gap rows aren't |
+| `engine/src/test/hostedApiContract.test.ts` | here | parses AgentX-web-api's route tables; same check for `cloud` |
+| `tests/test_endpoint_contract.py` | AgentX-Python | drives every public SDK method through a recording transport; the paths it emits are exactly the rows |
+
+The first runs in plain `yarn test`. The other two need the repo they check out alongside this one
+and skip otherwise - point them somewhere else with `AGENTX_WEB_API_PATH` and `AGENTX_SDK_CONTRACT`
+respectively. Closing a gap means flipping its flag in the same change: both directions are
+asserted, so a row that starts answering fails just as loudly as one that stops.
+
 The engine's integration suites boot the real engine as a subprocess. The ones that exercise
 Postgres skip unless you point them at a server:
 
@@ -338,7 +371,9 @@ end-user feedback).
   fundamentally tied to AgentX's native agent config-branching system, which self-host doesn't
   have. The version-comparison and Prompt Registry features are the self-host analogs.
 - Guardrail hasn't been started.
-- Evaluate's async whole-run analysis (`analyze_run`/`get_report`) is out of scope for now.
+- Evaluate's whole-run analysis (`analyze_run`/`get_report`) works, but runs synchronously where
+  hosted AgentX queues a durable job: `analyze` returns only once the judges are done, and the
+  SDK's poll loop sees a terminal status on its first check. Long runs hold the request open.
 
 See [CHANGELOG.md](CHANGELOG.md) for the detailed, narrative build/verification history behind
 every feature above.
