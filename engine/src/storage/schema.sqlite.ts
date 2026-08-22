@@ -645,6 +645,32 @@ export const usageEvents = sqliteTable("usage_events", {
 // One row per background sweep name (core/shared/sweepLease.ts): the multi-replica guard that
 // keeps N engine replicas sharing one database from each running the same sweep every tick.
 // Global on purpose - no project_id, a sweep iterates every project itself.
+// Append-only audit trail (core/audit/auditLog.ts): who changed what, when, from where. Written
+// by the control-plane tap in routes/auditTap.ts (config mutations, auth events, data egress);
+// readable via GET /admin/audit (operator token) and the org-scoped /auth-org/audit. Immutable
+// by construction - the code base contains INSERT and SELECT for this table and nothing else.
+export const auditEvents = sqliteTable("audit_events", {
+  id: text("id").primaryKey(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  // "project:<id>" (API-key caller), a user email (session caller), "admin" (operator token),
+  // or "anonymous" (unauthenticated attempt - failed sign-ins land here).
+  actor: text("actor").notNull(),
+  actorType: text("actor_type").notNull(),
+  // Stable dotted verb, e.g. "scorer.create", "project.delete", "auth.sign-in", "export.read" -
+  // derived from method+path by the tap so dashboards can group without parsing URLs.
+  action: text("action").notNull(),
+  method: text("method").notNull(),
+  path: text("path").notNull(),
+  status: integer("status").notNull(),
+  entityType: text("entity_type"),
+  entityId: text("entity_id"),
+  // Deliberately values-free except a human-recognizable `name`: bodies carry secrets (scripts,
+  // keys, passwords), so the tap records which fields changed, never what they changed to.
+  summary: text("summary", { mode: "json" }),
+  ip: text("ip"),
+  projectId: text("project_id"),
+});
+
 export const sweepLeases = sqliteTable("sweep_leases", {
   name: text("name").primaryKey(),
   holder: text("holder").notNull(),

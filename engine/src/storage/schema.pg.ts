@@ -419,6 +419,23 @@ export const gateResults = pgTable("gate_results", {
 });
 
 // See schema.sqlite.ts's sweepLeases for the full comment.
+// Append-only audit trail - see schema.sqlite.ts's auditEvents comment for the contract.
+export const auditEvents = pgTable("audit_events", {
+  id: text("id").primaryKey(),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  actor: text("actor").notNull(),
+  actorType: text("actor_type").notNull(),
+  action: text("action").notNull(),
+  method: text("method").notNull(),
+  path: text("path").notNull(),
+  status: integer("status").notNull(),
+  entityType: text("entity_type"),
+  entityId: text("entity_id"),
+  summary: jsonb("summary"),
+  ip: text("ip"),
+  projectId: text("project_id"),
+});
+
 export const sweepLeases = pgTable("sweep_leases", {
   name: text("name").primaryKey(),
   holder: text("holder").notNull(),

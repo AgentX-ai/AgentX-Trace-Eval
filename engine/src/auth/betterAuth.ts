@@ -3,7 +3,7 @@ import { nanoid } from "nanoid";
 import { eq, isNull } from "drizzle-orm";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { organization } from "better-auth/plugins";
+import { genericOAuth, organization } from "better-auth/plugins";
 import { mailerConfigured, sendMailInBackground } from "./mailer.js";
 
 // Verification is an explicit opt-in on top of a working mailer.
@@ -13,11 +13,42 @@ export function verificationRequired(): boolean {
 
 // Google/GitHub sign-in appear automatically when their credentials are configured - the
 // standard SaaS front door, entirely env-driven so the OSS default stays credential-free.
+// "oidc" is the generic enterprise SSO door (P2.3): one env trio covers Okta/Entra/Auth0/
+// Google Workspace/anything speaking OIDC discovery, without per-vendor engine work. SAML and
+// SCIM are deliberately NOT implied by this - they remain unimplemented and documented as such.
 export function enabledSocialProviders(): string[] {
   const providers: string[] = [];
   if (process.env.AGENTX_GOOGLE_CLIENT_ID && process.env.AGENTX_GOOGLE_CLIENT_SECRET) providers.push("google");
   if (process.env.AGENTX_GITHUB_CLIENT_ID && process.env.AGENTX_GITHUB_CLIENT_SECRET) providers.push("github");
+  if (oidcConfigured()) providers.push("oidc");
   return providers;
+}
+
+export function oidcConfigured(): boolean {
+  return Boolean(
+    process.env.AGENTX_OIDC_ISSUER && process.env.AGENTX_OIDC_CLIENT_ID && process.env.AGENTX_OIDC_CLIENT_SECRET
+  );
+}
+
+// What the SSO button says, e.g. "Okta" - purely cosmetic, defaults to the neutral "SSO".
+export function oidcDisplayName(): string {
+  return process.env.AGENTX_OIDC_NAME?.trim() || "SSO";
+}
+
+function genericOAuthConfigFromEnv() {
+  if (!oidcConfigured()) {
+    return [];
+  }
+  const issuer = process.env.AGENTX_OIDC_ISSUER!.replace(/\/$/, "");
+  return [
+    {
+      providerId: "oidc",
+      clientId: process.env.AGENTX_OIDC_CLIENT_ID!,
+      clientSecret: process.env.AGENTX_OIDC_CLIENT_SECRET!,
+      discoveryUrl: `${issuer}/.well-known/openid-configuration`,
+      scopes: ["openid", "profile", "email"],
+    },
+  ];
 }
 
 function socialProvidersFromEnv() {
@@ -214,6 +245,9 @@ function buildAuth(db: Db, opts: InitAuthOpts) {
           invitation: { modelName: "auth_invitation" },
         },
       }),
+      // Generic OIDC SSO (sign-in route: POST /auth/sign-in/oauth2 with providerId "oidc",
+      // callback: <public URL>/api/v1/auth/oauth2/callback/oidc). Inert without the env trio.
+      genericOAuth({ config: genericOAuthConfigFromEnv() }),
     ],
   });
 }

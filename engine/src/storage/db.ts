@@ -697,6 +697,23 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       expires_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS audit_events (
+      id TEXT PRIMARY KEY,
+      created_at INTEGER NOT NULL,
+      actor TEXT NOT NULL,
+      actor_type TEXT NOT NULL,
+      action TEXT NOT NULL,
+      method TEXT NOT NULL,
+      path TEXT NOT NULL,
+      status INTEGER NOT NULL,
+      entity_type TEXT,
+      entity_id TEXT,
+      summary TEXT,
+      ip TEXT,
+      project_id TEXT
+    );
+    CREATE INDEX IF NOT EXISTS audit_events_created_at ON audit_events (created_at);
+
     CREATE TABLE IF NOT EXISTS tool_schemas (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -1662,6 +1679,23 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       holder TEXT NOT NULL,
       expires_at TIMESTAMP NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS audit_events (
+      id TEXT PRIMARY KEY,
+      created_at TIMESTAMPTZ NOT NULL,
+      actor TEXT NOT NULL,
+      actor_type TEXT NOT NULL,
+      action TEXT NOT NULL,
+      method TEXT NOT NULL,
+      path TEXT NOT NULL,
+      status INTEGER NOT NULL,
+      entity_type TEXT,
+      entity_id TEXT,
+      summary JSONB,
+      ip TEXT,
+      project_id TEXT
+    );
+    CREATE INDEX IF NOT EXISTS audit_events_created_at ON audit_events (created_at);
 
     CREATE TABLE IF NOT EXISTS tool_schemas (
       id TEXT PRIMARY KEY,

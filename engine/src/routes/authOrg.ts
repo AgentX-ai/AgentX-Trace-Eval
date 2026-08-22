@@ -311,3 +311,40 @@ authOrgRouter.delete("/organizations/:orgId/members/:memberId", async (req: Requ
   }
   res.status(200).json({ ok: true });
 });
+
+// Org-scoped audit read: members see the trail for their own organizations' projects (plus, for
+// owners/admins, nothing more - instance-wide reads stay behind the operator's admin token, a
+// different trust domain). Same read-only posture as GET /admin/audit: audit_events has no
+// mutation surface anywhere.
+authOrgRouter.get("/audit", async (req: Request, res: Response) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const db = getDb();
+  const memberships = await membershipsOf(db, user.id);
+  const orgIds = memberships.map(m => m.organizationId);
+  const projectRows = (
+    orgIds.length === 0
+      ? []
+      : db.kind === "sqlite"
+        ? db.db.select({ id: db.schema.projects.id }).from(db.schema.projects)
+            .where(inArray(db.schema.projects.organizationId, orgIds)).all()
+        : await db.db.select({ id: db.schema.projects.id }).from(db.schema.projects)
+            .where(inArray(db.schema.projects.organizationId, orgIds))
+  ) as { id: string }[];
+  let since: Date | undefined;
+  if (typeof req.query.since === "string" && req.query.since) {
+    since = new Date(req.query.since);
+    if (Number.isNaN(since.getTime())) {
+      res.status(400).json({ error: "since must be an ISO-8601 date" });
+      return;
+    }
+  }
+  const { listAuditEvents } = await import("../core/audit/auditLog.js");
+  const events = await listAuditEvents(db, {
+    since,
+    projectIds: projectRows.map(p => p.id),
+    action: typeof req.query.action === "string" ? req.query.action : undefined,
+    limit: typeof req.query.limit === "string" ? Number(req.query.limit) || undefined : undefined,
+  });
+  res.status(200).json({ events });
+});

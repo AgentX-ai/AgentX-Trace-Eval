@@ -12,6 +12,8 @@ import { feedbackRouter } from "./feedback.js";
 import { agentMonitoringDashboardRouter } from "./agentMonitoringDashboard.js";
 import { evaluateDashboardRouter } from "./evaluateDashboard.js";
 import { otlpRouter } from "./otlp.js";
+import { exportRouter } from "./exportData.js";
+import { auditAuthTap, auditControlPlaneTap } from "./auditTap.js";
 import { getDb, withProjectId } from "../storage/db.js";
 import {
   createProject,
@@ -35,6 +37,8 @@ import {
   getSessionUser,
   getUserOrganizationIds,
   needsSetup,
+  oidcConfigured,
+  oidcDisplayName,
   verificationRequired,
 } from "../auth/betterAuth.js";
 import { mailerConfigured } from "../auth/mailer.js";
@@ -67,12 +71,17 @@ export function registerAuthRoutes(app: Express, credentialLimit: RequestHandler
             socialProviders: enabledSocialProviders(),
             emailEnabled: mailerConfigured(),
             verificationRequired: verificationRequired(),
+            // The generic OIDC provider's button label ("Okta", "Entra", ... - AGENTX_OIDC_NAME).
+            ...(oidcConfigured() ? { ssoLabel: oidcDisplayName() } : {}),
           }
         : {}),
     });
   }));
   if (authMode() === "enabled") {
-    app.all("/api/v1/auth/*", credentialLimit, toNodeHandler(getAuth()));
+    // auditAuthTap sits before better-auth's handler (and before express.json - better-auth
+    // reads the raw stream itself): sign-in/up/out attempts land in the audit trail with
+    // status and attempted email, nothing more (routes/auditTap.ts).
+    app.all("/api/v1/auth/*", credentialLimit, auditAuthTap, toNodeHandler(getAuth()));
   }
 }
 
@@ -83,6 +92,11 @@ export function registerApiV1(app: Express, deps: ApiV1Deps): void {
   });
   const { credentialLimit, dataPlaneLimit, apiKey } = deps;
   const router = Router();
+
+  // Control-plane audit trail (routes/auditTap.ts): observes every /api/v1 request and records
+  // config mutations + bulk egress into audit_events. Registered first so nothing below can
+  // dodge it; data-plane routes are excluded inside the tap, not here.
+  router.use(auditControlPlaneTap);
 
   router.get("/mcp-oauth/callback", credentialLimit, asyncHandler(async (req, res) => {
     const code = typeof req.query.code === "string" ? req.query.code : "";
@@ -211,6 +225,9 @@ export function registerApiV1(app: Express, deps: ApiV1Deps): void {
   router.use("/agent-monitoring", dataPlaneLimit, apiKey, agentMonitoringDashboardRouter);
   router.use("/evaluate", dataPlaneLimit, apiKey, evaluateDashboardRouter);
   router.use("/otel", dataPlaneLimit, apiKey, otlpRouter);
+  // Bulk NDJSON export for backup/migration (routes/exportData.ts) - data-plane like everything
+  // else keyed by x-api-key; the key alone scopes what leaves the box.
+  router.use("/export", dataPlaneLimit, apiKey, exportRouter);
 
   app.use("/api/v1", router);
 }
