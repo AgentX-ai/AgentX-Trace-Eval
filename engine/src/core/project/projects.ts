@@ -23,7 +23,6 @@ export type ProjectRow = {
   coverageMode: string;
   sampleRate: number;
   retentionDays: number;
-  redactionMode: string;
   latencyThresholdMs: number;
   topicsEnabled: boolean;
   coherenceSweepEnabled: boolean;
@@ -44,7 +43,6 @@ export type MonitoringDefaults = {
   coverageMode: string;
   sampleRate: number;
   retentionDays: number;
-  redactionMode: string;
   latencyThresholdMs: number;
   // Topics classification opt-in - project-level as of the migration described in
   // schema.sqlite.ts's projects.topicsEnabled comment (formerly per-agent on monitor_profiles).
@@ -62,7 +60,6 @@ function toMonitoringDefaultsWire(row: ProjectRow): MonitoringDefaults {
     coverageMode: row.coverageMode,
     sampleRate: row.sampleRate,
     retentionDays: row.retentionDays,
-    redactionMode: row.redactionMode,
     latencyThresholdMs: row.latencyThresholdMs,
     topicsEnabled: row.topicsEnabled,
     coherenceSweepEnabled: row.coherenceSweepEnabled,
@@ -83,7 +80,6 @@ export async function createProject(db: Db, name: string, organizationId: string
     coverageMode: "all",
     sampleRate: 1,
     retentionDays: 30,
-    redactionMode: "standard",
     latencyThresholdMs: 20000,
     topicsEnabled: false,
     coherenceSweepEnabled: true,
@@ -216,7 +212,6 @@ export async function updateMonitoringDefaults(db: Db, patch: UpdateMonitoringDe
     coverageMode: patch.coverageMode ?? existing.coverageMode,
     sampleRate: patch.sampleRate ?? existing.sampleRate,
     retentionDays: patch.retentionDays ?? existing.retentionDays,
-    redactionMode: patch.redactionMode ?? existing.redactionMode,
     latencyThresholdMs: patch.latencyThresholdMs ?? existing.latencyThresholdMs,
     topicsEnabled: patch.topicsEnabled ?? existing.topicsEnabled,
     coherenceSweepEnabled: patch.coherenceSweepEnabled ?? existing.coherenceSweepEnabled,
