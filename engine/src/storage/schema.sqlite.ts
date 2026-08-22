@@ -40,7 +40,7 @@ export const projects = sqliteTable("projects", {
   // Built-in pattern keys (core/monitor/detect.ts's BUILT_IN_MONITOR_PATTERNS) this project has
   // switched off - the pattern catalog's enable toggle for builtIn rows writes here. Empty/null
   // means all built-ins run (the default).
-  disabledBuiltinPatterns: text("disabled_builtin_patterns", { mode: "json" }),
+  enabledBuiltinPatterns: text("enabled_builtin_patterns", { mode: "json" }),
   // Which auth organization owns this project (AGENTX_AUTH=enabled mode). Null in disabled mode
   // and for pre-auth rows; the first owner signup claims all orgless projects.
   organizationId: text("organization_id"),

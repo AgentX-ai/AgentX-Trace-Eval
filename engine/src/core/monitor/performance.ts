@@ -1,5 +1,5 @@
 import type { Db } from "../../storage/db.js";
-import { listSignalRows } from "./signals.js";
+import { isOperationalKey, listEventsSince } from "./events.js";
 import { getAgentNamesById } from "./agents.js";
 
 // Matches AgentX-web-front's MonitoringHealthRate/MonitoringAgentPerformance/
@@ -8,13 +8,13 @@ export type MonitoringHealthRate = {
   totalRuns: number;
   healthyRuns: number;
   failingRuns: number;
-  systemFailingRuns: number;
-  customFailingRuns: number;
+  operationalFailingRuns: number;
+  scorerFailingRuns: number;
   healthRate: number | null;
 };
 
 function emptyHealthRate(): MonitoringHealthRate {
-  return { totalRuns: 0, healthyRuns: 0, failingRuns: 0, systemFailingRuns: 0, customFailingRuns: 0, healthRate: null };
+  return { totalRuns: 0, healthyRuns: 0, failingRuns: 0, operationalFailingRuns: 0, scorerFailingRuns: 0, healthRate: null };
 }
 
 function finalize(rate: MonitoringHealthRate): MonitoringHealthRate {
@@ -23,42 +23,41 @@ function finalize(rate: MonitoringHealthRate): MonitoringHealthRate {
   return rate;
 }
 
-// Sums the "healthy-response" tally detect.ts's runMonitorCheck now records against
-// failure-polarity signals, per agent and overall - the same underlying rows
-// GET /agent-monitoring/signals reads, just aggregated instead of listed. "proper"-polarity
-// custom pattern matches (a deliberate positive-signal pattern, distinct from the built-in
-// healthy tally) count toward neither side: they're not a failure, but they're not the "nothing
-// went wrong" baseline either.
+// Aggregates the KPI event ledger per agent - the same rows getKpis tallies, just grouped. Reads
+// events rather than Signals: operational outcomes (trace errors, tool failures, empty responses)
+// classify into events WITHOUT raising a Signal (detect.ts's classifyOperational), so a
+// signal-based tally would count an erroring agent as healthy. Evaluator rows (continuous judge
+// ratings / custom-scorer verdicts) are skipped, same as tallyEvent - they aren't run outcomes.
+// "proper"-polarity custom pattern matches count toward neither side: not a failure, but not the
+// "nothing went wrong" baseline either.
 export async function getPerformance(db: Db) {
-  const rows = await listSignalRows(db);
+  const rows = await listEventsSince(db, new Date(0));
   const overall = emptyHealthRate();
   const byAgent = new Map<string, MonitoringHealthRate>();
 
   for (const row of rows) {
+    if (row.onlineEvaluatorId || row.customEvaluatorId) continue;
     if (!row.agentId) continue;
     if (!byAgent.has(row.agentId)) byAgent.set(row.agentId, emptyHealthRate());
     const agentRate = byAgent.get(row.agentId)!;
 
     if (row.patternKey === "healthy-response") {
-      overall.healthyRuns += row.occurrenceCount;
-      agentRate.healthyRuns += row.occurrenceCount;
+      overall.healthyRuns++;
+      agentRate.healthyRuns++;
       continue;
     }
     if (row.polarity !== "failure") {
       continue;
     }
 
-    overall.failingRuns += row.occurrenceCount;
-    agentRate.failingRuns += row.occurrenceCount;
-    // Built-in checks' pattern keys (agent-trace-error, agent-tool-failure:<name>,
-    // empty-agent-response, latency-regression, ...) never start with "custom:" - see
-    // patterns.ts's createPattern, the only place that prefix is assigned.
-    if (row.patternKey.startsWith("custom:")) {
-      overall.customFailingRuns += row.occurrenceCount;
-      agentRate.customFailingRuns += row.occurrenceCount;
+    overall.failingRuns++;
+    agentRate.failingRuns++;
+    if (isOperationalKey(row.patternKey)) {
+      overall.operationalFailingRuns++;
+      agentRate.operationalFailingRuns++;
     } else {
-      overall.systemFailingRuns += row.occurrenceCount;
-      agentRate.systemFailingRuns += row.occurrenceCount;
+      overall.scorerFailingRuns++;
+      agentRate.scorerFailingRuns++;
     }
   }
 

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { startEngine, type TestEngine } from "./server.js";
+import { enableBuiltinScorers, startEngine, type TestEngine } from "./server.js";
 
 // One trace's full journey: ingested by the SDK, listed in Observe, opened in the trace dialog,
 // grouped into a session, and picked up by Monitor's built-in detectors. These run as detached
@@ -9,6 +9,8 @@ let engine: TestEngine;
 
 beforeAll(async () => {
   engine = await startEngine();
+  // Built-in template scorers are opt-in now - this suite exercises them, so switch them on.
+  await enableBuiltinScorers(engine, engine.apiKey);
 }, 90_000);
 
 afterAll(async () => {
@@ -119,30 +121,55 @@ describe("trace lifecycle", () => {
 });
 
 describe("built-in monitor detection", () => {
-  it("raises a tool-failure signal naming the tool", async () => {
+  // Operational outcomes (tool failures, trace errors, empty responses) are not scorers: they
+  // raise no Signal, but every one classifies into the KPI events - asserted here through
+  // top-failing, the same aggregation Overview reads.
+  const topFailingKeys = async (timeoutMs = 10_000): Promise<string[]> => {
+    const res = await engine.json("/api/v1/agent-monitoring/top-failing?window=24h");
+    void timeoutMs;
+    return ((res.body as { patterns?: { patternKey: string }[] }).patterns ?? []).map(p => p.patternKey);
+  };
+  const waitForTopFailing = async (predicate: (keys: string[]) => boolean, timeoutMs = 10_000): Promise<string[]> => {
+    const deadline = Date.now() + timeoutMs;
+    let keys: string[] = [];
+    while (Date.now() < deadline) {
+      keys = await topFailingKeys();
+      if (predicate(keys)) return keys;
+      await new Promise(r => setTimeout(r, 150));
+    }
+    return keys;
+  };
+
+  it("classifies a tool failure into the KPI events, naming the tool, without raising a signal", async () => {
     await ingest({
       name: "tool-agent",
       input: "look up order 42",
       output: "sorry, something went wrong",
       tool_calls: [{ name: "lookup_order", input: { id: 42 }, output: null, success: false }],
     });
-    const signals = await signalsFor(s => (s.patternKey ?? "").startsWith("agent-tool-failure"));
-    expect(signals.length).toBeGreaterThan(0);
-    expect(signals[0]!.patternKey).toBe("agent-tool-failure:lookup_order");
-    expect(signals[0]!.severity).toBe("high");
+    const keys = await waitForTopFailing(k => k.includes("agent-tool-failure:lookup_order"));
+    expect(keys).toContain("agent-tool-failure:lookup_order");
+    const res = await engine.json("/api/v1/agent-monitoring/signals?limit=100");
+    const raised = ((res.body as { signals?: Signal[] }).signals ?? []).filter(s =>
+      (s.patternKey ?? "").startsWith("agent-tool-failure")
+    );
+    expect(raised, "an operational tool failure raised a triage Signal").toEqual([]);
   });
 
-  it("raises a trace-error signal", async () => {
+  it("classifies a trace error into the KPI events without raising a signal", async () => {
     await ingest({ name: "erroring-agent", input: "q", output: "", error: "RateLimitError: slow down" });
-    const signals = await signalsFor(s => s.patternKey === "agent-trace-error");
-    expect(signals.length).toBeGreaterThan(0);
-    expect(signals[0]!.summary).toContain("RateLimitError");
+    const keys = await waitForTopFailing(k => k.includes("agent-trace-error"));
+    expect(keys).toContain("agent-trace-error");
+    const res = await engine.json("/api/v1/agent-monitoring/signals?limit=100");
+    expect(
+      ((res.body as { signals?: Signal[] }).signals ?? []).filter(s => s.patternKey === "agent-trace-error")
+    ).toEqual([]);
   });
 
-  it("raises an empty-response signal", async () => {
+  it("classifies an empty response into the KPI events", async () => {
     await ingest({ name: "silent-agent", input: "hello?", output: "   " });
-    const signals = await signalsFor(s => s.patternKey === "empty-agent-response");
-    expect(signals.length).toBeGreaterThan(0);
+    const keys = await waitForTopFailing(k => k.includes("empty-agent-response"));
+    expect(keys).toContain("empty-agent-response");
   });
 
   it("raises a PII signal for an email address in the response", async () => {

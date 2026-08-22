@@ -240,6 +240,23 @@ export async function startEngine(
 }
 
 /** POST helper for JSON bodies (the engine's own routes are all JSON in / JSON out). */
+// Built-in template scorers are opt-in (nothing runs by default). Only PII exists: operational
+// outcomes are always-on telemetry and user feedback is its own ground-truth stream - see
+// detect.ts's BUILT_IN_MONITOR_PATTERNS comment.
+export const ALL_BUILTIN_PATTERN_KEYS = ["pii-in-response"];
+
+export async function enableBuiltinScorers(engine: TestEngine, apiKey: string): Promise<void> {
+  const res = await engine.request("/api/v1/agent-monitoring/settings/monitoring-defaults", {
+    method: "PUT",
+    body: JSON.stringify({ enabledBuiltinPatterns: ALL_BUILTIN_PATTERN_KEYS }),
+    headers: { "content-type": "application/json" },
+    apiKey,
+  });
+  if (res.status !== 200) {
+    throw new Error(`enableBuiltinScorers failed: ${res.status}`);
+  }
+}
+
 export function postJson(body: unknown): RequestInit {
   return { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } };
 }

@@ -26,14 +26,19 @@ async function resolveAgentxVerdict(db: Db, report: OutcomeReportRow): Promise<b
     if (events.length === 0) {
       return null;
     }
-    // Same "a raised Signal is the one thing pattern/online-evaluator/custom-evaluator detection
-    // all funnel through" primitive core/monitor/events.ts's own getKpis-adjacent code relies on -
-    // reusing signalId here instead of re-deriving polarity/threshold logic per evaluator type
-    // keeps this in sync with however each evaluator kind decides to raise one. The one carve-out:
-    // detect.ts's "healthy-response" tally *also* goes through upsertSignal (one aggregate signal
-    // per agent, see its own comment), so signalId alone can't distinguish "flagged" from "counted
-    // as healthy" - excluded the same way tallyEvent (events.ts) already excludes it.
-    return events.some(e => e.signalId !== null && e.patternKey !== "healthy-response");
+    // Two ways AgentX can have "flagged" a trace: (a) a raised Signal - the funnel every scorer
+    // kind (pattern/online-evaluator/custom-evaluator) goes through, so signalId stays in sync
+    // with however each kind decides to raise one; (b) an operational failure classification
+    // (trace error / failed tool call / empty response, detect.ts's classifyOperational) - a
+    // failure-polarity event with NO signal, since operational outcomes live outside the scorer
+    // system. Evaluator rows are excluded from (b): their events carry failure-agnostic ratings/
+    // verdicts and only count via their signalId. "healthy-response" is excluded the same way
+    // tallyEvent (events.ts) already excludes it - its aggregate signal isn't a flag.
+    return events.some(
+      e =>
+        e.patternKey !== "healthy-response" &&
+        (e.signalId !== null || (!e.onlineEvaluatorId && !e.customEvaluatorId && e.polarity === "failure"))
+    );
   }
   if (report.evaluationRunResultId) {
     const cond = and(

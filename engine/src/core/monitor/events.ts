@@ -213,24 +213,32 @@ function percentile(sorted: number[], p: number): number | null {
   return sorted[index]!;
 }
 
-// Same "custom:" prefix / "healthy-response" special-case classification
-// core/monitor/performance.ts's getPerformance already uses for the all-time aggregate - kept
-// consistent rather than reinvented, just windowed here instead of all-time.
-function isCustomPattern(patternKey: string): boolean {
-  return patternKey.startsWith("custom:");
+// Failure classification for the run-outcome breakdown: operational outcomes are facts the
+// trace itself recorded (detect.ts's classifyOperational - trace errors, tool failures, empty
+// responses; the legacy agent-response-failed / latency-regression keys are grouped here too so
+// historical events classify sanely), everything else failing came from a scorer someone
+// enabled (template patterns, PII, negative feedback). Shared with performance.ts.
+export function isOperationalKey(patternKey: string): boolean {
+  return (
+    patternKey.startsWith("agent-tool-failure") ||
+    patternKey === "agent-trace-error" ||
+    patternKey === "empty-agent-response" ||
+    patternKey === "agent-response-failed" ||
+    patternKey === "latency-regression"
+  );
 }
 
 type WindowedCounts = {
   total: number;
   healthy: number;
   failing: number;
-  systemFailing: number;
-  customFailing: number;
+  operationalFailing: number;
+  scorerFailing: number;
   toolFailing: number;
 };
 
 function emptyCounts(): WindowedCounts {
-  return { total: 0, healthy: 0, failing: 0, systemFailing: 0, customFailing: 0, toolFailing: 0 };
+  return { total: 0, healthy: 0, failing: 0, operationalFailing: 0, scorerFailing: 0, toolFailing: 0 };
 }
 
 function tallyEvent(counts: WindowedCounts, row: EventRow): void {
@@ -246,10 +254,10 @@ function tallyEvent(counts: WindowedCounts, row: EventRow): void {
     return;
   }
   counts.failing++;
-  if (isCustomPattern(row.patternKey)) {
-    counts.customFailing++;
+  if (isOperationalKey(row.patternKey)) {
+    counts.operationalFailing++;
   } else {
-    counts.systemFailing++;
+    counts.scorerFailing++;
   }
   if (row.patternKey.startsWith("agent-tool-failure")) {
     counts.toolFailing++;
@@ -259,6 +267,26 @@ function tallyEvent(counts: WindowedCounts, row: EventRow): void {
 function healthRate(counts: WindowedCounts): number | null {
   const denom = counts.healthy + counts.failing;
   return denom > 0 ? counts.healthy / denom : null;
+}
+
+// Downvote rate: the share of end-user votes (user_feedback rows, POST /feedback) that were
+// "down" in the window. Vote-denominated, not run-denominated - most runs receive no vote at
+// all, and "of the users who reacted, how many were unhappy" is the question the card answers.
+async function feedbackDownvoteRate(db: Db, since: Date, until?: Date): Promise<number | null> {
+  const conditions = [gte(db.schema.userFeedback.createdAt, since), eq(db.schema.userFeedback.projectId, db.projectId)];
+  if (until) {
+    conditions.push(lt(db.schema.userFeedback.createdAt, until));
+  }
+  const cond = and(...conditions);
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select({ rating: db.schema.userFeedback.rating }).from(db.schema.userFeedback).where(cond).all()
+      : await db.db.select({ rating: db.schema.userFeedback.rating }).from(db.schema.userFeedback).where(cond)
+  ) as { rating: string }[];
+  if (rows.length === 0) {
+    return null;
+  }
+  return rows.filter(r => r.rating === "down").length / rows.length;
 }
 
 export type MonitoringKpisResponse = {
@@ -279,8 +307,8 @@ export type MonitoringKpisResponse = {
     totalRuns: number;
     healthyRuns: number;
     failingRuns: number;
-    systemFailingRuns: number;
-    customFailingRuns: number;
+    operationalFailingRuns: number;
+    scorerFailingRuns: number;
     healthRate: number | null;
   };
 };
@@ -319,32 +347,57 @@ export async function getKpis(db: Db, window: MonitoringWindow): Promise<Monitor
   const previousFailureRate = previous.total > 0 ? previous.failing / previous.total : null;
   const currentToolFailureRate = current.total > 0 ? current.toolFailing / current.total : null;
   const previousToolFailureRate = previous.total > 0 ? previous.toolFailing / previous.total : null;
+  const currentDownvoteRate = await feedbackDownvoteRate(db, new Date(boundary));
+  const previousDownvoteRate = await feedbackDownvoteRate(db, new Date(boundary - windowMs), new Date(boundary));
 
   return {
     window,
     totalRuns: current.total,
     healthRate: currentHealthRate,
     failureRate: currentFailureRate,
-    // No native chat UI on self-host to downvote a response from - always null, same convention
-    // as EvaluateTab's out-of-scope fields elsewhere in this engine (omit rather than fake).
-    downvoteRate: null,
+    downvoteRate: currentDownvoteRate,
     toolFailureRate: currentToolFailureRate,
     p95LatencyMs,
     deltas: {
       healthRate: delta(currentHealthRate, previousHealthRate),
       failureRate: delta(currentFailureRate, previousFailureRate),
-      downvoteRate: null,
+      downvoteRate: delta(currentDownvoteRate, previousDownvoteRate),
       toolFailureRate: delta(currentToolFailureRate, previousToolFailureRate),
     },
     breakdown: {
       totalRuns: current.healthy + current.failing,
       healthyRuns: current.healthy,
       failingRuns: current.failing,
-      systemFailingRuns: current.systemFailing,
-      customFailingRuns: current.customFailing,
+      operationalFailingRuns: current.operationalFailing,
+      scorerFailingRuns: current.scorerFailing,
       healthRate: currentHealthRate,
     },
   };
+}
+
+// Per-scorer signal activity for the Scorers page's "Signals · window" column: how many
+// signal-raising events each scorer key produced in the window, plus per-day buckets for the
+// row sparkline. Grouped by FULL patternKey (evaluator keys carry their id; custom pattern keys
+// carry their slug) - only events that actually raised/updated a Signal count, uniformly across
+// pattern, LLM-judge, and custom-scorer kinds.
+export async function getScorerActivity(
+  db: Db,
+  window: MonitoringWindow
+): Promise<{ window: MonitoringWindow; activity: Record<string, { count: number; buckets: number[] }> }> {
+  const { days } = windowConfig(window);
+  const bucketMs = 24 * 60 * 60 * 1000;
+  const since = new Date(Date.now() - days * bucketMs);
+  const rows = await listEventsSince(db, since);
+  const activity: Record<string, { count: number; buckets: number[] }> = {};
+  const start = since.getTime();
+  for (const row of rows) {
+    if (!row.signalId || row.patternKey === "healthy-response") continue;
+    const entry = (activity[row.patternKey] ??= { count: 0, buckets: new Array(days).fill(0) });
+    entry.count++;
+    const bucket = Math.min(days - 1, Math.max(0, Math.floor((row.createdAt.getTime() - start) / bucketMs)));
+    entry.buckets[bucket] = (entry.buckets[bucket] ?? 0) + 1;
+  }
+  return { window, activity };
 }
 
 export type MonitoringTrendPoint = { label: string; ts?: number; healthRate: number | null };

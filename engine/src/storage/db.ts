@@ -963,6 +963,10 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     ["projects", "ALTER TABLE projects ADD COLUMN topics_enabled INTEGER NOT NULL DEFAULT 0"],
     ["projects", "ALTER TABLE projects ADD COLUMN coherence_sweep_enabled INTEGER NOT NULL DEFAULT 1"],
     ["projects", "ALTER TABLE projects ADD COLUMN disabled_builtin_patterns TEXT"],
+    // Scorer opt-in flip: built-ins used to be on-by-default with a disabled list; now nothing
+    // runs unless listed here. The old column is left in place (ignored) rather than migrated -
+    // "everything starts off" is the intended posture for existing installs too.
+    ["projects", "ALTER TABLE projects ADD COLUMN enabled_builtin_patterns TEXT"],
     ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN scope TEXT NOT NULL DEFAULT 'trace'"],
     ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN idle_seconds INTEGER NOT NULL DEFAULT 120"],
     ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN builtin_key TEXT"],
@@ -1892,6 +1896,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS topics_enabled BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS coherence_sweep_enabled BOOLEAN NOT NULL DEFAULT true;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS disabled_builtin_patterns JSONB;
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS enabled_builtin_patterns JSONB;
     ALTER TABLE portability_models ADD COLUMN IF NOT EXISTS organization_id TEXT;
     ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'trace';
     ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS idle_seconds INTEGER NOT NULL DEFAULT 120;

@@ -50,7 +50,13 @@ export async function openTestDb(options: { postgres?: boolean } = {}): Promise<
       await cleanup.end();
     };
   } else {
-    delete process.env.AGENTX_DB_URL;
+    // Point at a temp sqlite file EXPLICITLY rather than deleting AGENTX_DB_URL: storage/db.ts
+    // freezes AGENTX_HOME at module-import time, and this harness's callers statically import
+    // engine modules (which import db.ts) before openTestDb() runs - so the temp AGENTX_HOME set
+    // above arrives too late, and the no-URL fallback would resolve to the REAL ~/.agentx
+    // database. That exact leak filled a developer's live DB with "Retention A/B" projects, one
+    // pair per suite run. AGENTX_DB_URL is read lazily inside initDb(), so it isolates reliably.
+    process.env.AGENTX_DB_URL = `sqlite:${path.join(home, "test.db")}`;
   }
 
   const storage = await import("../storage/db.js");

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { startEngine, type TestEngine } from "./server.js";
+import { enableBuiltinScorers, startEngine, type TestEngine } from "./server.js";
 
 // Overview's headline numbers are computed in JS over the monitor_events log, and the dashboard
 // renders a plausible percentage either way - so this seeds a mix with a known answer. In a
@@ -53,7 +53,7 @@ type Kpis = {
   downvoteRate: number | null;
   p95LatencyMs: number | null;
   deltas: Record<string, number | null>;
-  breakdown: { totalRuns: number; healthyRuns: number; failingRuns: number; systemFailingRuns: number; customFailingRuns: number };
+  breakdown: { totalRuns: number; healthyRuns: number; failingRuns: number; operationalFailingRuns: number; scorerFailingRuns: number };
 };
 
 async function kpis(window = "7d"): Promise<Kpis> {
@@ -67,6 +67,7 @@ beforeAll(async () => {
   const project = await engine.json("/api/v1/projects", post({ name: "KPI project" }, null));
   expect(project.status).toBe(201);
   key = (project.body as { project: { apiKey: string } }).project.apiKey;
+  await enableBuiltinScorers(engine, key);
 
   await seed();
   // The monitor checks run detached from the ingest response; wait for all ten to land.
@@ -102,8 +103,8 @@ describe("KPI arithmetic", () => {
 
   it("attributes built-in failures to the system bucket, not the custom-pattern one", async () => {
     const result = await kpis();
-    expect(result.breakdown.systemFailingRuns).toBe(TOOL_FAILURES + OTHER_FAILURES);
-    expect(result.breakdown.customFailingRuns).toBe(0);
+    expect(result.breakdown.operationalFailingRuns).toBe(TOOL_FAILURES + OTHER_FAILURES);
+    expect(result.breakdown.scorerFailingRuns).toBe(0);
   });
 
   it("keeps every rate inside [0, 1]", async () => {

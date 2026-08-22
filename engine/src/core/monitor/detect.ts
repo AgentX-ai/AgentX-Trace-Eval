@@ -9,26 +9,52 @@ import { extractWebhookUrls, notifyWebhooks } from "./webhooks.js";
 import { matchesAgentScope, passesSampleRate } from "./routing.js";
 import { getMonitoringDefaults } from "../project/projects.js";
 
-// Built-in checks, evaluated in code rather than stored as pattern rows (same list as
-// AgentX-web-api's BUILT_IN_AGENT_MONITORING_PATTERNS). "negative-feedback" is the one entry not
-// detected by this file at all: the feedback API (core/monitor/feedback.ts) raises it directly
-// when an end user downvotes, since the user is the detector - it's listed here so the Signals
-// and Patterns surfaces resolve its name like any other built-in.
+// Built-in template scorers. Deliberately short: operational run outcomes (trace errors, failed
+// tool calls, empty responses, latency) are facts the trace itself records - classified into the
+// KPI tallies by classifyOperational below, always on, never listed here. End-user feedback is a
+// third stream (core/monitor/userFeedback.ts): human ground truth attached to the trace, raising
+// its "negative-feedback" signal directly on a downvote - the user IS the detector, so there is
+// nothing to configure and it isn't a scorer either. A scorer is a judgment call someone opts
+// into; PII detection is currently the only built-in that qualifies.
 export const BUILT_IN_MONITOR_PATTERNS = [
-  { key: "negative-feedback", name: "Negative user feedback", description: "Flags responses the end user explicitly downvoted, reported via the feedback API.", severity: "medium", category: "Reliability" },
-  { key: "agent-response-failed", name: "Failed response", description: "Flags responses explicitly marked as failed.", severity: "high", category: "Reliability" },
-  { key: "agent-trace-error", name: "Trace error", description: "Flags agent runs where the execution trace contains an error.", severity: "high", category: "Tooling" },
-  { key: "agent-tool-failure", name: "Tool failure", description: "Flags failed tool calls recorded in the trace.", severity: "high", category: "Tooling" },
-  { key: "empty-agent-response", name: "Empty agent response", description: "Flags responses where the agent returned no usable text.", severity: "medium", category: "Reliability" },
-  { key: "pii-in-response", name: "PII in response", description: "Flags responses containing what looks like personal data: email addresses, phone numbers, SSNs, or payment card numbers. Regex-based, zero LLM cost.", severity: "high", category: "Safety" },
-  { key: "latency-regression", name: "Latency regression", description: "Flags responses that exceed the configured latency threshold.", severity: "medium", category: "Performance" },
+  { key: "secrets-in-response", name: "Secrets in response", description: "Flags responses containing what looks like a leaked credential: API keys (OpenAI/AWS/GitHub/Slack), bearer tokens, JWTs, or private-key blocks. Regex-based, zero LLM cost.", severity: "critical", category: "Safety", detectorKind: "regex" },
+  { key: "pii-in-response", name: "PII in response", description: "Flags responses containing what looks like personal data: email addresses, phone numbers, SSNs, or payment card numbers. Regex-based, zero LLM cost.", severity: "high", category: "Safety", detectorKind: "regex" },
+  { key: "prompt-injection-echo", name: "Prompt injection echo", description: "Flags responses that repeat known jailbreak/injection phrasings (\"ignore previous instructions\", \"developer mode\", system-prompt disclosure), a sign the agent may be complying with injected instructions.", severity: "high", category: "Safety", detectorKind: "contains" },
+  { key: "profanity-in-response", name: "Profanity in response", description: "Flags responses containing profanity, from a small unambiguous wordlist. Zero LLM cost.", severity: "medium", category: "Safety", detectorKind: "regex" },
+  { key: "refusal-response", name: "Refusal / non-answer", description: "Flags responses that read as a refusal or deflection (\"I can't help with that\", \"I'm unable to...\"). Some refusals are correct behavior - that's a triage decision, this just surfaces them.", severity: "low", category: "Reliability", detectorKind: "contains" },
+  { key: "malformed-json-response", name: "Malformed JSON response", description: "Flags responses that are not parseable JSON. Enable only for agents whose contract is to return JSON - prose responses will (correctly) all flag.", severity: "medium", category: "Reliability", detectorKind: "code" },
 ] as const;
+
+// Human-readable spec of each built-in template's exact rules, derived from the live check
+// tables (SECRET_CHECKS/PII_CHECKS/markers/wordlist) rather than hand-written so the dialog's
+// view stays truthful by construction.
+function builtInRuleSpec(key: string): string[] {
+  switch (key) {
+    case "secrets-in-response":
+      return SECRET_CHECKS.map(check => `${check.kind}: /${check.pattern.source}/`);
+    case "pii-in-response":
+      return PII_CHECKS.map(check => `${check.kind}: /${check.pattern.source}/`);
+    case "prompt-injection-echo":
+      return INJECTION_MARKERS.map(marker => `response contains "${marker}" (case-insensitive)`);
+    case "refusal-response":
+      return REFUSAL_MARKERS.map(marker => `response contains "${marker}" (case-insensitive)`);
+    case "profanity-in-response":
+      return [`response matches /${PROFANITY_PATTERN.source}/i (word-boundary wordlist)`];
+    case "malformed-json-response":
+      return [
+        "JSON.parse(response) must succeed - anything unparseable flags",
+        "structured (non-string) outputs count as already-parsed JSON and always pass",
+      ];
+    default:
+      return [];
+  }
+}
 
 // Shared by the SDK-facing GET /monitor/patterns (routes/monitor.ts) and the dashboard-facing
 // GET /agent-monitoring/patterns (routes/agentMonitoringDashboard.ts), so the built-in list's
 // wire shape has one definition, not two hand-written copies drifting apart.
-export function builtInPatternsWire(disabledKeys: string[] = []) {
-  const disabled = new Set(disabledKeys);
+export function builtInPatternsWire(enabledKeys: string[] = []) {
+  const enabled = new Set(enabledKeys);
   return BUILT_IN_MONITOR_PATTERNS.map(p => ({
     _id: p.key,
     workspaceId: "local",
@@ -37,16 +63,20 @@ export function builtInPatternsWire(disabledKeys: string[] = []) {
     description: p.description,
     category: p.category,
     source: "builtIn" as const,
-    detectorKind: "contains",
+    detectorKind: p.detectorKind,
+    // The exact rules each template checks, human-readable, derived from the live check tables
+    // above/below so the dialog's "how it detects" view can never drift from the detector.
+    ruleSpec: builtInRuleSpec(p.key),
     matchTarget: ["response", "trace"],
     matchMode: "any" as const,
     includeTerms: [] as string[],
     excludeTerms: [] as string[],
     severity: p.severity,
     polarity: "failure" as const,
-    // Toggleable project-wide via PUT /settings/monitoring-defaults' disabledBuiltinPatterns -
-    // readOnly refers to the pattern's definition (name/detector/severity), not its enablement.
-    enabled: !disabled.has(p.key),
+    // Opt-IN project-wide via PUT /settings/monitoring-defaults' enabledBuiltinPatterns - no
+    // template scorer runs until it's switched on. readOnly refers to the pattern's definition
+    // (name/detector/severity), not its enablement.
+    enabled: enabled.has(p.key),
     sampleRate: 1,
     readOnly: true,
   }));
@@ -69,20 +99,17 @@ function detectPiiKinds(text: string): string[] {
   return PII_CHECKS.filter(check => check.pattern.test(text)).map(check => check.kind);
 }
 
-function detectBuiltIn(
-  trace: TraceLike & { latencyMs?: number | null },
-  latencyThresholdMs: number,
-  disabledKeys: Set<string>
-): DetectedSignal | null {
+// Operational run-outcome classification - NOT a scorer. Trace errors, failed tool calls, and
+// empty responses are objective facts the ingested trace itself records; they always classify
+// (no opt-in, no catalog entry, no Signal raised) so the KPI health/failure tallies and the
+// tool-schema evidence loop (core/evaluate/toolSchemas.ts joins on agent-tool-failure:<name>)
+// keep reading reality even when every scorer is switched off. Latency deliberately absent:
+// it's a distribution metric (p95 from the traces table), not a run failure.
+function classifyOperational(trace: TraceLike & { latencyMs?: number | null }): DetectedSignal | null {
   // Checked BEFORE the generic trace-error case: when a tool call fails and its exception
   // escapes the agent loop, the SDK records both (success:false on the call AND the span's own
-  // error), and "which tool failed" is the more specific, actionable classification - it names
-  // the root cause and feeds the tool-schema improvement loop's evidence gathering
-  // (core/evaluate/toolSchemas.ts joins on this patternKey). agent-trace-error remains the
-  // classification for errors with no failed tool call recorded.
-  const failedCall = disabledKeys.has("agent-tool-failure")
-    ? undefined
-    : (trace.toolCalls ?? []).find(call => call.success === false);
+  // error), and "which tool failed" is the more specific, actionable classification.
+  const failedCall = (trace.toolCalls ?? []).find(call => call.success === false);
   if (failedCall) {
     return {
       type: "agent_tool_failure",
@@ -93,7 +120,7 @@ function detectBuiltIn(
     };
   }
 
-  if (trace.error && !disabledKeys.has("agent-trace-error")) {
+  if (trace.error) {
     return {
       type: "agent_trace_error",
       severity: "high",
@@ -104,7 +131,7 @@ function detectBuiltIn(
   }
 
   const responseText = typeof trace.output === "string" ? trace.output.trim() : trace.output ? JSON.stringify(trace.output) : "";
-  if (!responseText && !disabledKeys.has("empty-agent-response")) {
+  if (!responseText) {
     return {
       type: "empty_agent_response",
       severity: "medium",
@@ -113,33 +140,164 @@ function detectBuiltIn(
     };
   }
 
-  // Regex-based PII sniff, zero LLM cost - deliberately conservative patterns (prefixed card
-  // numbers, separator-required phone numbers) so ids/timestamps in agent output don't
-  // false-positive. An agent legitimately ECHOING data the user just provided still flags:
-  // whether that's acceptable is a triage decision, not a detection one.
-  const piiKinds = disabledKeys.has("pii-in-response") ? [] : detectPiiKinds(responseText);
-  if (piiKinds.length > 0) {
-    return {
-      type: "pii_in_response",
-      severity: "high",
-      summary: `The response contains what looks like ${piiKinds.join(" and ")}.`,
-      patternKey: "pii-in-response",
-      rootCause: piiKinds.join(", "),
-    };
-  }
+  return null;
+}
 
-  const latencyMs = trace.latencyMs;
-  if (latencyMs && latencyMs > latencyThresholdMs && !disabledKeys.has("latency-regression")) {
-    return {
-      type: "latency_regression",
-      severity: "medium",
-      summary: `The agent took ${Math.round(latencyMs / 1000)}s to respond, above the ${Math.round(
-        latencyThresholdMs / 1000
-      )}s threshold.`,
-      patternKey: "latency-regression",
-    };
-  }
+// The remaining built-in template detectors, all zero-LLM-cost. Deliberately conservative
+// patterns/wordlists throughout: a built-in that cries wolf gets switched off, and anything
+// project-specific belongs in a custom pattern instead. An agent legitimately ECHOING data the
+// user just provided still flags (PII/secrets): whether that's acceptable is a triage decision,
+// not a detection one.
+const SECRET_CHECKS: { kind: string; pattern: RegExp }[] = [
+  { kind: "an OpenAI-style API key", pattern: /\bsk-[A-Za-z0-9_-]{20,}\b/ },
+  { kind: "an AWS access key id", pattern: /\bAKIA[0-9A-Z]{16}\b/ },
+  { kind: "a GitHub token", pattern: /\bgh[pousr]_[A-Za-z0-9]{36,}\b/ },
+  { kind: "a Slack token", pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/ },
+  { kind: "a bearer token", pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]{25,}/i },
+  { kind: "a JWT", pattern: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/ },
+  { kind: "a private-key block", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
+];
 
+// Response-side echoes of known injection phrasings: an agent REPEATING these usually means an
+// injected instruction made it into (or through) the model. Input-side injection is the user's
+// own prompt - only the response is checked, same as every other built-in.
+const INJECTION_MARKERS = [
+  "ignore previous instructions",
+  "ignore all previous instructions",
+  "disregard your instructions",
+  "disregard all previous instructions",
+  "you are now dan",
+  "do anything now",
+  "developer mode enabled",
+  "my system prompt is",
+  "my instructions are as follows",
+];
+
+const REFUSAL_MARKERS = [
+  "i can't help with that",
+  "i cannot help with that",
+  "i can't assist with",
+  "i cannot assist with",
+  "i'm unable to help",
+  "i am unable to help",
+  "i'm not able to help",
+  "i cannot provide that",
+  "i can't provide that",
+  "i'm sorry, but i can't",
+  "i'm sorry, but i cannot",
+];
+
+// Small and unambiguous on purpose - words that are profanity in any register. Milder words that
+// double as ordinary usage ("damn", "hell", names) are excluded; extend per project with a
+// custom pattern instead.
+const PROFANITY_PATTERN = /\b(?:mother)?fuck\w*\b|\bshit\w*\b|\basshole\w*\b|\bbitch\w*\b|\bbastard\w*\b|\bcunt\w*\b|\bdickhead\w*\b|\bdumbass\w*\b/i;
+
+function containedMarker(text: string, markers: string[]): string | null {
+  const lower = text.toLowerCase();
+  return markers.find(marker => lower.includes(marker)) ?? null;
+}
+
+// Ordered most-specific/most-severe first: first match wins, one detection per trace, same
+// contract as the custom-pattern sweep this short-circuits ahead of. malformed-json-response is
+// deliberately last - it's the most generic check, everything else is more actionable.
+const BUILT_IN_DETECTORS: { key: string; detect: (trace: TraceLike, responseText: string) => DetectedSignal | null }[] = [
+  {
+    key: "secrets-in-response",
+    detect: (_trace, responseText) => {
+      const hits = SECRET_CHECKS.filter(check => check.pattern.test(responseText)).map(check => check.kind);
+      if (hits.length === 0) return null;
+      return {
+        type: "secrets_in_response",
+        severity: "critical",
+        summary: `The response contains what looks like ${hits.join(" and ")}.`,
+        patternKey: "secrets-in-response",
+        rootCause: hits.join(", "),
+      };
+    },
+  },
+  {
+    key: "pii-in-response",
+    detect: (_trace, responseText) => {
+      const piiKinds = detectPiiKinds(responseText);
+      if (piiKinds.length === 0) return null;
+      return {
+        type: "pii_in_response",
+        severity: "high",
+        summary: `The response contains what looks like ${piiKinds.join(" and ")}.`,
+        patternKey: "pii-in-response",
+        rootCause: piiKinds.join(", "),
+      };
+    },
+  },
+  {
+    key: "prompt-injection-echo",
+    detect: (_trace, responseText) => {
+      const marker = containedMarker(responseText, INJECTION_MARKERS);
+      if (!marker) return null;
+      return {
+        type: "prompt_injection_echo",
+        severity: "high",
+        summary: `The response repeats a known injection phrasing ("${marker}") - the agent may be complying with injected instructions.`,
+        patternKey: "prompt-injection-echo",
+        rootCause: marker,
+      };
+    },
+  },
+  {
+    key: "profanity-in-response",
+    detect: (_trace, responseText) => {
+      const match = PROFANITY_PATTERN.exec(responseText);
+      if (!match) return null;
+      return {
+        type: "profanity_in_response",
+        severity: "medium",
+        summary: "The response contains profanity.",
+        patternKey: "profanity-in-response",
+        rootCause: match[0],
+      };
+    },
+  },
+  {
+    key: "refusal-response",
+    detect: (_trace, responseText) => {
+      const marker = containedMarker(responseText, REFUSAL_MARKERS);
+      if (!marker) return null;
+      return {
+        type: "refusal_response",
+        severity: "low",
+        summary: `The response reads as a refusal or deflection ("${marker}").`,
+        patternKey: "refusal-response",
+        rootCause: marker,
+      };
+    },
+  },
+  {
+    key: "malformed-json-response",
+    detect: (trace, responseText) => {
+      // A structured (non-string) output is already parsed JSON by definition.
+      if (typeof trace.output !== "string") return null;
+      try {
+        JSON.parse(responseText);
+        return null;
+      } catch {
+        return {
+          type: "malformed_json_response",
+          severity: "medium",
+          summary: "The response is not parseable JSON.",
+          patternKey: "malformed-json-response",
+        };
+      }
+    },
+  },
+];
+
+function detectBuiltIn(trace: TraceLike, enabledKeys: Set<string>): DetectedSignal | null {
+  const responseText = typeof trace.output === "string" ? trace.output.trim() : trace.output ? JSON.stringify(trace.output) : "";
+  for (const detector of BUILT_IN_DETECTORS) {
+    if (!enabledKeys.has(detector.key)) continue;
+    const detected = detector.detect(trace, responseText);
+    if (detected) return detected;
+  }
   return null;
 }
 
@@ -266,10 +424,30 @@ export async function runMonitorCheck(
       }
     }
   } else {
+    // Operational classification first (always on): an erroring/failed run is recorded as a KPI
+    // event and nothing else - no Signal, no scorer involved. Only operationally-clean traces go
+    // on to scorer detection, mirroring the old built-in-then-custom short-circuit order so each
+    // checked trace still produces exactly one classification event.
+    const operational = profile?.failureDetectionEnabled === false ? null : classifyOperational(trace);
+    if (operational) {
+      await recordEvent(db, {
+        signalId: null,
+        patternKey: operational.patternKey,
+        type: operational.type,
+        severity: operational.severity,
+        polarity: "failure",
+        agentId,
+        traceId: ctx.traceId ?? null,
+      });
+      if (profile) {
+        await pruneRetentionData(db, agentId, defaults.retentionDays);
+      }
+      return;
+    }
     const builtIn =
       profile?.failureDetectionEnabled === false
         ? null
-        : detectBuiltIn(trace, defaults.latencyThresholdMs, new Set(defaults.disabledBuiltinPatterns));
+        : detectBuiltIn(trace, new Set(defaults.enabledBuiltinPatterns));
     detected = builtIn ?? (await detectCustomPatterns(db, trace, agentId, ctx.traceId ?? null));
   }
 

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { startEngine, type TestEngine } from "./server.js";
+import { enableBuiltinScorers, startEngine, type TestEngine } from "./server.js";
 
 // Judge Calibration compares each reported real-world outcome against the verdict AgentX had
 // already recorded. A confusion matrix computed the wrong way round outputs a confident percentage
@@ -53,6 +53,7 @@ beforeAll(async () => {
   const project = await engine.json("/api/v1/projects", post({ name: "Calibration project" }, null));
   expect(project.status).toBe(201);
   key = (project.body as { project: { apiKey: string } }).project.apiKey;
+  await enableBuiltinScorers(engine, key);
 }, 90_000);
 
 afterAll(async () => {
@@ -145,6 +146,7 @@ describe("judge calibration", () => {
   it("computes agreement, false positives and false negatives from reported reality", async () => {
     const fresh = await engine.json("/api/v1/projects", post({ name: "Matrix project" }, null));
     const matrixKey = (fresh.body as { project: { apiKey: string } }).project.apiKey;
+    await enableBuiltinScorers(engine, matrixKey);
 
     const ingestTo = async (body: Record<string, unknown>) => {
       const res = await engine.json("/api/v1/ingest/traces", post(body, matrixKey));
@@ -203,6 +205,7 @@ describe("judge calibration", () => {
   it("reports nulls rather than a fabricated score when nothing has been reported", async () => {
     const fresh = await engine.json("/api/v1/projects", post({ name: "Quiet calibration project" }, null));
     const quietKey = (fresh.body as { project: { apiKey: string } }).project.apiKey;
+    await enableBuiltinScorers(engine, quietKey);
     const res = await engine.json("/api/v1/agent-monitoring/calibration", { apiKey: quietKey });
     expect(res.body).toMatchObject({
       reportedCount: 0,
@@ -216,6 +219,7 @@ describe("judge calibration", () => {
   it("keeps one project's outcome reports out of another's calibration", async () => {
     const fresh = await engine.json("/api/v1/projects", post({ name: "Isolated calibration project" }, null));
     const otherKey = (fresh.body as { project: { apiKey: string } }).project.apiKey;
+    await enableBuiltinScorers(engine, otherKey);
     const traceId = await ingest({ name: "cal-agent", input: "q", output: "a" });
     await reportOutcome({ traceId, outcome: "reviewed", isNegative: true });
 

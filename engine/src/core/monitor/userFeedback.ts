@@ -5,10 +5,11 @@ import { getTraceRow } from "../trace/ingest.js";
 import { upsertSignal } from "./signals.js";
 import { createOutcomeReport } from "../outcomes/outcomeReports.js";
 
-// End-user feedback on a traced response - the missing SDK/OTel equivalent of the native chat
-// UI's downvote (see detect.ts's BUILT_IN_MONITOR_PATTERNS comment). The customer's app forwards
-// its own users' votes here; a "down" raises the "negative-feedback" signal directly, since the
-// user IS the detector - no sampling, no judge call, no pattern to configure.
+// End-user feedback on a traced response - human ground truth, the third stream next to
+// operational facts and scorer verdicts (see detect.ts's BUILT_IN_MONITOR_PATTERNS comment).
+// The customer's app forwards its own users' votes here; a "down" raises the "negative-feedback"
+// signal directly, since the user IS the detector - no sampling, no judge call, nothing to
+// configure, and deliberately no catalog entry: it is not a scorer anyone opts into.
 //
 // Every report also dual-writes an outcome report (outcome "user_thumbs_up"/"user_thumbs_down"),
 // so Judge Calibration measures AgentX's own verdicts against real human reactions with zero

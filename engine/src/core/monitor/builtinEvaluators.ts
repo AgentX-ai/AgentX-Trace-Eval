@@ -53,7 +53,9 @@ export async function ensureSessionBaselineJudge(db: Db): Promise<void> {
     evaluationSettingsId: settings._id,
     sampleRate: 1,
     scopeMode: "all",
-    enabled: project?.coherenceSweepEnabled ?? true,
+    // Scorers are opt-in: the baseline judge is created PAUSED and only runs once someone
+    // switches it on (it also stays off for installs that had disabled the old coherence toggle).
+    enabled: false,
     // Low-severity signal below 5: it's now a real evaluator, so a genuinely incoherent session
     // reaches the Signal inbox instead of only a table cell - at the lowest severity tier since
     // it's a baseline check, not the user's own quality bar.

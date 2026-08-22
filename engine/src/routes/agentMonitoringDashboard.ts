@@ -5,7 +5,7 @@ import { scopedDb } from "../auth/apiKey.js";
 import { createPattern, updatePattern, deletePattern, listPatternsWire, legacyPayloadToConditions } from "../core/monitor/patterns.js";
 import { builtInPatternsWire } from "../core/monitor/detect.js";
 import { validateConditionRegexes } from "../core/monitor/regexSafety.js";
-import { listSignals, getSignal, updateSignal } from "../core/monitor/signals.js";
+import { listSignals, getSignal, updateSignal, signalCountsByPatternKey } from "../core/monitor/signals.js";
 import { updateProfile, listProfilesWire } from "../core/monitor/profiles.js";
 import {
   listAgentsWire,
@@ -29,6 +29,7 @@ import {
   getCustomEvaluatorEvents,
   listTraceEvaluations,
   type MonitoringWindow,
+  getScorerActivity,
 } from "../core/monitor/events.js";
 import { getTopicsTrend, getTopIntents, getIssueBreakdown, getTopicsMap } from "../core/monitor/topics.js";
 import { getJudgeCalibration } from "../core/monitor/outcomeCalibration.js";
@@ -138,11 +139,20 @@ agentMonitoringDashboardRouter.get("/overview/attention", async (req: Request, r
 });
 
 agentMonitoringDashboardRouter.get("/patterns", async (req: Request, res: Response) => {
-  const [custom, defaults] = await Promise.all([
+  const [custom, defaults, signalCounts] = await Promise.all([
     listPatternsWire(scopedDb(req)),
     getMonitoringDefaults(scopedDb(req)),
+    signalCountsByPatternKey(scopedDb(req)),
   ]);
-  res.status(200).json({ patterns: [...builtInPatternsWire(defaults.disabledBuiltinPatterns), ...custom] });
+  // The catalog's Signals column: attach per-key tallies to built-in and custom rows alike
+  // (both key spaces are what signals record as patternKey).
+  const withCounts = <T extends { key: string }>(row: T) => {
+    const counts = signalCounts.get(row.key) ?? { total: 0, open: 0 };
+    return { ...row, totalSignals: counts.total, openSignals: counts.open };
+  };
+  res.status(200).json({
+    patterns: [...builtInPatternsWire(defaults.enabledBuiltinPatterns).map(withCounts), ...custom.map(withCounts)],
+  });
 });
 
 agentMonitoringDashboardRouter.post("/patterns", async (req: Request, res: Response) => {
@@ -314,6 +324,11 @@ agentMonitoringDashboardRouter.get("/kpis", async (req: Request, res: Response) 
 
 agentMonitoringDashboardRouter.get("/trend", async (req: Request, res: Response) => {
   res.status(200).json(await getTrend(scopedDb(req), parseWindow(req)));
+});
+
+// Per-scorer signal activity (count + daily buckets) for the Scorers page's payoff column.
+agentMonitoringDashboardRouter.get("/scorer-activity", async (req: Request, res: Response) => {
+  res.status(200).json(await getScorerActivity(scopedDb(req), parseWindow(req)));
 });
 
 agentMonitoringDashboardRouter.get("/top-failing", async (req: Request, res: Response) => {
@@ -1093,7 +1108,7 @@ agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: 
     latencyThresholdMs?: number;
     topicsEnabled?: boolean;
     coherenceSweepEnabled?: boolean;
-    disabledBuiltinPatterns?: string[];
+    enabledBuiltinPatterns?: string[];
   } = {};
   if (typeof body.coverageMode === "string") patch.coverageMode = body.coverageMode;
   if (typeof body.sampleRate === "number") patch.sampleRate = body.sampleRate;
@@ -1102,8 +1117,8 @@ agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: 
   if (typeof body.latencyThresholdMs === "number") patch.latencyThresholdMs = body.latencyThresholdMs;
   if (typeof body.topicsEnabled === "boolean") patch.topicsEnabled = body.topicsEnabled;
   if (typeof body.coherenceSweepEnabled === "boolean") patch.coherenceSweepEnabled = body.coherenceSweepEnabled;
-  if (Array.isArray(body.disabledBuiltinPatterns)) {
-    patch.disabledBuiltinPatterns = (body.disabledBuiltinPatterns as unknown[]).filter(
+  if (Array.isArray(body.enabledBuiltinPatterns)) {
+    patch.enabledBuiltinPatterns = (body.enabledBuiltinPatterns as unknown[]).filter(
       (k): k is string => typeof k === "string"
     );
   }

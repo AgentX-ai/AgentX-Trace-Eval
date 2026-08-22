@@ -8,7 +8,7 @@ import { createAgent } from "./agents.js";
 import { createPattern } from "./patterns.js";
 import { updateProfile } from "./profiles.js";
 import { runMonitorCheck } from "./detect.js";
-import { listSignalRows } from "./signals.js";
+import { listEventsSince } from "./events.js";
 import type { PatternCondition } from "./conditions.js";
 
 // Real (temporary) SQLite rather than mocks: what's under test is which rows the detection path
@@ -40,12 +40,11 @@ const REFUND_TRACE = { input: "where is my money", output: "the refund was denie
 
 const N = 200;
 
-// Signals dedupe per (patternKey, agentId), so occurrenceCount is "how many traces got monitored".
+// One KPI event is recorded per monitored trace (operational classification raises no Signal),
+// so counting event rows counts "how many traces got monitored".
 async function monitoredCount(patternKey: string, agentId: string | null): Promise<number> {
-  const rows = await listSignalRows(db);
-  return rows
-    .filter(row => row.patternKey === patternKey && row.agentId === agentId)
-    .reduce((total, row) => total + row.occurrenceCount, 0);
+  const rows = await listEventsSince(db, new Date(0));
+  return rows.filter(row => row.patternKey === patternKey && row.agentId === agentId).length;
 }
 
 async function runN(n: number, trace: typeof FAILING_TRACE, ctx: { agentId: string | null; patternIds?: string[] }): Promise<void> {

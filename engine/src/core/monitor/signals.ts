@@ -211,6 +211,24 @@ export async function upsertSignal(
   return toWire(updated, [], undefined, await getAgentNamesById(db, [updated.agentId]));
 }
 
+// Per-scorer signal tallies for the catalog's Signals column: how many signal rows each
+// pattern/template key has raised (dedup unit: one row per patternKey+agent) and how many are
+// still open. Sub-keyed detections ("some-key:<detail>") roll up under their base key. The
+// healthy tally and "proper" positive matches are not failures, so they don't count.
+export async function signalCountsByPatternKey(db: Db): Promise<Map<string, { total: number; open: number }>> {
+  const rows = await listSignalRows(db);
+  const counts = new Map<string, { total: number; open: number }>();
+  for (const row of rows) {
+    if (row.polarity !== "failure" || row.patternKey === "healthy-response") continue;
+    const baseKey = row.patternKey.split(":")[0]!;
+    const entry = counts.get(baseKey) ?? { total: 0, open: 0 };
+    entry.total++;
+    if (row.status === "open" || row.status === "reopened") entry.open++;
+    counts.set(baseKey, entry);
+  }
+  return counts;
+}
+
 export async function listSignalRows(db: Db): Promise<SignalRow[]> {
   const cond = eq(db.schema.monitorSignals.projectId, db.projectId);
   const rows =

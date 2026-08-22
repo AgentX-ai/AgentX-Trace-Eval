@@ -44,8 +44,8 @@ async function seedExampleMonitorDataIfEmpty(db: Db): Promise<void> {
   //   1. an agentic tool-use trace: root -> LLM planning call -> tool call -> LLM answer,
   //   2. a RAG trace: root -> retrieval (kind-marked, chunk outputs) -> LLM answer,
   //   3. a failure trace: the escalation tool times out and the agent returns nothing -
-  //      trips the built-in Tool-failure and Empty-agent-response checks, so Monitor starts
-  //      with real signals pointing at a trace whose timeline shows the broken step.
+  //      classified operationally (tool failure) into the KPI tallies, so Overview starts with
+  //      real failure metrics pointing at a trace whose timeline shows the broken step.
   // Children are sent before their root, the same order the SDK emits.
   const base = Date.now() - 10 * 60 * 1000;
   const nano = (offsetMs: number) => String((base + offsetMs) * 1_000_000);

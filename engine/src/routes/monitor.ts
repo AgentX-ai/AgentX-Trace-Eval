@@ -18,7 +18,7 @@ import {
   deleteOnlineEvaluator,
   InvalidEvaluationSettingsIdError,
 } from "../core/monitor/onlineEvaluators.js";
-import { getOnlineEvaluatorRatings, getOnlineEvaluatorEvents, type MonitoringWindow } from "../core/monitor/events.js";
+import { getKpis, getOnlineEvaluatorRatings, getOnlineEvaluatorEvents, type MonitoringWindow } from "../core/monitor/events.js";
 
 // Mounted at /api/v1/monitor, matching AgentX-Python's MonitorClient base URL
 // (agentx/monitor/client.py appends "/monitor" to AGENTX_API_BASE_URL if not already present).
@@ -81,7 +81,7 @@ monitorRouter.get("/patterns", async (req: Request, res: Response) => {
     listPatternsWire(scopedDb(req)),
     getMonitoringDefaults(scopedDb(req)),
   ]);
-  res.status(200).json({ patterns: [...builtInPatternsWire(defaults.disabledBuiltinPatterns), ...custom] });
+  res.status(200).json({ patterns: [...builtInPatternsWire(defaults.enabledBuiltinPatterns), ...custom] });
 });
 
 monitorRouter.get("/patterns/:id", async (req: Request, res: Response) => {
@@ -233,6 +233,12 @@ monitorRouter.delete("/online-evaluators/:id", async (req: Request, res: Respons
     return;
   }
   res.status(204).send();
+});
+
+// SDK-facing mirror of the dashboard's GET /agent-monitoring/kpis (same computation, same wire
+// shape) - lets scripts read health/failure/downvote/latency metrics without dashboard routes.
+monitorRouter.get("/kpis", async (req: Request, res: Response) => {
+  res.status(200).json(await getKpis(scopedDb(req), parseWindow(req)));
 });
 
 monitorRouter.get("/online-evaluators/:id/ratings", async (req: Request, res: Response) => {

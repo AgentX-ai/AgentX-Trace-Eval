@@ -111,36 +111,25 @@ describe("project monitoring settings", () => {
     expect(JSON.stringify(afterB.body), "one project's settings leaked into another").not.toContain("1234");
   });
 
-  it("applies the project's own latency threshold when detecting a slow response", async () => {
-    const project = await newProject("Latency threshold project");
-    await engine.json("/api/v1/agent-monitoring/settings/monitoring-defaults", {
-      ...post({ latencyThresholdMs: 500 }, project.apiKey),
-      method: "PUT",
-    });
-
+  it("reports latency as a KPI metric from the traces themselves - no scorer involved", async () => {
+    // Latency is a distribution metric now (p95 from the traces table), never a signal - the
+    // latency-regression scorer was removed with the rest of the operational built-ins.
+    const project = await newProject("Latency metric project");
     await engine.json("/api/v1/ingest/traces", post({ name: "slow-agent", input: "q", output: "an answer", latency_ms: 900 }, project.apiKey));
 
     const deadline = Date.now() + 15_000;
-    let signal: unknown;
-    while (Date.now() < deadline && !signal) {
-      const res = await engine.json("/api/v1/agent-monitoring/signals?limit=100", { apiKey: project.apiKey });
-      signal = ((res.body as { signals?: { patternKey?: string }[] }).signals ?? []).find(s => s.patternKey === "latency-regression");
-      if (!signal) await new Promise(r => setTimeout(r, 150));
+    let p95: number | null = null;
+    while (Date.now() < deadline && p95 === null) {
+      const res = await engine.json("/api/v1/agent-monitoring/kpis?window=24h", { apiKey: project.apiKey });
+      p95 = (res.body as { p95LatencyMs: number | null }).p95LatencyMs;
+      if (p95 === null) await new Promise(r => setTimeout(r, 150));
     }
-    expect(signal, "a 900ms response did not trip a 500ms threshold").toBeTruthy();
-  }, 40_000);
+    expect(p95, "trace latency never reached the KPI metric").toBe(900);
 
-  it("does not flag a response that sits under the project's threshold", async () => {
-    const project = await newProject("Fast enough project");
-    await engine.json("/api/v1/agent-monitoring/settings/monitoring-defaults", {
-      ...post({ latencyThresholdMs: 5_000 }, project.apiKey),
-      method: "PUT",
-    });
-    await engine.json("/api/v1/ingest/traces", post({ name: "brisk-agent", input: "q", output: "an answer", latency_ms: 900 }, project.apiKey));
-    await new Promise(r => setTimeout(r, 1_500));
-
-    const res = await engine.json("/api/v1/agent-monitoring/signals?limit=100", { apiKey: project.apiKey });
-    const flagged = ((res.body as { signals?: { patternKey?: string }[] }).signals ?? []).filter(s => s.patternKey === "latency-regression");
-    expect(flagged).toEqual([]);
+    const signals = await engine.json("/api/v1/agent-monitoring/signals?limit=100", { apiKey: project.apiKey });
+    const flagged = ((signals.body as { signals?: { patternKey?: string }[] }).signals ?? []).filter(
+      s => s.patternKey === "latency-regression"
+    );
+    expect(flagged, "latency raised a signal despite not being a scorer").toEqual([]);
   }, 40_000);
 });
