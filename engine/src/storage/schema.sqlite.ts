@@ -17,13 +17,12 @@ export const projects = sqliteTable("projects", {
   isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
   // Project-level monitoring defaults (formerly per-agent AgentMonitoringProfile fields - see
   // core/monitor/profiles.ts's toWire comment): apply uniformly to every agent in this project.
-  // monitor_profiles keeps its own coverageMode/sampleRate/retentionDays/redactionMode columns for
+  // monitor_profiles keeps its own coverageMode/sampleRate/retentionDays columns for
   // SDK wire-compat, but nothing reads them for behavior anymore - these are the real source of
   // truth as of the project-level Settings screen.
   coverageMode: text("coverage_mode").notNull().default("all"),
   sampleRate: real("sample_rate").notNull().default(1),
   retentionDays: integer("retention_days").notNull().default(30),
-  redactionMode: text("redaction_mode").notNull().default("standard"),
   latencyThresholdMs: integer("latency_threshold_ms").notNull().default(20000),
   // Topics classification opt-in (core/monitor/topics.ts's runClassification) - moved here from
   // monitor_profiles.topicsEnabled, the last per-agent monitoring setting left behind when the
@@ -323,8 +322,7 @@ export const monitorProfiles = sqliteTable(
     coverageMode: text("coverage_mode").notNull().default("all"),
     sampleRate: real("sample_rate").notNull().default(1),
     retentionDays: integer("retention_days").notNull().default(30),
-    redactionMode: text("redaction_mode").notNull().default("standard"),
-    // e.g. { latencyMs: 15000 } to override the built-in "Latency regression" pattern's default.
+      // e.g. { latencyMs: 15000 } to override the built-in "Latency regression" pattern's default.
     thresholdOverrides: text("threshold_overrides", { mode: "json" }),
     approvalPolicy: text("approval_policy", { mode: "json" }),
     // Notification channel ids, e.g. ["slack:#alerts"] - self-host has no notification delivery

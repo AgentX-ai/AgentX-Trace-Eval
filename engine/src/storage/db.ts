@@ -326,7 +326,6 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       coverage_mode TEXT NOT NULL DEFAULT 'all',
       sample_rate REAL NOT NULL DEFAULT 1,
       retention_days INTEGER NOT NULL DEFAULT 30,
-      redaction_mode TEXT NOT NULL DEFAULT 'standard',
       latency_threshold_ms INTEGER NOT NULL DEFAULT 20000,
       created_at INTEGER NOT NULL
     );
@@ -500,7 +499,6 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       coverage_mode TEXT NOT NULL DEFAULT 'all',
       sample_rate REAL NOT NULL DEFAULT 1,
       retention_days INTEGER NOT NULL DEFAULT 30,
-      redaction_mode TEXT NOT NULL DEFAULT 'standard',
       threshold_overrides TEXT,
       approval_policy TEXT,
       channels TEXT,
@@ -952,7 +950,6 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     ["projects", "ALTER TABLE projects ADD COLUMN coverage_mode TEXT NOT NULL DEFAULT 'all'"],
     ["projects", "ALTER TABLE projects ADD COLUMN sample_rate REAL NOT NULL DEFAULT 1"],
     ["projects", "ALTER TABLE projects ADD COLUMN retention_days INTEGER NOT NULL DEFAULT 30"],
-    ["projects", "ALTER TABLE projects ADD COLUMN redaction_mode TEXT NOT NULL DEFAULT 'standard'"],
     ["projects", "ALTER TABLE projects ADD COLUMN latency_threshold_ms INTEGER NOT NULL DEFAULT 20000"],
     // Prompt-caching token counts (core/trace/ingest.ts's ingestTraceSchema) - subsets of
     // input_tokens, priced separately by estimateCostUSD when configured.
@@ -1297,7 +1294,6 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       coverage_mode TEXT NOT NULL DEFAULT 'all',
       sample_rate DOUBLE PRECISION NOT NULL DEFAULT 1,
       retention_days INTEGER NOT NULL DEFAULT 30,
-      redaction_mode TEXT NOT NULL DEFAULT 'standard',
       latency_threshold_ms INTEGER NOT NULL DEFAULT 20000,
       created_at TIMESTAMP NOT NULL
     );
@@ -1471,7 +1467,6 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       coverage_mode TEXT NOT NULL DEFAULT 'all',
       sample_rate DOUBLE PRECISION NOT NULL DEFAULT 1,
       retention_days INTEGER NOT NULL DEFAULT 30,
-      redaction_mode TEXT NOT NULL DEFAULT 'standard',
       threshold_overrides JSONB,
       approval_policy JSONB,
       channels JSONB,
@@ -1899,7 +1894,6 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS coverage_mode TEXT NOT NULL DEFAULT 'all';
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS sample_rate DOUBLE PRECISION NOT NULL DEFAULT 1;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS retention_days INTEGER NOT NULL DEFAULT 30;
-    ALTER TABLE projects ADD COLUMN IF NOT EXISTS redaction_mode TEXT NOT NULL DEFAULT 'standard';
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS latency_threshold_ms INTEGER NOT NULL DEFAULT 20000;
     ALTER TABLE traces ADD COLUMN IF NOT EXISTS cache_read_tokens INTEGER;
     ALTER TABLE traces ADD COLUMN IF NOT EXISTS cache_write_tokens INTEGER;

@@ -110,7 +110,6 @@ monitorRouter.put("/profiles/:agentId", async (req: Request, res: Response) => {
     coverageMode: body.coverageMode,
     sampleRate: body.sampleRate,
     retentionDays: body.retentionDays,
-    redactionMode: body.redactionMode,
     thresholdOverrides: body.thresholdOverrides,
     approvalPolicy: body.approvalPolicy,
   });

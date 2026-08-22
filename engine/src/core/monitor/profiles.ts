@@ -21,7 +21,6 @@ export type ProfileRow = {
   coverageMode: string;
   sampleRate: number;
   retentionDays: number;
-  redactionMode: string;
   thresholdOverrides: Record<string, unknown> | null;
   approvalPolicy: Record<string, string> | null;
   channels: string[] | null;
@@ -35,7 +34,7 @@ export type ProfileRow = {
 // keeps the dashboard's settings dialog rendering sensibly instead of needing a self-host-only
 // branch there.
 //
-// coverageMode/sampleRate/retentionDays/redactionMode/thresholdOverrides.latencyMs are no longer
+// coverageMode/sampleRate/retentionDays/thresholdOverrides.latencyMs are no longer
 // read from `row` for any actual behavior (see core/project/projects.ts's MonitoringDefaults) -
 // they moved to project-level Settings. Still returned here, overlaid from `defaults`, so the SDK
 // and any remaining per-agent reader see the *effective* values rather than a stale per-agent copy
@@ -54,7 +53,6 @@ function toWire(row: ProfileRow, defaults: MonitoringDefaults) {
     sampleRate: defaults.sampleRate,
     channels: row.channels ?? [],
     retentionDays: defaults.retentionDays,
-    redactionMode: defaults.redactionMode,
     thresholdOverrides: { ...(row.thresholdOverrides ?? {}), latencyMs: defaults.latencyThresholdMs },
     billingMode: "credits" as const,
     pausedForCredits: false,
@@ -91,7 +89,6 @@ export type UpdateProfileInput = Partial<{
   coverageMode: string;
   sampleRate: number;
   retentionDays: number;
-  redactionMode: string;
   thresholdOverrides: Record<string, unknown>;
   approvalPolicy: Record<string, string>;
   channels: string[];
@@ -115,7 +112,6 @@ export async function updateProfile(db: Db, agentId: string, patch: UpdateProfil
       coverageMode: patch.coverageMode ?? "all",
       sampleRate: patch.sampleRate ?? 1,
       retentionDays: patch.retentionDays ?? 30,
-      redactionMode: patch.redactionMode ?? "standard",
       thresholdOverrides: patch.thresholdOverrides ?? null,
       approvalPolicy: patch.approvalPolicy ?? null,
       channels: patch.channels ?? null,
@@ -139,7 +135,6 @@ export async function updateProfile(db: Db, agentId: string, patch: UpdateProfil
     coverageMode: patch.coverageMode ?? existing.coverageMode,
     sampleRate: patch.sampleRate ?? existing.sampleRate,
     retentionDays: patch.retentionDays ?? existing.retentionDays,
-    redactionMode: patch.redactionMode ?? existing.redactionMode,
     thresholdOverrides: patch.thresholdOverrides
       ? { ...(existing.thresholdOverrides ?? {}), ...patch.thresholdOverrides }
       : existing.thresholdOverrides,
@@ -155,7 +150,6 @@ export async function updateProfile(db: Db, agentId: string, patch: UpdateProfil
     coverageMode: updated.coverageMode,
     sampleRate: updated.sampleRate,
     retentionDays: updated.retentionDays,
-    redactionMode: updated.redactionMode,
     thresholdOverrides: updated.thresholdOverrides,
     approvalPolicy: updated.approvalPolicy,
     channels: updated.channels,

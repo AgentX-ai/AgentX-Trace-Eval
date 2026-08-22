@@ -288,7 +288,6 @@ agentMonitoringDashboardRouter.put("/profiles/:agentId", async (req: Request, re
     coverageMode: body.coverageMode,
     sampleRate: body.sampleRate,
     retentionDays: body.retentionDays,
-    redactionMode: body.redactionMode,
     thresholdOverrides: body.thresholdOverrides,
     channels: body.channels,
   });
@@ -1198,7 +1197,7 @@ agentMonitoringDashboardRouter.get("/settings", async (req: Request, res: Respon
   });
 });
 
-// Project-level monitoring defaults (coverage/sample rate/retention/redaction/latency threshold -
+// Project-level monitoring defaults (coverage/sample rate/retention -
 // see core/project/projects.ts's MonitoringDefaults) - moved here from being per-agent
 // AgentMonitoringProfile fields, see core/monitor/profiles.ts's toWire comment.
 agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: Request, res: Response) => {
@@ -1207,7 +1206,6 @@ agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: 
     coverageMode?: string;
     sampleRate?: number;
     retentionDays?: number;
-    redactionMode?: string;
     latencyThresholdMs?: number;
     topicsEnabled?: boolean;
     coherenceSweepEnabled?: boolean;
@@ -1216,7 +1214,6 @@ agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: 
   if (typeof body.coverageMode === "string") patch.coverageMode = body.coverageMode;
   if (typeof body.sampleRate === "number") patch.sampleRate = body.sampleRate;
   if (typeof body.retentionDays === "number") patch.retentionDays = body.retentionDays;
-  if (typeof body.redactionMode === "string") patch.redactionMode = body.redactionMode;
   if (typeof body.latencyThresholdMs === "number") patch.latencyThresholdMs = body.latencyThresholdMs;
   if (typeof body.topicsEnabled === "boolean") patch.topicsEnabled = body.topicsEnabled;
   if (typeof body.coherenceSweepEnabled === "boolean") patch.coherenceSweepEnabled = body.coherenceSweepEnabled;
