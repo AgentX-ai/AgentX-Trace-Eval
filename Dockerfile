@@ -60,7 +60,9 @@ RUN mkdir -p /web && tar -xzf /tmp/agentx-web.tar.gz -C /web && rm /tmp/agentx-w
 FROM debian:bookworm-slim
 # ca-certificates: the engine calls out to OpenAI/Anthropic/Gemini over HTTPS for judge scoring.
 # curl: used by the HEALTHCHECK below.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+# python3: the Python variant of Code scorers (core/monitor/scriptScorer.ts) runs user scripts in
+# a python3 subprocess - without it those scorers report "python3 was not found" per check.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl python3 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --home-dir /data --shell /usr/sbin/nologin agentx
 

@@ -336,6 +336,10 @@ export const customEvaluators = pgTable("custom_evaluators", {
   enabled: boolean("enabled").notNull().default(true),
   invertMatch: boolean("invert_match").notNull().default(false),
   severity: text("severity").notNull().default("medium"),
+  kind: text("kind").notNull().default("external"),
+  language: text("language"),
+  script: text("script"),
+  alertBelow: doublePrecision("alert_below"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
   projectId: text("project_id"),
 });

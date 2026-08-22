@@ -3,6 +3,8 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { matchesAgentScope, passesSampleRate } from "./routing.js";
 import { recordEvent } from "./events.js";
+import { loadScorerSpans, runScriptScorer, type ScorerSpan } from "./scriptScorer.js";
+import { getTraceRow } from "../trace/ingest.js";
 import { upsertSignal } from "./signals.js";
 
 // Promoted out of core/monitor/conditions.ts's Pattern-condition "external" detector - same
@@ -13,7 +15,8 @@ import { upsertSignal } from "./signals.js";
 // standalone evaluator just gets the whole trace every time.
 export type CreateCustomEvaluatorInput = {
   name: string;
-  url: string;
+  // External kind: the endpoint. Code kind: unused (empty string stored).
+  url?: string;
   sampleRate?: number;
   scopeMode?: string;
   agentIds?: string[];
@@ -23,6 +26,13 @@ export type CreateCustomEvaluatorInput = {
   // the old per-condition `negate` flag from the Pattern builder it was extracted from.
   invertMatch?: boolean;
   severity?: string;
+  // "external" (default, HTTP endpoint) or "code" (user script run in-engine).
+  kind?: string;
+  // Code kind: "javascript" | "python", and the script body defining `handler`.
+  language?: string;
+  script?: string;
+  // Code kind: a returned score below this raises a Signal (0..1, default 0.5).
+  alertBelow?: number;
 };
 
 export type UpdateCustomEvaluatorInput = Partial<CreateCustomEvaluatorInput>;
@@ -38,6 +48,10 @@ export type CustomEvaluatorRow = {
   enabled: boolean;
   invertMatch: boolean;
   severity: string;
+  kind: string;
+  language: string | null;
+  script: string | null;
+  alertBelow: number | null;
   createdAt: Date;
 };
 
@@ -52,8 +66,17 @@ function toWire(row: CustomEvaluatorRow) {
     enabled: row.enabled,
     invertMatch: row.invertMatch,
     severity: row.severity,
+    kind: row.kind,
+    language: row.language ?? undefined,
+    script: row.script ?? undefined,
+    alertBelow: row.alertBelow ?? undefined,
     createdAt: row.createdAt.toISOString(),
   };
+}
+
+function clampAlertBelow(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0.5;
+  return Math.max(0, Math.min(1, value));
 }
 
 export async function createCustomEvaluator(db: Db, input: CreateCustomEvaluatorInput) {
@@ -61,16 +84,20 @@ export async function createCustomEvaluator(db: Db, input: CreateCustomEvaluator
     id: nanoid(),
     projectId: db.projectId,
     name: input.name,
-    url: input.url,
+    url: input.url ?? "",
     // Same reasoning as Online Evaluators' default: every check is a real outbound HTTP call
-    // against a URL the user controls, so sampling isn't optional the way it arguably is for a
-    // free phrase/regex match.
+    // (external) or a script execution (code), so sampling isn't optional the way it arguably
+    // is for a free phrase/regex match.
     sampleRate: input.sampleRate ?? 0.1,
     scopeMode: input.scopeMode ?? "all",
     agentIds: input.agentIds ?? null,
     enabled: input.enabled ?? true,
     invertMatch: input.invertMatch ?? false,
     severity: input.severity ?? "medium",
+    kind: input.kind === "code" ? "code" : "external",
+    language: input.kind === "code" ? (input.language === "python" ? "python" : "javascript") : null,
+    script: input.kind === "code" ? input.script ?? null : null,
+    alertBelow: input.kind === "code" ? clampAlertBelow(input.alertBelow) : null,
     createdAt: new Date(),
   };
   if (db.kind === "sqlite") {
@@ -123,6 +150,10 @@ export async function updateCustomEvaluator(db: Db, id: string, input: UpdateCus
     enabled: input.enabled ?? existing.enabled,
     invertMatch: input.invertMatch ?? existing.invertMatch,
     severity: input.severity ?? existing.severity,
+    // kind is immutable after creation - an external scorer doesn't become a code scorer.
+    language: existing.kind === "code" && input.language ? (input.language === "python" ? "python" : "javascript") : existing.language,
+    script: existing.kind === "code" && input.script !== undefined ? input.script : existing.script,
+    alertBelow: existing.kind === "code" && input.alertBelow !== undefined ? clampAlertBelow(input.alertBelow) : existing.alertBelow,
   };
   const setValues = {
     name: updated.name,
@@ -133,6 +164,9 @@ export async function updateCustomEvaluator(db: Db, id: string, input: UpdateCus
     enabled: updated.enabled,
     invertMatch: updated.invertMatch,
     severity: updated.severity,
+    language: updated.language,
+    script: updated.script,
+    alertBelow: updated.alertBelow,
   };
   const updateCond = and(eq(db.schema.customEvaluators.id, id), eq(db.schema.customEvaluators.projectId, db.projectId));
   if (db.kind === "sqlite") {
@@ -163,12 +197,37 @@ export async function deleteCustomEvaluator(db: Db, id: string): Promise<boolean
 // through: a Custom Evaluator always sees the whole trace).
 // ---------------------------------------------------------------------------
 
+// Contract v2: the external scorer sees the FULL traced span, not a four-field summary. The
+// legacy keys (input/output/error/toolCalls) keep their exact positions inside `trace` so v1
+// consumers keep working; everything else the tracer records rides alongside them, and the
+// trace's own span subtree (root first, start-time ordered, each with a derived `type` of
+// llm/tool/retrieval/span) arrives as `spans`. schemaVersion identifies the shape.
 export type CustomEvaluatorRequest = {
+  schemaVersion: 2;
   evaluatorId: string | null;
   evaluatorName: string;
   agentId: string | null;
   traceId: string | null;
-  trace: { input: unknown; output: unknown; error: string | null; toolCalls: unknown };
+  trace: {
+    input: unknown;
+    output: unknown;
+    error: string | null;
+    toolCalls: unknown;
+    name: string | null;
+    model: string | null;
+    framework: string | null;
+    sessionId: string | null;
+    spanId: string | null;
+    latencyMs: number | null;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    cacheReadTokens: number | null;
+    cacheWriteTokens: number | null;
+    metadata: unknown;
+    startedAt: string | null;
+    createdAt: string | null;
+  };
+  spans: ScorerSpan[];
 };
 
 // `score` is optional metadata, not a second way to decide the verdict - `matches` alone still
@@ -226,15 +285,26 @@ export async function runCustomEvaluators(
   ctx: { agentId: string | null; traceId: string | null }
 ): Promise<void> {
   const evaluators = await listCustomEvaluatorRows(db);
+  const active = evaluators.filter(e => e.enabled && matchesAgentScope(e, ctx.agentId));
+  if (active.length === 0) return;
 
-  for (const evaluator of evaluators) {
-    if (!evaluator.enabled) continue;
-    if (!matchesAgentScope(evaluator, ctx.agentId)) continue;
+  // Loaded once per trace, shared by every scorer that runs on it: the full stored row (for the
+  // v2 external payload) and the span subtree (for both kinds).
+  const row = ctx.traceId ? await getTraceRow(db, ctx.traceId) : undefined;
+  const spans = await loadScorerSpans(db, ctx.traceId);
+
+  for (const evaluator of active) {
     if (!passesSampleRate(evaluator.sampleRate)) continue;
+
+    if (evaluator.kind === "code") {
+      await runCodeKind(db, evaluator, trace, spans, ctx);
+      continue;
+    }
 
     let result: CustomEvaluatorResponse;
     try {
       result = await callCustomEvaluator(evaluator.url, {
+        schemaVersion: 2,
         evaluatorId: evaluator.id,
         evaluatorName: evaluator.name,
         agentId: ctx.agentId,
@@ -244,7 +314,21 @@ export async function runCustomEvaluators(
           output: trace.output ?? null,
           error: trace.error ?? null,
           toolCalls: trace.toolCalls ?? null,
+          name: row?.name ?? null,
+          model: row?.model ?? null,
+          framework: row?.framework ?? null,
+          sessionId: row?.sessionId ?? null,
+          spanId: row?.spanId ?? null,
+          latencyMs: row?.latencyMs ?? null,
+          inputTokens: row?.inputTokens ?? null,
+          outputTokens: row?.outputTokens ?? null,
+          cacheReadTokens: row?.cacheReadTokens ?? null,
+          cacheWriteTokens: row?.cacheWriteTokens ?? null,
+          metadata: row?.metadata ?? null,
+          startedAt: row?.startedAt ? row.startedAt.toISOString() : null,
+          createdAt: row?.createdAt ? row.createdAt.toISOString() : null,
         },
+        spans,
       });
     } catch (err) {
       // One dead endpoint must not skip every other evaluator after it for this trace - isolated
@@ -294,4 +378,84 @@ export async function runCustomEvaluators(
       justification: result.reason ?? null,
     });
   }
+}
+
+// The Code kind: run the user's script in-engine (core/monitor/scriptScorer.ts) and translate
+// its 0..1 score into the same signal/event stream the external kind feeds. A null score (the
+// handler returned null/None, or the script failed) records nothing signal-worthy: failures log
+// an event with the error as justification so the evaluator's history shows them, but never
+// raise a Signal - a broken scorer is an operator problem, not an agent problem.
+async function runCodeKind(
+  db: Db,
+  evaluator: CustomEvaluatorRow,
+  trace: ScorableTrace,
+  spans: ScorerSpan[],
+  ctx: { agentId: string | null; traceId: string | null }
+): Promise<void> {
+  const result = await runScriptScorer(
+    { name: evaluator.name, language: evaluator.language ?? "javascript", script: evaluator.script ?? "" },
+    {
+      input: trace.input ?? null,
+      output: trace.output ?? null,
+      expected: null,
+      metadata: (trace as { metadata?: unknown }).metadata ?? null,
+      spans,
+    }
+  );
+
+  if (result.error) {
+    console.error(`Code scorer "${evaluator.name}" failed:`, result.error);
+    await recordEvent(db, {
+      signalId: null,
+      patternKey: `custom-eval:${evaluator.id}`,
+      type: "custom_eval_check",
+      severity: "low",
+      polarity: "score",
+      agentId: ctx.agentId,
+      traceId: ctx.traceId,
+      customEvaluatorId: evaluator.id,
+      matched: null,
+      score: null,
+      justification: `scorer error: ${result.error}`,
+    });
+    return;
+  }
+  if (result.score === null) {
+    // Handler chose to skip this trace - by contract, no event, no signal.
+    return;
+  }
+
+  const threshold = evaluator.alertBelow ?? 0.5;
+  const hit = result.score < threshold;
+  const displayName = result.name ?? evaluator.name;
+  let signalId: string | null = null;
+  if (hit) {
+    const signal = await upsertSignal(
+      db,
+      {
+        type: "custom_evaluator_match",
+        severity: evaluator.severity,
+        polarity: "failure",
+        summary: `"${displayName}" scored this response ${result.score.toFixed(2)}, below the ${threshold.toFixed(2)} alert threshold`,
+        patternKey: `custom-eval:${evaluator.id}`,
+        rootCause: evaluator.name,
+      },
+      { agentId: ctx.agentId, traceId: ctx.traceId, evidence: { input: trace.input, output: trace.output } }
+    );
+    signalId = signal._id;
+  }
+
+  await recordEvent(db, {
+    signalId,
+    patternKey: `custom-eval:${evaluator.id}`,
+    type: "custom_eval_check",
+    severity: "low",
+    polarity: "score",
+    agentId: ctx.agentId,
+    traceId: ctx.traceId,
+    customEvaluatorId: evaluator.id,
+    matched: hit,
+    score: result.score,
+    justification: result.metadata !== undefined ? JSON.stringify(result.metadata).slice(0, 2000) : null,
+  });
 }

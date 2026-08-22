@@ -599,6 +599,10 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       enabled INTEGER NOT NULL DEFAULT 1,
       invert_match INTEGER NOT NULL DEFAULT 0,
       severity TEXT NOT NULL DEFAULT 'medium',
+      kind TEXT NOT NULL DEFAULT 'external',
+      language TEXT,
+      script TEXT,
+      alert_below REAL,
       created_at INTEGER NOT NULL,
       project_id TEXT
     );
@@ -967,6 +971,12 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     // runs unless listed here. The old column is left in place (ignored) rather than migrated -
     // "everything starts off" is the intended posture for existing installs too.
     ["projects", "ALTER TABLE projects ADD COLUMN enabled_builtin_patterns TEXT"],
+    // Code scorers: a second custom-scorer kind (user script run in-engine) next to the original
+    // HTTP-endpoint kind, now called "external".
+    ["custom_evaluators", "ALTER TABLE custom_evaluators ADD COLUMN kind TEXT NOT NULL DEFAULT 'external'"],
+    ["custom_evaluators", "ALTER TABLE custom_evaluators ADD COLUMN language TEXT"],
+    ["custom_evaluators", "ALTER TABLE custom_evaluators ADD COLUMN script TEXT"],
+    ["custom_evaluators", "ALTER TABLE custom_evaluators ADD COLUMN alert_below REAL"],
     ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN scope TEXT NOT NULL DEFAULT 'trace'"],
     ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN idle_seconds INTEGER NOT NULL DEFAULT 120"],
     ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN builtin_key TEXT"],
@@ -1558,6 +1568,10 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       enabled BOOLEAN NOT NULL DEFAULT true,
       invert_match BOOLEAN NOT NULL DEFAULT false,
       severity TEXT NOT NULL DEFAULT 'medium',
+      kind TEXT NOT NULL DEFAULT 'external',
+      language TEXT,
+      script TEXT,
+      alert_below DOUBLE PRECISION,
       created_at TIMESTAMP NOT NULL,
       project_id TEXT
     );
@@ -1897,6 +1911,10 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS coherence_sweep_enabled BOOLEAN NOT NULL DEFAULT true;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS disabled_builtin_patterns JSONB;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS enabled_builtin_patterns JSONB;
+    ALTER TABLE custom_evaluators ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'external';
+    ALTER TABLE custom_evaluators ADD COLUMN IF NOT EXISTS language TEXT;
+    ALTER TABLE custom_evaluators ADD COLUMN IF NOT EXISTS script TEXT;
+    ALTER TABLE custom_evaluators ADD COLUMN IF NOT EXISTS alert_below DOUBLE PRECISION;
     ALTER TABLE portability_models ADD COLUMN IF NOT EXISTS organization_id TEXT;
     ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'trace';
     ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS idle_seconds INTEGER NOT NULL DEFAULT 120;

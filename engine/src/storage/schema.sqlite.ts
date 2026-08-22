@@ -510,6 +510,13 @@ export const customEvaluators = sqliteTable("custom_evaluators", {
   // `negate` flag from the Pattern builder this was extracted from.
   invertMatch: integer("invert_match", { mode: "boolean" }).notNull().default(false),
   severity: text("severity").notNull().default("medium"),
+  // "external" (HTTP endpoint, the original kind - url is the contract) or "code" (user script
+  // run in-engine - language/script/alertBelow are the contract, url unused).
+  kind: text("kind").notNull().default("external"),
+  language: text("language"),
+  script: text("script"),
+  // Code kind only: a returned score below this raises a Signal (0..1, default 0.5).
+  alertBelow: real("alert_below"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   projectId: text("project_id"),
 });

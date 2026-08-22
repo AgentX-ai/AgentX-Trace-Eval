@@ -60,7 +60,9 @@ import {
   deleteCustomEvaluator,
   listCustomEvaluatorsWire,
   callCustomEvaluator,
+  type CustomEvaluatorRequest,
 } from "../core/monitor/customEvaluators.js";
+import { runScriptScorer } from "../core/monitor/scriptScorer.js";
 import { getPortabilityPreview, runModelPortabilityCheck } from "../core/evaluate/portability.js";
 import {
   listPortabilityModels,
@@ -672,7 +674,17 @@ agentMonitoringDashboardRouter.post("/custom-evaluators", async (req: Request, r
     res.status(400).json({ error: "Custom evaluator name is required" });
     return;
   }
-  if (!isValidHttpUrl(body.url)) {
+  const isCode = body.kind === "code";
+  if (isCode) {
+    if (typeof body.script !== "string" || !body.script.trim()) {
+      res.status(400).json({ error: "A code scorer needs a script defining handler(...)" });
+      return;
+    }
+    if (body.language !== "javascript" && body.language !== "python") {
+      res.status(400).json({ error: 'language must be "javascript" or "python"' });
+      return;
+    }
+  } else if (!isValidHttpUrl(body.url)) {
     res.status(400).json({ error: "A valid http:// or https:// url is required" });
     return;
   }
@@ -685,6 +697,10 @@ agentMonitoringDashboardRouter.post("/custom-evaluators", async (req: Request, r
     enabled: body.enabled,
     invertMatch: body.invertMatch,
     severity: body.severity,
+    kind: body.kind,
+    language: body.language,
+    script: body.script,
+    alertBelow: body.alertBelow,
   });
   res.status(201).json({ evaluator });
 });
@@ -704,6 +720,9 @@ agentMonitoringDashboardRouter.put("/custom-evaluators/:evaluatorId", async (req
     enabled: body.enabled,
     invertMatch: body.invertMatch,
     severity: body.severity,
+    language: body.language,
+    script: body.script,
+    alertBelow: body.alertBelow,
   });
   if (!evaluator) {
     res.status(404).json({ error: "Custom evaluator not found" });
@@ -735,25 +754,109 @@ agentMonitoringDashboardRouter.get("/custom-evaluators/:evaluatorId/events", asy
 // endpoint is an expected, common outcome here, not a server error.
 agentMonitoringDashboardRouter.post("/custom-evaluators/dry-run", async (req: Request, res: Response) => {
   const body = req.body ?? {};
+  const sampleInput = "Sample user question: Can you help me reset my password?";
+  const sampleOutput =
+    "Sample assistant response: Sure - I can help with that. Go to Settings > Security and click " +
+    "\"Reset password\". You'll get an email with a reset link that's valid for 24 hours.";
+  const sampleSpans = [
+    {
+      span_id: "dry-root",
+      parent_span_id: null,
+      name: "dry-run-agent",
+      type: "span",
+      input: sampleInput,
+      output: sampleOutput,
+      error: null,
+      model: null,
+      latency_ms: 1450,
+      input_tokens: null,
+      output_tokens: null,
+      tool_calls: null,
+      metadata: null,
+      started_at: null,
+    },
+    {
+      span_id: "dry-llm",
+      parent_span_id: "dry-root",
+      name: "LLM Call 1",
+      type: "llm",
+      input: sampleInput,
+      output: sampleOutput,
+      error: null,
+      model: "gpt-4o-mini",
+      latency_ms: 900,
+      input_tokens: 220,
+      output_tokens: 64,
+      tool_calls: null,
+      metadata: null,
+      started_at: null,
+    },
+  ];
+  const startedAt = Date.now();
+
+  // Code kind: execute the script against the same sample the external dry run sends.
+  if (body.kind === "code") {
+    if (typeof body.script !== "string" || !body.script.trim()) {
+      res.status(400).json({ error: "A code scorer needs a script defining handler(...)" });
+      return;
+    }
+    const result = await runScriptScorer(
+      {
+        name: typeof body.name === "string" ? body.name : "Dry run",
+        language: body.language === "python" ? "python" : "javascript",
+        script: body.script,
+      },
+      { input: sampleInput, output: sampleOutput, expected: null, metadata: {}, spans: sampleSpans }
+    );
+    if (result.error) {
+      res.status(200).json({ ok: false, error: result.error, latencyMs: Date.now() - startedAt });
+      return;
+    }
+    res.status(200).json({
+      ok: true,
+      latencyMs: Date.now() - startedAt,
+      // Shaped like the external response so the dialog renders both kinds the same way:
+      // "matches" here means "would raise a signal at the given threshold".
+      response: {
+        matches: result.score !== null && result.score < (typeof body.alertBelow === "number" ? body.alertBelow : 0.5),
+        score: result.score ?? undefined,
+        reason: result.score === null ? "handler returned null - trace skipped" : undefined,
+      },
+    });
+    return;
+  }
+
   if (!isValidHttpUrl(body.url)) {
     res.status(400).json({ error: "A valid http:// or https:// url is required" });
     return;
   }
-  const samplePayload = {
+  const samplePayload: CustomEvaluatorRequest = {
+    schemaVersion: 2,
     evaluatorId: null,
     evaluatorName: typeof body.name === "string" && body.name.trim() ? body.name : "Dry run",
     agentId: null,
     traceId: null,
     trace: {
-      input: "Sample user question: Can you help me reset my password?",
-      output:
-        "Sample assistant response: Sure - I can help with that. Go to Settings > Security and click " +
-        "\"Reset password\". You'll get an email with a reset link that's valid for 24 hours.",
+      input: sampleInput,
+      output: sampleOutput,
       error: null,
       toolCalls: [],
+      name: "dry-run-agent",
+      model: null,
+      framework: null,
+      sessionId: null,
+      spanId: "dry-root",
+      latencyMs: 1450,
+      inputTokens: null,
+      outputTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      metadata: null,
+      startedAt: null,
+      createdAt: null,
     },
+    spans: sampleSpans,
   };
-  const startedAt = Date.now();
   try {
     // callCustomEvaluator only distinguishes ok/not-ok (any non-2xx throws with the status folded
     // into the error message) rather than surfacing the exact status code - good enough for this
