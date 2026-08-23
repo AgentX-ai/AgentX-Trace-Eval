@@ -377,15 +377,30 @@ describe.skipIf(!postgresAvailable)("Postgres-specific behaviour", () => {
   }, 60_000);
 
   it("counts every simultaneous detection into one signal, losing none", async () => {
-    // Detection runs in detached post-ingest work, so a burst of failing traces all reach
+    // Detection runs in detached post-ingest work, so a burst of flagged traces all reach
     // upsertSignal having seen no existing signal row. Before this was made atomic, one insert
     // violated monitor_signals_pattern_key_agent_id and that trace's detection was dropped with
     // only a log line, while the survivors each wrote back a count they had read a moment
     // earlier - twelve detections were reported as five.
+    //
+    // The scorers redesign retired this test's original trigger: trace errors are operational
+    // KPI events now, not signals ("no signals" by design), and the remaining built-in scorers
+    // are opt-in via enabledBuiltinPatterns - nothing runs until enabled. The atomicity this
+    // test guards is unchanged, so it now opts a live scorer in and bursts through that.
+    const enable = await engine.request("/api/v1/agent-monitoring/settings/monitoring-defaults", {
+      method: "PUT",
+      body: JSON.stringify({ enabledBuiltinPatterns: ["pii-in-response"] }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(enable.status, JSON.stringify(enable.body)).toBe(200);
+
     const count = 12;
     await Promise.all(
       Array.from({ length: count }, (_, i) =>
-        engine.json("/api/v1/ingest/traces", post({ name: "pg-signal-agent", span_id: `pg-sig-${i}`, input: "q", output: "", error: "Boom" }))
+        engine.json(
+          "/api/v1/ingest/traces",
+          post({ name: "pg-signal-agent", span_id: `pg-sig-${i}`, input: "q", output: "reach me at pg-burst@example.com" })
+        )
       )
     );
 
@@ -394,7 +409,7 @@ describe.skipIf(!postgresAvailable)("Postgres-specific behaviour", () => {
     while (Date.now() < deadline) {
       const res = await engine.json("/api/v1/agent-monitoring/signals?limit=100&polarity=all");
       rows = ((res.body as { signals?: { patternKey?: string; occurrenceCount?: number }[] }).signals ?? []).filter(
-        s => s.patternKey === "agent-trace-error"
+        s => s.patternKey === "pii-in-response"
       );
       if (rows[0] && (rows[0].occurrenceCount ?? 0) >= count) break;
       await new Promise(r => setTimeout(r, 250));
