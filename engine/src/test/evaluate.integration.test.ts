@@ -162,6 +162,27 @@ describe("evaluation run loop", () => {
     }
   });
 
+  it("carries _id alongside runId, like every sibling resource", async () => {
+    // datasets and evaluation-settings rows key on _id; runs historically keyed on runId
+    // (which the Python SDK aliases, so it stays). Both must be present and equal, on the
+    // single-run read and on every list row - a consumer iterating mixed resources reads
+    // _id everywhere without special-casing runs.
+    const one = await engine.json(`/api/v1/custom-agent-evaluations/runs/${runId}`);
+    expect(one.status).toBe(200);
+    const single = one.body as { _id?: string; runId?: string };
+    expect(single._id, "single run carries _id").toBe(runId);
+    expect(single.runId, "runId stays for the SDK").toBe(runId);
+
+    const list = await engine.json("/api/v1/custom-agent-evaluations/runs");
+    expect(list.status).toBe(200);
+    const rows = (list.body as { runs?: { _id?: string; runId?: string }[] }).runs ?? [];
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row._id, "list row carries _id").toBeTypeOf("string");
+      expect(row.runId, "list row keeps runId").toBe(row._id);
+    }
+  });
+
   it("finalizes the run", async () => {
     const finalized = await engine.json(`/api/v1/custom-agent-evaluations/runs/${runId}/finalize`, { method: "POST" });
     expect(finalized.status, JSON.stringify(finalized.body)).toBe(200);

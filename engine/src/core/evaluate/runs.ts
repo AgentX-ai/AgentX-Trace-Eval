@@ -718,6 +718,11 @@ export async function getRun(db: Db, runId: string) {
   }));
 
   return {
+    // Every other /custom-agent-evaluations resource keys on _id (datasets.ts,
+    // evaluationSettings.ts, ...); runs historically keyed on runId, which the
+    // Python SDK's models alias and therefore must keep. Carry both, equal, so
+    // a consumer iterating mixed resources can read _id everywhere.
+    _id: run.id,
     runId: run.id,
     datasetId: run.datasetId,
     evaluationSettingsId: run.evaluationSettingsId,
@@ -1234,7 +1239,7 @@ export async function listRuns(db: Db, limit = 50) {
   return Promise.all(
     rows.slice(0, limit).map(async row => {
       const summary = await getRun(db, row.id);
-      return summary ?? { runId: row.id, datasetId: row.datasetId, status: row.status, resultCount: 0, averageRating: null };
+      return summary ?? { _id: row.id, runId: row.id, datasetId: row.datasetId, status: row.status, resultCount: 0, averageRating: null };
     })
   );
 }
