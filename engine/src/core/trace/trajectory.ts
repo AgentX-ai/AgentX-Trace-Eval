@@ -268,3 +268,71 @@ export async function getTraceRetrievalContext(db: Db, traceId: string): Promise
   const joined = chunks.map((c, i) => `[retrieval ${i + 1}] ${c}`).join("\n\n");
   return joined.length > MAX_CONTEXT_CHARS ? `${joined.slice(0, MAX_CONTEXT_CHARS)}\n... (truncated)` : joined;
 }
+
+// ---------------------------------------------------------------------------
+// Trace-captured tool catalog
+// ---------------------------------------------------------------------------
+
+// The SDK's LLM auto-instrumentation (OpenAI/Anthropic/Google GenAI/LiteLLM patches, the
+// LangChain handler - see AgentX-Python's integrations/_traced_call.py capture_tool_definitions)
+// records each request's full `tools=[...]` list into the span's metadata.tools: names,
+// descriptions, and complete parameter schemas, exactly as the model saw them on THAT call.
+// For a judge grading tool choice this beats the registry catalog outright - no drift, no
+// registration step - so the includeToolCatalog assembly prefers it and only falls back to
+// core/evaluate/toolSchemas.ts's renderToolCatalog when the trace carries no definitions
+// (manual tracer.trace() calls, OTel spans from non-SDK exporters).
+const CATALOG_MAX_TOOLS = 20;
+const CATALOG_MAX_DEFINITION = 600;
+
+function toolDefName(def: unknown): string | null {
+  if (!def || typeof def !== "object") return null;
+  const d = def as { name?: unknown; function?: { name?: unknown } };
+  // OpenAI shape nests under .function; Anthropic/Google are flat.
+  const name = d.function?.name ?? d.name;
+  return typeof name === "string" && name ? name : null;
+}
+
+function metadataTools(metadata: unknown): unknown[] {
+  if (!metadata || typeof metadata !== "object") return [];
+  const tools = (metadata as { tools?: unknown }).tools;
+  return Array.isArray(tools) ? tools : [];
+}
+
+export async function renderTraceToolCatalog(db: Db, traceId: string): Promise<string | null> {
+  const cond = and(eq(db.schema.traces.id, traceId), eq(db.schema.traces.projectId, db.projectId));
+  const rows =
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.traces).where(cond).all()
+      : await db.db.select().from(db.schema.traces).where(cond);
+  const root = rows[0] as { spanId: string | null; sessionId: string | null; metadata: unknown } | undefined;
+  if (!root) return null;
+
+  // Root first (the promoted copy), then any subtree LLM spans' own captures.
+  const collected: unknown[] = [...metadataTools(root.metadata)];
+  if (root.spanId && root.sessionId) {
+    const spans = (await listSessionSpans(db, root.sessionId)) as SpanWire[];
+    for (const span of spans) {
+      collected.push(...metadataTools(span.metadata));
+    }
+  }
+  if (collected.length === 0) return null;
+
+  // Dedupe by tool name (the same list repeats on every LLM call of an agent loop).
+  const byName = new Map<string, unknown>();
+  for (const def of collected) {
+    const name = toolDefName(def);
+    if (name && !byName.has(name)) byName.set(name, def);
+  }
+  if (byName.size === 0) return null;
+
+  const lines: string[] = [];
+  for (const [name, def] of [...byName.entries()].slice(0, CATALOG_MAX_TOOLS)) {
+    const text = JSON.stringify(def).replace(/\s+/g, " ");
+    const truncated = text.length > CATALOG_MAX_DEFINITION ? `${text.slice(0, CATALOG_MAX_DEFINITION)}...` : text;
+    lines.push(`- ${name}: ${truncated}`);
+  }
+  if (byName.size > CATALOG_MAX_TOOLS) {
+    lines.push(`... ${byName.size - CATALOG_MAX_TOOLS} more tools omitted`);
+  }
+  return `The tools this agent's LLM calls actually advertised (captured from the trace - the exact menu the model saw):\n${lines.join("\n")}`;
+}

@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
 import { renderToolCatalog } from "./toolSchemas.js";
+import { renderTraceToolCatalog } from "../trace/trajectory.js";
 import { eq, and, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import {
@@ -281,6 +282,14 @@ type ScoredResult = { rating: number | null; justification: string; judgeError: 
   };
 
 async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: SubmittedResult, toolCatalog?: string | null): Promise<ScoredResult> {
+  // Trace-captured tool definitions (metadata.tools from the linked trace's LLM calls) beat
+  // the registry fallback the batch resolved - exact menu, zero drift. Gated on the config
+  // flag, not on the fallback being non-null: an empty registry must not disable the
+  // trace-captured path.
+  const itemToolCatalog =
+    config.includeToolCatalog && item.traceId
+      ? ((await renderTraceToolCatalog(db, item.traceId).catch(() => null)) ?? toolCatalog)
+      : toolCatalog;
   const question = item.questionIndex != null ? config.questions[item.questionIndex] : undefined;
   const mainQ = question?.main_question;
   const expected = mainQ?.expectedResults;
@@ -322,7 +331,7 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
       // context first, then linked-trace retrievals, then the case's pinned chunks.
       context: retrievalContext,
       trajectory: trajectory ?? undefined,
-      toolCatalog: toolCatalog ?? undefined,
+      toolCatalog: itemToolCatalog ?? undefined,
     }).then(
       result => ({ ...result, judgeError: null as Error | null }),
       (err: unknown) => ({

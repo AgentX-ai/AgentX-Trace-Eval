@@ -10,7 +10,7 @@ import {
   getEvaluationSettingsRow,
   isDatasetTwinSettingsId,
 } from "../evaluate/evaluationSettings.js";
-import { renderTraceTrajectory, getTraceRetrievalContext } from "../trace/trajectory.js";
+import { renderTraceTrajectory, renderTraceToolCatalog, getTraceRetrievalContext } from "../trace/trajectory.js";
 import { renderToolCatalog } from "../evaluate/toolSchemas.js";
 
 // The ONLINE PROFILE of an LLM Judge Scorer (core/monitor/judgeScorers.ts is the unified
@@ -306,10 +306,16 @@ export async function runOnlineEvaluators(
   // retrieval spans) - so RAG scoring works on real traffic with zero caller changes.
   // Opt-in tool catalog (settings.includeToolCatalog): rendered once, lazily, shared by every
   // opted-in evaluator scoring this trace; a render failure degrades to catalog-less judging.
+  // Trace-captured definitions win (metadata.tools - the exact menu the model saw on THIS
+  // trace's LLM calls, recorded by the SDK integrations); the registry is the fallback for
+  // traces that carry none.
   let toolCatalogPromise: Promise<string | null> | null = null;
   const getToolCatalog = () => {
     if (!toolCatalogPromise) {
-      toolCatalogPromise = renderToolCatalog(db).catch(() => null);
+      toolCatalogPromise = (async () => {
+        const fromTrace = ctx.traceId ? await renderTraceToolCatalog(db, ctx.traceId).catch(() => null) : null;
+        return fromTrace ?? (await renderToolCatalog(db).catch(() => null));
+      })();
     }
     return toolCatalogPromise;
   };
