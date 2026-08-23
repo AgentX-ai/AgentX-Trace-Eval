@@ -1,0 +1,81 @@
+import { and, asc, count, eq, gt, gte, type SQL } from "drizzle-orm";
+import type { Db } from "../../storage/db.js";
+
+// Bulk data egress (P2.1 of the enterprise improvement plan): every project-scoped table an
+// operator needs to back up, migrate, or walk out the door with, streamed as NDJSON by
+// routes/exportData.ts. Config tables (patterns, evaluators) ride along with the data tables
+// because a usable backup is the data PLUS the scorer/judge config that produced it.
+//
+// The registry maps a stable wire name to its table and to the timestamp column an incremental
+// `?since=` filter applies to. Rows are keyset-paginated on `id` under the hood, so memory stays
+// flat regardless of table size and an interrupted export can be diffed against a re-run (ids
+// are stable). Instance-wide tables (portability models, app settings, auth_*) are deliberately
+// absent: they belong to the operator's own infrastructure backup, not a project's data export.
+export const EXPORT_ENTITIES = {
+  traces: { table: "traces", sinceColumn: "createdAt" },
+  signals: { table: "monitorSignals", sinceColumn: "lastSeenAt" },
+  "signal-feedback": { table: "monitorSignalFeedback", sinceColumn: "createdAt" },
+  events: { table: "monitorEvents", sinceColumn: "createdAt" },
+  classifications: { table: "monitorClassifications", sinceColumn: "createdAt" },
+  runs: { table: "evaluationRuns", sinceColumn: "createdAt" },
+  "run-results": { table: "evaluationRunResults", sinceColumn: "createdAt" },
+  "gate-results": { table: "gateResults", sinceColumn: "createdAt" },
+  datasets: { table: "datasets", sinceColumn: "createdAt" },
+  feedback: { table: "userFeedback", sinceColumn: "createdAt" },
+  outcomes: { table: "outcomeReports", sinceColumn: "reportedAt" },
+  "session-scores": { table: "sessionScores", sinceColumn: "createdAt" },
+  patterns: { table: "monitorPatterns", sinceColumn: "createdAt" },
+  "online-evaluators": { table: "monitorOnlineEvaluators", sinceColumn: "createdAt" },
+  "custom-evaluators": { table: "customEvaluators", sinceColumn: "createdAt" },
+} as const;
+
+export type ExportEntity = keyof typeof EXPORT_ENTITIES;
+
+export const EXPORT_BATCH = 500;
+
+export function isExportEntity(value: string): value is ExportEntity {
+  return value in EXPORT_ENTITIES;
+}
+
+// drizzle's sqlite and pg table types don't unify, so the registry lookup narrows through `any`
+// in this one spot; the two schemas are kept structurally parallel by auth/schemaParity.test.ts.
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function entityTable(db: Db, entity: ExportEntity): any {
+  return (db.schema as Record<string, any>)[EXPORT_ENTITIES[entity].table];
+}
+
+function buildWhere(db: Db, entity: ExportEntity, since: Date | null, cursor: string | null): SQL | undefined {
+  const t = entityTable(db, entity);
+  const conds: SQL[] = [eq(t.projectId, db.projectId)];
+  if (since) {
+    conds.push(gte(t[EXPORT_ENTITIES[entity].sinceColumn], since));
+  }
+  if (cursor) {
+    conds.push(gt(t.id, cursor));
+  }
+  return and(...conds);
+}
+
+export async function countExportRows(db: Db, entity: ExportEntity, since: Date | null = null): Promise<number> {
+  const t = entityTable(db, entity);
+  const q = (db.db as any).select({ n: count() }).from(t).where(buildWhere(db, entity, since, null));
+  const rows: { n: number | string }[] = db.kind === "sqlite" ? q.all() : await q;
+  return Number(rows[0]?.n ?? 0);
+}
+
+export async function fetchExportBatch(
+  db: Db,
+  entity: ExportEntity,
+  since: Date | null,
+  cursor: string | null
+): Promise<Record<string, unknown>[]> {
+  const t = entityTable(db, entity);
+  const q = (db.db as any)
+    .select()
+    .from(t)
+    .where(buildWhere(db, entity, since, cursor))
+    .orderBy(asc(t.id))
+    .limit(EXPORT_BATCH);
+  return db.kind === "sqlite" ? q.all() : await q;
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */

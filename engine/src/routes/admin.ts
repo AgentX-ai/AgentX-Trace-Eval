@@ -3,6 +3,7 @@ import { and, eq, gte, isNull, sql } from "drizzle-orm";
 import { asyncRouter } from "./asyncRouter.js";
 import { getDb } from "../storage/db.js";
 import { judgeCallsSince } from "../core/shared/usage.js";
+import { listAuditEvents } from "../core/audit/auditLog.js";
 
 // Operator surface for a multi-tenant deployment: who's on this instance and what are they
 // spending. Guarded by a static operator token (AGENTX_ADMIN_TOKEN, x-admin-token header) -
@@ -79,4 +80,25 @@ adminRouter.get("/overview", async (req: Request, res: Response) => {
       judgeCalls24h: judgeCalls.get(null) ?? 0,
     },
   });
+});
+
+// The instance-wide audit trail (core/audit/auditLog.ts) - the operator's compliance read.
+// Read-only by design: no update or delete route exists anywhere for audit_events, and this
+// router adds none. Filters: ?since=ISO, ?action=scorer.create, ?actor=..., ?limit= (max 1000).
+adminRouter.get("/audit", async (req: Request, res: Response) => {
+  let since: Date | undefined;
+  if (typeof req.query.since === "string" && req.query.since) {
+    since = new Date(req.query.since);
+    if (Number.isNaN(since.getTime())) {
+      res.status(400).json({ error: "since must be an ISO-8601 date" });
+      return;
+    }
+  }
+  const events = await listAuditEvents(getDb(), {
+    since,
+    action: typeof req.query.action === "string" ? req.query.action : undefined,
+    actor: typeof req.query.actor === "string" ? req.query.actor : undefined,
+    limit: typeof req.query.limit === "string" ? Number(req.query.limit) || undefined : undefined,
+  });
+  res.status(200).json({ events });
 });
