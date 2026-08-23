@@ -701,7 +701,10 @@ export async function listTraceEvaluations(db: Db, traceId: string): Promise<Tra
 export type CustomEvaluatorEvent = {
   id: string;
   traceId: string;
-  matched: boolean;
+  // null = the check itself failed to run (script crash, endpoint down); the error text is in
+  // `justification`. These rows MUST stay visible - filtering them out made a crashing scorer
+  // indistinguishable from a quiet one (deep-dive round 3, bug #4).
+  matched: boolean | null;
   score: number | null;
   justification: string | null;
   createdAt: Date;
@@ -721,9 +724,10 @@ export async function getCustomEvaluatorEvents(
   const { days } = windowConfig(window);
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
+  // matched === null rows are the scorer's own failures (recorded by customEvaluators.ts with
+  // the error in justification) - they belong in the history, not on the cutting-room floor.
   const rows = (await listEventsSince(db, since)).filter(
-    (r): r is EventRow & { matched: boolean; traceId: string } =>
-      r.customEvaluatorId === evaluatorId && r.matched !== null && r.traceId !== null
+    (r): r is EventRow & { traceId: string } => r.customEvaluatorId === evaluatorId && r.traceId !== null
   );
   rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 

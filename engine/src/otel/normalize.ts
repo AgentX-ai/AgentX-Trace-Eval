@@ -18,15 +18,23 @@ export type NormalizedSpan = {
   events: NormalizedSpanEvent[];
 };
 
-// Bytes fields (trace/span/parent-span id) are base64 in both the protobuf-decoded object
-// (bytes: String, see protoTypes.ts) and a spec-compliant OTLP/JSON body - same conversion either
-// way. Rendered as hex (32/16 chars) to match how every OTel backend and the W3C tracecontext spec
-// display ids, not how they're transmitted.
-function base64ToHex(b64: unknown): string | null {
-  if (typeof b64 !== "string" || !b64) {
+// Bytes fields (trace/span/parent-span id) arrive in two encodings, and the OTLP spec makes
+// them DIFFERENT: the protobuf-decoded object carries base64 (bytes: String, see protoTypes.ts,
+// the plain proto3-JSON mapping), but OTLP/JSON is an explicit spec exception - ids are
+// hex-encoded there (opentelemetry-proto's JSON mapping note; opentelemetry-js's JSON exporter
+// sends hex). Treating both as base64 garbled every JSON-protocol exporter's ids into junk
+// sessions (deep-dive round 3, bug #3). The two encodings are length-unambiguous: hex ids are
+// 32 (trace) / 16 (span) chars of pure hex, base64 of the same bytes is 24 / 12 chars - so
+// detect by shape instead of trusting one spec reading. Rendered as lowercase hex either way,
+// matching how every OTel backend and W3C tracecontext display ids.
+function idToHex(value: unknown): string | null {
+  if (typeof value !== "string" || !value) {
     return null;
   }
-  return Buffer.from(b64, "base64").toString("hex");
+  if ((value.length === 32 || value.length === 16) && /^[0-9a-fA-F]+$/.test(value)) {
+    return value.toLowerCase();
+  }
+  return Buffer.from(value, "base64").toString("hex");
 }
 
 // A handful of real-world JSON producers emit snake_case (the literal .proto field names) instead
@@ -77,9 +85,9 @@ export function normalizeExportRequest(parsed: Record<string, unknown>): Normali
         const status = objectOrUndefined(span.status);
         const events = objectList(span.events);
         spans.push({
-          traceIdHex: base64ToHex(pick(span, "traceId", "trace_id")) ?? "",
-          spanIdHex: base64ToHex(pick(span, "spanId", "span_id")) ?? "",
-          parentSpanIdHex: base64ToHex(pick(span, "parentSpanId", "parent_span_id")),
+          traceIdHex: idToHex(pick(span, "traceId", "trace_id")) ?? "",
+          spanIdHex: idToHex(pick(span, "spanId", "span_id")) ?? "",
+          parentSpanIdHex: idToHex(pick(span, "parentSpanId", "parent_span_id")),
           name: typeof span.name === "string" && span.name ? span.name : "unknown",
           // 0n for anything unparseable, which mapping.ts already treats as "no timestamp".
           startTimeUnixNano: parseUnixNanosOrZero(pick(span, "startTimeUnixNano", "start_time_unix_nano")),
