@@ -184,6 +184,10 @@ export async function scoreAgainstCriteria(
     // as its own labeled block so any judge, default or custom, can weigh the path taken (tools
     // called, order, failures) and not just the final answer.
     trajectory?: string;
+    // Opt-in (evaluation_settings.includeToolCatalog): the registered tool catalog rendered by
+    // core/evaluate/toolSchemas.ts's renderToolCatalog - placed BEFORE the trajectory so the
+    // judge reads what the agent COULD have called before seeing what it did call.
+    toolCatalog?: string;
   }
 ): Promise<{ rating: number; justification: string }> {
   // Mode-aware prompt selection. With no reference answer, the default prompt's Expected Results
@@ -206,6 +210,7 @@ export async function scoreAgainstCriteria(
   });
 
   const additionalContext = `
+${content.toolCatalog ? `**Available tools (registry catalog):**\n${content.toolCatalog}\n` : ""}
 ${content.trajectory ? `**Agent execution trajectory (what the agent actually did to produce the output):**\n${content.trajectory}\n` : ""}
 ${content.judgeGuideline ? `**Judge Guideline (specific to this question):** ${content.judgeGuideline}` : ""}
 ${criteria.acceptanceCriteria ? `**Acceptance Criteria:** ${criteria.acceptanceCriteria}` : ""}

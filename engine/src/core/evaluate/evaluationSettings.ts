@@ -28,6 +28,8 @@ export type CreateEvaluationSettingsInput = {
   // Only meaningful for a standalone config - see the isDefault comment on the schema column.
   isDefault?: boolean;
   status?: string;
+  // Opt-in: append the tool-registry catalog to this judge's prompt (see the schema column).
+  includeToolCatalog?: boolean;
 };
 
 export type UpdateEvaluationSettingsInput = Omit<CreateEvaluationSettingsInput, "id">;
@@ -47,6 +49,7 @@ export type EvaluationSettingsRow = {
   judgeModel: string | null;
   isDefault: boolean;
   status: string;
+  includeToolCatalog: boolean;
   createdAt: Date;
 };
 
@@ -65,6 +68,7 @@ function toWire(row: EvaluationSettingsRow) {
     judgeModel: row.judgeModel ?? undefined,
     isDefault: row.isDefault,
     status: row.status,
+    includeToolCatalog: row.includeToolCatalog,
     createdAt: row.createdAt,
   };
 }
@@ -103,6 +107,7 @@ export async function createEvaluationSettings(db: Db, input: CreateEvaluationSe
     judgeModel: input.judgeModel ?? null,
     isDefault: input.isDefault ?? false,
     status: input.status ?? "published",
+    includeToolCatalog: input.includeToolCatalog ?? false,
     createdAt: new Date(),
   };
   if (row.isDefault) {
@@ -135,6 +140,7 @@ export async function updateEvaluationSettings(db: Db, id: string, input: Update
     evaluationCriteria: input.evaluationCriteria ?? null,
     judgePrompt: input.judgePrompt ?? null,
     judgeModel: input.judgeModel ?? null,
+    includeToolCatalog: input.includeToolCatalog ?? false,
   };
   const updateCond = and(eq(db.schema.evaluationSettings.id, id), eq(db.schema.evaluationSettings.projectId, db.projectId));
   if (db.kind === "sqlite") {
@@ -176,6 +182,7 @@ export async function patchEvaluationSettings(db: Db, id: string, patch: Partial
     judgeModel: patch.judgeModel ?? existing.judgeModel,
     isDefault: patch.isDefault ?? existing.isDefault,
     status: patch.status ?? existing.status,
+    includeToolCatalog: patch.includeToolCatalog ?? existing.includeToolCatalog,
   };
   const patchCond = and(eq(db.schema.evaluationSettings.id, id), eq(db.schema.evaluationSettings.projectId, db.projectId));
   if (db.kind === "sqlite") {

@@ -132,6 +132,33 @@ describe("unified CRUD", () => {
   });
 });
 
+describe("opt-in tool catalog", () => {
+  it("round-trips judge.includeToolCatalog and survives sparse updates", async () => {
+    const created = await api("/agent-monitoring/judge-scorers", postJson({
+      name: "Catalog judge",
+      judge: { acceptanceCriteria: "Uses the right tool.", includeToolCatalog: true },
+      online: { enabled: true },
+    }));
+    expect(created.status).toBe(201);
+    const scorer = (created.body as { judgeScorer: Wire }).judgeScorer;
+    expect(scorer.judge.includeToolCatalog).toBe(true);
+
+    // Sparse online toggle must not clear the flag (the patch-vs-replace trap).
+    const toggled = await api(`/agent-monitoring/judge-scorers/${scorer._id}`, {
+      ...postJson({ online: { enabled: false } }),
+      method: "PUT",
+    });
+    expect((toggled.body as { judgeScorer: Wire }).judgeScorer.judge.includeToolCatalog).toBe(true);
+
+    // Off by default for everything else, and visible on the legacy settings wire too.
+    const legacy = await api(`/evaluate/evaluationSettings/${scorer._id}`);
+    expect(JSON.stringify(legacy.body)).toContain('"includeToolCatalog":true');
+
+    const plain = await api("/agent-monitoring/judge-scorers", postJson({ name: "No catalog" }));
+    expect((plain.body as { judgeScorer: Wire }).judgeScorer.judge.includeToolCatalog).toBe(false);
+  });
+});
+
 describe("strict 1:1 and the legacy auto-clone", () => {
   it("legacy create binding an already-bound config gets a CLONE, not a shared rubric", async () => {
     const created = await api("/agent-monitoring/judge-scorers", postJson({

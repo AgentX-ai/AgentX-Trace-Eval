@@ -393,6 +393,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       judge_model TEXT,
       is_default INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'published',
+      include_tool_catalog INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       project_id TEXT
     );
@@ -988,6 +989,10 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     // Code scorers: a second custom-scorer kind (user script run in-engine) next to the original
     // HTTP-endpoint kind, now called "external".
     ["custom_evaluators", "ALTER TABLE custom_evaluators ADD COLUMN kind TEXT NOT NULL DEFAULT 'external'"],
+    // Judge scorers: opt-in "give the judge the tool registry catalog" (names + descriptions +
+    // current definitions) appended to the judge prompt - for rubrics that grade tool CHOICE
+    // and tool-definition quality, not just the calls that happened.
+    ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN include_tool_catalog INTEGER NOT NULL DEFAULT 0"],
     ["custom_evaluators", "ALTER TABLE custom_evaluators ADD COLUMN language TEXT"],
     ["custom_evaluators", "ALTER TABLE custom_evaluators ADD COLUMN script TEXT"],
     ["custom_evaluators", "ALTER TABLE custom_evaluators ADD COLUMN alert_below REAL"],
@@ -1457,6 +1462,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       judge_model TEXT,
       is_default BOOLEAN NOT NULL DEFAULT FALSE,
       status TEXT NOT NULL DEFAULT 'published',
+      include_tool_catalog BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMP NOT NULL,
       project_id TEXT
     );
@@ -2019,6 +2025,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS disabled_builtin_patterns JSONB;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS enabled_builtin_patterns JSONB;
     ALTER TABLE custom_evaluators ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'external';
+    ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS include_tool_catalog BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE custom_evaluators ADD COLUMN IF NOT EXISTS language TEXT;
     ALTER TABLE custom_evaluators ADD COLUMN IF NOT EXISTS script TEXT;
     ALTER TABLE custom_evaluators ADD COLUMN IF NOT EXISTS alert_below DOUBLE PRECISION;

@@ -1,4 +1,5 @@
 import type { Db } from "../../storage/db.js";
+import { renderToolCatalog } from "./toolSchemas.js";
 import { callModelWithTools, scoreAgainstCriteria, DEFAULT_JUDGE_MODEL, DEFAULT_JUDGE_PROMPT, type ToolCallTrace } from "./judge.js";
 import { getPortabilityModel, estimateCostUSD } from "./models.js";
 import { runCodeScorer, type CodeScorerConfig, type CodeScorerResult } from "./codeScorer.js";
@@ -249,7 +250,11 @@ async function runPlaygroundOnlineEvaluatorChecks(
           judgePrompt: (settings.judgePrompt ?? "").trim() || DEFAULT_JUDGE_PROMPT,
           judgeModel: settings.judgeModel ?? DEFAULT_JUDGE_MODEL,
         },
-        content
+        {
+          ...content,
+          // Dry run mirrors production exactly (that's the whole point of the playground check).
+          toolCatalog: settings.includeToolCatalog ? ((await renderToolCatalog(db)) ?? undefined) : undefined,
+        }
       );
       results.push({
         evaluatorId: evaluator.id,

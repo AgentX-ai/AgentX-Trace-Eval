@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import { renderToolCatalog } from "./toolSchemas.js";
 import { eq, and, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import {
@@ -65,6 +66,8 @@ type ResolvedRunConfig = {
   evaluationCriteria: string;
   judgePrompt: string;
   judgeModel: string;
+  // Opt-in judge context (settings-only - datasets have no such column).
+  includeToolCatalog: boolean;
   similarityConfig: SimilarityConfig;
   codeScorers: CodeScorerConfig[];
   questions: Array<{
@@ -106,6 +109,7 @@ export async function resolveRunConfig(
     evaluationCriteria: source?.evaluationCriteria ?? "",
     judgePrompt: (settings?.judgePrompt ?? "").trim() || DEFAULT_JUDGE_PROMPT,
     judgeModel: settings?.judgeModel ?? DEFAULT_JUDGE_MODEL,
+    includeToolCatalog: settings?.includeToolCatalog ?? false,
     similarityConfig: (source?.similarityConfig as SimilarityConfig | null) ?? {},
     codeScorers: ((source?.codeScorers as CodeScorerConfig[] | null) ?? []).filter(s => s.enabled),
     questions,
@@ -276,7 +280,7 @@ type ScoredResult = { rating: number | null; justification: string; judgeError: 
     codeScorerResults: CodeScorerResult[];
   };
 
-async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: SubmittedResult): Promise<ScoredResult> {
+async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: SubmittedResult, toolCatalog?: string | null): Promise<ScoredResult> {
   const question = item.questionIndex != null ? config.questions[item.questionIndex] : undefined;
   const mainQ = question?.main_question;
   const expected = mainQ?.expectedResults;
@@ -318,6 +322,7 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
       // context first, then linked-trace retrievals, then the case's pinned chunks.
       context: retrievalContext,
       trajectory: trajectory ?? undefined,
+      toolCatalog: toolCatalog ?? undefined,
     }).then(
       result => ({ ...result, judgeError: null as Error | null }),
       (err: unknown) => ({
@@ -423,6 +428,9 @@ export async function appendResults(
   }
 
   const config = await resolveRunConfig(db, run.datasetId, run.evaluationSettingsId);
+  // Rendered once per batch (registry reads are cheap but not free) and only when the judge
+  // config opted in - see evaluation_settings.includeToolCatalog.
+  const toolCatalog = config.includeToolCatalog ? await renderToolCatalog(db) : null;
 
   let accepted = 0;
   let duplicates = 0;
@@ -454,7 +462,7 @@ export async function appendResults(
       justification = `Case failed with error: ${item.error.type}: ${item.error.message}`;
     } else {
       try {
-        const scored = await scoreOneResult(db, config, item);
+        const scored = await scoreOneResult(db, config, item, toolCatalog);
         // Kept regardless of the judge outcome - all a run without an LLM key has to show.
         similarity = scored;
         codeScorerResults = scored.codeScorerResults;
