@@ -1018,6 +1018,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
   sqlite.exec(BACKFILL_AUTH_ACCOUNT_ISSUER);
 
   migrateOnlineEvaluatorsToConfigsSqlite(sqlite);
+  enforceJudgeScorerCardinalitySqlite(sqlite);
   backfillAgentsSqlite(sqlite);
   backfillDefaultProjectSqlite(sqlite);
 
@@ -1172,6 +1173,84 @@ function migrateOnlineEvaluatorsToConfigsSqlite(sqlite: SqliteHandle): void {
         throw err;
       }
     }
+  }
+}
+
+// LLM Judge Scorer unification (see core/monitor/judgeScorers.ts): one judge config backs at most
+// ONE online profile. Historically N online evaluators could share one evaluation_settings row
+// (and a few were bound to dataset "twin" settings, which the unified surface excludes). This
+// enforces the 1:1 shape by CLONING the settings row for every extra/twin-bound evaluator and
+// repointing the evaluator at its clone. Evaluator ids are NEVER rewritten - `online-eval:<id>`
+// patternKeys in monitor_events/monitor_signals/session_scores, KPI exclusions, and the tuning
+// routes all key on them. Idempotent: a re-run finds every group at size 1 and no twin bindings.
+// Clones start with an empty version history; the next edit seeds one.
+type JudgeScorerBindingRow = {
+  id: string;
+  project_id: string | null;
+  evaluation_settings_id: string | null;
+  builtin_key: string | null;
+  created_at: number;
+};
+
+// Shared decision logic for both dialects: which evaluator ids need their config cloned.
+function judgeScorerCloneTargets(evaluators: JudgeScorerBindingRow[], datasetIds: Set<string>): string[] {
+  const targets: string[] = [];
+  const grouped = new Map<string, JudgeScorerBindingRow[]>();
+  for (const row of evaluators) {
+    if (!row.evaluation_settings_id) continue;
+    // Twin-bound: the config doubles as a dataset's grading half - the online profile must not
+    // share it (deleting the scorer would take the dataset's grading with it).
+    if (datasetIds.has(row.evaluation_settings_id)) {
+      targets.push(row.id);
+      continue;
+    }
+    const key = `${row.project_id ?? ""} ${row.evaluation_settings_id}`;
+    const group = grouped.get(key) ?? [];
+    group.push(row);
+    grouped.set(key, group);
+  }
+  for (const group of grouped.values()) {
+    if (group.length <= 1) continue;
+    // Keeper: the builtin if present (its config id is what ensureSessionBaselineJudge looks up),
+    // else the oldest binding (created_at asc, id asc tiebreak for determinism).
+    const keeper =
+      group.find(r => r.builtin_key) ??
+      [...group].sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id))[0]!;
+    for (const row of group) {
+      if (row.id !== keeper.id) targets.push(row.id);
+    }
+  }
+  return targets;
+}
+
+const JUDGE_SCORER_CLONE_COLUMNS =
+  "name, description, number_of_requests, similarity_config, code_scorers, acceptance_criteria, " +
+  "rejection_criteria, evaluation_criteria, judge_prompt, judge_model";
+
+function enforceJudgeScorerCardinalitySqlite(sqlite: SqliteHandle): void {
+  const evaluators = sqlite
+    .prepare(
+      `SELECT id, project_id, evaluation_settings_id, builtin_key, created_at
+       FROM monitor_online_evaluators WHERE evaluation_settings_id IS NOT NULL`
+    )
+    .all() as JudgeScorerBindingRow[];
+  if (evaluators.length === 0) return;
+  const datasetIds = new Set(
+    (sqlite.prepare(`SELECT id FROM datasets`).all() as { id: string }[]).map(r => r.id)
+  );
+  const now = Date.now();
+  for (const evaluatorId of judgeScorerCloneTargets(evaluators, datasetIds)) {
+    const cloneId = nanoid();
+    // INSERT..SELECT copies the full rubric; is_default cleared (only one default per project,
+    // and the original keeps it), created_at = now, project_id follows the source row.
+    sqlite
+      .prepare(
+        `INSERT INTO evaluation_settings (id, ${JUDGE_SCORER_CLONE_COLUMNS}, is_default, status, created_at, project_id)
+         SELECT ?, ${JUDGE_SCORER_CLONE_COLUMNS}, 0, status, ?, project_id
+         FROM evaluation_settings WHERE id = (SELECT evaluation_settings_id FROM monitor_online_evaluators WHERE id = ?)`
+      )
+      .run(cloneId, now, evaluatorId);
+    sqlite.prepare(`UPDATE monitor_online_evaluators SET evaluation_settings_id = ? WHERE id = ?`).run(cloneId, evaluatorId);
   }
 }
 
@@ -1970,6 +2049,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
   await pool.query(BACKFILL_AUTH_ACCOUNT_ISSUER);
 
   await migrateOnlineEvaluatorsToConfigsPostgres(pool);
+  await enforceJudgeScorerCardinalityPostgres(pool);
   await backfillAgentsPostgres(pool);
   await backfillDefaultProjectPostgres(pool);
 
@@ -2022,6 +2102,29 @@ async function migrateOnlineEvaluatorsToConfigsPostgres(pool: Pool): Promise<voi
     for (const column of legacyColumns) {
       await pool.query(`ALTER TABLE monitor_online_evaluators DROP COLUMN IF EXISTS ${column}`);
     }
+  }
+}
+
+// Postgres mirror of enforceJudgeScorerCardinalitySqlite above - see that function's comment.
+// Decision logic is shared (judgeScorerCloneTargets); only the SQL dialect differs.
+async function enforceJudgeScorerCardinalityPostgres(pool: Pool): Promise<void> {
+  const { rows: evaluators } = await pool.query<JudgeScorerBindingRow & { created_at: Date }>(
+    `SELECT id, project_id, evaluation_settings_id, builtin_key, created_at
+     FROM monitor_online_evaluators WHERE evaluation_settings_id IS NOT NULL`
+  );
+  if (evaluators.length === 0) return;
+  const normalized = evaluators.map(row => ({ ...row, created_at: new Date(row.created_at).getTime() }));
+  const { rows: datasetRows } = await pool.query<{ id: string }>(`SELECT id FROM datasets`);
+  const datasetIds = new Set(datasetRows.map(r => r.id));
+  for (const evaluatorId of judgeScorerCloneTargets(normalized, datasetIds)) {
+    const cloneId = nanoid();
+    await pool.query(
+      `INSERT INTO evaluation_settings (id, ${JUDGE_SCORER_CLONE_COLUMNS}, is_default, status, created_at, project_id)
+       SELECT $1, ${JUDGE_SCORER_CLONE_COLUMNS}, FALSE, status, NOW(), project_id
+       FROM evaluation_settings WHERE id = (SELECT evaluation_settings_id FROM monitor_online_evaluators WHERE id = $2)`,
+      [cloneId, evaluatorId]
+    );
+    await pool.query(`UPDATE monitor_online_evaluators SET evaluation_settings_id = $1 WHERE id = $2`, [cloneId, evaluatorId]);
   }
 }
 

@@ -190,6 +190,43 @@ export async function patchEvaluationSettings(db: Db, id: string, patch: Partial
   return after;
 }
 
+// Copies a config's full rubric + offline profile into a fresh row (new id, isDefault cleared,
+// empty version history - the next edit seeds one). Exists for the LLM Judge Scorer 1:1
+// invariant (core/monitor/judgeScorers.ts): a legacy create/update that would bind an online
+// profile to an already-bound or dataset-twin config gets its own copy instead of sharing -
+// the shared-rubric ambiguity ("which of my three evaluators does editing this config change?")
+// is exactly what the unification removes. Returns the clone's id, or null if the source is gone.
+export async function cloneEvaluationSettings(db: Db, id: string): Promise<string | null> {
+  const existing = await getEvaluationSettingsRow(db, id);
+  if (!existing) {
+    return null;
+  }
+  const clone: EvaluationSettingsRow = {
+    ...existing,
+    id: nanoid(),
+    isDefault: false,
+    createdAt: new Date(),
+  };
+  if (db.kind === "sqlite") {
+    await db.db.insert(db.schema.evaluationSettings).values(clone);
+  } else {
+    await db.db.insert(db.schema.evaluationSettings).values(clone);
+  }
+  return clone.id;
+}
+
+// True when this settings id doubles as a dataset's grading twin (both share one id - see
+// routes/evaluateDashboard.ts's header comment). Twins are dataset internals, not standalone
+// judge scorers: the unified surface 404s them and online profiles must never bind to one.
+export async function isDatasetTwinSettingsId(db: Db, id: string): Promise<boolean> {
+  const cond = and(eq(db.schema.datasets.id, id), eq(db.schema.datasets.projectId, db.projectId));
+  const rows =
+    db.kind === "sqlite"
+      ? db.db.select({ id: db.schema.datasets.id }).from(db.schema.datasets).where(cond).all()
+      : await db.db.select({ id: db.schema.datasets.id }).from(db.schema.datasets).where(cond);
+  return rows.length > 0;
+}
+
 export async function getEvaluationSettingsRow(db: Db, id: string): Promise<EvaluationSettingsRow | null> {
   const cond = and(eq(db.schema.evaluationSettings.id, id), eq(db.schema.evaluationSettings.projectId, db.projectId));
   let row: EvaluationSettingsRow | undefined;

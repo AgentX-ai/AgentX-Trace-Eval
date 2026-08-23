@@ -111,6 +111,12 @@ async function judgeSessionAgainstEvaluator(
   const { transcript, promptSpans, elidedNote } = buildSessionTranscript(spans);
   const judgeModel = settings.judgeModel ?? DEFAULT_JUDGE_MODEL;
 
+  // Deliberate: session scope builds its own structured prompt from the criteria fields and
+  // does NOT use settings.judgePrompt. That prompt is {input}/{output}-templated for a single
+  // trace and cannot address a numbered multi-turn transcript, and the builtin baseline's
+  // drift-index schema depends on this framing. Documented on the LLM Judge Scorer surface:
+  // "judge.judgePrompt applies to trace-scope scoring; session scope always uses the structured
+  // session prompt built from your criteria."
   const criteriaBlock = [
     settings.acceptanceCriteria ? `Acceptance criteria: ${settings.acceptanceCriteria}` : "",
     settings.rejectionCriteria ? `Rejection criteria: ${settings.rejectionCriteria}` : "",
