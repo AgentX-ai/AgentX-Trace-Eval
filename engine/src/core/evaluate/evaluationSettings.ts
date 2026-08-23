@@ -7,6 +7,17 @@ import { recordEvaluationSettingsVersionIfChanged } from "./versions.js";
 
 export type { SimilarityConfig };
 
+// The judge's tool-context level - one control replacing the old always-on trajectory plus a
+// separate catalog boolean: "none" = conversation + expected results only; "simple" = tool
+// inputs/outputs in real trace order (the historical behavior, hence the default); "detailed"
+// = simple + definitions for the tools actually USED (trace-captured metadata.tools first,
+// registry by name as fallback) + a one-line mention of advertised-but-unused tools.
+export type JudgeToolContext = "none" | "simple" | "detailed";
+
+export function normalizeToolContext(value: unknown): JudgeToolContext {
+  return value === "none" || value === "detailed" ? value : "simple";
+}
+
 // Mirrors AgentX-Python's EvaluationSettingsBuilder.publish() payload and the EvaluationSettings
 // pydantic model's field aliases (agentx/evaluations/evaluation_settings.py, models.py). A
 // standalone, reusable grading config: no questions attached, referenced by id from init_run.
@@ -28,8 +39,9 @@ export type CreateEvaluationSettingsInput = {
   // Only meaningful for a standalone config - see the isDefault comment on the schema column.
   isDefault?: boolean;
   status?: string;
-  // Opt-in: append the tool-registry catalog to this judge's prompt (see the schema column).
-  includeToolCatalog?: boolean;
+  // How much tool context the judge sees: "none" | "simple" | "detailed" (see the schema
+  // column). Defaults to "simple", the historical behavior.
+  toolContext?: JudgeToolContext;
 };
 
 export type UpdateEvaluationSettingsInput = Omit<CreateEvaluationSettingsInput, "id">;
@@ -49,7 +61,7 @@ export type EvaluationSettingsRow = {
   judgeModel: string | null;
   isDefault: boolean;
   status: string;
-  includeToolCatalog: boolean;
+  toolContext: string;
   createdAt: Date;
 };
 
@@ -68,7 +80,7 @@ function toWire(row: EvaluationSettingsRow) {
     judgeModel: row.judgeModel ?? undefined,
     isDefault: row.isDefault,
     status: row.status,
-    includeToolCatalog: row.includeToolCatalog,
+    toolContext: normalizeToolContext(row.toolContext),
     createdAt: row.createdAt,
   };
 }
@@ -107,7 +119,7 @@ export async function createEvaluationSettings(db: Db, input: CreateEvaluationSe
     judgeModel: input.judgeModel ?? null,
     isDefault: input.isDefault ?? false,
     status: input.status ?? "published",
-    includeToolCatalog: input.includeToolCatalog ?? false,
+    toolContext: normalizeToolContext(input.toolContext),
     createdAt: new Date(),
   };
   if (row.isDefault) {
@@ -140,7 +152,7 @@ export async function updateEvaluationSettings(db: Db, id: string, input: Update
     evaluationCriteria: input.evaluationCriteria ?? null,
     judgePrompt: input.judgePrompt ?? null,
     judgeModel: input.judgeModel ?? null,
-    includeToolCatalog: input.includeToolCatalog ?? false,
+    toolContext: normalizeToolContext(input.toolContext),
   };
   const updateCond = and(eq(db.schema.evaluationSettings.id, id), eq(db.schema.evaluationSettings.projectId, db.projectId));
   if (db.kind === "sqlite") {
@@ -182,7 +194,7 @@ export async function patchEvaluationSettings(db: Db, id: string, patch: Partial
     judgeModel: patch.judgeModel ?? existing.judgeModel,
     isDefault: patch.isDefault ?? existing.isDefault,
     status: patch.status ?? existing.status,
-    includeToolCatalog: patch.includeToolCatalog ?? existing.includeToolCatalog,
+    toolContext: patch.toolContext !== undefined ? normalizeToolContext(patch.toolContext) : existing.toolContext,
   };
   const patchCond = and(eq(db.schema.evaluationSettings.id, id), eq(db.schema.evaluationSettings.projectId, db.projectId));
   if (db.kind === "sqlite") {

@@ -132,35 +132,44 @@ describe("unified CRUD", () => {
   });
 });
 
-describe("opt-in tool catalog", () => {
-  it("round-trips judge.includeToolCatalog and survives sparse updates", async () => {
+describe("tool context levels", () => {
+  it("defaults to 'simple', round-trips the enum, and survives sparse updates", async () => {
     const created = await api("/agent-monitoring/judge-scorers", postJson({
-      name: "Catalog judge",
-      judge: { acceptanceCriteria: "Uses the right tool.", includeToolCatalog: true },
+      name: "Tool-context judge",
+      judge: { acceptanceCriteria: "Uses the right tool.", toolContext: "detailed" },
       online: { enabled: true },
     }));
     expect(created.status).toBe(201);
     const scorer = (created.body as { judgeScorer: Wire }).judgeScorer;
-    expect(scorer.judge.includeToolCatalog).toBe(true);
+    expect(scorer.judge.toolContext).toBe("detailed");
 
-    // Sparse online toggle must not clear the flag (the patch-vs-replace trap).
+    // Sparse online toggle must not clear the level (the patch-vs-replace trap).
     const toggled = await api(`/agent-monitoring/judge-scorers/${scorer._id}`, {
       ...postJson({ online: { enabled: false } }),
       method: "PUT",
     });
-    expect((toggled.body as { judgeScorer: Wire }).judgeScorer.judge.includeToolCatalog).toBe(true);
+    expect((toggled.body as { judgeScorer: Wire }).judgeScorer.judge.toolContext).toBe("detailed");
 
-    // Off by default for everything else, and visible on the legacy settings wire too.
+    // Visible on the legacy settings wire; nonsense values normalize to the default.
     const legacy = await api(`/evaluate/evaluationSettings/${scorer._id}`);
-    expect(JSON.stringify(legacy.body)).toContain('"includeToolCatalog":true');
+    expect(JSON.stringify(legacy.body)).toContain('"toolContext":"detailed"');
 
-    const plain = await api("/agent-monitoring/judge-scorers", postJson({ name: "No catalog" }));
-    expect((plain.body as { judgeScorer: Wire }).judgeScorer.judge.includeToolCatalog).toBe(false);
+    const plain = await api("/agent-monitoring/judge-scorers", postJson({ name: "Default level" }));
+    expect((plain.body as { judgeScorer: Wire }).judgeScorer.judge.toolContext).toBe("simple");
+
+    const nonsense = await api("/agent-monitoring/judge-scorers", postJson({
+      name: "Nonsense level", judge: { toolContext: "everything" },
+    }));
+    expect((nonsense.body as { judgeScorer: Wire }).judgeScorer.judge.toolContext).toBe("simple");
+
+    const none = await api(`/agent-monitoring/judge-scorers/${scorer._id}`, {
+      ...postJson({ judge: { toolContext: "none" } }),
+      method: "PUT",
+    });
+    expect((none.body as { judgeScorer: Wire }).judgeScorer.judge.toolContext).toBe("none");
   });
 
-  it("prefers trace-captured metadata.tools over the registry (the exact menu the model saw)", async () => {
-    // The SDK integrations record each LLM request's tools=[...] into metadata.tools; the
-    // catalog renderer must surface it, deduped by name, provider shape-agnostic.
+  it("stores metadata.tools intact for the detailed renderer to consume", async () => {
     const ingested = await api("/ingest/traces", postJson({
       name: "tooled-agent",
       input: "q",
@@ -171,15 +180,13 @@ describe("opt-in tool catalog", () => {
         tools: [
           { type: "function", function: { name: "search_orders", description: "Find orders by id", parameters: { type: "object", properties: { id: { type: "string" } } } } },
           { name: "refund_order", description: "Anthropic-flat shape", input_schema: { type: "object" } },
-          { type: "function", function: { name: "search_orders", description: "duplicate, must dedupe" } },
         ],
       },
     }));
     expect(ingested.status).toBe(200);
     const traceId = (ingested.body as { traceId: string }).traceId;
-
-    // The test engine runs out-of-process, so the renderer itself is pinned in-process by
-    // toolCatalog.test.ts; here we pin that ingest stores metadata.tools intact for it.
+    // The renderer itself is pinned in-process by toolCatalog.test.ts; here we pin that ingest
+    // stores metadata.tools intact for it.
     const detail = await api(`/ingest/traces/${traceId}`);
     const stored = JSON.stringify(detail.body);
     expect(stored).toContain("search_orders");

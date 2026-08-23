@@ -270,19 +270,26 @@ export async function getTraceRetrievalContext(db: Db, traceId: string): Promise
 }
 
 // ---------------------------------------------------------------------------
-// Trace-captured tool catalog
+// Tool definitions for the "detailed" tool-context level
 // ---------------------------------------------------------------------------
 
 // The SDK's LLM auto-instrumentation (OpenAI/Anthropic/Google GenAI/LiteLLM patches, the
 // LangChain handler - see AgentX-Python's integrations/_traced_call.py capture_tool_definitions)
 // records each request's full `tools=[...]` list into the span's metadata.tools: names,
 // descriptions, and complete parameter schemas, exactly as the model saw them on THAT call.
-// For a judge grading tool choice this beats the registry catalog outright - no drift, no
-// registration step - so the includeToolCatalog assembly prefers it and only falls back to
-// core/evaluate/toolSchemas.ts's renderToolCatalog when the trace carries no definitions
-// (manual tracer.trace() calls, OTel spans from non-SDK exporters).
-const CATALOG_MAX_TOOLS = 20;
-const CATALOG_MAX_DEFINITION = 600;
+//
+// At toolContext="detailed" the judge gets, after the trajectory:
+//   - the full definition of every tool the agent actually USED (deduped by name; the
+//     trace-captured menu wins, the Tools & MCPs registry is a by-name fallback for manual
+//     tracer users) - the context for judging whether a call was set up to fail by a vague
+//     description or missing enum
+//   - one cheap line naming advertised-but-unused tools, so "was there a better tool it
+//     didn't pick?" stays gradeable without paying for unused schemas
+// Used-names-only lookup is what makes the registry fallback safe: the registry is
+// project-wide, but a lookup keyed by the names this agent actually called can never inject
+// another agent's tools.
+const DEFS_MAX_TOOLS = 20;
+const DEFS_MAX_DEFINITION = 600;
 
 function toolDefName(def: unknown): string | null {
   if (!def || typeof def !== "object") return null;
@@ -292,47 +299,142 @@ function toolDefName(def: unknown): string | null {
   return typeof name === "string" && name ? name : null;
 }
 
+function toolDefDescription(def: unknown): string | null {
+  if (!def || typeof def !== "object") return null;
+  const d = def as { description?: unknown; function?: { description?: unknown } };
+  const description = d.function?.description ?? d.description;
+  return typeof description === "string" && description ? description : null;
+}
+
 function metadataTools(metadata: unknown): unknown[] {
   if (!metadata || typeof metadata !== "object") return [];
   const tools = (metadata as { tools?: unknown }).tools;
   return Array.isArray(tools) ? tools : [];
 }
 
-export async function renderTraceToolCatalog(db: Db, traceId: string): Promise<string | null> {
+function toolCallNames(toolCalls: unknown): string[] {
+  if (!Array.isArray(toolCalls)) return [];
+  return toolCalls
+    .map(tc => (tc && typeof tc === "object" && "name" in tc ? String((tc as { name: unknown }).name) : ""))
+    .filter(Boolean);
+}
+
+function truncateDef(def: unknown): string {
+  const text = JSON.stringify(def).replace(/\s+/g, " ");
+  return text.length > DEFS_MAX_DEFINITION ? `${text.slice(0, DEFS_MAX_DEFINITION)}...` : text;
+}
+
+// Core assembly, span-list driven so both the per-trace and per-session paths share it.
+async function renderDefsFromSpans(
+  db: Db,
+  spans: Array<{ name: string; parentSpanId?: string | null; metadata?: unknown; toolCalls?: unknown }>
+): Promise<string | null> {
+  // The advertised menu: every metadata.tools capture across the spans, deduped by name.
+  const menu = new Map<string, unknown>();
+  for (const span of spans) {
+    for (const def of metadataTools(span.metadata)) {
+      const name = toolDefName(def);
+      if (name && !menu.has(name)) menu.set(name, def);
+    }
+  }
+  // Used tool names: flat toolCalls entries plus child-span names that match an advertised
+  // tool (a tool child span is named after its tool; matching against the menu/registry keeps
+  // LLM/step spans from being mistaken for tools).
+  const usedNames = new Set<string>();
+  for (const span of spans) {
+    for (const name of toolCallNames(span.toolCalls)) usedNames.add(name);
+    if (span.parentSpanId && menu.has(span.name)) usedNames.add(span.name);
+  }
+  // Registry fallback ONLY for used names the menu didn't cover (and to classify child spans
+  // when no menu was captured at all).
+  const { getRegistryToolsByName } = await import("../evaluate/toolSchemas.js");
+  const childNames = spans.filter(s => s.parentSpanId).map(s => s.name);
+  const registry = await getRegistryToolsByName(db, [...new Set([...usedNames, ...childNames])]);
+  for (const span of spans) {
+    if (span.parentSpanId && registry.has(span.name)) usedNames.add(span.name);
+  }
+  if (usedNames.size === 0 && menu.size === 0) return null;
+
+  const lines: string[] = [];
+  const used = [...usedNames].slice(0, DEFS_MAX_TOOLS);
+  for (const name of used) {
+    const fromMenu = menu.get(name);
+    if (fromMenu) {
+      lines.push(`- ${name}: ${truncateDef(fromMenu)}`);
+      continue;
+    }
+    const fromRegistry = registry.get(name);
+    if (fromRegistry) {
+      const def = fromRegistry.definition.replace(/\s+/g, " ");
+      const truncated = def.length > DEFS_MAX_DEFINITION ? `${def.slice(0, DEFS_MAX_DEFINITION)}...` : def;
+      lines.push(
+        `- ${name}${fromRegistry.description ? ` (${fromRegistry.description})` : ""}: ${truncated} [from the tool registry]`
+      );
+    } else {
+      lines.push(`- ${name}: (no definition captured or registered)`);
+    }
+  }
+  if (usedNames.size > DEFS_MAX_TOOLS) lines.push(`... ${usedNames.size - DEFS_MAX_TOOLS} more used tools omitted`);
+
+  const unused = [...menu.keys()].filter(name => !usedNames.has(name));
+  const unusedLine =
+    unused.length > 0
+      ? `\nAlso advertised to the model but NOT used: ${unused
+          .slice(0, DEFS_MAX_TOOLS)
+          .map(name => {
+            const description = toolDefDescription(menu.get(name));
+            return description ? `${name} (${description.slice(0, 120)})` : name;
+          })
+          .join("; ")}`
+      : "";
+  if (lines.length === 0 && !unusedLine) return null;
+  const usedBlock =
+    lines.length > 0 ? `Definitions of the tools the agent used (exactly as the model saw them):\n${lines.join("\n")}` : "The agent used no tools.";
+  return `${usedBlock}${unusedLine}`;
+}
+
+export async function renderUsedToolDefinitions(db: Db, traceId: string): Promise<string | null> {
   const cond = and(eq(db.schema.traces.id, traceId), eq(db.schema.traces.projectId, db.projectId));
   const rows =
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.traces).where(cond).all()
       : await db.db.select().from(db.schema.traces).where(cond);
-  const root = rows[0] as { spanId: string | null; sessionId: string | null; metadata: unknown } | undefined;
+  const root = rows[0] as
+    | { name: string; spanId: string | null; sessionId: string | null; metadata: unknown; toolCalls: unknown }
+    | undefined;
   if (!root) return null;
-
-  // Root first (the promoted copy), then any subtree LLM spans' own captures.
-  const collected: unknown[] = [...metadataTools(root.metadata)];
+  const spans: Array<{ name: string; parentSpanId?: string | null; metadata?: unknown; toolCalls?: unknown }> = [
+    { name: root.name, parentSpanId: null, metadata: root.metadata, toolCalls: root.toolCalls },
+  ];
   if (root.spanId && root.sessionId) {
-    const spans = (await listSessionSpans(db, root.sessionId)) as SpanWire[];
-    for (const span of spans) {
-      collected.push(...metadataTools(span.metadata));
+    const sessionSpans = (await listSessionSpans(db, root.sessionId)) as SpanWire[];
+    // Same subtree scoping as renderTraceTrajectory: only THIS trace's steps.
+    const included = new Set<string>([root.spanId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const span of sessionSpans) {
+        if (span.spanId && span.parentSpanId && !included.has(span.spanId) && included.has(span.parentSpanId)) {
+          included.add(span.spanId);
+          changed = true;
+        }
+      }
+    }
+    for (const span of sessionSpans) {
+      if (span.spanId && included.has(span.spanId) && span.spanId !== root.spanId) {
+        spans.push({ name: span.name, parentSpanId: span.parentSpanId, metadata: span.metadata, toolCalls: span.toolCalls });
+      }
     }
   }
-  if (collected.length === 0) return null;
+  return renderDefsFromSpans(db, spans);
+}
 
-  // Dedupe by tool name (the same list repeats on every LLM call of an agent loop).
-  const byName = new Map<string, unknown>();
-  for (const def of collected) {
-    const name = toolDefName(def);
-    if (name && !byName.has(name)) byName.set(name, def);
-  }
-  if (byName.size === 0) return null;
-
-  const lines: string[] = [];
-  for (const [name, def] of [...byName.entries()].slice(0, CATALOG_MAX_TOOLS)) {
-    const text = JSON.stringify(def).replace(/\s+/g, " ");
-    const truncated = text.length > CATALOG_MAX_DEFINITION ? `${text.slice(0, CATALOG_MAX_DEFINITION)}...` : text;
-    lines.push(`- ${name}: ${truncated}`);
-  }
-  if (byName.size > CATALOG_MAX_TOOLS) {
-    lines.push(`... ${byName.size - CATALOG_MAX_TOOLS} more tools omitted`);
-  }
-  return `The tools this agent's LLM calls actually advertised (captured from the trace - the exact menu the model saw):\n${lines.join("\n")}`;
+// Session-scope variant: the whole conversation's spans, for detailed session judging.
+export async function renderSessionUsedToolDefinitions(db: Db, sessionId: string): Promise<string | null> {
+  const spans = (await listSessionSpans(db, sessionId)) as SpanWire[];
+  if (spans.length === 0) return null;
+  return renderDefsFromSpans(
+    db,
+    spans.map(s => ({ name: s.name, parentSpanId: s.parentSpanId, metadata: s.metadata, toolCalls: s.toolCalls }))
+  );
 }

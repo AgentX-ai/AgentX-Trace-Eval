@@ -1,15 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { nanoid } from "nanoid";
 import { openTestDb, type TestDb } from "./dbHarness.js";
-import { renderTraceToolCatalog } from "../core/trace/trajectory.js";
-import { renderToolCatalog } from "../core/evaluate/toolSchemas.js";
-import { createToolSchema } from "../core/evaluate/toolSchemas.js";
+import { renderUsedToolDefinitions, renderSessionUsedToolDefinitions } from "../core/trace/trajectory.js";
+import { createToolSchema, getRegistryToolsByName } from "../core/evaluate/toolSchemas.js";
 import type { Db } from "../storage/db.js";
 
-// The judge's opt-in tool catalog, trace-first: metadata.tools captured by the SDK's LLM
-// integrations (the exact menu the model saw) wins; the Tools & MCPs registry is the fallback.
-// Pins: provider shape-agnostic name extraction (OpenAI nested vs Anthropic flat), dedupe
-// across an agent loop's repeated lists, subtree collection, and the empty cases.
+// The "detailed" tool-context level: definitions for the tools the agent actually USED
+// (trace-captured metadata.tools first, registry by name as fallback - used-names-only lookup
+// is what keeps the project-wide registry safe), deduped, plus a one-line mention of tools
+// advertised to the model but not used.
 
 let test: TestDb;
 let db: Db;
@@ -48,63 +47,102 @@ async function insertTrace(values: Partial<Record<string, unknown>> & { id: stri
 
 beforeAll(async () => {
   test = await openTestDb();
-  db = test.scoped(await test.newProject("tool-catalog"));
+  db = test.scoped(await test.newProject("tool-context"));
 }, 60_000);
 
 afterAll(async () => {
   await test?.close();
 });
 
-describe("renderTraceToolCatalog", () => {
-  it("renders trace-captured definitions, both provider shapes, deduped across the subtree", async () => {
+describe("renderUsedToolDefinitions", () => {
+  it("defines only USED tools (both provider shapes) and one-lines the unused menu", async () => {
     const rootId = nanoid();
     await insertTrace({
       id: rootId,
-      sessionId: "cat-sess",
-      spanId: "cat-root",
+      sessionId: "def-sess",
+      spanId: "def-root",
       metadata: {
         tools: [
-          { type: "function", function: { name: "search_orders", description: "Find orders" } },
-          { name: "refund_order", description: "flat shape", input_schema: { type: "object" } },
+          { type: "function", function: { name: "search_orders", description: "Find orders", parameters: { type: "object" } } },
+          { name: "refund_order", description: "Refund an order", input_schema: { type: "object" } },
+          { type: "function", function: { name: "escalate_ticket", description: "Escalate to a human" } },
         ],
       },
+      // Flat tool-call record: search_orders was used...
+      toolCalls: [{ name: "search_orders", success: true }],
     });
+    // ...and refund_order ran as a child span named after the tool.
     await insertTrace({
       id: nanoid(),
-      sessionId: "cat-sess",
-      spanId: "cat-llm",
-      parentSpanId: "cat-root",
-      model: "gpt-4.1-mini",
-      // The agent loop re-sends the same list on every call - it must dedupe to one entry.
-      metadata: { tools: [{ type: "function", function: { name: "search_orders", description: "Find orders" } }] },
+      sessionId: "def-sess",
+      spanId: "def-tool",
+      parentSpanId: "def-root",
+      name: "refund_order",
     });
 
-    const rendered = await renderTraceToolCatalog(db, rootId);
-    expect(rendered).toContain("captured from the trace");
-    expect(rendered).toContain("search_orders");
-    expect(rendered).toContain("refund_order");
-    // One catalog ENTRY (the name also appears inside the JSON definition, so count lines).
+    const rendered = await renderUsedToolDefinitions(db, rootId);
+    expect(rendered).toContain("Definitions of the tools the agent used");
+    // Used tools get full definitions...
+    expect(rendered).toMatch(/- search_orders: .*Find orders/);
+    expect(rendered).toMatch(/- refund_order: .*input_schema/);
+    // ...the unused one is a one-liner, not a schema dump.
+    expect(rendered).toContain("NOT used: escalate_ticket (Escalate to a human)");
+    expect(rendered).not.toMatch(/- escalate_ticket:/);
+    // Deduped: one entry per used tool.
     expect((rendered!.match(/^- search_orders:/gm) ?? []).length).toBe(1);
   });
 
-  it("returns null for traces without captured definitions", async () => {
-    const plainId = nanoid();
-    await insertTrace({ id: plainId });
-    expect(await renderTraceToolCatalog(db, plainId)).toBeNull();
-  });
-});
-
-describe("renderToolCatalog (registry fallback)", () => {
-  it("renders registered tools and stays null on an empty registry", async () => {
-    expect(await renderToolCatalog(db)).toBeNull();
+  it("falls back to the registry BY NAME for used tools without captured definitions", async () => {
     await createToolSchema(db, {
       name: "lookup_invoice",
       description: "Fetches an invoice PDF",
       definition: '{"type":"object","properties":{"invoiceId":{"type":"string"}}}',
     });
-    const rendered = await renderToolCatalog(db);
-    expect(rendered).toContain("registered tool catalog");
+    await createToolSchema(db, {
+      name: "other_agents_tool",
+      description: "Belongs to a different agent",
+      definition: '{"type":"object"}',
+    });
+    const traceId = nanoid();
+    await insertTrace({
+      id: traceId,
+      toolCalls: [{ name: "lookup_invoice", success: true }],
+    });
+
+    const rendered = await renderUsedToolDefinitions(db, traceId);
     expect(rendered).toContain("lookup_invoice");
     expect(rendered).toContain("invoiceId");
+    expect(rendered).toContain("[from the tool registry]");
+    // The used-names-only lookup keeps the project-wide registry from leaking other tools in.
+    expect(rendered).not.toContain("other_agents_tool");
+  });
+
+  it("returns null for traces with no tool activity and no menu", async () => {
+    const plainId = nanoid();
+    await insertTrace({ id: plainId });
+    expect(await renderUsedToolDefinitions(db, plainId)).toBeNull();
+  });
+});
+
+describe("renderSessionUsedToolDefinitions", () => {
+  it("collects across the whole conversation", async () => {
+    await insertTrace({
+      id: nanoid(),
+      sessionId: "sess-defs",
+      spanId: "turn-1",
+      metadata: { tools: [{ name: "search_orders", description: "Find orders", input_schema: {} }] },
+      toolCalls: [{ name: "search_orders" }],
+    });
+    const rendered = await renderSessionUsedToolDefinitions(db, "sess-defs");
+    expect(rendered).toContain("search_orders");
+  });
+});
+
+describe("getRegistryToolsByName", () => {
+  it("returns only requested names, with current definitions", async () => {
+    const found = await getRegistryToolsByName(db, ["lookup_invoice", "never_registered"]);
+    expect(found.get("lookup_invoice")?.definition).toContain("invoiceId");
+    expect(found.has("never_registered")).toBe(false);
+    expect((await getRegistryToolsByName(db, [])).size).toBe(0);
   });
 });

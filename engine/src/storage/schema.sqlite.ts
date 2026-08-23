@@ -149,10 +149,12 @@ export const evaluationSettings = sqliteTable("evaluation_settings", {
   // row has isDefault=true at a time (enforced in core/evaluate/evaluationSettings.ts, not here).
   isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
   status: text("status").notNull().default("published"),
-  // Opt-in: append the tool-registry catalog (core/evaluate/toolSchemas.ts) to this
-  // judge's prompt so it can grade tool CHOICE and definition quality, not just the calls
-  // that happened. Off by default - it costs tokens on every judged trace.
-  includeToolCatalog: integer("include_tool_catalog", { mode: "boolean" }).notNull().default(false),
+  // How much tool context this judge sees: "none" (conversation turns only), "simple" (tool
+  // inputs/outputs in trace order - the historical always-on behavior, hence the default),
+  // "detailed" (simple + definitions for the tools actually used, trace-captured
+  // metadata.tools first with the registry as a by-name fallback, plus a one-line mention of
+  // advertised-but-unused tools).
+  toolContext: text("tool_context").notNull().default("simple"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   projectId: text("project_id"),
 });

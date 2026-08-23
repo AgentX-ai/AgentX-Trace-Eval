@@ -13,6 +13,7 @@ import {
 import { listOnlineEvaluatorRows, type OnlineEvaluatorRow } from "./onlineEvaluators.js";
 import { getEvaluationSettingsRow } from "../evaluate/evaluationSettings.js";
 import { listSessionSpans } from "../trace/ingest.js";
+import { renderSessionUsedToolDefinitions } from "../trace/trajectory.js";
 import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { matchesAgentScope, passesSampleRate } from "./routing.js";
 import { upsertSignal } from "./signals.js";
@@ -108,7 +109,17 @@ async function judgeSessionAgainstEvaluator(
   if (spans.length === 0) {
     return null;
   }
-  const { transcript, promptSpans, elidedNote } = buildSessionTranscript(spans);
+  // toolContext gates what the session judge sees, mirroring the per-trace levels:
+  // "none" = conversation turns only (root spans, no tools-called lines), "simple" = every
+  // step incl. tool spans (the historical behavior and the default), "detailed" = simple +
+  // definitions of the tools the conversation actually used.
+  const toolContext = settings.toolContext ?? "simple";
+  const transcriptSpans = toolContext === "none" ? spans.filter(s => !s.parentSpanId) : spans;
+  const { transcript, promptSpans, elidedNote } = buildSessionTranscript(transcriptSpans, {
+    includeToolLines: toolContext !== "none",
+  });
+  const toolDefinitions =
+    toolContext === "detailed" ? await renderSessionUsedToolDefinitions(db, sessionId).catch(() => null) : null;
   const judgeModel = settings.judgeModel ?? DEFAULT_JUDGE_MODEL;
 
   // Deliberate: session scope builds its own structured prompt from the criteria fields and
@@ -127,7 +138,7 @@ async function judgeSessionAgainstEvaluator(
 
   const userMessage = `You are evaluating an ENTIRE multi-turn AI agent session against the criteria below - judge the conversation as a whole (consistency across turns, whether the user's need was actually resolved, context retention), not any single reply in isolation. Each numbered entry is one step in chronological order.${elidedNote}
 
-${criteriaBlock}
+${criteriaBlock}${toolDefinitions ? `\n\nTool definitions (for the tools used in the transcript):\n${toolDefinitions}` : ""}
 
 Session:
 

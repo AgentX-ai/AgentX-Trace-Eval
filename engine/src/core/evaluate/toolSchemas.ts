@@ -754,52 +754,36 @@ Rewrite the definition to prevent these failures. Where an example shows the arg
   };
 }
 
-// The judge-facing rendering of the registry (evaluation_settings.includeToolCatalog, opt-in):
-// name + description + the CURRENT definition text per tool, so an LLM judge can grade tool
-// CHOICE ("was there a better tool for this?") and definition QUALITY ("was the agent set up to
-// fail by a vague description / missing enum?") - the failure modes call-level trajectory data
-// alone can't explain. Definitions are truncated per tool and the catalog capped so one huge
-// registry can't blow the judge prompt; returns null when the registry is empty.
-const CATALOG_MAX_TOOLS = 20;
-const CATALOG_MAX_DEFINITION = 600;
-
-export async function renderToolCatalog(db: Db): Promise<string | null> {
+// By-name registry lookup for the judge's "detailed" tool context (core/trace/trajectory.ts's
+// renderUsedToolDefinitions): definitions only for tools the agent actually CALLED, which is
+// what makes reaching into the project-wide registry safe - a lookup keyed by used names can
+// never inject another agent's tools into the judge prompt.
+export async function getRegistryToolsByName(
+  db: Db,
+  names: string[]
+): Promise<Map<string, { description: string | null; definition: string }>> {
+  const result = new Map<string, { description: string | null; definition: string }>();
+  if (names.length === 0) return result;
+  const wanted = new Set(names);
   const cond = eq(db.schema.toolSchemas.projectId, db.projectId);
   const rows = (
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.toolSchemas).where(cond).all()
       : await db.db.select().from(db.schema.toolSchemas).where(cond)
   ) as ToolSchemaRow[];
-  if (rows.length === 0) {
-    return null;
-  }
-  rows.sort((a, b) => a.name.localeCompare(b.name));
-
+  const matches = rows.filter(r => wanted.has(r.name));
+  if (matches.length === 0) return result;
   const versionCond = eq(db.schema.toolSchemaVersions.projectId, db.projectId);
   const versionRows = (
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.toolSchemaVersions).where(versionCond).all()
       : await db.db.select().from(db.schema.toolSchemaVersions).where(versionCond)
   ) as ToolSchemaVersionRow[];
-  const currentBySchema = new Map<string, string>();
-  for (const versionRow of versionRows) {
-    const owner = rows.find(r => r.id === versionRow.toolSchemaId);
-    if (owner && versionRow.version === owner.currentVersion) {
-      currentBySchema.set(owner.id, versionRow.definition);
+  for (const row of matches) {
+    const current = versionRows.find(v => v.toolSchemaId === row.id && v.version === row.currentVersion);
+    if (current && !result.has(row.name)) {
+      result.set(row.name, { description: row.description ?? null, definition: current.definition });
     }
   }
-
-  const lines: string[] = [];
-  for (const row of rows.slice(0, CATALOG_MAX_TOOLS)) {
-    const definition = (currentBySchema.get(row.id) ?? "").replace(/\s+/g, " ").trim();
-    const truncated =
-      definition.length > CATALOG_MAX_DEFINITION ? `${definition.slice(0, CATALOG_MAX_DEFINITION)}...` : definition;
-    lines.push(
-      `- ${row.name}${row.description ? `: ${row.description}` : ""}${truncated ? `\n  definition: ${truncated}` : ""}`
-    );
-  }
-  if (rows.length > CATALOG_MAX_TOOLS) {
-    lines.push(`... ${rows.length - CATALOG_MAX_TOOLS} more tools omitted`);
-  }
-  return `The agent's registered tool catalog (what it COULD have called):\n${lines.join("\n")}`;
+  return result;
 }

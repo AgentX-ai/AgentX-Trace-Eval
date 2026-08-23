@@ -10,8 +10,7 @@ import {
   getEvaluationSettingsRow,
   isDatasetTwinSettingsId,
 } from "../evaluate/evaluationSettings.js";
-import { renderTraceTrajectory, renderTraceToolCatalog, getTraceRetrievalContext } from "../trace/trajectory.js";
-import { renderToolCatalog } from "../evaluate/toolSchemas.js";
+import { renderTraceTrajectory, renderUsedToolDefinitions, getTraceRetrievalContext } from "../trace/trajectory.js";
 
 // The ONLINE PROFILE of an LLM Judge Scorer (core/monitor/judgeScorers.ts is the unified
 // surface): a real judge scoring sampled live traffic continuously, producing a rating over
@@ -304,20 +303,16 @@ export async function runOnlineEvaluators(
   // {context}-referencing judges (the RAG metric pack): explicit metadata.retrievalContext wins,
   // else fall back to what the trace actually recorded retrieving (SDK/LangChain/LlamaIndex
   // retrieval spans) - so RAG scoring works on real traffic with zero caller changes.
-  // Opt-in tool catalog (settings.includeToolCatalog): rendered once, lazily, shared by every
-  // opted-in evaluator scoring this trace; a render failure degrades to catalog-less judging.
-  // Trace-captured definitions win (metadata.tools - the exact menu the model saw on THIS
-  // trace's LLM calls, recorded by the SDK integrations); the registry is the fallback for
-  // traces that carry none.
-  let toolCatalogPromise: Promise<string | null> | null = null;
-  const getToolCatalog = () => {
-    if (!toolCatalogPromise) {
-      toolCatalogPromise = (async () => {
-        const fromTrace = ctx.traceId ? await renderTraceToolCatalog(db, ctx.traceId).catch(() => null) : null;
-        return fromTrace ?? (await renderToolCatalog(db).catch(() => null));
-      })();
+  // toolContext="detailed" evaluators: definitions of the tools this trace actually used
+  // (trace-captured metadata.tools first, registry by name as fallback) - rendered once,
+  // lazily, shared by every opted-in evaluator; a render failure degrades gracefully.
+  let toolDefinitionsPromise: Promise<string | null> | null = null;
+  const getToolDefinitions = () => {
+    if (!ctx.traceId) return Promise.resolve(null);
+    if (!toolDefinitionsPromise) {
+      toolDefinitionsPromise = renderUsedToolDefinitions(db, ctx.traceId).catch(() => null);
     }
-    return toolCatalogPromise;
+    return toolDefinitionsPromise;
   };
   const explicitContext = extractRetrievalContext(trace.metadata);
   let recordedContextPromise: Promise<string | null> | null = null;
@@ -364,8 +359,11 @@ export async function runOnlineEvaluators(
           input: inputText,
           output: outputText,
           context: (await getContext()) ?? undefined,
-          trajectory: (await getTrajectory()) ?? undefined,
-          toolCatalog: settings.includeToolCatalog ? ((await getToolCatalog()) ?? undefined) : undefined,
+          // toolContext gates how much the judge sees: "none" = conversation only,
+          // "simple" = the trajectory (historical behavior), "detailed" = + definitions.
+          trajectory: settings.toolContext !== "none" ? ((await getTrajectory()) ?? undefined) : undefined,
+          toolDefinitions:
+            settings.toolContext === "detailed" ? ((await getToolDefinitions()) ?? undefined) : undefined,
         }
       ));
     } catch (err) {

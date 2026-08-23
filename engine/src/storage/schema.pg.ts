@@ -90,7 +90,7 @@ export const evaluationSettings = pgTable("evaluation_settings", {
   judgeModel: text("judge_model"),
   isDefault: boolean("is_default").notNull().default(false),
   status: text("status").notNull().default("published"),
-  includeToolCatalog: boolean("include_tool_catalog").notNull().default(false),
+  toolContext: text("tool_context").notNull().default("simple"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
   projectId: text("project_id"),
 });

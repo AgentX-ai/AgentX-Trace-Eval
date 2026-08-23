@@ -41,7 +41,7 @@ const SETTINGS_SNAPSHOT_FIELDS = [
   "codeScorers",
   "sovereigntyIndex",
   "status",
-  "includeToolCatalog",
+  "toolContext",
 ] as const;
 const SETTINGS_FIELD_LABELS: Record<string, string> = {
   name: "name",

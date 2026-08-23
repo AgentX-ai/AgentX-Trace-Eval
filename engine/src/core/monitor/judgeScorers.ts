@@ -7,6 +7,7 @@ import {
   getEvaluationSettingsRow,
   isDatasetTwinSettingsId,
   listStandaloneEvaluationSettings,
+  normalizeToolContext,
   patchEvaluationSettings,
   type EvaluationSettingsRow,
 } from "../evaluate/evaluationSettings.js";
@@ -38,10 +39,11 @@ export type JudgeScorerJudgeInput = {
   evaluationCriteria?: string;
   judgePrompt?: string;
   judgeModel?: string;
-  // Opt-in: append the tool-registry catalog to the judge prompt (see
-  // evaluation_settings.includeToolCatalog) - lets the judge grade tool choice and
-  // definition quality, not just the calls that happened.
-  includeToolCatalog?: boolean;
+  // How much tool context the judge sees: "none" (conversation + expected results only),
+  // "simple" (tool inputs/outputs in trace order - the default and historical behavior),
+  // "detailed" (simple + definitions for the tools actually used + a one-line unused-tools
+  // mention). See evaluation_settings.toolContext.
+  toolContext?: string;
 };
 
 export type JudgeScorerOfflineInput = {
@@ -108,7 +110,7 @@ export function toJudgeScorerWire(settings: EvaluationSettingsRow, evaluator: On
       evaluationCriteria: settings.evaluationCriteria ?? undefined,
       judgePrompt: settings.judgePrompt ?? undefined,
       judgeModel: settings.judgeModel ?? undefined,
-      includeToolCatalog: settings.includeToolCatalog,
+      toolContext: normalizeToolContext(settings.toolContext),
     },
     offline: {
       numberOfRequests: settings.numberOfRequests,
@@ -190,7 +192,7 @@ export async function createJudgeScorer(db: Db, input: CreateJudgeScorerInput) {
     evaluationCriteria: input.judge?.evaluationCriteria,
     judgePrompt: input.judge?.judgePrompt,
     judgeModel: input.judge?.judgeModel,
-    includeToolCatalog: input.judge?.includeToolCatalog,
+    toolContext: input.judge?.toolContext !== undefined ? normalizeToolContext(input.judge.toolContext) : undefined,
     isDefault: input.offline?.isDefault,
     status: input.offline?.status,
   });
@@ -239,7 +241,7 @@ export async function updateJudgeScorer(db: Db, id: string, patch: UpdateJudgeSc
     for (const key of ["acceptanceCriteria", "rejectionCriteria", "evaluationCriteria", "judgePrompt", "judgeModel"] as const) {
       if (patch.judge[key] !== undefined) settingsPatch[key] = patch.judge[key];
     }
-    if (patch.judge.includeToolCatalog !== undefined) settingsPatch.includeToolCatalog = patch.judge.includeToolCatalog;
+    if (patch.judge.toolContext !== undefined) settingsPatch.toolContext = normalizeToolContext(patch.judge.toolContext);
   }
   if (patch.offline) {
     if (patch.offline.numberOfRequests !== undefined) settingsPatch.numberOfRequests = patch.offline.numberOfRequests;
