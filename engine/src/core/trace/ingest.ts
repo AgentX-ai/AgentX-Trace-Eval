@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
 import { z } from "zod";
-import { desc, lt, and, eq, isNull, type SQL } from "drizzle-orm";
+import { desc, lt, and, eq, isNull, or, type SQL } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { resolveAgentId } from "../monitor/agents.js";
 import { listPortabilityModels, estimateCostUSD } from "../evaluate/models.js";
@@ -269,9 +269,11 @@ export async function listTracesPaginated(
   const pageSize = Math.min(Math.max(limit, 1), 100);
 
   let cursorCreatedAt: Date | null = null;
+  let cursorId: string | null = null;
   if (cursor) {
     const cursorRow = await getTraceRow(db, cursor);
     cursorCreatedAt = cursorRow?.createdAt ?? null;
+    cursorId = cursorRow?.id ?? null;
   }
 
   // Root spans only: a span_tree=True SDK trace or a multi-span OTel session otherwise floods
@@ -282,7 +284,17 @@ export async function listTracesPaginated(
   // only changes what the top-level list itself enumerates.
   const conditions: SQL[] = [isNull(db.schema.traces.parentSpanId), eq(db.schema.traces.projectId, db.projectId)];
   if (framework) conditions.push(eq(db.schema.traces.framework, framework));
-  if (cursorCreatedAt) conditions.push(lt(db.schema.traces.createdAt, cursorCreatedAt));
+  // Keyset with an id tiebreak, matching the (createdAt DESC, id DESC) sort below. The old
+  // createdAt-only predicate silently skipped every row that shared the page-boundary row's
+  // millisecond (3 of 2000 lost in a realistic burst - deep-dive round 3, bug #6), because
+  // "strictly older than the boundary" excludes its same-timestamp siblings.
+  if (cursorCreatedAt && cursorId) {
+    const next = or(
+      lt(db.schema.traces.createdAt, cursorCreatedAt),
+      and(eq(db.schema.traces.createdAt, cursorCreatedAt), lt(db.schema.traces.id, cursorId))
+    );
+    if (next) conditions.push(next);
+  }
   const where = and(...conditions);
 
   const rows = (
@@ -291,14 +303,14 @@ export async function listTracesPaginated(
           .select()
           .from(db.schema.traces)
           .where(where)
-          .orderBy(desc(db.schema.traces.createdAt))
+          .orderBy(desc(db.schema.traces.createdAt), desc(db.schema.traces.id))
           .limit(pageSize + 1)
           .all()
       : await db.db
           .select()
           .from(db.schema.traces)
           .where(where)
-          .orderBy(desc(db.schema.traces.createdAt))
+          .orderBy(desc(db.schema.traces.createdAt), desc(db.schema.traces.id))
           .limit(pageSize + 1)
   ) as TraceRow[];
 

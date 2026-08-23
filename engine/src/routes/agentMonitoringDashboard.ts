@@ -3,7 +3,7 @@ import { asyncRouter } from "./asyncRouter.js";
 import { getDb, type Db } from "../storage/db.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { createPattern, updatePattern, deletePattern, listPatternsWire, legacyPayloadToConditions } from "../core/monitor/patterns.js";
-import { builtInPatternsWire } from "../core/monitor/detect.js";
+import { BUILT_IN_MONITOR_PATTERNS, builtInPatternsWire } from "../core/monitor/detect.js";
 import { validateConditionRegexes } from "../core/monitor/regexSafety.js";
 import { listSignals, getSignal, updateSignal, signalCountsByPatternKey } from "../core/monitor/signals.js";
 import { updateProfile, listProfilesWire } from "../core/monitor/profiles.js";
@@ -1218,9 +1218,21 @@ agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: 
   if (typeof body.topicsEnabled === "boolean") patch.topicsEnabled = body.topicsEnabled;
   if (typeof body.coherenceSweepEnabled === "boolean") patch.coherenceSweepEnabled = body.coherenceSweepEnabled;
   if (Array.isArray(body.enabledBuiltinPatterns)) {
-    patch.enabledBuiltinPatterns = (body.enabledBuiltinPatterns as unknown[]).filter(
-      (k): k is string => typeof k === "string"
-    );
+    const keys = (body.enabledBuiltinPatterns as unknown[]).filter((k): k is string => typeof k === "string");
+    // Reject unknown keys instead of storing them: a typo'd key used to be accepted verbatim,
+    // enable nothing, and report nothing - the config-as-code caller believed a scorer was on
+    // while nothing ran (deep-dive round 3, bug #2). Silent no-op config is the same failure
+    // class the removed redaction placebo was.
+    const known = new Set<string>(BUILT_IN_MONITOR_PATTERNS.map(p => p.key));
+    const unknown = keys.filter(k => !known.has(k));
+    if (unknown.length > 0) {
+      res.status(400).json({
+        error: `Unknown template scorer key(s): ${unknown.join(", ")}`,
+        knownKeys: [...known],
+      });
+      return;
+    }
+    patch.enabledBuiltinPatterns = keys;
   }
   const monitoringDefaults = await updateMonitoringDefaults(scopedDb(req), patch);
   res.status(200).json({ monitoringDefaults });
