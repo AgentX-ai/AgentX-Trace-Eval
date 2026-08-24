@@ -73,7 +73,9 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
   // real judge call) routinely pushed this response past the SDK's sync=True 10-second timeout,
   // the client gave up and returned trace_id=None even though ingestion itself had already
   // succeeded and the real id was about to be sent.
-  res.status(200).json({ trace_id: traceId, deduped });
+  // traceId is the canonical (camelCase) key; trace_id stays as the legacy alias every
+  // existing SDK reads. Same one-wire-two-spellings posture as the ingest schema's aliases.
+  res.status(200).json({ trace_id: traceId, traceId, deduped });
 
   // Root spans only by default (see the MONITOR_CHILD_SPANS constant above) - a child span from a
   // span_tree-enabled trace skips Monitor/online-evaluator/classification entirely rather than

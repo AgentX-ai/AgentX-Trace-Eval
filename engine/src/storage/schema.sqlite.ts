@@ -149,6 +149,16 @@ export const evaluationSettings = sqliteTable("evaluation_settings", {
   // row has isDefault=true at a time (enforced in core/evaluate/evaluationSettings.ts, not here).
   isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
   status: text("status").notNull().default("published"),
+  // How much tool context this judge sees: "none" (conversation turns only), "simple" (tool
+  // inputs/outputs in trace order - the historical always-on behavior, hence the default),
+  // "detailed" (simple + definitions for the tools actually used, trace-captured
+  // metadata.tools first with the registry as a by-name fallback, plus a one-line mention of
+  // advertised-but-unused tools).
+  toolContext: text("tool_context").notNull().default("simple"),
+  // True for rows the engine itself seeded (the Example judge, the RAG metric packs): quick-start
+  // templates, not the user's own scorers. The dashboard's first-run starter state keys on it -
+  // never inherited by clones, never settable through the write surfaces.
+  seeded: integer("seeded", { mode: "boolean" }).notNull().default(false),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   projectId: text("project_id"),
 });
@@ -455,12 +465,13 @@ export const monitorClassifications = sqliteTable("monitor_classifications", {
   embedding: text("embedding", { mode: "json" }),
 });
 
-// Mirrors monitor_patterns' routing fields (sampleRate/scopeMode/agentIds, see core/monitor/
-// routing.ts) - the same filter+sample primitive, applied to a judge-scoring config instead of a
-// pattern-matching one. References an evaluationSettings row for its criteria/judge prompt/judge
-// model (evaluationSettingsId) rather than storing its own copy - that used to be inline before
-// Evaluate's standalone-config creation UI existed; now that it does, the "Evaluator" config is
-// the single source of truth, reused via EvaluationConfigSelector on the frontend.
+// The ONLINE PROFILE of an LLM Judge Scorer (core/monitor/judgeScorers.ts): routing/threshold
+// state only - sampleRate/scopeMode/agentIds mirror monitor_patterns' routing fields (see
+// core/monitor/routing.ts). The rubric (criteria/judge prompt/judge model) and the scorer's
+// OFFLINE profile both live on the referenced evaluationSettings row (evaluationSettingsId).
+// Strict 1:1 since the unification: each settings row backs at most one row here (enforced by
+// enforceJudgeScorerCardinality* in storage/db.ts and the auto-clone guard in
+// core/monitor/onlineEvaluators.ts).
 export const monitorOnlineEvaluators = sqliteTable("monitor_online_evaluators", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),

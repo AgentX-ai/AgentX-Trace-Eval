@@ -221,7 +221,11 @@ CRITICAL EVALUATION RULES:
 export const REFERENCE_FREE_EXPECTED_PLACEHOLDER =
   "(none - this is reference-free scoring; grade against the evaluation criteria alone and do not penalize the absence of a reference answer)";
 
-export const DEFAULT_JUDGE_PROMPT = `You are an expert AI evaluator. Please evaluate the following agent response against the expected results.
+// Deliberately compact (simplified 2026-08 from a ~30-line rulebook at Robin's request): the
+// JSON response shape is enforced by callJudgeJson's schema, not by prose, so the prompt only
+// needs the scoring semantics. Every rule below preserves the intent of the long version:
+// expected-results-as-ground-truth, exact-fact strictness, no style credit, tools optional.
+export const DEFAULT_JUDGE_PROMPT = `You are an expert AI evaluator. Score the agent response against the expected results.
 
 **User Query:** {input}
 
@@ -231,28 +235,13 @@ export const DEFAULT_JUDGE_PROMPT = `You are an expert AI evaluator. Please eval
 **Expected Results:**
 {expected}
 
-Please provide:
-1. A rating from 0-10 (where 0 is completely wrong, 5 is partially correct, and 10 is perfect)
-2. A detailed justification explaining your rating
+Rate 0-10 (0 = completely wrong, 5 = partially correct, 10 = perfect) with a concise justification, written in the same language as the query.
 
-**LANGUAGE:** Provide your justification (and any text in your response) in the same language(s) as the evaluation dataset, i.e. the language of the User Query and Expected Results above.
-
-CRITICAL EVALUATION RULES:
-- Expected Results Are the Authoritative Ground Truth: When Expected Results are provided, treat them as correct by definition, they are the benchmark for this test. Your only job is to measure how well the agent's response agrees with the Expected Results. It is NOT your role to decide whether the Expected Results are objectively true.
-- Never Argue With or Second-Guess the Expected Results: Do not use your own knowledge, outside knowledge, or "current law/facts" to dispute, correct, or fact-check the Expected Results, even if you believe them to be wrong in the real world. Score alignment only: a response that contradicts the Expected Results scores low even if you personally think the response is correct, and a response that matches them scores high even if you personally disagree. Do not editorialize in the justification that the Expected Results are wrong, outdated, or contrary to reality, anchor every statement to agreement (or disagreement) with the Expected Results, not to external truth.
-- Factual Accuracy is Paramount: If the expected result contains specific facts (dates, numbers, names), the agent MUST provide those exact facts. Providing context or additional information does NOT compensate for wrong core facts.
-- Dates and Numbers Must Match: If expected result is "996" and agent says "966" or any other number, this is WRONG and should receive a low score (0-3 range), regardless of how detailed the explanation is.
-- No Credit for "Context" When Core Fact is Wrong: Additional historical context, nuanced explanations, or caveats do NOT make up for incorrect primary facts.
-- Be Strict on Factual Queries: When the query asks for a specific fact (e.g., "When was X established?", "Who was Y?"), the response must contain that exact fact to score above 5.
-- Tools Are OPTIONAL Unless Specified: Do NOT deduct points for the agent not invoking tools (e.g. retrieve) when the test step does not explicitly require specific capabilities or tools. Many queries (e.g. "2+2=?", simple general knowledge) do not need any tools. Only expect tool/capability usage when the test explicitly lists expected capabilities, expected knowledge base, or required tools.
-- References in Prompt Trace = Retrieval: If "Actual Capabilities or References Used" lists documents, the agent had retrieval context available and used it; do not penalize for "Tools: None" when references are present, the agent may have used pre-supplied context instead of an explicit retrieve call.
-
-Consider:
-- Accuracy: Does the response contain the EXACT facts from expected results? (dates, numbers, names must match precisely)
-- Completeness: Does it cover all aspects mentioned in expected results?
-- Capability/Tool Usage: Only require tools or capabilities when explicitly specified; otherwise tools are optional. If references appear in the prompt trace, the agent had document context, do not penalize for no explicit tool call.
-- Relevance: Is the response on-topic and helpful?
-- Quality: Is the response well-structured and clear?`;
+Rules:
+- The Expected Results are ground truth by definition. Score only how well the response agrees with them - never fact-check, dispute, or second-guess them with outside knowledge.
+- Specific facts (dates, numbers, names) must match exactly; a wrong core fact scores low (0-3) no matter how detailed or well-written the response is, and extra context never compensates.
+- Completeness counts: the response should cover every aspect of the Expected Results, stay on topic, and be clear.
+- Tools are optional unless the test explicitly requires them; references listed in the trace count as retrieval context, so do not penalize a missing explicit tool call.`;
 
 // ---------------------------------------------------------------------------
 // Evaluation-run "analysis" narrative — the structured write-up an LLM judge produces about a

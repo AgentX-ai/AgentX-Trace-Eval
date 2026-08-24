@@ -246,6 +246,7 @@ async function seedExampleEvaluatorConfig(db: Db): Promise<void> {
     rejectionCriteria: "The response is off-topic, factually wrong, or ignores part of the user's question.",
     isDefault: true,
     status: "published",
+    seeded: true,
   });
 }
 

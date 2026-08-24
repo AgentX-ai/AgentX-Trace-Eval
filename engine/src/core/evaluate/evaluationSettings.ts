@@ -7,6 +7,17 @@ import { recordEvaluationSettingsVersionIfChanged } from "./versions.js";
 
 export type { SimilarityConfig };
 
+// The judge's tool-context level - one control replacing the old always-on trajectory plus a
+// separate catalog boolean: "none" = conversation + expected results only; "simple" = tool
+// inputs/outputs in real trace order (the historical behavior, hence the default); "detailed"
+// = simple + definitions for the tools actually USED (trace-captured metadata.tools first,
+// registry by name as fallback) + a one-line mention of advertised-but-unused tools.
+export type JudgeToolContext = "none" | "simple" | "detailed";
+
+export function normalizeToolContext(value: unknown): JudgeToolContext {
+  return value === "none" || value === "detailed" ? value : "simple";
+}
+
 // Mirrors AgentX-Python's EvaluationSettingsBuilder.publish() payload and the EvaluationSettings
 // pydantic model's field aliases (agentx/evaluations/evaluation_settings.py, models.py). A
 // standalone, reusable grading config: no questions attached, referenced by id from init_run.
@@ -28,6 +39,13 @@ export type CreateEvaluationSettingsInput = {
   // Only meaningful for a standalone config - see the isDefault comment on the schema column.
   isDefault?: boolean;
   status?: string;
+  // How much tool context the judge sees: "none" | "simple" | "detailed" (see the schema
+  // column). Defaults to "simple", the historical behavior.
+  toolContext?: JudgeToolContext;
+  // Set ONLY by the engine's seed paths (Example judge, RAG metric packs): marks quick-start
+  // template rows so the dashboard can tell a clean account from one the user built in. Not
+  // accepted from any write surface, never inherited by clones, immutable after create.
+  seeded?: boolean;
 };
 
 export type UpdateEvaluationSettingsInput = Omit<CreateEvaluationSettingsInput, "id">;
@@ -47,6 +65,8 @@ export type EvaluationSettingsRow = {
   judgeModel: string | null;
   isDefault: boolean;
   status: string;
+  toolContext: string;
+  seeded: boolean;
   createdAt: Date;
 };
 
@@ -65,6 +85,8 @@ function toWire(row: EvaluationSettingsRow) {
     judgeModel: row.judgeModel ?? undefined,
     isDefault: row.isDefault,
     status: row.status,
+    toolContext: normalizeToolContext(row.toolContext),
+    seeded: row.seeded ?? false,
     createdAt: row.createdAt,
   };
 }
@@ -103,6 +125,8 @@ export async function createEvaluationSettings(db: Db, input: CreateEvaluationSe
     judgeModel: input.judgeModel ?? null,
     isDefault: input.isDefault ?? false,
     status: input.status ?? "published",
+    toolContext: normalizeToolContext(input.toolContext),
+    seeded: input.seeded ?? false,
     createdAt: new Date(),
   };
   if (row.isDefault) {
@@ -135,6 +159,7 @@ export async function updateEvaluationSettings(db: Db, id: string, input: Update
     evaluationCriteria: input.evaluationCriteria ?? null,
     judgePrompt: input.judgePrompt ?? null,
     judgeModel: input.judgeModel ?? null,
+    toolContext: normalizeToolContext(input.toolContext),
   };
   const updateCond = and(eq(db.schema.evaluationSettings.id, id), eq(db.schema.evaluationSettings.projectId, db.projectId));
   if (db.kind === "sqlite") {
@@ -176,6 +201,7 @@ export async function patchEvaluationSettings(db: Db, id: string, patch: Partial
     judgeModel: patch.judgeModel ?? existing.judgeModel,
     isDefault: patch.isDefault ?? existing.isDefault,
     status: patch.status ?? existing.status,
+    toolContext: patch.toolContext !== undefined ? normalizeToolContext(patch.toolContext) : existing.toolContext,
   };
   const patchCond = and(eq(db.schema.evaluationSettings.id, id), eq(db.schema.evaluationSettings.projectId, db.projectId));
   if (db.kind === "sqlite") {
@@ -188,6 +214,46 @@ export async function patchEvaluationSettings(db: Db, id: string, patch: Partial
     await recordEvaluationSettingsVersionIfChanged(db, id, before, after);
   }
   return after;
+}
+
+// Copies a config's full rubric + offline profile into a fresh row (new id, isDefault cleared,
+// empty version history - the next edit seeds one). Exists for the LLM Judge Scorer 1:1
+// invariant (core/monitor/judgeScorers.ts): a legacy create/update that would bind an online
+// profile to an already-bound or dataset-twin config gets its own copy instead of sharing -
+// the shared-rubric ambiguity ("which of my three evaluators does editing this config change?")
+// is exactly what the unification removes. Returns the clone's id, or null if the source is gone.
+export async function cloneEvaluationSettings(db: Db, id: string): Promise<string | null> {
+  const existing = await getEvaluationSettingsRow(db, id);
+  if (!existing) {
+    return null;
+  }
+  const clone: EvaluationSettingsRow = {
+    ...existing,
+    id: nanoid(),
+    isDefault: false,
+    // A clone always exists because of user activity (a legacy binding, a copy) - it is the
+    // user's row even when the source was an engine-seeded template.
+    seeded: false,
+    createdAt: new Date(),
+  };
+  if (db.kind === "sqlite") {
+    await db.db.insert(db.schema.evaluationSettings).values(clone);
+  } else {
+    await db.db.insert(db.schema.evaluationSettings).values(clone);
+  }
+  return clone.id;
+}
+
+// True when this settings id doubles as a dataset's grading twin (both share one id - see
+// routes/evaluateDashboard.ts's header comment). Twins are dataset internals, not standalone
+// judge scorers: the unified surface 404s them and online profiles must never bind to one.
+export async function isDatasetTwinSettingsId(db: Db, id: string): Promise<boolean> {
+  const cond = and(eq(db.schema.datasets.id, id), eq(db.schema.datasets.projectId, db.projectId));
+  const rows =
+    db.kind === "sqlite"
+      ? db.db.select({ id: db.schema.datasets.id }).from(db.schema.datasets).where(cond).all()
+      : await db.db.select({ id: db.schema.datasets.id }).from(db.schema.datasets).where(cond);
+  return rows.length > 0;
 }
 
 export async function getEvaluationSettingsRow(db: Db, id: string): Promise<EvaluationSettingsRow | null> {

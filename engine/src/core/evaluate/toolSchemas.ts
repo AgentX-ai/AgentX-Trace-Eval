@@ -753,3 +753,37 @@ Rewrite the definition to prevent these failures. Where an example shows the arg
     exampleCount: gathered.examples.length,
   };
 }
+
+// By-name registry lookup for the judge's "detailed" tool context (core/trace/trajectory.ts's
+// renderUsedToolDefinitions): definitions only for tools the agent actually CALLED, which is
+// what makes reaching into the project-wide registry safe - a lookup keyed by used names can
+// never inject another agent's tools into the judge prompt.
+export async function getRegistryToolsByName(
+  db: Db,
+  names: string[]
+): Promise<Map<string, { description: string | null; definition: string }>> {
+  const result = new Map<string, { description: string | null; definition: string }>();
+  if (names.length === 0) return result;
+  const wanted = new Set(names);
+  const cond = eq(db.schema.toolSchemas.projectId, db.projectId);
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.toolSchemas).where(cond).all()
+      : await db.db.select().from(db.schema.toolSchemas).where(cond)
+  ) as ToolSchemaRow[];
+  const matches = rows.filter(r => wanted.has(r.name));
+  if (matches.length === 0) return result;
+  const versionCond = eq(db.schema.toolSchemaVersions.projectId, db.projectId);
+  const versionRows = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.toolSchemaVersions).where(versionCond).all()
+      : await db.db.select().from(db.schema.toolSchemaVersions).where(versionCond)
+  ) as ToolSchemaVersionRow[];
+  for (const row of matches) {
+    const current = versionRows.find(v => v.toolSchemaId === row.id && v.version === row.currentVersion);
+    if (current && !result.has(row.name)) {
+      result.set(row.name, { description: row.description ?? null, definition: current.definition });
+    }
+  }
+  return result;
+}

@@ -53,6 +53,17 @@ import {
   getOnlineEvaluatorRow,
   InvalidEvaluationSettingsIdError,
 } from "../core/monitor/onlineEvaluators.js";
+import {
+  BuiltinJudgeScorerError,
+  createJudgeScorer,
+  deleteJudgeScorer,
+  getJudgePreviewContext,
+  getJudgeScorer,
+  listJudgeScorers,
+  previewJudgeScore,
+  updateJudgeScorer,
+  type JudgeScorerOnlineInput,
+} from "../core/monitor/judgeScorers.js";
 import { patchEvaluationSettings } from "../core/evaluate/evaluationSettings.js";
 import {
   createCustomEvaluator,
@@ -520,6 +531,134 @@ agentMonitoringDashboardRouter.delete("/online-evaluators/:evaluatorId", async (
     return;
   }
   res.status(204).send();
+});
+
+// ---------------------------------------------------------------------------
+// LLM Judge Scorers - the unified surface (core/monitor/judgeScorers.ts): one entity carrying
+// the judge rubric plus its offline (dataset-run) and optional online (live-traffic) profiles.
+// The legacy /online-evaluators and /evaluate/evaluationSettings routes above/elsewhere stay
+// wire-compatible; this is the surface the dashboard's Scorers page and the SDK's
+// client.monitor.judge_scorers use. camelCase only, per the project's wire convention.
+// ---------------------------------------------------------------------------
+
+function parseOnlineSection(body: Record<string, unknown>): { ok: true; online: JudgeScorerOnlineInput | null | undefined } | { ok: false } {
+  const online = body.online;
+  if (online === undefined) return { ok: true, online: undefined };
+  if (online === null) return { ok: true, online: null };
+  if (typeof online !== "object" || Array.isArray(online)) return { ok: false };
+  return { ok: true, online: online as JudgeScorerOnlineInput };
+}
+
+agentMonitoringDashboardRouter.get("/judge-scorers", async (req: Request, res: Response) => {
+  res.status(200).json({ judgeScorers: await listJudgeScorers(scopedDb(req)) });
+});
+
+// "Try it on a real trace" (Judge Scorer editor): the sample trace + recent traffic volume.
+// Registered BEFORE /judge-scorers/:id so "preview-context" is not captured as an id.
+agentMonitoringDashboardRouter.get("/judge-scorers/preview-context", async (req: Request, res: Response) => {
+  res.status(200).json(await getJudgePreviewContext(scopedDb(req)));
+});
+
+// One reference-free judge call on one trace with an UNSAVED draft rubric. Judge failures
+// (missing API key, provider outage) surface as 502 with the message, not a crash.
+agentMonitoringDashboardRouter.post("/judge-scorers/preview-score", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  const judge = body.judge && typeof body.judge === "object" ? body.judge : {};
+  try {
+    const result = await previewJudgeScore(scopedDb(req), judge, {
+      traceId: typeof body.traceId === "string" ? body.traceId : undefined,
+      sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+    });
+    if (!result) {
+      res.status(404).json({ error: "Nothing captured to score yet" });
+      return;
+    }
+    res.status(200).json(result);
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : "Judge call failed" });
+  }
+});
+
+agentMonitoringDashboardRouter.get("/judge-scorers/:id", async (req: Request, res: Response) => {
+  const judgeScorer = await getJudgeScorer(scopedDb(req), req.params.id!);
+  if (!judgeScorer) {
+    res.status(404).json({ error: "Judge scorer not found" });
+    return;
+  }
+  res.status(200).json({ judgeScorer });
+});
+
+agentMonitoringDashboardRouter.post("/judge-scorers", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  if (typeof body.name !== "string" || !body.name.trim()) {
+    res.status(400).json({ error: "Judge scorer name is required" });
+    return;
+  }
+  const parsed = parseOnlineSection(body);
+  if (!parsed.ok) {
+    res.status(400).json({ error: "online must be an object or null" });
+    return;
+  }
+  const online = parsed.online
+    ? { ...parsed.online, agentIds: await resolveAgentIds(scopedDb(req), parsed.online.agentIds) }
+    : parsed.online;
+  const judgeScorer = await createJudgeScorer(scopedDb(req), {
+    name: body.name.trim(),
+    description: typeof body.description === "string" ? body.description : undefined,
+    judge: body.judge && typeof body.judge === "object" ? body.judge : undefined,
+    offline: body.offline && typeof body.offline === "object" ? body.offline : undefined,
+    online,
+  });
+  res.status(201).json({ judgeScorer });
+});
+
+agentMonitoringDashboardRouter.put("/judge-scorers/:id", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  const parsed = parseOnlineSection(body);
+  if (!parsed.ok) {
+    res.status(400).json({ error: "online must be an object or null" });
+    return;
+  }
+  const online = parsed.online
+    ? { ...parsed.online, agentIds: await resolveAgentIds(scopedDb(req), parsed.online.agentIds) }
+    : parsed.online;
+  try {
+    const judgeScorer = await updateJudgeScorer(scopedDb(req), req.params.id!, {
+      name: typeof body.name === "string" && body.name.trim() ? body.name.trim() : undefined,
+      description: typeof body.description === "string" ? body.description : undefined,
+      judge: body.judge && typeof body.judge === "object" ? body.judge : undefined,
+      offline: body.offline && typeof body.offline === "object" ? body.offline : undefined,
+      online,
+    });
+    if (!judgeScorer) {
+      res.status(404).json({ error: "Judge scorer not found" });
+      return;
+    }
+    res.status(200).json({ judgeScorer });
+  } catch (err) {
+    if (err instanceof BuiltinJudgeScorerError) {
+      res.status(409).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
+});
+
+agentMonitoringDashboardRouter.delete("/judge-scorers/:id", async (req: Request, res: Response) => {
+  try {
+    const deleted = await deleteJudgeScorer(scopedDb(req), req.params.id!);
+    if (!deleted) {
+      res.status(404).json({ error: "Judge scorer not found" });
+      return;
+    }
+    res.status(204).send();
+  } catch (err) {
+    if (err instanceof BuiltinJudgeScorerError) {
+      res.status(409).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
 });
 
 // Every online-evaluator verdict for one trace - the trace dialog's "Judge scores" section

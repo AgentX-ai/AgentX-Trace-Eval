@@ -38,12 +38,13 @@ export type SpanWire = {
   parentSpanId?: string;
 };
 
-function buildSpanLine(span: SpanWire, index: number): string {
+function buildSpanLine(span: SpanWire, index: number, includeToolLines = true): string {
   const parts = [`[${index}] ${span.name}${span.model ? ` (${span.model})` : ""}`];
   const input = span.input !== undefined ? truncate(extractText(span.input), MAX_TEXT_PER_SPAN) : "";
   const output = span.output !== undefined ? truncate(extractText(span.output), MAX_TEXT_PER_SPAN) : "";
   if (input) parts.push(`  input: ${input}`);
-  if (Array.isArray(span.toolCalls) && span.toolCalls.length > 0) {
+  // toolContext="none": the judge sees the conversation, not the plumbing.
+  if (includeToolLines && Array.isArray(span.toolCalls) && span.toolCalls.length > 0) {
     const names = span.toolCalls
       .map(t => (t && typeof t === "object" && "name" in t ? String((t as { name: unknown }).name) : "unknown"))
       .join(", ");
@@ -125,11 +126,15 @@ export async function listSessionScores(db: Db, sessionId: string): Promise<Sess
 // criteria-based session evaluators (core/monitor/sessionSweep.ts), so every session-level judge
 // reads the same bounded excerpt format. Keep first/last spans, elide the middle beyond the cap -
 // see MAX_SPANS_IN_PROMPT's comment.
-export function buildSessionTranscript(spans: SpanWire[]): {
+export function buildSessionTranscript(
+  spans: SpanWire[],
+  options: { includeToolLines?: boolean } = {}
+): {
   transcript: string;
   promptSpans: SpanWire[];
   elidedNote: string;
 } {
+  const includeToolLines = options.includeToolLines ?? true;
   let promptSpans = spans;
   let elidedNote = "";
   if (spans.length > MAX_SPANS_IN_PROMPT) {
@@ -138,7 +143,7 @@ export function buildSessionTranscript(spans: SpanWire[]): {
     promptSpans = [...spans.slice(0, head), ...spans.slice(spans.length - tail)];
     elidedNote = `\n(Note: ${spans.length - MAX_SPANS_IN_PROMPT} middle spans elided for length - indices below are positions in this excerpt, not the full session.)`;
   }
-  const transcript = promptSpans.map((span, i) => buildSpanLine(span, i)).join("\n\n");
+  const transcript = promptSpans.map((span, i) => buildSpanLine(span, i, includeToolLines)).join("\n\n");
   return { transcript, promptSpans, elidedNote };
 }
 

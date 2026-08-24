@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import { renderUsedToolDefinitions } from "../trace/trajectory.js";
 import { eq, and, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import {
@@ -65,6 +66,9 @@ type ResolvedRunConfig = {
   evaluationCriteria: string;
   judgePrompt: string;
   judgeModel: string;
+  // The judge's tool-context level (settings-only - datasets have no such column):
+  // "none" | "simple" (default, the historical trajectory behavior) | "detailed".
+  toolContext: string;
   similarityConfig: SimilarityConfig;
   codeScorers: CodeScorerConfig[];
   questions: Array<{
@@ -106,6 +110,7 @@ export async function resolveRunConfig(
     evaluationCriteria: source?.evaluationCriteria ?? "",
     judgePrompt: (settings?.judgePrompt ?? "").trim() || DEFAULT_JUDGE_PROMPT,
     judgeModel: settings?.judgeModel ?? DEFAULT_JUDGE_MODEL,
+    toolContext: settings?.toolContext ?? "simple",
     similarityConfig: (source?.similarityConfig as SimilarityConfig | null) ?? {},
     codeScorers: ((source?.codeScorers as CodeScorerConfig[] | null) ?? []).filter(s => s.enabled),
     questions,
@@ -277,6 +282,12 @@ type ScoredResult = { rating: number | null; justification: string; judgeError: 
   };
 
 async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: SubmittedResult): Promise<ScoredResult> {
+  // toolContext="detailed": definitions for the tools this result's trace actually used
+  // (trace-captured metadata.tools first, registry by name as fallback).
+  const itemToolDefinitions =
+    config.toolContext === "detailed" && item.traceId
+      ? await renderUsedToolDefinitions(db, item.traceId).catch(() => null)
+      : null;
   const question = item.questionIndex != null ? config.questions[item.questionIndex] : undefined;
   const mainQ = question?.main_question;
   const expected = mainQ?.expectedResults;
@@ -317,7 +328,9 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
       // For {context}-referencing judge prompts (the RAG metric pack) - dynamic per-result
       // context first, then linked-trace retrievals, then the case's pinned chunks.
       context: retrievalContext,
-      trajectory: trajectory ?? undefined,
+      // "none" strips the trajectory too - conversation + expected results only.
+      trajectory: config.toolContext !== "none" ? (trajectory ?? undefined) : undefined,
+      toolDefinitions: itemToolDefinitions ?? undefined,
     }).then(
       result => ({ ...result, judgeError: null as Error | null }),
       (err: unknown) => ({

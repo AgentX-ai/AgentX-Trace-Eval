@@ -26,6 +26,10 @@ export const EXPORT_ENTITIES = {
   "session-scores": { table: "sessionScores", sinceColumn: "createdAt" },
   patterns: { table: "monitorPatterns", sinceColumn: "createdAt" },
   "online-evaluators": { table: "monitorOnlineEvaluators", sinceColumn: "createdAt" },
+  // The judge rubric + offline profile behind each online evaluator and dataset run - without
+  // it a backup captured the binding but not what it judges WITH (deep-dive gap, closed with
+  // the LLM Judge Scorer unification).
+  "evaluation-settings": { table: "evaluationSettings", sinceColumn: "createdAt" },
   "custom-evaluators": { table: "customEvaluators", sinceColumn: "createdAt" },
 } as const;
 

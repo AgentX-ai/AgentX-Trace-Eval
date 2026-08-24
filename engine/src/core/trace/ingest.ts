@@ -11,7 +11,44 @@ import { unixNanosToDate } from "../shared/unixNano.js";
 // (agentx/tracing/tracer.py); see AgentX-Python for the exact field list this was checked
 // against. Deliberately permissive (most fields optional) since the SDK only ever sends what
 // it actually captured.
-export const ingestTraceSchema = z.object({
+//
+// Casing: the project's wire convention is camelCase (every read endpoint already is), and this
+// write path historically spoke snake_case - the one seam. Both are accepted here: camelCase is
+// canonical, the snake_case keys stay as legacy aliases for the existing SDKs and the hosted
+// platform's payload shape. The preprocess below folds camelCase twins onto the snake_case
+// schema keys so nothing downstream changes.
+const INGEST_CAMEL_ALIASES: Record<string, string> = {
+  latencyMs: "latency_ms",
+  toolCalls: "tool_calls",
+  sessionId: "session_id",
+  performanceSummary: "performance_summary",
+  inputTokens: "input_tokens",
+  outputTokens: "output_tokens",
+  cacheReadTokens: "cache_read_tokens",
+  cacheWriteTokens: "cache_write_tokens",
+  spanId: "span_id",
+  parentSpanId: "parent_span_id",
+  startedAtUnixNano: "started_at_unix_nano",
+  patternIds: "pattern_ids",
+  agentId: "agent_id",
+};
+
+function foldCamelAliases(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  let folded: Record<string, unknown> | null = null;
+  for (const [camel, snake] of Object.entries(INGEST_CAMEL_ALIASES)) {
+    if (record[camel] !== undefined && record[snake] === undefined) {
+      folded = folded ?? { ...record };
+      folded[snake] = record[camel];
+    }
+  }
+  return folded ?? record;
+}
+
+export const ingestTraceSchema = z.preprocess(foldCamelAliases, z.object({
   name: z.string().min(1),
   input: z.unknown().optional(),
   output: z.unknown().optional(),
@@ -54,7 +91,7 @@ export const ingestTraceSchema = z.object({
   // agents.ts). Omitted (the default, and every pre-registry caller's only option): resolved from
   // `name` alone via resolveAgentId, identical to this engine's behavior before agent ids existed.
   agent_id: z.string().optional(),
-});
+}));
 
 export type IngestTraceInput = z.infer<typeof ingestTraceSchema>;
 

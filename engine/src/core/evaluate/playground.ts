@@ -249,6 +249,8 @@ async function runPlaygroundOnlineEvaluatorChecks(
           judgePrompt: (settings.judgePrompt ?? "").trim() || DEFAULT_JUDGE_PROMPT,
           judgeModel: settings.judgeModel ?? DEFAULT_JUDGE_MODEL,
         },
+        // The dry-run has no trace, so there is no trajectory and no used-tools list to
+        // render - "simple"/"detailed" tool context only applies to real traffic.
         content
       );
       results.push({

@@ -5,16 +5,21 @@ import { scoreAgainstCriteria, DEFAULT_JUDGE_PROMPT, DEFAULT_JUDGE_MODEL } from 
 import { matchesAgentScope, passesSampleRate } from "./routing.js";
 import { recordEvent } from "./events.js";
 import { upsertSignal } from "./signals.js";
-import { getEvaluationSettingsRow } from "../evaluate/evaluationSettings.js";
-import { renderTraceTrajectory, getTraceRetrievalContext } from "../trace/trajectory.js";
+import {
+  cloneEvaluationSettings,
+  getEvaluationSettingsRow,
+  isDatasetTwinSettingsId,
+} from "../evaluate/evaluationSettings.js";
+import { renderTraceTrajectory, renderUsedToolDefinitions, getTraceRetrievalContext } from "../trace/trajectory.js";
 
-// LangSmith's actual "online evals": a real judge scoring sampled live traffic continuously,
-// producing a rating over time - distinct from core/monitor/detect.ts's pattern-matching (a
-// binary signal). References an evaluationSettingsId (an "Evaluator" config, core/evaluate/
-// evaluationSettings.ts) for its criteria/judge prompt/judge model rather than storing its own
-// copy - that used to be inline before the standalone-config creation UI existed; it does now, so
-// the config is the single source of truth, shared with Runs via EvaluationConfigSelector on the
-// frontend.
+// The ONLINE PROFILE of an LLM Judge Scorer (core/monitor/judgeScorers.ts is the unified
+// surface): a real judge scoring sampled live traffic continuously, producing a rating over
+// time - distinct from core/monitor/detect.ts's pattern-matching (a binary signal). This row
+// stores routing/threshold state only; the rubric (criteria/judge prompt/judge model) lives on
+// the referenced evaluation_settings row, which also carries the scorer's OFFLINE profile
+// (dataset-run repetitions/similarity metrics/code scorers). Strict 1:1 since the unification:
+// each config backs at most one online profile - legacy creates that would share a config get
+// an automatic clone (see resolveBindableSettingsId below).
 export type CreateOnlineEvaluatorInput = {
   name: string;
   evaluationSettingsId: string;
@@ -87,13 +92,48 @@ async function assertEvaluationSettingsExists(db: Db, evaluationSettingsId: stri
   }
 }
 
+// Which evaluator (if any) already holds this config as its online profile - the 1:1 invariant's
+// lookup, also used by the unified surface's 409 check (core/monitor/judgeScorers.ts).
+export async function findEvaluatorBoundToSettings(db: Db, evaluationSettingsId: string): Promise<OnlineEvaluatorRow | null> {
+  const cond = and(
+    eq(db.schema.monitorOnlineEvaluators.evaluationSettingsId, evaluationSettingsId),
+    eq(db.schema.monitorOnlineEvaluators.projectId, db.projectId)
+  );
+  const row =
+    db.kind === "sqlite"
+      ? (db.db.select().from(db.schema.monitorOnlineEvaluators).where(cond).all()[0] as OnlineEvaluatorRow | undefined)
+      : ((await db.db.select().from(db.schema.monitorOnlineEvaluators).where(cond))[0] as OnlineEvaluatorRow | undefined);
+  return row ?? null;
+}
+
+// Enforces the 1:1 judge-scorer invariant on the LEGACY create/update surfaces without breaking
+// their wire contract: a config that is already another evaluator's online profile, or that
+// doubles as a dataset twin, gets CLONED and the clone's id is bound instead. The caller's
+// script keeps working; the response's evaluationSettingsId simply comes back as the clone
+// (SDKs round-trip it opaquely). The unified /judge-scorers surface 409s instead - explicitness
+// there, compatibility here.
+async function resolveBindableSettingsId(db: Db, evaluationSettingsId: string, selfEvaluatorId?: string): Promise<string> {
+  await assertEvaluationSettingsExists(db, evaluationSettingsId);
+  const twin = await isDatasetTwinSettingsId(db, evaluationSettingsId);
+  const bound = await findEvaluatorBoundToSettings(db, evaluationSettingsId);
+  const boundElsewhere = bound !== null && bound.id !== selfEvaluatorId;
+  if (!twin && !boundElsewhere) {
+    return evaluationSettingsId;
+  }
+  const cloneId = await cloneEvaluationSettings(db, evaluationSettingsId);
+  if (!cloneId) {
+    throw new InvalidEvaluationSettingsIdError(`evaluationSettingsId "${evaluationSettingsId}" disappeared while binding`);
+  }
+  return cloneId;
+}
+
 export async function createOnlineEvaluator(db: Db, input: CreateOnlineEvaluatorInput) {
-  await assertEvaluationSettingsExists(db, input.evaluationSettingsId);
+  const evaluationSettingsId = await resolveBindableSettingsId(db, input.evaluationSettingsId);
   const row: OnlineEvaluatorRow = {
     id: nanoid(),
     projectId: db.projectId,
     name: input.name,
-    evaluationSettingsId: input.evaluationSettingsId,
+    evaluationSettingsId,
     // Every check here is a real LLM call against the user's own API key - default meaningfully
     // lower than a pattern's (1), sampling isn't optional the way it arguably is for pattern-
     // matching (usually free string/regex work).
@@ -149,13 +189,16 @@ export async function updateOnlineEvaluator(db: Db, id: string, input: UpdateOnl
   if (!existing) {
     return null;
   }
-  if (input.evaluationSettingsId !== undefined) {
-    await assertEvaluationSettingsExists(db, input.evaluationSettingsId);
+  let requestedSettingsId = input.evaluationSettingsId;
+  if (requestedSettingsId !== undefined && requestedSettingsId !== existing.evaluationSettingsId) {
+    requestedSettingsId = await resolveBindableSettingsId(db, requestedSettingsId, id);
   }
   // Built-ins are read-only except enabled: pausable, never editable away. Everything else in the
   // patch is ignored rather than erroring, so a stale full-object PUT from an older dashboard
   // can't corrupt the system row.
-  const patch: UpdateOnlineEvaluatorInput = existing.builtinKey ? { enabled: input.enabled } : input;
+  const patch: UpdateOnlineEvaluatorInput = existing.builtinKey
+    ? { enabled: input.enabled }
+    : { ...input, evaluationSettingsId: requestedSettingsId };
   const input_ = patch;
   const updated: OnlineEvaluatorRow = {
     ...existing,
@@ -260,6 +303,17 @@ export async function runOnlineEvaluators(
   // {context}-referencing judges (the RAG metric pack): explicit metadata.retrievalContext wins,
   // else fall back to what the trace actually recorded retrieving (SDK/LangChain/LlamaIndex
   // retrieval spans) - so RAG scoring works on real traffic with zero caller changes.
+  // toolContext="detailed" evaluators: definitions of the tools this trace actually used
+  // (trace-captured metadata.tools first, registry by name as fallback) - rendered once,
+  // lazily, shared by every opted-in evaluator; a render failure degrades gracefully.
+  let toolDefinitionsPromise: Promise<string | null> | null = null;
+  const getToolDefinitions = () => {
+    if (!ctx.traceId) return Promise.resolve(null);
+    if (!toolDefinitionsPromise) {
+      toolDefinitionsPromise = renderUsedToolDefinitions(db, ctx.traceId).catch(() => null);
+    }
+    return toolDefinitionsPromise;
+  };
   const explicitContext = extractRetrievalContext(trace.metadata);
   let recordedContextPromise: Promise<string | null> | null = null;
   const getContext = () => {
@@ -305,7 +359,11 @@ export async function runOnlineEvaluators(
           input: inputText,
           output: outputText,
           context: (await getContext()) ?? undefined,
-          trajectory: (await getTrajectory()) ?? undefined,
+          // toolContext gates how much the judge sees: "none" = conversation only,
+          // "simple" = the trajectory (historical behavior), "detailed" = + definitions.
+          trajectory: settings.toolContext !== "none" ? ((await getTrajectory()) ?? undefined) : undefined,
+          toolDefinitions:
+            settings.toolContext === "detailed" ? ((await getToolDefinitions()) ?? undefined) : undefined,
         }
       ));
     } catch (err) {

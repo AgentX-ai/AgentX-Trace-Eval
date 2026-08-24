@@ -187,6 +187,7 @@ async function getMergedEvaluationSettings(db: Db, id: string) {
     ...base,
     judgePrompt: settingsRow?.judgePrompt ?? undefined,
     judgeModel: settingsRow?.judgeModel ?? undefined,
+    toolContext: settingsRow?.toolContext ?? "simple",
     creator: LOCAL_USER,
   };
 }
@@ -1159,6 +1160,7 @@ evaluateDashboardRouter.post("/evaluationSettings/create-standalone", async (req
     judgeModel: body.judgeModel as string | undefined,
     isDefault: body.isDefault === true,
     status: typeof body.status === "string" ? body.status : undefined,
+    toolContext: typeof body.toolContext === "string" ? body.toolContext : undefined,
   });
   res.status(201).json({ ...settings, creator: LOCAL_USER });
 });
@@ -1187,6 +1189,7 @@ evaluateDashboardRouter.put("/evaluationSettings/:id", async (req: Request, res:
       judgeModel: body.judgeModel as string | undefined,
       isDefault: typeof body.isDefault === "boolean" ? body.isDefault : undefined,
       status: typeof body.status === "string" ? body.status : undefined,
+      toolContext: typeof body.toolContext === "string" ? body.toolContext : undefined,
     });
     if (!updated) {
       res.status(404).json({ error: "Evaluation settings not found" });

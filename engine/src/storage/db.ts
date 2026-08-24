@@ -305,7 +305,30 @@ function ensureProjectScopedUniqueIndexes(exec: (statement: string) => void): vo
   }
 }
 
+// The evaluation-settings rows historically created by the engine's seed paths (core/seed.ts
+// seedExampleEvaluatorConfig + core/evaluate/metricPack.ts METRIC_PACK) - used only by the
+// one-shot `seeded` column backfill in both dialects' bootstraps.
+const SEEDED_SETTINGS_BACKFILL_NAMES = [
+  "Example: Helpfulness Judge",
+  "RAG: Faithfulness",
+  "RAG: Answer Relevancy",
+  "RAG: Context Relevancy",
+  "RAG: Contextual Precision",
+  "RAG: Contextual Recall",
+]
+  .map(name => `'${name}'`)
+  .join(", ");
+
 function bootstrapSqlite(sqlite: SqliteHandle): void {
+  // Checked BEFORE any DDL runs: `seeded` is backfilled by name exactly once, at the upgrade
+  // that introduces the column (see the UPDATE after columnMigrations). Running it on every
+  // boot could misclassify a user's scorer that happens to share a seed name.
+  const settingsSeededColumnPreexists =
+    (
+      sqlite
+        .prepare("SELECT COUNT(*) AS n FROM pragma_table_info('evaluation_settings') WHERE name = 'seeded'")
+        .all() as Array<{ n: number }>
+    )[0]!.n > 0;
   // CREATE UNIQUE INDEX IF NOT EXISTS only checks the index *name* - on a pre-existing install
   // that already created these 3 with their old (pre-multi-project) column sets, the IF NOT
   // EXISTS in ensureProjectScopedUniqueIndexes (run at the end of this function) would otherwise
@@ -393,6 +416,8 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       judge_model TEXT,
       is_default INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'published',
+      tool_context TEXT NOT NULL DEFAULT 'simple',
+      seeded INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       project_id TEXT
     );
@@ -988,6 +1013,13 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     // Code scorers: a second custom-scorer kind (user script run in-engine) next to the original
     // HTTP-endpoint kind, now called "external".
     ["custom_evaluators", "ALTER TABLE custom_evaluators ADD COLUMN kind TEXT NOT NULL DEFAULT 'external'"],
+    // Judge scorers: how much tool context the judge sees - "none" (conversation only),
+    // "simple" (tool inputs/outputs in trace order - the historical behavior, hence the
+    // default), "detailed" (simple + definitions for the tools actually used).
+    ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN tool_context TEXT NOT NULL DEFAULT 'simple'"],
+    // Engine-seeded template rows (Example judge, RAG metric packs) vs. the user's own scorers -
+    // the dashboard's first-run starter state keys on this. Backfilled by name once, below.
+    ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN seeded INTEGER NOT NULL DEFAULT 0"],
     ["custom_evaluators", "ALTER TABLE custom_evaluators ADD COLUMN language TEXT"],
     ["custom_evaluators", "ALTER TABLE custom_evaluators ADD COLUMN script TEXT"],
     ["custom_evaluators", "ALTER TABLE custom_evaluators ADD COLUMN alert_below REAL"],
@@ -1013,11 +1045,21 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     }
   }
 
+  // One-shot backfill for databases that predate the `seeded` column: mark the rows the seed
+  // paths created. The names are the seed names frozen at backfill time on purpose - the rows
+  // being marked were created by past engine versions, so drifting future seed constants must
+  // not change this list. Guarded by the pre-DDL check so it never reruns once the column
+  // exists (a user scorer that happens to reuse a seed name must not be reclassified later).
+  if (!settingsSeededColumnPreexists) {
+    sqlite.exec(`UPDATE evaluation_settings SET seeded = 1 WHERE name IN (${SEEDED_SETTINGS_BACKFILL_NAMES})`);
+  }
+
   ensureTraceSpanIdUnique(statement => sqlite.exec(statement));
   ensureVersionUnique(statement => sqlite.exec(statement));
   sqlite.exec(BACKFILL_AUTH_ACCOUNT_ISSUER);
 
   migrateOnlineEvaluatorsToConfigsSqlite(sqlite);
+  enforceJudgeScorerCardinalitySqlite(sqlite);
   backfillAgentsSqlite(sqlite);
   backfillDefaultProjectSqlite(sqlite);
 
@@ -1175,6 +1217,84 @@ function migrateOnlineEvaluatorsToConfigsSqlite(sqlite: SqliteHandle): void {
   }
 }
 
+// LLM Judge Scorer unification (see core/monitor/judgeScorers.ts): one judge config backs at most
+// ONE online profile. Historically N online evaluators could share one evaluation_settings row
+// (and a few were bound to dataset "twin" settings, which the unified surface excludes). This
+// enforces the 1:1 shape by CLONING the settings row for every extra/twin-bound evaluator and
+// repointing the evaluator at its clone. Evaluator ids are NEVER rewritten - `online-eval:<id>`
+// patternKeys in monitor_events/monitor_signals/session_scores, KPI exclusions, and the tuning
+// routes all key on them. Idempotent: a re-run finds every group at size 1 and no twin bindings.
+// Clones start with an empty version history; the next edit seeds one.
+type JudgeScorerBindingRow = {
+  id: string;
+  project_id: string | null;
+  evaluation_settings_id: string | null;
+  builtin_key: string | null;
+  created_at: number;
+};
+
+// Shared decision logic for both dialects: which evaluator ids need their config cloned.
+function judgeScorerCloneTargets(evaluators: JudgeScorerBindingRow[], datasetIds: Set<string>): string[] {
+  const targets: string[] = [];
+  const grouped = new Map<string, JudgeScorerBindingRow[]>();
+  for (const row of evaluators) {
+    if (!row.evaluation_settings_id) continue;
+    // Twin-bound: the config doubles as a dataset's grading half - the online profile must not
+    // share it (deleting the scorer would take the dataset's grading with it).
+    if (datasetIds.has(row.evaluation_settings_id)) {
+      targets.push(row.id);
+      continue;
+    }
+    const key = `${row.project_id ?? ""} ${row.evaluation_settings_id}`;
+    const group = grouped.get(key) ?? [];
+    group.push(row);
+    grouped.set(key, group);
+  }
+  for (const group of grouped.values()) {
+    if (group.length <= 1) continue;
+    // Keeper: the builtin if present (its config id is what ensureSessionBaselineJudge looks up),
+    // else the oldest binding (created_at asc, id asc tiebreak for determinism).
+    const keeper =
+      group.find(r => r.builtin_key) ??
+      [...group].sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id))[0]!;
+    for (const row of group) {
+      if (row.id !== keeper.id) targets.push(row.id);
+    }
+  }
+  return targets;
+}
+
+const JUDGE_SCORER_CLONE_COLUMNS =
+  "name, description, number_of_requests, similarity_config, code_scorers, acceptance_criteria, " +
+  "rejection_criteria, evaluation_criteria, judge_prompt, judge_model";
+
+function enforceJudgeScorerCardinalitySqlite(sqlite: SqliteHandle): void {
+  const evaluators = sqlite
+    .prepare(
+      `SELECT id, project_id, evaluation_settings_id, builtin_key, created_at
+       FROM monitor_online_evaluators WHERE evaluation_settings_id IS NOT NULL`
+    )
+    .all() as JudgeScorerBindingRow[];
+  if (evaluators.length === 0) return;
+  const datasetIds = new Set(
+    (sqlite.prepare(`SELECT id FROM datasets`).all() as { id: string }[]).map(r => r.id)
+  );
+  const now = Date.now();
+  for (const evaluatorId of judgeScorerCloneTargets(evaluators, datasetIds)) {
+    const cloneId = nanoid();
+    // INSERT..SELECT copies the full rubric; is_default cleared (only one default per project,
+    // and the original keeps it), created_at = now, project_id follows the source row.
+    sqlite
+      .prepare(
+        `INSERT INTO evaluation_settings (id, ${JUDGE_SCORER_CLONE_COLUMNS}, is_default, status, created_at, project_id)
+         SELECT ?, ${JUDGE_SCORER_CLONE_COLUMNS}, 0, status, ?, project_id
+         FROM evaluation_settings WHERE id = (SELECT evaluation_settings_id FROM monitor_online_evaluators WHERE id = ?)`
+      )
+      .run(cloneId, now, evaluatorId);
+    sqlite.prepare(`UPDATE monitor_online_evaluators SET evaluation_settings_id = ? WHERE id = ?`).run(cloneId, evaluatorId);
+  }
+}
+
 // One-time backfill for self-host's real agent registry (core/monitor/agents.ts): before this,
 // "agentId" everywhere (monitor_profiles/signals/events/classifications.agent_id,
 // monitor_patterns/monitor_online_evaluators.agent_ids) was literally the trace's `name` string -
@@ -1294,6 +1414,14 @@ function backfillAgentsSqlite(sqlite: SqliteHandle): void {
 // schema.pg.ts. Replace with real drizzle-kit migrations once the schema stabilizes, see plan
 // task #107 (same note as bootstrapSqlite).
 async function bootstrapPostgres(pool: Pool): Promise<void> {
+  // See bootstrapSqlite: checked BEFORE any DDL so the one-shot `seeded` backfill below runs
+  // only at the upgrade that introduces the column.
+  const settingsSeededColumnPreexists =
+    (
+      await pool.query(
+        "SELECT COUNT(*)::int AS n FROM information_schema.columns WHERE table_name = 'evaluation_settings' AND column_name = 'seeded'"
+      )
+    ).rows[0].n > 0;
   // See bootstrapSqlite's identical comment: CREATE UNIQUE INDEX IF NOT EXISTS only checks the
   // index name, so a pre-existing install's old (pre-multi-project) column set would otherwise
   // silently survive. Drop first so the recreation below actually picks up project_id.
@@ -1378,6 +1506,8 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       judge_model TEXT,
       is_default BOOLEAN NOT NULL DEFAULT FALSE,
       status TEXT NOT NULL DEFAULT 'published',
+      tool_context TEXT NOT NULL DEFAULT 'simple',
+      seeded BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMP NOT NULL,
       project_id TEXT
     );
@@ -1940,6 +2070,8 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS disabled_builtin_patterns JSONB;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS enabled_builtin_patterns JSONB;
     ALTER TABLE custom_evaluators ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'external';
+    ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS tool_context TEXT NOT NULL DEFAULT 'simple';
+    ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS seeded BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE custom_evaluators ADD COLUMN IF NOT EXISTS language TEXT;
     ALTER TABLE custom_evaluators ADD COLUMN IF NOT EXISTS script TEXT;
     ALTER TABLE custom_evaluators ADD COLUMN IF NOT EXISTS alert_below DOUBLE PRECISION;
@@ -1969,7 +2101,13 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
   await ensureVersionUniqueAsync(statement => pool.query(statement).then(() => undefined));
   await pool.query(BACKFILL_AUTH_ACCOUNT_ISSUER);
 
+  // One-shot `seeded` backfill - see bootstrapSqlite's identical block for the rationale.
+  if (!settingsSeededColumnPreexists) {
+    await pool.query(`UPDATE evaluation_settings SET seeded = TRUE WHERE name IN (${SEEDED_SETTINGS_BACKFILL_NAMES})`);
+  }
+
   await migrateOnlineEvaluatorsToConfigsPostgres(pool);
+  await enforceJudgeScorerCardinalityPostgres(pool);
   await backfillAgentsPostgres(pool);
   await backfillDefaultProjectPostgres(pool);
 
@@ -2022,6 +2160,29 @@ async function migrateOnlineEvaluatorsToConfigsPostgres(pool: Pool): Promise<voi
     for (const column of legacyColumns) {
       await pool.query(`ALTER TABLE monitor_online_evaluators DROP COLUMN IF EXISTS ${column}`);
     }
+  }
+}
+
+// Postgres mirror of enforceJudgeScorerCardinalitySqlite above - see that function's comment.
+// Decision logic is shared (judgeScorerCloneTargets); only the SQL dialect differs.
+async function enforceJudgeScorerCardinalityPostgres(pool: Pool): Promise<void> {
+  const { rows: evaluators } = await pool.query<JudgeScorerBindingRow & { created_at: Date }>(
+    `SELECT id, project_id, evaluation_settings_id, builtin_key, created_at
+     FROM monitor_online_evaluators WHERE evaluation_settings_id IS NOT NULL`
+  );
+  if (evaluators.length === 0) return;
+  const normalized = evaluators.map(row => ({ ...row, created_at: new Date(row.created_at).getTime() }));
+  const { rows: datasetRows } = await pool.query<{ id: string }>(`SELECT id FROM datasets`);
+  const datasetIds = new Set(datasetRows.map(r => r.id));
+  for (const evaluatorId of judgeScorerCloneTargets(normalized, datasetIds)) {
+    const cloneId = nanoid();
+    await pool.query(
+      `INSERT INTO evaluation_settings (id, ${JUDGE_SCORER_CLONE_COLUMNS}, is_default, status, created_at, project_id)
+       SELECT $1, ${JUDGE_SCORER_CLONE_COLUMNS}, FALSE, status, NOW(), project_id
+       FROM evaluation_settings WHERE id = (SELECT evaluation_settings_id FROM monitor_online_evaluators WHERE id = $2)`,
+      [cloneId, evaluatorId]
+    );
+    await pool.query(`UPDATE monitor_online_evaluators SET evaluation_settings_id = $1 WHERE id = $2`, [cloneId, evaluatorId]);
   }
 }
 
