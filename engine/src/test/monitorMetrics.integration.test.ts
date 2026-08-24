@@ -87,4 +87,34 @@ describe("GET /agent-monitoring/metrics", () => {
     expect(res.buckets.length).toBe(12);
     expect(res.totals.traces).toBeGreaterThanOrEqual(2);
   });
+
+  it("sizes buckets adaptively across the preset ladder", async () => {
+    const sixH = (await api("/agent-monitoring/metrics?window=6h")).body as Wire & { bucketMs: number };
+    expect(sixH.window).toBe("6h");
+    expect(sixH.bucketMs).toBe(15 * 60 * 1000);
+    expect(sixH.buckets.length).toBe(24);
+    const ninetyD = (await api("/agent-monitoring/metrics?window=90d")).body as Wire & { bucketMs: number };
+    expect(ninetyD.bucketMs).toBe(3 * 24 * 60 * 60 * 1000);
+    expect(ninetyD.buckets.length).toBe(30);
+    // Unknown window falls back to the 7d preset.
+    const bogus = (await api("/agent-monitoring/metrics?window=zzz")).body as Wire;
+    expect(bogus.window).toBe("7d");
+  });
+
+  it("accepts a custom from/to range and honors both bounds", async () => {
+    const now = Date.now();
+    const live = (await api(`/agent-monitoring/metrics?from=${now - 2 * 3600_000}&to=${now}`)).body as Wire & {
+      bucketMs: number;
+      end: number;
+    };
+    expect(live.window).toBe("custom");
+    expect(live.bucketMs).toBe(5 * 60 * 1000); // 2h span -> 24 five-minute buckets
+    expect(live.totals.traces).toBeGreaterThanOrEqual(2);
+    expect(live.end).toBe(now);
+    // A range that ended before ingest excludes everything, including totals and facets.
+    const past = (await api(`/agent-monitoring/metrics?from=${now - 48 * 3600_000}&to=${now - 24 * 3600_000}`))
+      .body as Wire;
+    expect(past.totals.traces).toBe(0);
+    expect(past.facets.agents).toEqual([]);
+  });
 });

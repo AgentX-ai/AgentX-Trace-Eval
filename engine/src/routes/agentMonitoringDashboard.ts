@@ -75,7 +75,7 @@ import {
 } from "../core/monitor/customEvaluators.js";
 import { runScriptScorer } from "../core/monitor/scriptScorer.js";
 import { getPortabilityPreview, runModelPortabilityCheck } from "../core/evaluate/portability.js";
-import { getMonitorMetrics, parseMetricsWindow } from "../core/monitor/metrics.js";
+import { getMonitorMetrics, parseMetricsRange } from "../core/monitor/metrics.js";
 import {
   listPortabilityModels,
   createPortabilityModel,
@@ -335,7 +335,7 @@ function parseWindow(req: Request): MonitoringWindow {
 // agent/model/tool/status filters) - see core/monitor/metrics.ts.
 agentMonitoringDashboardRouter.get("/metrics", async (req: Request, res: Response) => {
   res.status(200).json(
-    await getMonitorMetrics(scopedDb(req), parseMetricsWindow(req.query.window), {
+    await getMonitorMetrics(scopedDb(req), parseMetricsRange(req.query as Record<string, unknown>), {
       agent: typeof req.query.agent === "string" ? req.query.agent : undefined,
       model: typeof req.query.model === "string" ? req.query.model : undefined,
       tool: typeof req.query.tool === "string" ? req.query.tool : undefined,

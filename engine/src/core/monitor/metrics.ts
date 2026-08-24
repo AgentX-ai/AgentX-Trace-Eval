@@ -7,23 +7,43 @@ import { listPortabilityModels, normalizeModelId, type PortabilityModel } from "
 // tool executions and failures - with agent/model/tool/status filters. Same window/bucket idiom
 // as cost.ts and topics.ts, extended with a "1h" live view.
 
-export type MetricsWindow = "1h" | "24h" | "7d" | "30d";
+const HOUR = 60 * 60 * 1000;
+const PRESETS: Record<string, number> = {
+  "1h": HOUR,
+  "6h": 6 * HOUR,
+  "12h": 12 * HOUR,
+  "1d": 24 * HOUR,
+  "24h": 24 * HOUR, // legacy alias
+  "3d": 3 * 24 * HOUR,
+  "7d": 7 * 24 * HOUR,
+  "14d": 14 * 24 * HOUR,
+  "30d": 30 * 24 * HOUR,
+  "90d": 90 * 24 * HOUR,
+};
 
-export function parseMetricsWindow(raw: unknown): MetricsWindow {
-  return raw === "1h" || raw === "24h" || raw === "30d" ? raw : "7d";
+export type MetricsRange = { from: number; to: number; window: string };
+
+// Presets ("1h".."90d") or an explicit custom range via from/to (epoch ms). Custom ranges are
+// clamped to [1 minute, 366 days]; nonsense falls back to the 7-day preset.
+export function parseMetricsRange(query: Record<string, unknown>): MetricsRange {
+  const from = Number(query.from);
+  const to = Number(query.to);
+  if (Number.isFinite(from) && Number.isFinite(to) && to > from) {
+    const clampedFrom = Math.max(from, to - 366 * 24 * HOUR);
+    return { from: clampedFrom, to: Math.max(to, clampedFrom + 60_000), window: "custom" };
+  }
+  const preset = typeof query.window === "string" && PRESETS[query.window] ? query.window : "7d";
+  const now = Date.now();
+  return { from: now - PRESETS[preset]!, to: now, window: preset };
 }
 
-function windowConfig(window: MetricsWindow): { ms: number; bucketMs: number } {
-  switch (window) {
-    case "1h":
-      return { ms: 60 * 60 * 1000, bucketMs: 5 * 60 * 1000 };
-    case "24h":
-      return { ms: 24 * 60 * 60 * 1000, bucketMs: 60 * 60 * 1000 };
-    case "30d":
-      return { ms: 30 * 24 * 60 * 60 * 1000, bucketMs: 24 * 60 * 60 * 1000 };
-    default:
-      return { ms: 7 * 24 * 60 * 60 * 1000, bucketMs: 24 * 60 * 60 * 1000 };
+// Adaptive bucket sizing: the smallest rung that keeps the chart to at most ~40 buckets.
+const BUCKET_LADDER = [5 * 60 * 1000, 15 * 60 * 1000, 30 * 60 * 1000, HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, 24 * HOUR, 3 * 24 * HOUR];
+function bucketSizeFor(rangeMs: number): number {
+  for (const size of BUCKET_LADDER) {
+    if (rangeMs / size <= 40) return size;
   }
+  return 7 * 24 * HOUR;
 }
 
 export type MonitorMetricsFilters = {
@@ -57,9 +77,10 @@ export type MonitorMetricsBucket = {
 };
 
 export type MonitorMetricsResponse = {
-  window: MetricsWindow;
+  window: string;
   bucketMs: number;
   start: number;
+  end: number;
   buckets: MonitorMetricsBucket[];
   totals: {
     spansLlm: number;
@@ -118,11 +139,12 @@ const TOP_TOOLS = 4;
 
 export async function getMonitorMetrics(
   db: Db,
-  window: MetricsWindow,
+  range: MetricsRange,
   filters: MonitorMetricsFilters = {}
 ): Promise<MonitorMetricsResponse> {
-  const { ms, bucketMs } = windowConfig(window);
-  const start = Date.now() - ms;
+  const ms = range.to - range.from;
+  const bucketMs = bucketSizeFor(ms);
+  const start = range.from;
   const since = new Date(start);
   let rows: Row[];
   if (db.kind === "sqlite") {
@@ -174,6 +196,8 @@ export async function getMonitorMetrics(
   // (a root and its children share sessionId - every SDK trace auto-creates one; rows without a
   // sessionId fall back to their own id as the grouping key).
   const keyOf = (row: Row) => row.sessionId ?? row.id;
+  // Custom ranges can end in the past - drop rows past the upper bound before anything counts them.
+  rows = rows.filter(row => row.createdAt.getTime() <= range.to);
   const wantsFilter = !!(filters.agent || filters.model || filters.tool || filters.status === "error");
   let filtered = rows;
   if (wantsFilter) {
@@ -213,7 +237,7 @@ export async function getMonitorMetrics(
   const priceOf = (model: string | null): PortabilityModel | null =>
     model ? (pricingById.get(model) ?? pricingById.get(normalizeModelId(model)) ?? null) : null;
 
-  const bucketCount = Math.round(ms / bucketMs);
+  const bucketCount = Math.max(1, Math.ceil(ms / bucketMs));
   const buckets: MonitorMetricsBucket[] = Array.from({ length: bucketCount }, (_, i) => ({
     ts: start + i * bucketMs,
     spansLlm: 0,
@@ -326,9 +350,10 @@ export async function getMonitorMetrics(
   };
 
   return {
-    window,
+    window: range.window,
     bucketMs,
     start,
+    end: range.to,
     buckets,
     totals,
     tools,
