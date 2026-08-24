@@ -194,6 +194,35 @@ describe("tool context levels", () => {
   });
 });
 
+describe("offline profile superset (legacy config parity)", () => {
+  it("round-trips thresholds and sovereigntyIndex through the unified surface", async () => {
+    const created = await api("/agent-monitoring/judge-scorers", postJson({
+      name: "Gated default",
+      judge: { acceptanceCriteria: "Balanced." },
+      offline: {
+        numberOfRequests: 2,
+        vectorSimilarity: { enabled: true },
+        thresholds: { enabled: true, gates: [{ metric: "rating", operator: "lt", value: 5 }] },
+        sovereigntyIndex: { enabled: false, models: [] },
+        isDefault: true,
+      },
+    }));
+    expect(created.status).toBe(201);
+    const scorer = (created.body as { judgeScorer: Wire }).judgeScorer;
+    expect((scorer.offline as { thresholds?: { enabled: boolean } }).thresholds?.enabled).toBe(true);
+    // Sparse judge-section PUT must not clobber the gates (the merge-vs-replace trap).
+    const touched = await api(`/agent-monitoring/judge-scorers/${scorer._id}`, {
+      ...postJson({ judge: { acceptanceCriteria: "Balanced v2." } }),
+      method: "PUT",
+    });
+    const after = (touched.body as { judgeScorer: Wire }).judgeScorer;
+    expect((after.offline as { thresholds?: { enabled: boolean; gates: unknown[] } }).thresholds?.gates).toHaveLength(1);
+    // Also visible through the legacy settings wire, same blob.
+    const legacy = await api(`/evaluate/evaluationSettings/${scorer._id}`);
+    expect(JSON.stringify(legacy.body)).toContain('"thresholds"');
+  });
+});
+
 describe("seeded templates vs the user's scorers", () => {
   it("marks engine-seeded templates, never user-created scorers, and rejects forgery", async () => {
     const list = await api("/agent-monitoring/judge-scorers");

@@ -52,6 +52,11 @@ export type JudgeScorerOfflineInput = {
   jaccardSimilarity?: { enabled: boolean };
   bleuScore?: { enabled: boolean };
   rougeScore?: { enabled: boolean };
+  // Verdict gates and the sovereignty matrix ride in the same similarityConfig blob the legacy
+  // config surface stored them in - passed through here so the unified surface is a strict
+  // superset and nothing needs the legacy routes anymore.
+  thresholds?: { enabled: boolean; gates?: unknown[] };
+  sovereigntyIndex?: { enabled: boolean; models?: unknown[] };
   codeScorers?: CodeScorerConfig[];
   isDefault?: boolean;
   status?: string;
@@ -85,7 +90,7 @@ export type UpdateJudgeScorerInput = Partial<CreateJudgeScorerInput>;
 // (read-only except `enabled` and the judge rubric, which tuning legitimately edits).
 export class BuiltinJudgeScorerError extends Error {}
 
-const SIMILARITY_KEYS = ["vectorSimilarity", "jaccardSimilarity", "bleuScore", "rougeScore"] as const;
+const SIMILARITY_KEYS = ["vectorSimilarity", "jaccardSimilarity", "bleuScore", "rougeScore", "thresholds", "sovereigntyIndex"] as const;
 
 function similarityFromOffline(offline: JudgeScorerOfflineInput | undefined, existing?: SimilarityConfig | null): SimilarityConfig | undefined {
   if (!offline || SIMILARITY_KEYS.every(k => offline[k] === undefined)) {
@@ -121,6 +126,8 @@ export function toJudgeScorerWire(settings: EvaluationSettingsRow, evaluator: On
       jaccardSimilarity: similarity.jaccardSimilarity ?? undefined,
       bleuScore: similarity.bleuScore ?? undefined,
       rougeScore: similarity.rougeScore ?? undefined,
+      thresholds: similarity.thresholds ?? undefined,
+      sovereigntyIndex: similarity.sovereigntyIndex ?? undefined,
       codeScorers: (settings.codeScorers as CodeScorerConfig[] | null) ?? undefined,
       isDefault: settings.isDefault,
       status: settings.status,
