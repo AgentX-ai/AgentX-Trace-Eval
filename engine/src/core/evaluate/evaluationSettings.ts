@@ -42,6 +42,10 @@ export type CreateEvaluationSettingsInput = {
   // How much tool context the judge sees: "none" | "simple" | "detailed" (see the schema
   // column). Defaults to "simple", the historical behavior.
   toolContext?: JudgeToolContext;
+  // Set ONLY by the engine's seed paths (Example judge, RAG metric packs): marks quick-start
+  // template rows so the dashboard can tell a clean account from one the user built in. Not
+  // accepted from any write surface, never inherited by clones, immutable after create.
+  seeded?: boolean;
 };
 
 export type UpdateEvaluationSettingsInput = Omit<CreateEvaluationSettingsInput, "id">;
@@ -62,6 +66,7 @@ export type EvaluationSettingsRow = {
   isDefault: boolean;
   status: string;
   toolContext: string;
+  seeded: boolean;
   createdAt: Date;
 };
 
@@ -81,6 +86,7 @@ function toWire(row: EvaluationSettingsRow) {
     isDefault: row.isDefault,
     status: row.status,
     toolContext: normalizeToolContext(row.toolContext),
+    seeded: row.seeded ?? false,
     createdAt: row.createdAt,
   };
 }
@@ -120,6 +126,7 @@ export async function createEvaluationSettings(db: Db, input: CreateEvaluationSe
     isDefault: input.isDefault ?? false,
     status: input.status ?? "published",
     toolContext: normalizeToolContext(input.toolContext),
+    seeded: input.seeded ?? false,
     createdAt: new Date(),
   };
   if (row.isDefault) {
@@ -224,6 +231,9 @@ export async function cloneEvaluationSettings(db: Db, id: string): Promise<strin
     ...existing,
     id: nanoid(),
     isDefault: false,
+    // A clone always exists because of user activity (a legacy binding, a copy) - it is the
+    // user's row even when the source was an engine-seeded template.
+    seeded: false,
     createdAt: new Date(),
   };
   if (db.kind === "sqlite") {

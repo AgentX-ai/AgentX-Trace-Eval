@@ -305,7 +305,30 @@ function ensureProjectScopedUniqueIndexes(exec: (statement: string) => void): vo
   }
 }
 
+// The evaluation-settings rows historically created by the engine's seed paths (core/seed.ts
+// seedExampleEvaluatorConfig + core/evaluate/metricPack.ts METRIC_PACK) - used only by the
+// one-shot `seeded` column backfill in both dialects' bootstraps.
+const SEEDED_SETTINGS_BACKFILL_NAMES = [
+  "Example: Helpfulness Judge",
+  "RAG: Faithfulness",
+  "RAG: Answer Relevancy",
+  "RAG: Context Relevancy",
+  "RAG: Contextual Precision",
+  "RAG: Contextual Recall",
+]
+  .map(name => `'${name}'`)
+  .join(", ");
+
 function bootstrapSqlite(sqlite: SqliteHandle): void {
+  // Checked BEFORE any DDL runs: `seeded` is backfilled by name exactly once, at the upgrade
+  // that introduces the column (see the UPDATE after columnMigrations). Running it on every
+  // boot could misclassify a user's scorer that happens to share a seed name.
+  const settingsSeededColumnPreexists =
+    (
+      sqlite
+        .prepare("SELECT COUNT(*) AS n FROM pragma_table_info('evaluation_settings') WHERE name = 'seeded'")
+        .all() as Array<{ n: number }>
+    )[0]!.n > 0;
   // CREATE UNIQUE INDEX IF NOT EXISTS only checks the index *name* - on a pre-existing install
   // that already created these 3 with their old (pre-multi-project) column sets, the IF NOT
   // EXISTS in ensureProjectScopedUniqueIndexes (run at the end of this function) would otherwise
@@ -394,6 +417,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       is_default INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'published',
       tool_context TEXT NOT NULL DEFAULT 'simple',
+      seeded INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       project_id TEXT
     );
@@ -993,6 +1017,9 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     // "simple" (tool inputs/outputs in trace order - the historical behavior, hence the
     // default), "detailed" (simple + definitions for the tools actually used).
     ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN tool_context TEXT NOT NULL DEFAULT 'simple'"],
+    // Engine-seeded template rows (Example judge, RAG metric packs) vs. the user's own scorers -
+    // the dashboard's first-run starter state keys on this. Backfilled by name once, below.
+    ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN seeded INTEGER NOT NULL DEFAULT 0"],
     ["custom_evaluators", "ALTER TABLE custom_evaluators ADD COLUMN language TEXT"],
     ["custom_evaluators", "ALTER TABLE custom_evaluators ADD COLUMN script TEXT"],
     ["custom_evaluators", "ALTER TABLE custom_evaluators ADD COLUMN alert_below REAL"],
@@ -1016,6 +1043,15 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
         throw err;
       }
     }
+  }
+
+  // One-shot backfill for databases that predate the `seeded` column: mark the rows the seed
+  // paths created. The names are the seed names frozen at backfill time on purpose - the rows
+  // being marked were created by past engine versions, so drifting future seed constants must
+  // not change this list. Guarded by the pre-DDL check so it never reruns once the column
+  // exists (a user scorer that happens to reuse a seed name must not be reclassified later).
+  if (!settingsSeededColumnPreexists) {
+    sqlite.exec(`UPDATE evaluation_settings SET seeded = 1 WHERE name IN (${SEEDED_SETTINGS_BACKFILL_NAMES})`);
   }
 
   ensureTraceSpanIdUnique(statement => sqlite.exec(statement));
@@ -1378,6 +1414,14 @@ function backfillAgentsSqlite(sqlite: SqliteHandle): void {
 // schema.pg.ts. Replace with real drizzle-kit migrations once the schema stabilizes, see plan
 // task #107 (same note as bootstrapSqlite).
 async function bootstrapPostgres(pool: Pool): Promise<void> {
+  // See bootstrapSqlite: checked BEFORE any DDL so the one-shot `seeded` backfill below runs
+  // only at the upgrade that introduces the column.
+  const settingsSeededColumnPreexists =
+    (
+      await pool.query(
+        "SELECT COUNT(*)::int AS n FROM information_schema.columns WHERE table_name = 'evaluation_settings' AND column_name = 'seeded'"
+      )
+    ).rows[0].n > 0;
   // See bootstrapSqlite's identical comment: CREATE UNIQUE INDEX IF NOT EXISTS only checks the
   // index name, so a pre-existing install's old (pre-multi-project) column set would otherwise
   // silently survive. Drop first so the recreation below actually picks up project_id.
@@ -1463,6 +1507,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       is_default BOOLEAN NOT NULL DEFAULT FALSE,
       status TEXT NOT NULL DEFAULT 'published',
       tool_context TEXT NOT NULL DEFAULT 'simple',
+      seeded BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMP NOT NULL,
       project_id TEXT
     );
@@ -2026,6 +2071,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS enabled_builtin_patterns JSONB;
     ALTER TABLE custom_evaluators ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'external';
     ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS tool_context TEXT NOT NULL DEFAULT 'simple';
+    ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS seeded BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE custom_evaluators ADD COLUMN IF NOT EXISTS language TEXT;
     ALTER TABLE custom_evaluators ADD COLUMN IF NOT EXISTS script TEXT;
     ALTER TABLE custom_evaluators ADD COLUMN IF NOT EXISTS alert_below DOUBLE PRECISION;
@@ -2054,6 +2100,11 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
   await ensureTraceSpanIdUniqueAsync(statement => pool.query(statement).then(() => undefined));
   await ensureVersionUniqueAsync(statement => pool.query(statement).then(() => undefined));
   await pool.query(BACKFILL_AUTH_ACCOUNT_ISSUER);
+
+  // One-shot `seeded` backfill - see bootstrapSqlite's identical block for the rationale.
+  if (!settingsSeededColumnPreexists) {
+    await pool.query(`UPDATE evaluation_settings SET seeded = TRUE WHERE name IN (${SEEDED_SETTINGS_BACKFILL_NAMES})`);
+  }
 
   await migrateOnlineEvaluatorsToConfigsPostgres(pool);
   await enforceJudgeScorerCardinalityPostgres(pool);

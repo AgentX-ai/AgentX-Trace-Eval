@@ -104,6 +104,9 @@ export function toJudgeScorerWire(settings: EvaluationSettingsRow, evaluator: On
     _id: settings.id,
     name: settings.name,
     description: settings.description ?? undefined,
+    // Engine-seeded template (Example judge, RAG packs) vs. a scorer the user made - the
+    // dashboard's first-run starter state shows only while no non-seeded scorer exists.
+    seeded: settings.seeded ?? false,
     judge: {
       acceptanceCriteria: settings.acceptanceCriteria ?? undefined,
       rejectionCriteria: settings.rejectionCriteria ?? undefined,

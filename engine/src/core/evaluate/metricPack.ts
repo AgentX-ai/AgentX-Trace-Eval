@@ -137,6 +137,7 @@ export async function ensureMetricPackConfigs(db: Db): Promise<number> {
       rejectionCriteria: config.rejectionCriteria,
       evaluationCriteria: config.evaluationCriteria,
       judgePrompt: config.judgePrompt,
+      seeded: true,
     });
     created++;
   }

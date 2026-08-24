@@ -91,6 +91,8 @@ export const evaluationSettings = pgTable("evaluation_settings", {
   isDefault: boolean("is_default").notNull().default(false),
   status: text("status").notNull().default("published"),
   toolContext: text("tool_context").notNull().default("simple"),
+  // Engine-seeded template rows (Example judge, RAG metric packs) - see schema.sqlite.ts.
+  seeded: boolean("seeded").notNull().default(false),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
   projectId: text("project_id"),
 });

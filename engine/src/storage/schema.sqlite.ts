@@ -155,6 +155,10 @@ export const evaluationSettings = sqliteTable("evaluation_settings", {
   // metadata.tools first with the registry as a by-name fallback, plus a one-line mention of
   // advertised-but-unused tools).
   toolContext: text("tool_context").notNull().default("simple"),
+  // True for rows the engine itself seeded (the Example judge, the RAG metric packs): quick-start
+  // templates, not the user's own scorers. The dashboard's first-run starter state keys on it -
+  // never inherited by clones, never settable through the write surfaces.
+  seeded: integer("seeded", { mode: "boolean" }).notNull().default(false),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   projectId: text("project_id"),
 });

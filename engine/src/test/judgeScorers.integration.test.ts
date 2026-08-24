@@ -194,6 +194,23 @@ describe("tool context levels", () => {
   });
 });
 
+describe("seeded templates vs the user's scorers", () => {
+  it("marks engine-seeded templates, never user-created scorers, and rejects forgery", async () => {
+    const list = await api("/agent-monitoring/judge-scorers");
+    const scorers = (list.body as { judgeScorers: (Wire & { seeded?: boolean })[] }).judgeScorers;
+    // Project creation seeds the RAG metric pack - those rows carry the flag...
+    expect(scorers.filter(s => s.seeded).length).toBeGreaterThan(0);
+    // ...while the scorer created by the CRUD tests above does not.
+    expect(scorers.find(s => s.name === "Support quality")?.seeded).toBe(false);
+    // The flag is engine-owned: a client cannot smuggle it in through the create surface.
+    const forged = await api(
+      "/agent-monitoring/judge-scorers",
+      postJson({ name: "Forged seed", seeded: true, judge: { seeded: true } })
+    );
+    expect((forged.body as { judgeScorer: { seeded?: boolean } }).judgeScorer.seeded).toBe(false);
+  });
+});
+
 describe("strict 1:1 and the legacy auto-clone", () => {
   it("legacy create binding an already-bound config gets a CLONE, not a shared rubric", async () => {
     const created = await api("/agent-monitoring/judge-scorers", postJson({
