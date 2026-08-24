@@ -565,13 +565,12 @@ agentMonitoringDashboardRouter.post("/judge-scorers/preview-score", async (req: 
   const body = req.body ?? {};
   const judge = body.judge && typeof body.judge === "object" ? body.judge : {};
   try {
-    const result = await previewJudgeScore(
-      scopedDb(req),
-      judge,
-      typeof body.traceId === "string" ? body.traceId : undefined
-    );
+    const result = await previewJudgeScore(scopedDb(req), judge, {
+      traceId: typeof body.traceId === "string" ? body.traceId : undefined,
+      sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+    });
     if (!result) {
-      res.status(404).json({ error: "No captured traces to score yet" });
+      res.status(404).json({ error: "Nothing captured to score yet" });
       return;
     }
     res.status(200).json(result);

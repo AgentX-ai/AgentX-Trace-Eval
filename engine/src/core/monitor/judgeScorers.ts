@@ -350,45 +350,87 @@ async function latestScorableTrace(db: Db, traceId?: string) {
   return rows[0] ?? null;
 }
 
-// The sample trace the editor shows, plus recent traffic volume for the live-scoring cost
-// estimate ("~N judge calls/day at this sample rate").
+// What the editor's "Try it" rail can score: recent root traces and recent multi-turn
+// sessions (newest first), plus recent traffic volume for the live-scoring cost estimate.
 export async function getJudgePreviewContext(db: Db): Promise<{
-  trace: { traceId: string; input: string; output: string } | null;
+  traces: { traceId: string; input: string; output: string; createdAt: Date }[];
+  sessions: { sessionId: string; firstInput: string; traceCount: number; lastAt: Date }[];
   dailyTraces: number;
 }> {
-  const row = await latestScorableTrace(db);
   const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+  const asText = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v ?? ""));
+  let rows: Array<{ id: string; input: unknown; output: unknown; sessionId: string | null; createdAt: Date }>;
   let weekly: number;
   if (db.kind === "sqlite") {
     const t = db.schema.traces;
+    rows = db.db
+      .select({ id: t.id, input: t.input, output: t.output, sessionId: t.sessionId, createdAt: t.createdAt })
+      .from(t)
+      .where(and(eq(t.projectId, db.projectId), isNull(t.parentSpanId), isNotNull(t.output), ne(t.output, "")))
+      .orderBy(desc(t.createdAt))
+      .limit(200)
+      .all();
     const countCond = and(eq(t.projectId, db.projectId), isNull(t.parentSpanId), gt(t.createdAt, weekAgo));
     weekly = Number(db.db.select({ n: count() }).from(t).where(countCond).all()[0]?.n ?? 0);
   } else {
     const t = db.schema.traces;
+    rows = await db.db
+      .select({ id: t.id, input: t.input, output: t.output, sessionId: t.sessionId, createdAt: t.createdAt })
+      .from(t)
+      .where(and(eq(t.projectId, db.projectId), isNull(t.parentSpanId), isNotNull(t.output), ne(t.output, "")))
+      .orderBy(desc(t.createdAt))
+      .limit(200);
     const countCond = and(eq(t.projectId, db.projectId), isNull(t.parentSpanId), gt(t.createdAt, weekAgo));
     const countRows = await db.db.select({ n: count() }).from(t).where(countCond);
     weekly = Number(countRows[0]?.n ?? 0);
   }
-  return {
-    trace: row
-      ? {
-          traceId: row.id,
-          input: typeof row.input === "string" ? row.input : JSON.stringify(row.input ?? ""),
-          output: typeof row.output === "string" ? row.output : JSON.stringify(row.output ?? ""),
-        }
-      : null,
-    dailyTraces: Math.round(weekly / 7),
-  };
+  const traces = rows.slice(0, 12).map(r => ({
+    traceId: r.id,
+    input: asText(r.input),
+    output: asText(r.output),
+    createdAt: r.createdAt,
+  }));
+  // Sessions grouped from the same recent window, newest activity first. Only multi-turn ones:
+  // every SDK trace auto-creates a single-turn session, which would just duplicate the trace
+  // list at conversation prices.
+  const bySession = new Map<string, { firstInput: string; traceCount: number; lastAt: Date }>();
+  for (const r of rows) {
+    if (!r.sessionId) continue;
+    const existing = bySession.get(r.sessionId);
+    if (existing) {
+      existing.traceCount += 1;
+      // rows are newest-first, so the LAST row seen for a session is its earliest turn.
+      existing.firstInput = asText(r.input);
+    } else {
+      bySession.set(r.sessionId, { firstInput: asText(r.input), traceCount: 1, lastAt: r.createdAt });
+    }
+  }
+  const sessions = [...bySession.entries()]
+    .filter(([, v]) => v.traceCount >= 2)
+    .slice(0, 8)
+    .map(([sessionId, v]) => ({ sessionId, ...v }));
+  return { traces, sessions, dailyTraces: Math.round(weekly / 7) };
 }
 
-// One reference-free judge call on one trace with the draft rubric. Throws on judge failure
+// One reference-free judge call with the draft rubric - on one trace, or (sessionId) on a
+// whole session via the sweep's exact structured session prompt. Throws on judge failure
 // (missing API key, provider outage) - the route maps that to a 502 the dialog can show.
 export async function previewJudgeScore(
   db: Db,
   draft: JudgePreviewDraft,
-  traceId?: string
-): Promise<{ traceId: string; rating: number; justification: string; latencyMs: number } | null> {
-  const row = await latestScorableTrace(db, traceId);
+  target: { traceId?: string; sessionId?: string } = {}
+): Promise<
+  | { traceId?: string; sessionId?: string; rating: number | null; justification: string | null; latencyMs: number }
+  | null
+> {
+  if (target.sessionId) {
+    const { judgeSessionWithDraftCriteria } = await import("./sessionSweep.js");
+    const startedAt = Date.now();
+    const verdict = await judgeSessionWithDraftCriteria(db, target.sessionId, draft);
+    if (!verdict) return null;
+    return { sessionId: target.sessionId, ...verdict, latencyMs: Date.now() - startedAt };
+  }
+  const row = await latestScorableTrace(db, target.traceId);
   if (!row) return null;
   const toolContext = normalizeToolContext(draft.toolContext);
   const { renderTraceTrajectory, renderUsedToolDefinitions, getTraceRetrievalContext } = await import(

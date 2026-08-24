@@ -85,6 +85,78 @@ const SESSION_SCORE_WITH_DRIFT_SCHEMA = {
   required: ["rating", "justification", "findings", "driftSpanIndex"],
 };
 
+// Shared session-judge message assembly - used by the sweep (stored settings) and by the judge
+// scorer editor's "Try it on a real session" (unsaved draft criteria), so the preview is
+// byte-identical to what live session scoring sends.
+function buildSessionJudgeMessage(input: {
+  elidedNote: string;
+  criteria: {
+    acceptanceCriteria?: string | null;
+    rejectionCriteria?: string | null;
+    evaluationCriteria?: string | null;
+  };
+  toolDefinitions: string | null;
+  transcript: string;
+  withDrift: boolean;
+}): string {
+  const criteriaBlock = [
+    input.criteria.acceptanceCriteria ? `Acceptance criteria: ${input.criteria.acceptanceCriteria}` : "",
+    input.criteria.rejectionCriteria ? `Rejection criteria: ${input.criteria.rejectionCriteria}` : "",
+    input.criteria.evaluationCriteria ? `Additional guidance: ${input.criteria.evaluationCriteria}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return `You are evaluating an ENTIRE multi-turn AI agent session against the criteria below - judge the conversation as a whole (consistency across turns, whether the user's need was actually resolved, context retention), not any single reply in isolation. Each numbered entry is one step in chronological order.${input.elidedNote}
+
+${criteriaBlock}${input.toolDefinitions ? `\n\nTool definitions (for the tools used in the transcript):\n${input.toolDefinitions}` : ""}
+
+Session:
+
+${input.transcript}
+
+Rate the whole session 0-10 against the criteria (10 = fully meets them across the conversation). Cite each concrete failure as a finding against the numbered step where it occurred - specific and quotable, never a restatement of the overall rating.${
+    input.withDrift ? " If the session broke the criteria, identify the index of the FIRST step where it happened." : ""
+  }`;
+}
+
+// One draft-rubric session verdict for the editor's "Try it" rail: the same transcript assembly
+// and structured session prompt as the sweep, but with UNSAVED criteria and nothing persisted.
+// Throws on judge failure (the route maps it to 502); null when the session has no spans.
+export async function judgeSessionWithDraftCriteria(
+  db: Db,
+  sessionId: string,
+  draft: {
+    acceptanceCriteria?: string;
+    rejectionCriteria?: string;
+    evaluationCriteria?: string;
+    judgeModel?: string;
+    toolContext?: string;
+  }
+): Promise<{ rating: number | null; justification: string | null } | null> {
+  const spans = (await listSessionSpans(db, sessionId)) as SpanWire[];
+  if (spans.length === 0) {
+    return null;
+  }
+  const toolContext = draft.toolContext === "none" || draft.toolContext === "detailed" ? draft.toolContext : "simple";
+  const transcriptSpans = toolContext === "none" ? spans.filter(s => !s.parentSpanId) : spans;
+  const { transcript, elidedNote } = buildSessionTranscript(transcriptSpans, {
+    includeToolLines: toolContext !== "none",
+  });
+  const toolDefinitions =
+    toolContext === "detailed" ? await renderSessionUsedToolDefinitions(db, sessionId).catch(() => null) : null;
+  const result = await callJudgeJson({
+    model: (draft.judgeModel ?? "").trim() || DEFAULT_JUDGE_MODEL,
+    jsonSchema: SESSION_SCORE_SCHEMA,
+    userMessage: buildSessionJudgeMessage({ elidedNote, criteria: draft, toolDefinitions, transcript, withDrift: false }),
+    maxTokens: 1600,
+  });
+  const payload = result.payload as { rating?: unknown; justification?: unknown } | null;
+  return {
+    rating: typeof payload?.rating === "number" ? Math.max(0, Math.min(10, payload.rating)) : null,
+    justification: typeof payload?.justification === "string" ? payload.justification : null,
+  };
+}
+
 async function judgeSessionAgainstEvaluator(
   db: Db,
   sessionId: string,
@@ -128,29 +200,14 @@ async function judgeSessionAgainstEvaluator(
   // drift-index schema depends on this framing. Documented on the LLM Judge Scorer surface:
   // "judge.judgePrompt applies to trace-scope scoring; session scope always uses the structured
   // session prompt built from your criteria."
-  const criteriaBlock = [
-    settings.acceptanceCriteria ? `Acceptance criteria: ${settings.acceptanceCriteria}` : "",
-    settings.rejectionCriteria ? `Rejection criteria: ${settings.rejectionCriteria}` : "",
-    settings.evaluationCriteria ? `Additional guidance: ${settings.evaluationCriteria}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  const userMessage = `You are evaluating an ENTIRE multi-turn AI agent session against the criteria below - judge the conversation as a whole (consistency across turns, whether the user's need was actually resolved, context retention), not any single reply in isolation. Each numbered entry is one step in chronological order.${elidedNote}
-
-${criteriaBlock}${toolDefinitions ? `\n\nTool definitions (for the tools used in the transcript):\n${toolDefinitions}` : ""}
-
-Session:
-
-${transcript}
-
-Rate the whole session 0-10 against the criteria (10 = fully meets them across the conversation). Cite each concrete failure as a finding against the numbered step where it occurred - specific and quotable, never a restatement of the overall rating.${
-    evaluator.builtinKey === SESSION_BASELINE_KEY
-      ? " If the session broke the criteria, identify the index of the FIRST step where it happened."
-      : ""
-  }`;
-
   const withDrift = evaluator.builtinKey === SESSION_BASELINE_KEY;
+  const userMessage = buildSessionJudgeMessage({
+    elidedNote,
+    criteria: settings,
+    toolDefinitions,
+    transcript,
+    withDrift,
+  });
   const result = await callJudgeJson({
     model: judgeModel,
     jsonSchema: withDrift ? SESSION_SCORE_WITH_DRIFT_SCHEMA : SESSION_SCORE_SCHEMA,
