@@ -68,12 +68,17 @@ export type MonitorMetricsBucket = {
   latencyP95: number | null;
   tokensPrompt: number;
   tokensCompletion: number;
+  /** Uncached input spend: regular input tokens plus the cache-write premium. */
   costPrompt: number;
+  /** Cache-read spend - the discounted reuse of cached prefix tokens. */
+  costCached: number;
   costCompletion: number;
   toolCalls: number;
   toolFailures: number;
   /** Executions per tool this bucket, limited to the window's top tools (rest under "other"). */
   byTool: Record<string, number>;
+  /** Priced spend per model this bucket, limited to the window's top models (rest under "other"). */
+  byModelCost: Record<string, number>;
 };
 
 export type MonitorMetricsResponse = {
@@ -93,12 +98,16 @@ export type MonitorMetricsResponse = {
     tokensPrompt: number;
     tokensCompletion: number;
     costPrompt: number;
+    costCached: number;
     costCompletion: number;
     toolCalls: number;
     toolFailures: number;
   };
   /** Window totals per tool, executions descending - legend + stack order. */
   tools: { name: string; count: number; failed: number }[];
+  /** Window spend per model, cost descending. cost 0 with tokens > 0 means the model has no
+   *  Model Portability pricing - spend exists but is unknown, not free. */
+  models: { name: string; cost: number; tokens: number }[];
   /** Filter suggestions: what actually appeared in the window. */
   facets: { agents: string[]; models: string[]; tools: string[] };
 };
@@ -136,6 +145,7 @@ const toolCallList = (raw: unknown): { name: string; failed: boolean }[] => {
 };
 
 const TOP_TOOLS = 4;
+const TOP_MODELS = 3;
 
 export async function getMonitorMetrics(
   db: Db,
@@ -250,15 +260,19 @@ export async function getMonitorMetrics(
     tokensPrompt: 0,
     tokensCompletion: 0,
     costPrompt: 0,
+    costCached: 0,
     costCompletion: 0,
     toolCalls: 0,
     toolFailures: 0,
     byTool: {},
+    byModelCost: {},
   }));
   const latencies: number[][] = Array.from({ length: bucketCount }, () => []);
   const allLatencies: number[] = [];
   const toolTotals = new Map<string, { count: number; failed: number }>();
   const byToolPerBucket: Map<string, number[]> = new Map();
+  const modelTotals = new Map<string, { cost: number; tokens: number }>();
+  const byModelCostPerBucket: Map<string, number[]> = new Map();
   const facetAgents = new Set<string>();
   const facetModels = new Set<string>();
 
@@ -285,17 +299,31 @@ export async function getMonitorMetrics(
     bucket.tokensPrompt += row.inputTokens ?? 0;
     bucket.tokensCompletion += row.outputTokens ?? 0;
     const pricing = priceOf(row.model);
-    if (pricing && (row.inputTokens != null || row.outputTokens != null)) {
-      const cacheRead = row.cacheReadTokens ?? 0;
-      const cacheWrite = row.cacheWriteTokens ?? 0;
-      const regularInput = Math.max(0, (row.inputTokens ?? 0) - cacheRead - cacheWrite);
-      const cacheReadRate = pricing.pricePerMCacheReadTokens ?? pricing.pricePerMInputTokens;
-      const cacheWriteRate = pricing.pricePerMCacheWriteTokens ?? pricing.pricePerMInputTokens;
-      bucket.costPrompt +=
-        (regularInput / 1e6) * pricing.pricePerMInputTokens +
-        (cacheRead / 1e6) * cacheReadRate +
-        (cacheWrite / 1e6) * cacheWriteRate;
-      bucket.costCompletion += ((row.outputTokens ?? 0) / 1e6) * pricing.pricePerMOutputTokens;
+    if (row.model && (row.inputTokens != null || row.outputTokens != null)) {
+      const rowTokens = (row.inputTokens ?? 0) + (row.outputTokens ?? 0);
+      let rowCost = 0;
+      if (pricing) {
+        const cacheRead = row.cacheReadTokens ?? 0;
+        const cacheWrite = row.cacheWriteTokens ?? 0;
+        const regularInput = Math.max(0, (row.inputTokens ?? 0) - cacheRead - cacheWrite);
+        const cacheReadRate = pricing.pricePerMCacheReadTokens ?? pricing.pricePerMInputTokens;
+        const cacheWriteRate = pricing.pricePerMCacheWriteTokens ?? pricing.pricePerMInputTokens;
+        const cachedCost = (cacheRead / 1e6) * cacheReadRate;
+        const uncachedCost =
+          (regularInput / 1e6) * pricing.pricePerMInputTokens + (cacheWrite / 1e6) * cacheWriteRate;
+        const outputCost = ((row.outputTokens ?? 0) / 1e6) * pricing.pricePerMOutputTokens;
+        bucket.costPrompt += uncachedCost;
+        bucket.costCached += cachedCost;
+        bucket.costCompletion += outputCost;
+        rowCost = uncachedCost + cachedCost + outputCost;
+        const series = byModelCostPerBucket.get(row.model) ?? Array.from({ length: bucketCount }, () => 0);
+        series[idx]! += rowCost;
+        byModelCostPerBucket.set(row.model, series);
+      }
+      const model = modelTotals.get(row.model) ?? { cost: 0, tokens: 0 };
+      model.cost += rowCost;
+      model.tokens += rowTokens;
+      modelTotals.set(row.model, model);
     }
     for (const tc of toolCallList(row.toolCalls)) {
       if (filters.tool && tc.name !== filters.tool) continue;
@@ -332,6 +360,21 @@ export async function getMonitorMetrics(
     buckets[i]!.byTool = byTool;
   }
 
+  const models = [...modelTotals.entries()]
+    .map(([name, totals]) => ({ name, ...totals }))
+    .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
+  const topModels = models.slice(0, TOP_MODELS).map(model => model.name);
+  for (let i = 0; i < bucketCount; i++) {
+    const byModelCost: Record<string, number> = {};
+    let otherCost = 0;
+    for (const [name, series] of byModelCostPerBucket) {
+      if (topModels.includes(name)) byModelCost[name] = series[i]!;
+      else otherCost += series[i]!;
+    }
+    if (otherCost > 0) byModelCost.other = otherCost;
+    buckets[i]!.byModelCost = byModelCost;
+  }
+
   const sortedAll = allLatencies.sort((a, b) => a - b);
   const totals = {
     spansLlm: buckets.reduce((n, b) => n + b.spansLlm, 0),
@@ -344,6 +387,7 @@ export async function getMonitorMetrics(
     tokensPrompt: buckets.reduce((n, b) => n + b.tokensPrompt, 0),
     tokensCompletion: buckets.reduce((n, b) => n + b.tokensCompletion, 0),
     costPrompt: buckets.reduce((n, b) => n + b.costPrompt, 0),
+    costCached: buckets.reduce((n, b) => n + b.costCached, 0),
     costCompletion: buckets.reduce((n, b) => n + b.costCompletion, 0),
     toolCalls: buckets.reduce((n, b) => n + b.toolCalls, 0),
     toolFailures: buckets.reduce((n, b) => n + b.toolFailures, 0),
@@ -357,6 +401,7 @@ export async function getMonitorMetrics(
     buckets,
     totals,
     tools,
+    models,
     facets: {
       agents: [...facetAgents].sort(),
       models: [...facetModels].sort(),

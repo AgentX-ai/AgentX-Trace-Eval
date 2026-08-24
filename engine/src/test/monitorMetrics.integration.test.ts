@@ -23,6 +23,7 @@ beforeAll(async () => {
     latencyMs: 800,
     inputTokens: 500,
     outputTokens: 100,
+    cacheReadTokens: 200,
     toolCalls: [
       { name: "lookup_order", success: true },
       { name: "get_weather", success: false, error: "boom" },
@@ -43,9 +44,10 @@ afterAll(async () => {
 
 type Wire = {
   window: string;
-  buckets: { traces: number; toolCalls: number }[];
-  totals: Record<string, number | null>;
+  buckets: { traces: number; toolCalls: number; byModelCost: Record<string, number> }[];
+  totals: Record<string, number | null> & { costPrompt: number; costCached: number; costCompletion: number };
   tools: { name: string; count: number; failed: number }[];
+  models: { name: string; cost: number; tokens: number }[];
   facets: { agents: string[]; models: string[]; tools: string[] };
 };
 
@@ -63,6 +65,15 @@ describe("GET /agent-monitoring/metrics", () => {
     expect(body.totals.toolFailures).toBeGreaterThanOrEqual(1);
     expect(body.totals.latencyP95).toBeGreaterThanOrEqual(800);
     expect(body.tools.find(t => t.name === "get_weather")?.failed).toBe(1);
+    // Cost splits: gpt-4o-mini is seed-priced, 200 of the 500 input tokens were cache reads.
+    expect(body.totals.costPrompt).toBeGreaterThan(0);
+    expect(body.totals.costCached).toBeGreaterThan(0);
+    expect(body.totals.costCompletion).toBeGreaterThan(0);
+    const mini = body.models.find(m => m.name === "gpt-4o-mini");
+    expect(mini?.cost).toBeGreaterThan(0);
+    expect(mini?.tokens).toBe(600);
+    const bucketModelCost = body.buckets.reduce((n, b) => n + (b.byModelCost["gpt-4o-mini"] ?? 0), 0);
+    expect(bucketModelCost).toBeCloseTo(mini!.cost, 10);
     expect(body.facets.agents).toContain("support-agent");
     expect(body.facets.models).toContain("gpt-4o-mini");
   });
