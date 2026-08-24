@@ -393,3 +393,30 @@ describe("startup cardinality migration", () => {
     }
   }, 120_000);
 });
+
+describe("judge preview endpoints (Try it on a real trace)", () => {
+  it("serves sample trace + traffic volume, and 404s draft scoring with no traces", async () => {
+    // A brand-new project has nothing to sample.
+    const created = await engine.json("/api/v1/projects", { ...postJson({ name: "preview-empty" }), apiKey: null });
+    const emptyKey = (created.body as { project: { apiKey: string } }).project.apiKey;
+    const empty = await engine.json("/api/v1/agent-monitoring/judge-scorers/preview-context", { apiKey: emptyKey });
+    expect(empty.status).toBe(200);
+    expect((empty.body as { trace: unknown }).trace).toBeNull();
+    expect((empty.body as { dailyTraces: number }).dailyTraces).toBe(0);
+    const noTrace = await engine.json("/api/v1/agent-monitoring/judge-scorers/preview-score", {
+      apiKey: emptyKey,
+      ...postJson({ judge: { acceptanceCriteria: "a" } }),
+    });
+    expect(noTrace.status).toBe(404);
+
+    // The main test project ingested traces earlier (camelCase alias tests) - the newest
+    // root trace becomes the sample. (The actual judge call needs a provider key, so
+    // preview-score's success path is exercised by the enterprise probes, not here.)
+    const ctx = await api("/agent-monitoring/judge-scorers/preview-context");
+    expect(ctx.status).toBe(200);
+    const body = ctx.body as { trace: { traceId: string; input: string; output: string } | null; dailyTraces: number };
+    expect(body.trace).not.toBeNull();
+    expect(body.trace!.output.length).toBeGreaterThan(0);
+    expect(body.dailyTraces).toBeGreaterThanOrEqual(0);
+  });
+});

@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, count, desc, eq, gt, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import type { SimilarityConfig } from "../evaluate/datasets.js";
 import type { CodeScorerConfig } from "../evaluate/codeScorer.js";
@@ -317,4 +317,105 @@ async function hardDeleteSettings(db: Db, id: string): Promise<void> {
     await db.db.delete(db.schema.evaluationSettingsVersions).where(versionsCond);
     await db.db.delete(db.schema.evaluationSettings).where(settingsCond);
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// "Try it on a real trace" (the Judge Scorer editor's rubric rail, per the claude.design
+// Judge Scorer Modal mock): score ONE captured trace with an UNSAVED draft rubric, so the user
+// sees what their criteria do before spending anything on live traffic. Exactly one judge call,
+// assembled the same way runOnlineEvaluators assembles a reference-free live check.
+
+export type JudgePreviewDraft = {
+  acceptanceCriteria?: string;
+  rejectionCriteria?: string;
+  evaluationCriteria?: string;
+  judgePrompt?: string;
+  judgeModel?: string;
+  toolContext?: string;
+};
+
+async function latestScorableTrace(db: Db, traceId?: string) {
+  if (db.kind === "sqlite") {
+    const t = db.schema.traces;
+    const cond = traceId
+      ? and(eq(t.id, traceId), eq(t.projectId, db.projectId))
+      : and(eq(t.projectId, db.projectId), isNull(t.parentSpanId), isNotNull(t.output), ne(t.output, ""));
+    return db.db.select().from(t).where(cond).orderBy(desc(t.createdAt)).limit(1).all()[0] ?? null;
+  }
+  const t = db.schema.traces;
+  const cond = traceId
+    ? and(eq(t.id, traceId), eq(t.projectId, db.projectId))
+    : and(eq(t.projectId, db.projectId), isNull(t.parentSpanId), isNotNull(t.output), ne(t.output, ""));
+  const rows = await db.db.select().from(t).where(cond).orderBy(desc(t.createdAt)).limit(1);
+  return rows[0] ?? null;
+}
+
+// The sample trace the editor shows, plus recent traffic volume for the live-scoring cost
+// estimate ("~N judge calls/day at this sample rate").
+export async function getJudgePreviewContext(db: Db): Promise<{
+  trace: { traceId: string; input: string; output: string } | null;
+  dailyTraces: number;
+}> {
+  const row = await latestScorableTrace(db);
+  const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+  let weekly: number;
+  if (db.kind === "sqlite") {
+    const t = db.schema.traces;
+    const countCond = and(eq(t.projectId, db.projectId), isNull(t.parentSpanId), gt(t.createdAt, weekAgo));
+    weekly = Number(db.db.select({ n: count() }).from(t).where(countCond).all()[0]?.n ?? 0);
+  } else {
+    const t = db.schema.traces;
+    const countCond = and(eq(t.projectId, db.projectId), isNull(t.parentSpanId), gt(t.createdAt, weekAgo));
+    const countRows = await db.db.select({ n: count() }).from(t).where(countCond);
+    weekly = Number(countRows[0]?.n ?? 0);
+  }
+  return {
+    trace: row
+      ? {
+          traceId: row.id,
+          input: typeof row.input === "string" ? row.input : JSON.stringify(row.input ?? ""),
+          output: typeof row.output === "string" ? row.output : JSON.stringify(row.output ?? ""),
+        }
+      : null,
+    dailyTraces: Math.round(weekly / 7),
+  };
+}
+
+// One reference-free judge call on one trace with the draft rubric. Throws on judge failure
+// (missing API key, provider outage) - the route maps that to a 502 the dialog can show.
+export async function previewJudgeScore(
+  db: Db,
+  draft: JudgePreviewDraft,
+  traceId?: string
+): Promise<{ traceId: string; rating: number; justification: string; latencyMs: number } | null> {
+  const row = await latestScorableTrace(db, traceId);
+  if (!row) return null;
+  const toolContext = normalizeToolContext(draft.toolContext);
+  const { renderTraceTrajectory, renderUsedToolDefinitions, getTraceRetrievalContext } = await import(
+    "../trace/trajectory.js"
+  );
+  const { scoreAgainstCriteria, DEFAULT_JUDGE_PROMPT, DEFAULT_JUDGE_MODEL } = await import("../evaluate/judge.js");
+  const [trajectory, toolDefinitions, context] = await Promise.all([
+    toolContext !== "none" ? renderTraceTrajectory(db, row.id).catch(() => null) : Promise.resolve(null),
+    toolContext === "detailed" ? renderUsedToolDefinitions(db, row.id).catch(() => null) : Promise.resolve(null),
+    getTraceRetrievalContext(db, row.id).catch(() => null),
+  ]);
+  const startedAt = Date.now();
+  const { rating, justification } = await scoreAgainstCriteria(
+    {
+      acceptanceCriteria: draft.acceptanceCriteria ?? "",
+      rejectionCriteria: draft.rejectionCriteria ?? "",
+      evaluationCriteria: draft.evaluationCriteria ?? "",
+      judgePrompt: (draft.judgePrompt ?? "").trim() || DEFAULT_JUDGE_PROMPT,
+      judgeModel: (draft.judgeModel ?? "").trim() || DEFAULT_JUDGE_MODEL,
+    },
+    {
+      input: typeof row.input === "string" ? row.input : JSON.stringify(row.input ?? ""),
+      output: typeof row.output === "string" ? row.output : JSON.stringify(row.output ?? ""),
+      context: context ?? undefined,
+      trajectory: trajectory ?? undefined,
+      toolDefinitions: toolDefinitions ?? undefined,
+    }
+  );
+  return { traceId: row.id, rating, justification, latencyMs: Date.now() - startedAt };
 }

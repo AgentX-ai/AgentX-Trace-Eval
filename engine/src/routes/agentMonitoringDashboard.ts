@@ -57,8 +57,10 @@ import {
   BuiltinJudgeScorerError,
   createJudgeScorer,
   deleteJudgeScorer,
+  getJudgePreviewContext,
   getJudgeScorer,
   listJudgeScorers,
+  previewJudgeScore,
   updateJudgeScorer,
   type JudgeScorerOnlineInput,
 } from "../core/monitor/judgeScorers.js";
@@ -549,6 +551,33 @@ function parseOnlineSection(body: Record<string, unknown>): { ok: true; online: 
 
 agentMonitoringDashboardRouter.get("/judge-scorers", async (req: Request, res: Response) => {
   res.status(200).json({ judgeScorers: await listJudgeScorers(scopedDb(req)) });
+});
+
+// "Try it on a real trace" (Judge Scorer editor): the sample trace + recent traffic volume.
+// Registered BEFORE /judge-scorers/:id so "preview-context" is not captured as an id.
+agentMonitoringDashboardRouter.get("/judge-scorers/preview-context", async (req: Request, res: Response) => {
+  res.status(200).json(await getJudgePreviewContext(scopedDb(req)));
+});
+
+// One reference-free judge call on one trace with an UNSAVED draft rubric. Judge failures
+// (missing API key, provider outage) surface as 502 with the message, not a crash.
+agentMonitoringDashboardRouter.post("/judge-scorers/preview-score", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  const judge = body.judge && typeof body.judge === "object" ? body.judge : {};
+  try {
+    const result = await previewJudgeScore(
+      scopedDb(req),
+      judge,
+      typeof body.traceId === "string" ? body.traceId : undefined
+    );
+    if (!result) {
+      res.status(404).json({ error: "No captured traces to score yet" });
+      return;
+    }
+    res.status(200).json(result);
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : "Judge call failed" });
+  }
 });
 
 agentMonitoringDashboardRouter.get("/judge-scorers/:id", async (req: Request, res: Response) => {
