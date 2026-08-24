@@ -5,7 +5,7 @@ import { runCodeScorer, type CodeScorerConfig, type CodeScorerResult } from "./c
 import { evaluatePatternConditions, type PatternCondition, type TraceLike } from "../monitor/conditions.js";
 import { getPatternRow } from "../monitor/patterns.js";
 import { llmSemanticJudge } from "../monitor/detect.js";
-import { getOnlineEvaluatorRow } from "../monitor/onlineEvaluators.js";
+import { getOnlineEvaluatorRow, findEvaluatorBoundToSettings } from "../monitor/onlineEvaluators.js";
 import { getEvaluationSettingsRow } from "./evaluationSettings.js";
 import { callMcpToolOnce } from "./mcp.js";
 
@@ -129,7 +129,10 @@ export type PlaygroundRunInput = {
   // write a Signal/Event row the way a real ingested trace would (see runPlaygroundPatternChecks/
   // runPlaygroundOnlineEvaluatorChecks below) - Playground stays "compute and return" throughout.
   patternIds?: string[];
+  // Legacy alias: live-profile ids (monitor_online_evaluators). The consolidated Playground
+  // panel sends judgeScorerIds instead - unified scorer ids, no live profile required.
   onlineEvaluatorIds?: string[];
+  judgeScorerIds?: string[];
   // Per-model overrides from Playground's "Model settings" - see callModelWithTools's `options`
   // param. Both omitted preserves today's exact defaults.
   maxTokens?: number;
@@ -221,12 +224,56 @@ async function runPlaygroundPatternChecks(db: Db, patternIds: string[], trace: T
 async function runPlaygroundOnlineEvaluatorChecks(
   db: Db,
   evaluatorIds: string[],
+  judgeScorerIds: string[],
   content: { input: string; output: string }
 ): Promise<PlaygroundOnlineEvaluatorCheckResult[]> {
   const results: PlaygroundOnlineEvaluatorCheckResult[] = [];
+  // Unified judge scorer ids resolve straight to their settings row - a dry-run check needs a
+  // rubric, not a live profile. The scorer's alert threshold (when it has an online config)
+  // still colors the wouldAlert verdict. Deduped against the legacy list by settings id.
+  const seenSettingsIds = new Set<string>();
+  for (const scorerId of judgeScorerIds) {
+    const settings = await getEvaluationSettingsRow(db, scorerId);
+    if (!settings || seenSettingsIds.has(settings.id)) continue;
+    seenSettingsIds.add(settings.id);
+    const profile = await findEvaluatorBoundToSettings(db, settings.id).catch(() => null);
+    const alertThreshold = profile?.alertThreshold ?? null;
+    try {
+      const { rating, justification } = await scoreAgainstCriteria(
+        {
+          acceptanceCriteria: settings.acceptanceCriteria ?? "",
+          rejectionCriteria: settings.rejectionCriteria ?? "",
+          evaluationCriteria: settings.evaluationCriteria ?? "",
+          judgePrompt: (settings.judgePrompt ?? "").trim() || DEFAULT_JUDGE_PROMPT,
+          judgeModel: settings.judgeModel ?? DEFAULT_JUDGE_MODEL,
+        },
+        content
+      );
+      results.push({
+        evaluatorId: settings.id,
+        name: settings.name,
+        rating,
+        justification,
+        alertThreshold,
+        wouldAlert: alertThreshold !== null && rating < alertThreshold,
+      });
+    } catch (err) {
+      results.push({
+        evaluatorId: settings.id,
+        name: settings.name,
+        rating: null,
+        justification: null,
+        alertThreshold,
+        wouldAlert: false,
+        error: err instanceof Error ? err.message : "Scoring failed",
+      });
+    }
+  }
   for (const evaluatorId of evaluatorIds) {
     const evaluator = await getOnlineEvaluatorRow(db, evaluatorId);
     if (!evaluator) continue; // deleted since the run started
+    if (evaluator.evaluationSettingsId && seenSettingsIds.has(evaluator.evaluationSettingsId)) continue;
+    if (evaluator.evaluationSettingsId) seenSettingsIds.add(evaluator.evaluationSettingsId);
     const settings = evaluator.evaluationSettingsId ? await getEvaluationSettingsRow(db, evaluator.evaluationSettingsId) : null;
     if (!settings) {
       results.push({
@@ -357,8 +404,11 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
         ? await runPlaygroundPatternChecks(db, input.patternIds, { input: input.query, output: completion.text, error: null })
         : undefined;
     const onlineEvaluatorChecks =
-      input.onlineEvaluatorIds && input.onlineEvaluatorIds.length > 0
-        ? await runPlaygroundOnlineEvaluatorChecks(db, input.onlineEvaluatorIds, { input: input.query, output: completion.text })
+      (input.onlineEvaluatorIds?.length ?? 0) + (input.judgeScorerIds?.length ?? 0) > 0
+        ? await runPlaygroundOnlineEvaluatorChecks(db, input.onlineEvaluatorIds ?? [], input.judgeScorerIds ?? [], {
+            input: input.query,
+            output: completion.text,
+          })
         : undefined;
 
     return {

@@ -507,6 +507,7 @@ evaluateDashboardRouter.post("/playground/run", async (req: Request, res: Respon
     tools: extractPlaygroundTools(body),
     patternIds: extractIds(body.patternIds),
     onlineEvaluatorIds: extractIds(body.onlineEvaluatorIds),
+    judgeScorerIds: extractIds(body.judgeScorerIds),
     maxTokens: typeof body.maxTokens === "number" ? body.maxTokens : undefined,
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
   });
