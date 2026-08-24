@@ -75,6 +75,7 @@ import {
 } from "../core/monitor/customEvaluators.js";
 import { runScriptScorer } from "../core/monitor/scriptScorer.js";
 import { getPortabilityPreview, runModelPortabilityCheck } from "../core/evaluate/portability.js";
+import { getMonitorMetrics, parseMetricsWindow } from "../core/monitor/metrics.js";
 import {
   listPortabilityModels,
   createPortabilityModel,
@@ -329,6 +330,19 @@ function parseWindow(req: Request): MonitoringWindow {
   const raw = req.query.window;
   return raw === "24h" || raw === "30d" ? raw : "7d";
 }
+
+// The Monitor metrics grid (spans/latency/cost/tokens/tools per bucket, with
+// agent/model/tool/status filters) - see core/monitor/metrics.ts.
+agentMonitoringDashboardRouter.get("/metrics", async (req: Request, res: Response) => {
+  res.status(200).json(
+    await getMonitorMetrics(scopedDb(req), parseMetricsWindow(req.query.window), {
+      agent: typeof req.query.agent === "string" ? req.query.agent : undefined,
+      model: typeof req.query.model === "string" ? req.query.model : undefined,
+      tool: typeof req.query.tool === "string" ? req.query.tool : undefined,
+      status: typeof req.query.status === "string" ? req.query.status : undefined,
+    })
+  );
+});
 
 agentMonitoringDashboardRouter.get("/kpis", async (req: Request, res: Response) => {
   res.status(200).json(await getKpis(scopedDb(req), parseWindow(req)));
