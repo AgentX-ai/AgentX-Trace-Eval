@@ -1,0 +1,107 @@
+# The gap between "tests pass" and "the shipped binary works": nightly, boot the ACTUAL
+# bun-compiled engine binary (the artifact install.sh distributes) and run the buyer probe suite
+# (sample-scripts/enterprise_evaluation UC1-10) against it with a real OpenAI key. The unit and
+# integration suites run the TypeScript sources under Node; only this exercises the compiled
+# bun:sqlite build end to end the way a customer runs it.
+#
+# Required repository secrets:
+#   PROBES_REPO_TOKEN - read access to AgentX-ai/sample-scripts and AgentX-ai/AgentX-Python
+#   OPENAI_API_KEY    - judge/topics calls made by the probes (real spend, small)
+name: Nightly probes
+
+on:
+  schedule:
+    # 06:17 UTC - off the top of the hour to dodge the scheduled-workflow thundering herd.
+    - cron: "17 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  probes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
+      - name: Check out probe suite
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          repository: AgentX-ai/sample-scripts
+          token: ${{ secrets.PROBES_REPO_TOKEN }}
+          path: sample-scripts
+
+      - name: Check out Python SDK
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          repository: AgentX-ai/AgentX-Python
+          token: ${{ secrets.PROBES_REPO_TOKEN }}
+          path: agentx-python
+
+      - name: Set up Node.js
+        uses: actions/setup-node@3235b876344d2a9aa001b8d1453c930bba69e610
+        with:
+          node-version: 24.x
+          cache: yarn
+          cache-dependency-path: yarn.lock
+
+      - name: Install workspace dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build judge-core
+        run: yarn workspace @agentx/judge-core build
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: latest
+
+      - name: Compile the engine binary
+        run: yarn workspace @agentx/engine compile
+
+      - name: Boot the compiled binary
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/agentx-home"
+          AGENTX_HOME="$RUNNER_TEMP/agentx-home" PORT=4791 ./engine/dist/agentx-engine \
+            > "$RUNNER_TEMP/engine.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/engine.pid"
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:4791/health >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "Engine never became healthy:"; tail -50 "$RUNNER_TEMP/engine.log"; exit 1
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Install the SDK
+        run: pip install -e ./agentx-python
+
+      - name: Run the probe suite
+        env:
+          AGENTX_SELFHOST_BASE_URL: http://127.0.0.1:4791/api/v1
+          AGENTX_ENGINE_DIR: ${{ github.workspace }}/engine
+        run: |
+          AGENTX_API_KEY=$(curl -fsS -X POST http://127.0.0.1:4791/api/v1/projects \
+            -H 'content-type: application/json' -d '{"name":"nightly-probes"}' \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["project"]["apiKey"])')
+          export AGENTX_API_KEY
+          cd sample-scripts/enterprise_evaluation
+          bash run_all.sh
+
+      - name: Engine log on failure
+        if: failure()
+        run: tail -200 "$RUNNER_TEMP/engine.log"
+
+      - name: Upload probe results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: probe-results
+          path: sample-scripts/enterprise_evaluation/results/
+          if-no-files-found: ignore
