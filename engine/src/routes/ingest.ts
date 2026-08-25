@@ -164,11 +164,12 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
 // Cursor-paginated, matching src/data/queries/evaluate/useGetProductionTraces.ts's params/
 // response shape exactly, see core/trace/ingest.ts's listTracesPaginated.
 ingestRouter.get("/traces", async (req: Request, res: Response) => {
-  const { limit, cursor, framework } = req.query;
+  const { limit, cursor, framework, search } = req.query;
   const result = await listTracesPaginated(scopedDb(req), {
     limit: limit ? Number(limit) : undefined,
     cursor: typeof cursor === "string" ? cursor : undefined,
     framework: typeof framework === "string" ? framework : undefined,
+    search: typeof search === "string" ? search : undefined,
   });
   res.status(200).json(result);
 });
