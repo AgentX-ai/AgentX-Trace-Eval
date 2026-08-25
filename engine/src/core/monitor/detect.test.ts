@@ -75,71 +75,45 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("runMonitorCheck - project-level sample rate", () => {
-  // The regression this suite exists for: the gate read `profile && !passesSampleRate(...)`, and
-  // only an explicit profile PUT or the seed ever writes a profile row, so this count was N.
-  it("samples an agent that has no monitor_profiles row", async () => {
-    await updateMonitoringDefaults(db, { sampleRate: 0.5 });
-    const agent = await createAgent(db, "sampling-no-profile");
+describe("runMonitorCheck - legacy coverage rate is inert", () => {
+  // Sampling simplification: detection is cheap text checks and runs on ALL ingested traffic.
+  // The legacy project-level coverage sampleRate is stored for old clients but gates nothing -
+  // it used to silently drop monitoring when "All traffic" mode kept a stale stored rate.
+  it("monitors every trace even with a legacy rate of 0.5 stored", async () => {
+    await updateMonitoringDefaults(db, { coverageMode: "sampled", sampleRate: 0.5 });
+    const agent = await createAgent(db, "legacy-rate-half");
     seedRng();
-
-    await runN(N, FAILING_TRACE, { agentId: agent._id });
-
-    const monitored = await monitoredCount("empty-agent-response", agent._id);
-    expect(monitored).toBeGreaterThan(N * 0.35);
-    expect(monitored).toBeLessThan(N * 0.65);
-  });
-
-  it("samples an agent that does have a profile row", async () => {
-    await updateMonitoringDefaults(db, { sampleRate: 0.5 });
-    const agent = await createAgent(db, "sampling-with-profile");
-    await updateProfile(db, agent._id, { enabled: true });
-    seedRng();
-
-    await runN(N, FAILING_TRACE, { agentId: agent._id });
-
-    const monitored = await monitoredCount("empty-agent-response", agent._id);
-    expect(monitored).toBeGreaterThan(N * 0.35);
-    expect(monitored).toBeLessThan(N * 0.65);
-  });
-
-  // An agent-less trace can never have a profile row - the other half of the same hole.
-  it("samples traces that carry no agentId", async () => {
-    await updateMonitoringDefaults(db, { sampleRate: 0.5 });
-    seedRng();
-
-    await runN(N, FAILING_TRACE, { agentId: null });
-
-    const monitored = await monitoredCount("empty-agent-response", null);
-    expect(monitored).toBeGreaterThan(N * 0.35);
-    expect(monitored).toBeLessThan(N * 0.65);
-  });
-
-  it("monitors every trace at the default sample rate of 1", async () => {
-    await updateMonitoringDefaults(db, { sampleRate: 1 });
-    const agent = await createAgent(db, "sampling-default");
 
     await runN(N, FAILING_TRACE, { agentId: agent._id });
 
     expect(await monitoredCount("empty-agent-response", agent._id)).toBe(N);
   });
 
-  it("monitors nothing at sample rate 0, with or without a profile row", async () => {
+  it("monitors every trace even with a legacy rate of 0 stored, profile or not", async () => {
     await updateMonitoringDefaults(db, { sampleRate: 0 });
-    const profileless = await createAgent(db, "sampling-zero-no-profile");
-    const profiled = await createAgent(db, "sampling-zero-with-profile");
+    const profileless = await createAgent(db, "legacy-zero-no-profile");
+    const profiled = await createAgent(db, "legacy-zero-with-profile");
     await updateProfile(db, profiled._id, { enabled: true });
 
     await runN(20, FAILING_TRACE, { agentId: profileless._id });
     await runN(20, FAILING_TRACE, { agentId: profiled._id });
 
-    expect(await monitoredCount("empty-agent-response", profileless._id)).toBe(0);
-    expect(await monitoredCount("empty-agent-response", profiled._id)).toBe(0);
+    expect(await monitoredCount("empty-agent-response", profileless._id)).toBe(20);
+    expect(await monitoredCount("empty-agent-response", profiled._id)).toBe(20);
   });
 
-  // Unchanged by the fix: the `profile &&` prefix stays on the enabled check.
-  it("skips an explicitly disabled profile even at sample rate 1", async () => {
-    await updateMonitoringDefaults(db, { sampleRate: 1 });
+  it("monitors agent-less traces unconditionally too", async () => {
+    await updateMonitoringDefaults(db, { sampleRate: 0 });
+    seedRng();
+
+    await runN(20, FAILING_TRACE, { agentId: null });
+
+    expect(await monitoredCount("empty-agent-response", null)).toBe(20);
+  });
+
+  // Unchanged: the `profile &&` prefix stays on the enabled check - an explicitly disabled
+  // profile still opts its agent out entirely.
+  it("skips an explicitly disabled profile", async () => {
     const agent = await createAgent(db, "sampling-disabled-profile");
     await updateProfile(db, agent._id, { enabled: false });
 
@@ -203,7 +177,10 @@ describe("runMonitorCheck - per-pattern sample rate", () => {
     expect(await monitoredCount(pattern.key, agent._id)).toBe(10);
   });
 
-  it("still honors the project sample rate for a pattern of its own sampled at 1", async () => {
+  // Sampling simplification: the pattern's own rate is the ONLY sampling applied - the legacy
+  // project coverage rate no longer multiplies in (it used to make effective rates an opaque
+  // product of two knobs).
+  it("ignores the legacy project rate: a pattern sampled at 1 matches every trace", async () => {
     await updateMonitoringDefaults(db, { sampleRate: 0.5 });
     const agent = await createAgent(db, "pattern-project-rate");
     const pattern = await createPattern(db, {
@@ -217,8 +194,6 @@ describe("runMonitorCheck - per-pattern sample rate", () => {
 
     await runN(N, REFUND_TRACE, { agentId: agent._id });
 
-    const matched = await monitoredCount(pattern.key, agent._id);
-    expect(matched).toBeGreaterThan(N * 0.35);
-    expect(matched).toBeLessThan(N * 0.65);
+    expect(await monitoredCount(pattern.key, agent._id)).toBe(N);
   });
 });

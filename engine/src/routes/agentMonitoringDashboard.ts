@@ -75,6 +75,7 @@ import {
 } from "../core/monitor/customEvaluators.js";
 import { runScriptScorer } from "../core/monitor/scriptScorer.js";
 import { getPortabilityPreview, runModelPortabilityCheck } from "../core/evaluate/portability.js";
+import { getMonitorMetrics, parseMetricsRange } from "../core/monitor/metrics.js";
 import {
   listPortabilityModels,
   createPortabilityModel,
@@ -329,6 +330,19 @@ function parseWindow(req: Request): MonitoringWindow {
   const raw = req.query.window;
   return raw === "24h" || raw === "30d" ? raw : "7d";
 }
+
+// The Monitor metrics grid (spans/latency/cost/tokens/tools per bucket, with
+// agent/model/tool/status filters) - see core/monitor/metrics.ts.
+agentMonitoringDashboardRouter.get("/metrics", async (req: Request, res: Response) => {
+  res.status(200).json(
+    await getMonitorMetrics(scopedDb(req), parseMetricsRange(req.query as Record<string, unknown>), {
+      agent: typeof req.query.agent === "string" ? req.query.agent : undefined,
+      model: typeof req.query.model === "string" ? req.query.model : undefined,
+      tool: typeof req.query.tool === "string" ? req.query.tool : undefined,
+      status: typeof req.query.status === "string" ? req.query.status : undefined,
+    })
+  );
+});
 
 agentMonitoringDashboardRouter.get("/kpis", async (req: Request, res: Response) => {
   res.status(200).json(await getKpis(scopedDb(req), parseWindow(req)));
@@ -1347,14 +1361,25 @@ agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: 
     retentionDays?: number;
     latencyThresholdMs?: number;
     topicsEnabled?: boolean;
+    topicsSampleRate?: number;
     coherenceSweepEnabled?: boolean;
     enabledBuiltinPatterns?: string[];
   } = {};
+  // coverageMode/sampleRate are LEGACY: stored for old clients, read by no monitoring consumer
+  // (see schema.sqlite.ts's projects.coverageMode block).
   if (typeof body.coverageMode === "string") patch.coverageMode = body.coverageMode;
   if (typeof body.sampleRate === "number") patch.sampleRate = body.sampleRate;
   if (typeof body.retentionDays === "number") patch.retentionDays = body.retentionDays;
   if (typeof body.latencyThresholdMs === "number") patch.latencyThresholdMs = body.latencyThresholdMs;
   if (typeof body.topicsEnabled === "boolean") patch.topicsEnabled = body.topicsEnabled;
+  if (body.topicsSampleRate !== undefined) {
+    const checked = validateSampleRateParam(body.topicsSampleRate);
+    if (!checked.ok) {
+      res.status(400).json({ error: `topicsSampleRate: ${checked.error}` });
+      return;
+    }
+    patch.topicsSampleRate = checked.sampleRate;
+  }
   if (typeof body.coherenceSweepEnabled === "boolean") patch.coherenceSweepEnabled = body.coherenceSweepEnabled;
   if (Array.isArray(body.enabledBuiltinPatterns)) {
     const keys = (body.enabledBuiltinPatterns as unknown[]).filter((k): k is string => typeof k === "string");

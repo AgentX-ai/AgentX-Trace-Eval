@@ -18,8 +18,12 @@ export const projects = sqliteTable("projects", {
   // Project-level monitoring defaults (formerly per-agent AgentMonitoringProfile fields - see
   // core/monitor/profiles.ts's toWire comment): apply uniformly to every agent in this project.
   // monitor_profiles keeps its own coverageMode/sampleRate/retentionDays columns for
-  // SDK wire-compat, but nothing reads them for behavior anymore - these are the real source of
-  // truth as of the project-level Settings screen.
+  // SDK wire-compat, but nothing reads them for behavior anymore.
+  // coverage_mode + sample_rate are LEGACY as of the sampling simplification: no monitoring
+  // consumer reads them (detection/patterns run on all ingested traffic; sampling lives on the
+  // LLM spenders - judge scorers, custom scorers, Topics below). Kept accepted-on-write so old
+  // dashboards/SDKs don't error; topics_sample_rate was backfilled from sample_rate once for
+  // projects that had sampled coverage (storage/db.ts).
   coverageMode: text("coverage_mode").notNull().default("all"),
   sampleRate: real("sample_rate").notNull().default(1),
   retentionDays: integer("retention_days").notNull().default(30),
@@ -30,6 +34,9 @@ export const projects = sqliteTable("projects", {
   // reads it for behavior anymore; a one-way boot-time backfill (storage/db.ts) copies any
   // enabled profile up to its project once, then clears the profile flags.
   topicsEnabled: integer("topics_enabled", { mode: "boolean" }).notNull().default(false),
+  // Share of traffic Topics classifies when enabled (an LLM call per trace) - the only
+  // project-level sampling knob left, owned by the Topics surface.
+  topicsSampleRate: real("topics_sample_rate").notNull().default(1),
   // Idle-session coherence sweep opt-OUT (default on): the built-in whole-session consistency
   // check (core/monitor/sessionScores.ts's runSessionCoherenceCheck) runs automatically from the
   // idle-session sweep for qualifying sessions; the dashboard's per-session button stays as the

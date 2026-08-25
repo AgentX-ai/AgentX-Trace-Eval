@@ -25,6 +25,7 @@ export type ProjectRow = {
   retentionDays: number;
   latencyThresholdMs: number;
   topicsEnabled: boolean;
+  topicsSampleRate: number;
   coherenceSweepEnabled: boolean;
   // Built-in template-scorer keys this project switched ON (scorer catalog toggle) -
   // null/empty = none run. Scorers are opt-in: a fresh project applies nothing by default.
@@ -40,6 +41,9 @@ function toWire(row: ProjectRow) {
 }
 
 export type MonitoringDefaults = {
+  // LEGACY, accepted on write but read by nothing - see schema.sqlite.ts's projects.coverageMode
+  // block. Detection runs on all ingested traffic; sampling lives on the LLM spenders (judge
+  // scorers, custom scorers, topicsSampleRate below).
   coverageMode: string;
   sampleRate: number;
   retentionDays: number;
@@ -47,6 +51,9 @@ export type MonitoringDefaults = {
   // Topics classification opt-in - project-level as of the migration described in
   // schema.sqlite.ts's projects.topicsEnabled comment (formerly per-agent on monitor_profiles).
   topicsEnabled: boolean;
+  // Share of traffic Topics classifies when enabled (LLM call per trace) - the one project-level
+  // sampling knob left, owned by the Topics surface.
+  topicsSampleRate: number;
   // Idle-session coherence sweep opt-OUT (default on) - see schema.sqlite.ts's
   // projects.coherenceSweepEnabled comment.
   coherenceSweepEnabled: boolean;
@@ -62,6 +69,7 @@ function toMonitoringDefaultsWire(row: ProjectRow): MonitoringDefaults {
     retentionDays: row.retentionDays,
     latencyThresholdMs: row.latencyThresholdMs,
     topicsEnabled: row.topicsEnabled,
+    topicsSampleRate: row.topicsSampleRate,
     coherenceSweepEnabled: row.coherenceSweepEnabled,
     enabledBuiltinPatterns: Array.isArray(row.enabledBuiltinPatterns) ? row.enabledBuiltinPatterns : [],
   };
@@ -82,6 +90,7 @@ export async function createProject(db: Db, name: string, organizationId: string
     retentionDays: 30,
     latencyThresholdMs: 20000,
     topicsEnabled: false,
+    topicsSampleRate: 1,
     coherenceSweepEnabled: true,
     enabledBuiltinPatterns: null,
     organizationId,
@@ -214,6 +223,7 @@ export async function updateMonitoringDefaults(db: Db, patch: UpdateMonitoringDe
     retentionDays: patch.retentionDays ?? existing.retentionDays,
     latencyThresholdMs: patch.latencyThresholdMs ?? existing.latencyThresholdMs,
     topicsEnabled: patch.topicsEnabled ?? existing.topicsEnabled,
+    topicsSampleRate: patch.topicsSampleRate ?? existing.topicsSampleRate,
     coherenceSweepEnabled: patch.coherenceSweepEnabled ?? existing.coherenceSweepEnabled,
     enabledBuiltinPatterns: patch.enabledBuiltinPatterns ?? existing.enabledBuiltinPatterns,
   };

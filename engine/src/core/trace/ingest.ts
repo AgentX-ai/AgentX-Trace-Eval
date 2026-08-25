@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
 import { z } from "zod";
-import { desc, lt, and, eq, isNull, or, type SQL } from "drizzle-orm";
+import { desc, lt, and, eq, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { resolveAgentId } from "../monitor/agents.js";
 import { listPortabilityModels, estimateCostUSD } from "../evaluate/models.js";
@@ -301,7 +301,7 @@ export async function toTraceDetailWireWithCost(db: Db, row: TraceRow) {
 // evolving this GET response shape for the dashboard doesn't risk SDK compatibility.
 export async function listTracesPaginated(
   db: Db,
-  { limit = 50, cursor, framework }: { limit?: number; cursor?: string; framework?: string }
+  { limit = 50, cursor, framework, search }: { limit?: number; cursor?: string; framework?: string; search?: string }
 ) {
   const pageSize = Math.min(Math.max(limit, 1), 100);
 
@@ -321,6 +321,28 @@ export async function listTracesPaginated(
   // only changes what the top-level list itself enumerates.
   const conditions: SQL[] = [isNull(db.schema.traces.parentSpanId), eq(db.schema.traces.projectId, db.projectId)];
   if (framework) conditions.push(eq(db.schema.traces.framework, framework));
+  // Database-side search (the dashboard's Live Traces box) - a LIKE across the columns a person
+  // actually greps traffic by: agent name, input/output text, model, error, and the trace/session
+  // ids (so a pasted id resolves). SQLite LIKE is already case-insensitive for ASCII; Postgres
+  // needs ILIKE. Wildcards in the term are escaped, so searching "100%" matches literally.
+  // The keyset cursor below composes with this - the frontend keys its infinite query on the
+  // term, so a changed term restarts pagination from the top.
+  const term = search?.trim();
+  if (term) {
+    const pattern = `%${term.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+    const t = db.schema.traces;
+    const columns = [t.name, t.input, t.output, t.model, t.error, t.id, t.sessionId];
+    // Explicit ESCAPE: SQLite's LIKE has no default escape character, so the backslash escaping
+    // above would otherwise be matched literally there.
+    const searchCond = or(
+      ...columns.map(column =>
+        db.kind === "sqlite"
+          ? sql`${column} LIKE ${pattern} ESCAPE '\\'`
+          : sql`${column} ILIKE ${pattern} ESCAPE '\\'`
+      )
+    );
+    if (searchCond) conditions.push(searchCond);
+  }
   // Keyset with an id tiebreak, matching the (createdAt DESC, id DESC) sort below. The old
   // createdAt-only predicate silently skipped every row that shared the page-boundary row's
   // millisecond (3 of 2000 lost in a realistic burst - deep-dive round 3, bug #6), because
