@@ -1072,3 +1072,35 @@ export const monitorRules = sqliteTable("monitor_rules", {
   lastFiredAt: integer("last_fired_at", { mode: "timestamp_ms" }),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
+
+// Pairwise (head-to-head) judging: instead of asking "score this answer 0-10", ask "which of these
+// two answers is better for this question". Absolute scores drift between judge versions and
+// bunch up around 7-8; a preference between two concrete answers is the comparison a human would
+// actually make, and it is what teams use to decide whether a change shipped an improvement.
+//
+// Position bias is the whole methodological risk here: judges favor whichever answer they read
+// first. Every row therefore records which run was presented first (presentedFirst), and a
+// bothOrders comparison judges the same pair twice with the sides swapped - if the winner flips,
+// the row is recorded as a tie caused by position bias (flipped=true) rather than a verdict.
+export const pairwiseComparisons = sqliteTable("pairwise_comparisons", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  // Groups every case row of one head-to-head into a single comparison.
+  batchId: text("batch_id").notNull(),
+  runAId: text("run_a_id").notNull(),
+  runBId: text("run_b_id").notNull(),
+  questionIndex: integer("question_index"),
+  query: text("query"),
+  // "a" | "b" | "tie"
+  winner: text("winner").notNull(),
+  // "a" | "b" - which run's answer the judge read first in the deciding pass.
+  presentedFirst: text("presented_first").notNull(),
+  // Whether this batch judged each pair twice with the sides swapped.
+  bothOrders: integer("both_orders", { mode: "boolean" }).notNull().default(false),
+  // True when a bothOrders pass produced opposite winners: the verdict is the position, not the
+  // answer, so it is scored as a tie and surfaced as the batch's flip rate.
+  flipped: integer("flipped", { mode: "boolean" }).notNull().default(false),
+  justification: text("justification"),
+  judgeModel: text("judge_model"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});

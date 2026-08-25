@@ -218,6 +218,33 @@ export const reviewQueueResponseSchema = z
   .object({ items: z.array(reviewQueueItemSchema), pending: z.number(), cap: z.number() })
   .strict();
 
+// ---- GET /evaluate/runs/pairwise --------------------------------------------------------------
+
+export const pairwiseSummarySchema = z
+  .object({
+    total: z.number(),
+    aWins: z.number(),
+    bWins: z.number(),
+    ties: z.number(),
+    winner: z.enum(["a", "b", "tie"]),
+    // null unless the batch judged both orders - there is no flip rate to report otherwise.
+    flipRate: z.number().nullable(),
+  })
+  .strict();
+
+export const pairwiseBatchSummarySchema = z
+  .object({
+    batchId: z.string(),
+    runAId: z.string(),
+    runBId: z.string(),
+    judgeModel: z.string().nullable(),
+    summary: pairwiseSummarySchema,
+    createdAt: isoDate,
+  })
+  .strict();
+
+export const pairwiseListResponseSchema = z.object({ comparisons: z.array(pairwiseBatchSummarySchema) }).strict();
+
 // ---- GET /agent-monitoring/judge-scorers -----------------------------------------------------
 
 export const judgeScorerSchema = z
@@ -320,6 +347,13 @@ export const WIRE_CONTRACT = [
     summary: "Automation rules: filter + sample + route",
     response: rulesResponseSchema,
     name: "RulesResponse",
+  },
+  {
+    method: "get" as const,
+    path: "/evaluate/runs/pairwise",
+    summary: "Head-to-head comparisons between two evaluation runs",
+    response: pairwiseListResponseSchema,
+    name: "PairwiseListResponse",
   },
   {
     method: "get" as const,

@@ -97,6 +97,9 @@ import {
   getEvaluationAnalysisRow,
 } from "../core/evaluate/analysis.js";
 import type { MonitoringWindow } from "../core/monitor/events.js";
+import { getPairwiseBatch, listPairwiseBatches, runPairwise } from "../core/evaluate/pairwise.js";
+import { z } from "zod";
+import { validateBody } from "./validateBody.js";
 
 // Same convention as agentMonitoringDashboard.ts's parseWindow - not shared across route files,
 // each route file is self-contained.
@@ -377,6 +380,49 @@ evaluateDashboardRouter.get("/runs/compare", async (req: Request, res: Response)
     return;
   }
   res.status(200).json(result);
+});
+
+// Head-to-head judging (core/evaluate/pairwise.ts): "which run answered this question better",
+// rather than two absolute scores that have to be trusted to the first decimal. Synchronous
+// because a batch is capped at MAX_PAIRWISE_CASES judge calls and the caller wants the verdict,
+// not a job id.
+const pairwiseSchema = z
+  .object({
+    runAId: z.string().min(1),
+    runBId: z.string().min(1),
+    criteria: z.string().max(4000).optional(),
+    judgeModel: z.string().max(200).optional(),
+    // Judge every pair twice with the sides swapped. Doubles the cost, and buys the only real
+    // defense against position bias - see the module comment.
+    bothOrders: z.boolean().optional(),
+  })
+  .strip();
+
+evaluateDashboardRouter.post("/runs/pairwise", validateBody(pairwiseSchema), async (req: Request, res: Response) => {
+  const result = await runPairwise(scopedDb(req), req.body);
+  if ("error" in result) {
+    res.status(result.error === "Run not found" ? 404 : 400).json(result);
+    return;
+  }
+  res.status(201).json({ comparison: result });
+});
+
+evaluateDashboardRouter.get("/runs/pairwise", async (req: Request, res: Response) => {
+  const { runAId, runBId } = req.query;
+  const comparisons = await listPairwiseBatches(scopedDb(req), {
+    ...(typeof runAId === "string" && runAId ? { runAId } : {}),
+    ...(typeof runBId === "string" && runBId ? { runBId } : {}),
+  });
+  res.status(200).json({ comparisons });
+});
+
+evaluateDashboardRouter.get("/runs/pairwise/:batchId", async (req: Request, res: Response) => {
+  const comparison = await getPairwiseBatch(scopedDb(req), req.params.batchId!);
+  if (!comparison) {
+    res.status(404).json({ error: "Comparison not found" });
+    return;
+  }
+  res.status(200).json({ comparison });
 });
 
 // Agent Connectors (core/evaluate/agentConnectors.ts) - "how to invoke my deployed agent," a

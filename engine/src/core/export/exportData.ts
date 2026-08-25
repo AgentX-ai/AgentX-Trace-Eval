@@ -22,6 +22,9 @@ export const EXPORT_ENTITIES = {
   runs: { table: "evaluationRuns", sinceColumn: "createdAt" },
   "run-results": { table: "evaluationRunResults", sinceColumn: "createdAt" },
   "gate-results": { table: "gateResults", sinceColumn: "createdAt" },
+  // Head-to-head verdicts are judged work with real judge spend behind them; losing them on a
+  // restore would mean re-running (and re-paying for) every comparison.
+  "pairwise-comparisons": { table: "pairwiseComparisons", sinceColumn: "createdAt" },
   datasets: { table: "datasets", sinceColumn: "createdAt" },
   feedback: { table: "userFeedback", sinceColumn: "createdAt" },
   outcomes: { table: "outcomeReports", sinceColumn: "reportedAt" },

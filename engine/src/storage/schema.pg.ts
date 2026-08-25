@@ -709,3 +709,21 @@ export const monitorRules = pgTable("monitor_rules", {
   lastFiredAt: timestamp("last_fired_at", { mode: "date" }),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
 });
+
+// See schema.sqlite.ts's pairwiseComparisons for the full comment.
+export const pairwiseComparisons = pgTable("pairwise_comparisons", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  batchId: text("batch_id").notNull(),
+  runAId: text("run_a_id").notNull(),
+  runBId: text("run_b_id").notNull(),
+  questionIndex: integer("question_index"),
+  query: text("query"),
+  winner: text("winner").notNull(),
+  presentedFirst: text("presented_first").notNull(),
+  bothOrders: boolean("both_orders").notNull().default(false),
+  flipped: boolean("flipped").notNull().default(false),
+  justification: text("justification"),
+  judgeModel: text("judge_model"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+});
