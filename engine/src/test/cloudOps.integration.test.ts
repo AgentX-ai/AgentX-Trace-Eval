@@ -92,9 +92,20 @@ describe("mailer", () => {
 
 describe("quotas", () => {
   it("caps daily root-trace ingest per project, children ride free", async () => {
-    // The tenant's seeded example project already ingested 3 starter traces - quota 6 leaves
-    // room for exactly 3 more.
-    for (let i = 0; i < 3; i++) {
+    // The tenant's seeded example project starts with 3 starter traces, but their createdAt is
+    // backdated ~10 minutes (seed.ts stamps startedAt for a believable timeline, and ingest
+    // uses startedAt as createdAt) - so in the first minutes after LOCAL midnight they fall
+    // outside the quota's dayStart() window and don't count. Compute today's usage instead of
+    // assuming 3, so this test doesn't fail between 00:00 and 00:10.
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    const listed = await engine.json("/api/v1/ingest/traces?limit=100", { apiKey: carolKey });
+    const usedToday = (bodyOf(listed).traces as { createdAt: string }[]).filter(
+      t => new Date(t.createdAt) >= midnight
+    ).length;
+    const room = 6 - usedToday;
+    expect(room).toBeGreaterThan(0);
+    for (let i = 0; i < room; i++) {
       const ok = await engine.json("/api/v1/ingest/traces", {
         ...json({ name: "quota-agent", input: `q${i}`, output: "a" }),
         apiKey: carolKey,
@@ -102,7 +113,7 @@ describe("quotas", () => {
       expect(ok.status).toBe(200);
     }
     const over = await engine.json("/api/v1/ingest/traces", {
-      ...json({ name: "quota-agent", input: "q4", output: "a" }),
+      ...json({ name: "quota-agent", input: "q-over", output: "a" }),
       apiKey: carolKey,
     });
     expect(over.status).toBe(429);
