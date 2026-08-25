@@ -591,6 +591,20 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       created_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS monitor_rules (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      name TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      filter TEXT,
+      sample_rate REAL NOT NULL DEFAULT 1,
+      action TEXT NOT NULL,
+      action_config TEXT,
+      fired_count INTEGER NOT NULL DEFAULT 0,
+      last_fired_at INTEGER,
+      created_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS monitor_events (
       id TEXT PRIMARY KEY,
       signal_id TEXT,
@@ -1720,6 +1734,20 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       note TEXT,
       reviewed_by TEXT,
       reviewed_at TIMESTAMP,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS monitor_rules (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      name TEXT NOT NULL,
+      enabled BOOLEAN NOT NULL DEFAULT true,
+      filter JSONB,
+      sample_rate DOUBLE PRECISION NOT NULL DEFAULT 1,
+      action TEXT NOT NULL,
+      action_config JSONB,
+      fired_count INTEGER NOT NULL DEFAULT 0,
+      last_fired_at TIMESTAMP,
       created_at TIMESTAMP NOT NULL
     );
 

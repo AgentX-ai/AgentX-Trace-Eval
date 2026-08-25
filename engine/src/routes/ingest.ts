@@ -33,6 +33,7 @@ import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
 import { runCustomEvaluators } from "../core/monitor/customEvaluators.js";
 import { runClassification } from "../core/monitor/topics.js";
 import { logger } from "../log.js";
+import { runRules } from "../core/monitor/rules.js";
 
 // Path matters here: AgentX-Python's IngestClient builds its endpoint as
 // f"{base_url}/ingest/traces" (agentx/tracing/ingest_client.py). Mounting this router at
@@ -146,6 +147,17 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
   // core/monitor/customEvaluators.ts.
   runCustomEvaluators(scopedDb(req), traceForMonitor, { agentId, traceId }).catch(err => {
     logger.error({ err: err instanceof Error ? err.message : err }, "Custom evaluator scoring failed:");
+  });
+
+  // Automation rules (core/monitor/rules.ts): filter + sample + route. Same detached posture as
+  // the scorers above, but rules never score - they move a trace somewhere (review queue,
+  // dataset, webhook), so a broken rule can cost a routing action, never a judge verdict.
+  runRules(
+    scopedDb(req),
+    { ...traceForMonitor, model: parsed.data.model ?? null, name: parsed.data.name ?? null },
+    { agentId, traceId }
+  ).catch(err => {
+    logger.error({ err: err instanceof Error ? err.message : err }, "Automation rules failed:");
   });
 
   // Third independent pass, same fire-and-forget shape - see core/monitor/topics.ts. Opt-in via

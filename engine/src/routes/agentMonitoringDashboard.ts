@@ -95,6 +95,7 @@ import { maskSecret } from "../core/shared/maskSecret.js";
 import { validateSeverityParam } from "../core/shared/severity.js";
 import { z } from "zod";
 import { validateBody } from "./validateBody.js";
+import { createRule, deleteRule, getRule, listRules, updateRule } from "../core/monitor/rules.js";
 import {
   REVIEW_QUEUE_PENDING_CAP,
   deleteReviewItem,
@@ -141,6 +142,85 @@ agentMonitoringDashboardRouter.use((req: Request, res: Response, next) => {
   next();
 });
 
+
+// ---------------------------------------------------------------------------
+// Automation rules (core/monitor/rules.ts): filter + sample + action. Rules ROUTE traffic (into
+// the review queue, a dataset, or a webhook); scorers SCORE it. Keeping the two separate is why
+// enabling a rule can never change what a judge costs.
+// ---------------------------------------------------------------------------
+const ruleFilterSchema = z
+  .object({
+    scopeMode: z.enum(["all", "selected"]).optional(),
+    agentIds: z.array(z.string()).optional(),
+    model: z.string().optional(),
+    status: z.enum(["any", "error"]).optional(),
+    contains: z.string().optional(),
+  })
+  .strip();
+
+const ruleActionConfigSchema = z.object({ datasetId: z.string().optional(), url: z.string().url().optional() }).strip();
+
+const createRuleSchema = z
+  .object({
+    name: z.string().min(1),
+    enabled: z.boolean().optional(),
+    filter: ruleFilterSchema.optional(),
+    sampleRate: z.number().min(0).max(1).optional(),
+    action: z.enum(["review", "dataset", "webhook"]),
+    actionConfig: ruleActionConfigSchema.optional(),
+  })
+  .strip();
+
+const updateRuleSchema = createRuleSchema.partial().strip();
+
+// An action whose config is missing is a rule that would silently do nothing every time it
+// matches - refused at the door instead.
+function ruleConfigError(action: string | undefined, config: { datasetId?: string; url?: string } | undefined) {
+  if (action === "dataset" && !config?.datasetId) return "A dataset rule needs actionConfig.datasetId";
+  if (action === "webhook" && !config?.url) return "A webhook rule needs actionConfig.url";
+  return null;
+}
+
+agentMonitoringDashboardRouter.get("/rules", async (req: Request, res: Response) => {
+  res.status(200).json({ rules: await listRules(scopedDb(req)) });
+});
+
+agentMonitoringDashboardRouter.post("/rules", validateBody(createRuleSchema), async (req: Request, res: Response) => {
+  const body = req.body as z.infer<typeof createRuleSchema>;
+  const configError = ruleConfigError(body.action, body.actionConfig);
+  if (configError) {
+    res.status(400).json({ error: configError });
+    return;
+  }
+  res.status(201).json({ rule: await createRule(scopedDb(req), body) });
+});
+
+agentMonitoringDashboardRouter.put("/rules/:id", validateBody(updateRuleSchema), async (req: Request, res: Response) => {
+  const body = req.body as z.infer<typeof updateRuleSchema>;
+  const existing = await getRule(scopedDb(req), req.params.id!);
+  if (!existing) {
+    res.status(404).json({ error: "Rule not found" });
+    return;
+  }
+  const configError = ruleConfigError(
+    body.action ?? existing.action,
+    body.actionConfig ?? existing.actionConfig
+  );
+  if (configError) {
+    res.status(400).json({ error: configError });
+    return;
+  }
+  res.status(200).json({ rule: await updateRule(scopedDb(req), req.params.id!, body) });
+});
+
+agentMonitoringDashboardRouter.delete("/rules/:id", async (req: Request, res: Response) => {
+  const deleted = await deleteRule(scopedDb(req), req.params.id!);
+  if (!deleted) {
+    res.status(404).json({ error: "Rule not found" });
+    return;
+  }
+  res.status(204).end();
+});
 
 // ---------------------------------------------------------------------------
 // Human-review queue (core/monitor/reviewQueue.ts): traces that raised no signal but still want a

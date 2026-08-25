@@ -1047,3 +1047,28 @@ export const reviewQueueItems = sqliteTable("review_queue_items", {
   reviewedAt: integer("reviewed_at", { mode: "timestamp_ms" }),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
+
+// Automation rules: filter + sample + action, evaluated on every ingested root trace
+// (core/monitor/rules.ts). The vocabulary is deliberately distinct from scorers - a SCORER scores
+// traffic (and owns its own sampling), a RULE routes traffic somewhere: into the human-review
+// queue, into a dataset, or out to a webhook. Keeping them separate is why enabling a rule can
+// never change what a judge costs or how it scores.
+export const monitorRules = sqliteTable("monitor_rules", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  name: text("name").notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  // { scopeMode: "all"|"selected", agentIds: string[], model?: string, status?: "any"|"error",
+  //   contains?: string } - a few typed fields on purpose, not a filter expression language.
+  filter: text("filter", { mode: "json" }),
+  sampleRate: real("sample_rate").notNull().default(1),
+  // "review" | "dataset" | "webhook"
+  action: text("action").notNull(),
+  // { datasetId } for "dataset", { url } for "webhook", {} for "review".
+  actionConfig: text("action_config", { mode: "json" }),
+  // Honest activity reporting: a rule that has never fired looks different from one that fires
+  // constantly, and the UI shows both rather than implying every rule is working.
+  firedCount: integer("fired_count").notNull().default(0),
+  lastFiredAt: integer("last_fired_at", { mode: "timestamp_ms" }),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});

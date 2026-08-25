@@ -694,3 +694,18 @@ export const reviewQueueItems = pgTable("review_queue_items", {
   reviewedAt: timestamp("reviewed_at", { mode: "date" }),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
 });
+
+// See schema.sqlite.ts's monitorRules for the full comment.
+export const monitorRules = pgTable("monitor_rules", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  name: text("name").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  filter: jsonb("filter"),
+  sampleRate: doublePrecision("sample_rate").notNull().default(1),
+  action: text("action").notNull(),
+  actionConfig: jsonb("action_config"),
+  firedCount: integer("fired_count").notNull().default(0),
+  lastFiredAt: timestamp("last_fired_at", { mode: "date" }),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+});

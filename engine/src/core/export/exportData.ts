@@ -16,6 +16,7 @@ export const EXPORT_ENTITIES = {
   signals: { table: "monitorSignals", sinceColumn: "lastSeenAt" },
   "signal-feedback": { table: "monitorSignalFeedback", sinceColumn: "createdAt" },
   "review-queue": { table: "reviewQueueItems", sinceColumn: "createdAt" },
+  rules: { table: "monitorRules", sinceColumn: "createdAt" },
   events: { table: "monitorEvents", sinceColumn: "createdAt" },
   classifications: { table: "monitorClassifications", sinceColumn: "createdAt" },
   runs: { table: "evaluationRuns", sinceColumn: "createdAt" },

@@ -187,6 +187,33 @@ export const reviewQueueItemSchema = z
   })
   .strict();
 
+// ---- GET /agent-monitoring/rules --------------------------------------------------------------
+
+export const ruleSchema = z
+  .object({
+    _id: z.string(),
+    name: z.string(),
+    enabled: z.boolean(),
+    filter: z
+      .object({
+        scopeMode: z.enum(["all", "selected"]).optional(),
+        agentIds: z.array(z.string()).optional(),
+        model: z.string().optional(),
+        status: z.enum(["any", "error"]).optional(),
+        contains: z.string().optional(),
+      })
+      .strict(),
+    sampleRate: z.number(),
+    action: z.enum(["review", "dataset", "webhook"]),
+    actionConfig: z.object({ datasetId: z.string().optional(), url: z.string().optional() }).strict(),
+    firedCount: z.number(),
+    lastFiredAt: isoDate.nullable(),
+    createdAt: isoDate,
+  })
+  .strict();
+
+export const rulesResponseSchema = z.object({ rules: z.array(ruleSchema) }).strict();
+
 export const reviewQueueResponseSchema = z
   .object({ items: z.array(reviewQueueItemSchema), pending: z.number(), cap: z.number() })
   .strict();
@@ -286,6 +313,13 @@ export const WIRE_CONTRACT = [
     summary: "Monitoring signals",
     response: signalsResponseSchema,
     name: "SignalsResponse",
+  },
+  {
+    method: "get" as const,
+    path: "/agent-monitoring/rules",
+    summary: "Automation rules: filter + sample + route",
+    response: rulesResponseSchema,
+    name: "RulesResponse",
   },
   {
     method: "get" as const,

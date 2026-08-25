@@ -30,20 +30,25 @@ const WEBHOOK_TIMEOUT_MS = 8000;
 // this engine's general shrug-and-log posture toward best-effort side effects (e.g. suggestion
 // endpoints' failure path) rather than introducing durability machinery for a notification.
 export function notifyWebhooks(urls: string[], signal: WebhookSignal): void {
-  if (urls.length === 0) {
-    return;
-  }
   // Slack's incoming-webhook format only requires a top-level `text` string and ignores unknown
   // fields, so pointing `channels` at a Slack webhook URL works with zero extra glue; anything
   // else gets the same JSON body with the full structured fields to parse itself.
-  const payload = {
+  postWebhooks(urls, {
     text: `[AgentX Monitor] ${signal.severity.toUpperCase()}: ${signal.summary}`,
     severity: signal.severity,
     patternKey: signal.patternKey,
     agentId: signal.agentId,
     rootCause: signal.rootCause ?? null,
     summary: signal.summary,
-  };
+  });
+}
+
+// The delivery primitive both callers share: signal notifications above, and automation rules'
+// webhook action (core/monitor/rules.ts), which sends its own rule-shaped payload.
+export function postWebhooks(urls: string[], payload: Record<string, unknown>): void {
+  if (urls.length === 0) {
+    return;
+  }
   for (const url of urls) {
     void fetch(url, {
       method: "POST",
