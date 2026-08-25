@@ -61,6 +61,11 @@ async function resolveAgentxVerdict(db: Db, report: OutcomeReportRow): Promise<b
 export type CalibrationResult = {
   window: MonitoringWindow;
   reportedCount: number;
+  // Labeled review-queue items inside the window (core/monitor/reviewQueue.ts). Structurally the
+  // same evidence as an outcome report - a human calling one trace good or bad - so they feed the
+  // same confusion matrix. Reported separately so the UI can say how much of the agreement number
+  // came from sampled human labels rather than production outcomes.
+  reviewLabelCount: number;
   // Reports whose traceId/evaluationRunResultId has no corresponding AgentX verdict yet - not an
   // error, just not (yet) usable for calibration math.
   noVerdictCount: number;
@@ -107,21 +112,42 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
   let falsePositive = 0;
   let falseNegative = 0;
 
-  for (const report of reports) {
-    const agentxFlagged = await resolveAgentxVerdict(db, report);
+  const tally = (agentxFlagged: boolean | null, isNegative: boolean) => {
     if (agentxFlagged === null) {
       noVerdict++;
-      continue;
+      return;
     }
-    if (agentxFlagged && report.isNegative) {
+    if (agentxFlagged && isNegative) {
       truePositive++;
-    } else if (!agentxFlagged && !report.isNegative) {
+    } else if (!agentxFlagged && !isNegative) {
       trueNegative++;
-    } else if (agentxFlagged && !report.isNegative) {
+    } else if (agentxFlagged && !isNegative) {
       falsePositive++;
     } else {
       falseNegative++;
     }
+  };
+
+  for (const report of reports) {
+    tally(await resolveAgentxVerdict(db, report), report.isNegative);
+  }
+
+  // Sampled human labels: the same math, windowed on when the verdict was given. This is what
+  // makes a review queue over ordinary traffic worth staffing - a judge quietly scoring bad
+  // answers as good never produces an outcome report, but a sampled label catches it.
+  const reviewCond = and(
+    gte(db.schema.reviewQueueItems.reviewedAt, since),
+    eq(db.schema.reviewQueueItems.projectId, db.projectId),
+    eq(db.schema.reviewQueueItems.status, "labeled")
+  );
+  const reviewLabels = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).all()
+      : await db.db.select().from(db.schema.reviewQueueItems).where(reviewCond)
+  ) as { traceId: string; label: string | null }[];
+  for (const item of reviewLabels) {
+    if (item.label !== "good" && item.label !== "bad") continue;
+    tally(await resolveAgentxVerdict(db, { traceId: item.traceId } as OutcomeReportRow), item.label === "bad");
   }
 
   const comparedCount = truePositive + trueNegative + falsePositive + falseNegative;
@@ -131,6 +157,7 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
   return {
     window,
     reportedCount: reports.length,
+    reviewLabelCount: reviewLabels.length,
     noVerdictCount: noVerdict,
     comparedCount,
     agreementRate: comparedCount > 0 ? (truePositive + trueNegative) / comparedCount : null,

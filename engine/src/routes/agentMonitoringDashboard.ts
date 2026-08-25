@@ -95,6 +95,14 @@ import { maskSecret } from "../core/shared/maskSecret.js";
 import { validateSeverityParam } from "../core/shared/severity.js";
 import { z } from "zod";
 import { validateBody } from "./validateBody.js";
+import { createRule, deleteRule, getRule, listRules, updateRule } from "../core/monitor/rules.js";
+import {
+  REVIEW_QUEUE_PENDING_CAP,
+  deleteReviewItem,
+  labelReviewItem,
+  listReviewQueue,
+  queueTraceForReview,
+} from "../core/monitor/reviewQueue.js";
 import { validateSampleRateParam } from "../core/shared/sampleRate.js";
 
 // Mounted at /api/v1/agent-monitoring - the paths AgentX-web-front's dashboard actually calls
@@ -134,6 +142,174 @@ agentMonitoringDashboardRouter.use((req: Request, res: Response, next) => {
   next();
 });
 
+
+// ---------------------------------------------------------------------------
+// Automation rules (core/monitor/rules.ts): filter + sample + action. Rules ROUTE traffic (into
+// the review queue, a dataset, or a webhook); scorers SCORE it. Keeping the two separate is why
+// enabling a rule can never change what a judge costs.
+// ---------------------------------------------------------------------------
+const ruleFilterSchema = z
+  .object({
+    scopeMode: z.enum(["all", "selected"]).optional(),
+    agentIds: z.array(z.string()).optional(),
+    model: z.string().optional(),
+    status: z.enum(["any", "error"]).optional(),
+    contains: z.string().optional(),
+  })
+  .strip();
+
+const ruleActionConfigSchema = z.object({ datasetId: z.string().optional(), url: z.string().url().optional() }).strip();
+
+const createRuleSchema = z
+  .object({
+    name: z.string().min(1),
+    enabled: z.boolean().optional(),
+    filter: ruleFilterSchema.optional(),
+    sampleRate: z.number().min(0).max(1).optional(),
+    action: z.enum(["review", "dataset", "webhook"]),
+    actionConfig: ruleActionConfigSchema.optional(),
+  })
+  .strip();
+
+const updateRuleSchema = createRuleSchema.partial().strip();
+
+// An action whose config is missing is a rule that would silently do nothing every time it
+// matches - refused at the door instead.
+function ruleConfigError(action: string | undefined, config: { datasetId?: string; url?: string } | undefined) {
+  if (action === "dataset" && !config?.datasetId) return "A dataset rule needs actionConfig.datasetId";
+  if (action === "webhook" && !config?.url) return "A webhook rule needs actionConfig.url";
+  return null;
+}
+
+agentMonitoringDashboardRouter.get("/rules", async (req: Request, res: Response) => {
+  res.status(200).json({ rules: await listRules(scopedDb(req)) });
+});
+
+agentMonitoringDashboardRouter.post("/rules", validateBody(createRuleSchema), async (req: Request, res: Response) => {
+  const body = req.body as z.infer<typeof createRuleSchema>;
+  const configError = ruleConfigError(body.action, body.actionConfig);
+  if (configError) {
+    res.status(400).json({ error: configError });
+    return;
+  }
+  res.status(201).json({ rule: await createRule(scopedDb(req), body) });
+});
+
+agentMonitoringDashboardRouter.put("/rules/:id", validateBody(updateRuleSchema), async (req: Request, res: Response) => {
+  const body = req.body as z.infer<typeof updateRuleSchema>;
+  const existing = await getRule(scopedDb(req), req.params.id!);
+  if (!existing) {
+    res.status(404).json({ error: "Rule not found" });
+    return;
+  }
+  const configError = ruleConfigError(
+    body.action ?? existing.action,
+    body.actionConfig ?? existing.actionConfig
+  );
+  if (configError) {
+    res.status(400).json({ error: configError });
+    return;
+  }
+  res.status(200).json({ rule: await updateRule(scopedDb(req), req.params.id!, body) });
+});
+
+agentMonitoringDashboardRouter.delete("/rules/:id", async (req: Request, res: Response) => {
+  const deleted = await deleteRule(scopedDb(req), req.params.id!);
+  if (!deleted) {
+    res.status(404).json({ error: "Rule not found" });
+    return;
+  }
+  res.status(204).end();
+});
+
+// ---------------------------------------------------------------------------
+// Human-review queue (core/monitor/reviewQueue.ts): traces that raised no signal but still want a
+// human verdict - sent by a person, or sampled by an automation rule. Signals reach Review on
+// their own; these rows are how ordinary traffic gets labeled, and a label with a judge score
+// beside it is a calibration pair.
+// ---------------------------------------------------------------------------
+agentMonitoringDashboardRouter.get("/review-queue", async (req: Request, res: Response) => {
+  const { status, source, limit } = req.query;
+  const result = await listReviewQueue(
+    scopedDb(req),
+    {
+      status: typeof status === "string" ? status : undefined,
+      source: typeof source === "string" ? source : undefined,
+    },
+    limit ? Math.min(Number(limit) || 100, 200) : 100
+  );
+  res.status(200).json(result);
+});
+
+const queueForReviewSchema = z
+  .object({
+    traceId: z.string().min(1),
+    source: z.enum(["manual", "rule", "signal"]).optional(),
+    note: z.string().optional(),
+  })
+  .strip();
+
+agentMonitoringDashboardRouter.post(
+  "/review-queue",
+  validateBody(queueForReviewSchema),
+  async (req: Request, res: Response) => {
+    const body = req.body as z.infer<typeof queueForReviewSchema>;
+    const result = await queueTraceForReview(scopedDb(req), {
+      traceId: body.traceId,
+      source: body.source ?? "manual",
+      note: body.note,
+    });
+    if (!result.ok) {
+      // Each refusal is a distinct, actionable condition - never a silent success.
+      const status = result.reason === "trace_not_found" ? 404 : result.reason === "already_queued" ? 409 : 429;
+      const error =
+        result.reason === "trace_not_found"
+          ? "Trace not found"
+          : result.reason === "already_queued"
+            ? "That trace is already waiting for a verdict in the review queue"
+            : `Review queue is full (${result.pending} pending, cap ${REVIEW_QUEUE_PENDING_CAP}) - label or dismiss some items first`;
+      res.status(status).json({ error, reason: result.reason });
+      return;
+    }
+    res.status(201).json({ item: result.item });
+  }
+);
+
+const labelReviewSchema = z
+  .object({
+    label: z.enum(["good", "bad"]).optional(),
+    correctedScore: z.number().min(0).max(10).nullable().optional(),
+    note: z.string().optional(),
+    status: z.enum(["pending", "labeled", "skipped"]).optional(),
+  })
+  .strip();
+
+agentMonitoringDashboardRouter.patch(
+  "/review-queue/:id",
+  validateBody(labelReviewSchema),
+  async (req: Request, res: Response) => {
+    const body = req.body as z.infer<typeof labelReviewSchema>;
+    const item = await labelReviewItem(scopedDb(req), req.params.id!, {
+      ...body,
+      // Auth mode records who labeled it; disabled mode leaves it null rather than inventing a user.
+      reviewedBy: (req as Request & { user?: { id?: string } }).user?.id ?? null,
+    });
+    if (!item) {
+      res.status(404).json({ error: "Review item not found" });
+      return;
+    }
+    res.status(200).json({ item });
+  }
+);
+
+agentMonitoringDashboardRouter.delete("/review-queue/:id", async (req: Request, res: Response) => {
+  const deleted = await deleteReviewItem(scopedDb(req), req.params.id!);
+  if (!deleted) {
+    res.status(404).json({ error: "Review item not found" });
+    return;
+  }
+  res.status(204).end();
+});
 
 agentMonitoringDashboardRouter.get("/signals", async (req: Request, res: Response) => {
   const { severity, status, agentId, polarity, limit } = req.query;

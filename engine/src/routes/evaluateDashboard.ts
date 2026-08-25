@@ -18,6 +18,7 @@ import {
   updateDataset,
   extractSimilarityConfig,
   extractCodeScorers,
+  listDatasetActivity,
   type SimilarityConfig,
 } from "../core/evaluate/datasets.js";
 import type { CodeScorerConfig } from "../core/evaluate/codeScorer.js";
@@ -97,6 +98,16 @@ import {
   getEvaluationAnalysisRow,
 } from "../core/evaluate/analysis.js";
 import type { MonitoringWindow } from "../core/monitor/events.js";
+import { getPairwiseBatch, listPairwiseBatches, runPairwise } from "../core/evaluate/pairwise.js";
+import { z } from "zod";
+import {
+  createPlaygroundProfile,
+  deletePlaygroundProfile,
+  getPlaygroundProfile,
+  listPlaygroundProfiles,
+  updatePlaygroundProfile,
+} from "../core/evaluate/playgroundProfiles.js";
+import { validateBody } from "./validateBody.js";
 
 // Same convention as agentMonitoringDashboard.ts's parseWindow - not shared across route files,
 // each route file is self-contained.
@@ -193,14 +204,22 @@ async function getMergedEvaluationSettings(db: Db, id: string) {
 }
 
 async function listMergedEvaluationSettings(db: Db) {
-  const datasetWires = await listDatasets(db);
+  // Activity is read once for the whole list, not per dataset - see listDatasetActivity.
+  const [datasetWires, activity] = await Promise.all([listDatasets(db), listDatasetActivity(db)]);
   const merged = await Promise.all(
     datasetWires.map(async d => {
       const settingsRow = await getEvaluationSettingsRow(db, d._id);
+      const own = activity.get(d._id);
       return {
         ...d,
         judgePrompt: settingsRow?.judgePrompt ?? undefined,
         judgeModel: settingsRow?.judgeModel ?? undefined,
+        // A dataset always has a v0 version row from creation, so the fallback only fires for
+        // rows written before version seeding existed.
+        updatedAt: own?.lastEditedAt ?? d.createdAt,
+        // null means "never run" and is shown as exactly that. It is never inferred from an
+        // absent value elsewhere.
+        lastRun: own?.lastRun ?? null,
         creator: LOCAL_USER,
       };
     })
@@ -377,6 +396,137 @@ evaluateDashboardRouter.get("/runs/compare", async (req: Request, res: Response)
     return;
   }
   res.status(200).json(result);
+});
+
+// Saved Playground workbenches (core/evaluate/playgroundProfiles.ts). The whole setup, not just
+// the prompt: messages, tool/MCP rows, models, scorers and test input.
+//
+// The config is validated but permissive at the leaves (.passthrough on a tool, free-form model
+// settings) - the Playground adds fields faster than this route should care about, and rejecting
+// an unknown one would break a newer dashboard against an older engine. What is NOT permissive:
+// mcpSessionId is stripped server-side before storage, so a live OAuth handle cannot be persisted
+// into a row that gets listed, exported and restored.
+const profileToolSchema = z
+  .object({
+    name: z.string().max(200),
+    description: z.string().max(4000).optional(),
+    parametersText: z.string().max(100_000).optional(),
+    endpointUrl: z.string().max(2000).optional(),
+    mcpServer: z.string().max(2000).optional(),
+  })
+  .passthrough();
+
+const profileConfigSchema = z.object({
+  messages: z.array(z.object({ role: z.string().max(50), content: z.string().max(500_000) })).max(200),
+  tools: z.array(profileToolSchema).max(100),
+  models: z.object({
+    ids: z.array(z.string().max(200)).max(50),
+    settings: z.record(z.object({ maxTokens: z.string().optional(), temperature: z.string().optional() })).optional(),
+  }),
+  scorers: z.object({
+    evaluationSettingsId: z.string().max(200).nullable().optional(),
+    patternIds: z.array(z.string().max(200)).max(200),
+    onlineEvaluatorIds: z.array(z.string().max(200)).max(200),
+  }),
+  testInput: z.object({
+    mode: z.enum(["dataset", "query"]),
+    datasetId: z.string().max(200).nullable().optional(),
+    questionIndexes: z.array(z.number().int().min(0)).max(1000),
+    query: z.string().max(100_000).optional(),
+  }),
+});
+
+const createProfileSchema = z
+  .object({
+    name: z.string().min(1).max(200),
+    description: z.string().max(2000).optional(),
+    promptId: z.string().max(200).nullable().optional(),
+    config: profileConfigSchema,
+  })
+  .strip();
+
+const updateProfileSchema = createProfileSchema.partial().strip();
+
+evaluateDashboardRouter.get("/playground/profiles", async (req: Request, res: Response) => {
+  res.status(200).json({ profiles: await listPlaygroundProfiles(scopedDb(req)) });
+});
+
+evaluateDashboardRouter.get("/playground/profiles/:id", async (req: Request, res: Response) => {
+  const profile = await getPlaygroundProfile(scopedDb(req), req.params.id!);
+  if (!profile) {
+    res.status(404).json({ error: "Profile not found" });
+    return;
+  }
+  res.status(200).json({ profile });
+});
+
+evaluateDashboardRouter.post(
+  "/playground/profiles",
+  validateBody(createProfileSchema),
+  async (req: Request, res: Response) => {
+    res.status(201).json({ profile: await createPlaygroundProfile(scopedDb(req), req.body) });
+  }
+);
+
+evaluateDashboardRouter.put(
+  "/playground/profiles/:id",
+  validateBody(updateProfileSchema),
+  async (req: Request, res: Response) => {
+    const profile = await updatePlaygroundProfile(scopedDb(req), req.params.id!, req.body);
+    if (!profile) {
+      res.status(404).json({ error: "Profile not found" });
+      return;
+    }
+    res.status(200).json({ profile });
+  }
+);
+
+evaluateDashboardRouter.delete("/playground/profiles/:id", async (req: Request, res: Response) => {
+  const deleted = await deletePlaygroundProfile(scopedDb(req), req.params.id!);
+  res.status(deleted ? 204 : 404).json(deleted ? undefined : { error: "Profile not found" });
+});
+
+// Head-to-head judging (core/evaluate/pairwise.ts): "which run answered this question better",
+// rather than two absolute scores that have to be trusted to the first decimal. Synchronous
+// because a batch is capped at MAX_PAIRWISE_CASES judge calls and the caller wants the verdict,
+// not a job id.
+const pairwiseSchema = z
+  .object({
+    runAId: z.string().min(1),
+    runBId: z.string().min(1),
+    criteria: z.string().max(4000).optional(),
+    judgeModel: z.string().max(200).optional(),
+    // Judge every pair twice with the sides swapped. Doubles the cost, and buys the only real
+    // defense against position bias - see the module comment.
+    bothOrders: z.boolean().optional(),
+  })
+  .strip();
+
+evaluateDashboardRouter.post("/runs/pairwise", validateBody(pairwiseSchema), async (req: Request, res: Response) => {
+  const result = await runPairwise(scopedDb(req), req.body);
+  if ("error" in result) {
+    res.status(result.error === "Run not found" ? 404 : 400).json(result);
+    return;
+  }
+  res.status(201).json({ comparison: result });
+});
+
+evaluateDashboardRouter.get("/runs/pairwise", async (req: Request, res: Response) => {
+  const { runAId, runBId } = req.query;
+  const comparisons = await listPairwiseBatches(scopedDb(req), {
+    ...(typeof runAId === "string" && runAId ? { runAId } : {}),
+    ...(typeof runBId === "string" && runBId ? { runBId } : {}),
+  });
+  res.status(200).json({ comparisons });
+});
+
+evaluateDashboardRouter.get("/runs/pairwise/:batchId", async (req: Request, res: Response) => {
+  const comparison = await getPairwiseBatch(scopedDb(req), req.params.batchId!);
+  if (!comparison) {
+    res.status(404).json({ error: "Comparison not found" });
+    return;
+  }
+  res.status(200).json({ comparison });
 });
 
 // Agent Connectors (core/evaluate/agentConnectors.ts) - "how to invoke my deployed agent," a

@@ -1019,3 +1019,112 @@ export type SqliteSchema = {
   evaluationAnalyses: typeof evaluationAnalyses;
   appSettings: typeof appSettings;
 };
+
+// Human-review queue for traces that did NOT raise a signal - the "annotation queue" half of
+// review. Signals arrive here implicitly (Review's signal stream); rows in THIS table are traces
+// a human asked for (source "manual") or an automation rule sampled (source "rule"), so a
+// reviewer can label ordinary traffic instead of only what fired. A label is ground truth:
+// core/monitor/outcomeCalibration.ts reads it next to the judge's own score, which is how
+// sampled labels retune judges even when nothing was flagged.
+export const reviewQueueItems = sqliteTable("review_queue_items", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  traceId: text("trace_id").notNull(),
+  sessionId: text("session_id"),
+  // "manual" = a person sent this trace over; "rule" = an automation rule sampled it;
+  // "signal" is reserved for a future signal->queue bridge (Review reads signals directly today).
+  source: text("source").notNull(),
+  status: text("status").notNull().default("pending"),
+  // The human verdict: "good" | "bad". Null while pending.
+  label: text("label"),
+  // Optional numeric correction, offered only when a judge score exists to correct - this is the
+  // pair calibration consumes (judgeScoreAtQueue vs correctedScore).
+  correctedScore: real("corrected_score"),
+  // The judge's own rating for this trace at queue time (latest online-eval event), if any.
+  judgeScoreAtQueue: real("judge_score_at_queue"),
+  note: text("note"),
+  reviewedBy: text("reviewed_by"),
+  reviewedAt: integer("reviewed_at", { mode: "timestamp_ms" }),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+// Automation rules: filter + sample + action, evaluated on every ingested root trace
+// (core/monitor/rules.ts). The vocabulary is deliberately distinct from scorers - a SCORER scores
+// traffic (and owns its own sampling), a RULE routes traffic somewhere: into the human-review
+// queue, into a dataset, or out to a webhook. Keeping them separate is why enabling a rule can
+// never change what a judge costs or how it scores.
+export const monitorRules = sqliteTable("monitor_rules", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  name: text("name").notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  // { scopeMode: "all"|"selected", agentIds: string[], model?: string, status?: "any"|"error",
+  //   contains?: string } - a few typed fields on purpose, not a filter expression language.
+  filter: text("filter", { mode: "json" }),
+  sampleRate: real("sample_rate").notNull().default(1),
+  // "review" | "dataset" | "webhook"
+  action: text("action").notNull(),
+  // { datasetId } for "dataset", { url } for "webhook", {} for "review".
+  actionConfig: text("action_config", { mode: "json" }),
+  // Honest activity reporting: a rule that has never fired looks different from one that fires
+  // constantly, and the UI shows both rather than implying every rule is working.
+  firedCount: integer("fired_count").notNull().default(0),
+  lastFiredAt: integer("last_fired_at", { mode: "timestamp_ms" }),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+// Pairwise (head-to-head) judging: instead of asking "score this answer 0-10", ask "which of these
+// two answers is better for this question". Absolute scores drift between judge versions and
+// bunch up around 7-8; a preference between two concrete answers is the comparison a human would
+// actually make, and it is what teams use to decide whether a change shipped an improvement.
+//
+// Position bias is the whole methodological risk here: judges favor whichever answer they read
+// first. Every row therefore records which run was presented first (presentedFirst), and a
+// bothOrders comparison judges the same pair twice with the sides swapped - if the winner flips,
+// the row is recorded as a tie caused by position bias (flipped=true) rather than a verdict.
+export const pairwiseComparisons = sqliteTable("pairwise_comparisons", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  // Groups every case row of one head-to-head into a single comparison.
+  batchId: text("batch_id").notNull(),
+  runAId: text("run_a_id").notNull(),
+  runBId: text("run_b_id").notNull(),
+  questionIndex: integer("question_index"),
+  query: text("query"),
+  // "a" | "b" | "tie"
+  winner: text("winner").notNull(),
+  // "a" | "b" - which run's answer the judge read first in the deciding pass.
+  presentedFirst: text("presented_first").notNull(),
+  // Whether this batch judged each pair twice with the sides swapped.
+  bothOrders: integer("both_orders", { mode: "boolean" }).notNull().default(false),
+  // True when a bothOrders pass produced opposite winners: the verdict is the position, not the
+  // answer, so it is scored as a tie and surfaced as the batch's flip rate.
+  flipped: integer("flipped", { mode: "boolean" }).notNull().default(false),
+  justification: text("justification"),
+  judgeModel: text("judge_model"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+// A saved Playground workbench: the whole setup a person had configured - system messages, tool
+// and MCP rows, model selection, scorers, and test input - so it can be reopened later or handed
+// to a teammate. "Save as prompt" only ever captured the prompt text, which meant the tools
+// someone had just wired up were gone on reload.
+//
+// The workbench itself lives in one `config` JSON blob rather than a column per field, the same
+// posture playground_runs takes with its snapshot: the Playground grows fields regularly and the
+// engine has no reason to understand each one. What the engine DOES enforce is the shape (zod, at
+// the route) and one exclusion - an MCP OAuth session handle is never stored here, see
+// core/evaluate/playgroundProfiles.ts.
+export const playgroundProfiles = sqliteTable("playground_profiles", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  name: text("name").notNull(),
+  description: text("description"),
+  // Which registry prompt (prompts.id) the messages came from, if any - kept as its own column
+  // because a profile pointing at a deleted prompt is worth being able to find.
+  promptId: text("prompt_id"),
+  // { messages, tools, models, scorers, testInput } - see PlaygroundProfileConfig.
+  config: text("config", { mode: "json" }).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});

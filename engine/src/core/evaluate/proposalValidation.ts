@@ -5,6 +5,7 @@ import { getPromptRow, getPromptVersionRow } from "./prompts.js";
 import { getToolSchemaRow, getToolSchemaVersionRow, getToolFailureExamples } from "./toolSchemas.js";
 import { callModelWithTools, scoreAgainstCriteria, DEFAULT_JUDGE_PROMPT, DEFAULT_JUDGE_MODEL, type ToolDefinition } from "./judge.js";
 import { compileUserRegex } from "../monitor/regexSafety.js";
+import { mapWithConcurrency } from "../shared/concurrency.js";
 
 // Propose -> VALIDATE -> publish: runs a proposal's candidate against the same golden dataset the
 // current version would be graded on, so the human approving a rewrite approves a measured claim
@@ -90,19 +91,6 @@ function pickCases(cases: CaseTurns[], maxCases: number): CaseTurns[] {
   const withExpected = cases.filter(c => c.turns.some(t => t.expected));
   const without = cases.filter(c => !c.turns.some(t => t.expected));
   return [...withExpected, ...without].slice(0, maxCases);
-}
-
-async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) {
-      const index = next++;
-      results[index] = await fn(items[index]!, index);
-    }
-  });
-  await Promise.all(workers);
-  return results;
 }
 
 type JudgeConfig = {

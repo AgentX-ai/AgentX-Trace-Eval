@@ -575,6 +575,64 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       project_id TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS review_queue_items (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      trace_id TEXT NOT NULL,
+      session_id TEXT,
+      source TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      label TEXT,
+      corrected_score REAL,
+      judge_score_at_queue REAL,
+      note TEXT,
+      reviewed_by TEXT,
+      reviewed_at INTEGER,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS monitor_rules (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      name TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      filter TEXT,
+      sample_rate REAL NOT NULL DEFAULT 1,
+      action TEXT NOT NULL,
+      action_config TEXT,
+      fired_count INTEGER NOT NULL DEFAULT 0,
+      last_fired_at INTEGER,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS playground_profiles (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      name TEXT NOT NULL,
+      description TEXT,
+      prompt_id TEXT,
+      config TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS pairwise_comparisons (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      batch_id TEXT NOT NULL,
+      run_a_id TEXT NOT NULL,
+      run_b_id TEXT NOT NULL,
+      question_index INTEGER,
+      query TEXT,
+      winner TEXT NOT NULL,
+      presented_first TEXT NOT NULL,
+      both_orders INTEGER NOT NULL DEFAULT 0,
+      flipped INTEGER NOT NULL DEFAULT 0,
+      justification TEXT,
+      judge_model TEXT,
+      created_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS monitor_events (
       id TEXT PRIMARY KEY,
       signal_id TEXT,
@@ -1689,6 +1747,64 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL,
       project_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS review_queue_items (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      trace_id TEXT NOT NULL,
+      session_id TEXT,
+      source TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      label TEXT,
+      corrected_score DOUBLE PRECISION,
+      judge_score_at_queue DOUBLE PRECISION,
+      note TEXT,
+      reviewed_by TEXT,
+      reviewed_at TIMESTAMP,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS monitor_rules (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      name TEXT NOT NULL,
+      enabled BOOLEAN NOT NULL DEFAULT true,
+      filter JSONB,
+      sample_rate DOUBLE PRECISION NOT NULL DEFAULT 1,
+      action TEXT NOT NULL,
+      action_config JSONB,
+      fired_count INTEGER NOT NULL DEFAULT 0,
+      last_fired_at TIMESTAMP,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS playground_profiles (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      name TEXT NOT NULL,
+      description TEXT,
+      prompt_id TEXT,
+      config JSONB NOT NULL,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS pairwise_comparisons (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      batch_id TEXT NOT NULL,
+      run_a_id TEXT NOT NULL,
+      run_b_id TEXT NOT NULL,
+      question_index INTEGER,
+      query TEXT,
+      winner TEXT NOT NULL,
+      presented_first TEXT NOT NULL,
+      both_orders BOOLEAN NOT NULL DEFAULT false,
+      flipped BOOLEAN NOT NULL DEFAULT false,
+      justification TEXT,
+      judge_model TEXT,
+      created_at TIMESTAMP NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS monitor_events (

@@ -677,3 +677,65 @@ export type PgSchema = {
   evaluationAnalyses: typeof evaluationAnalyses;
   appSettings: typeof appSettings;
 };
+
+// See schema.sqlite.ts's reviewQueueItems for the full comment.
+export const reviewQueueItems = pgTable("review_queue_items", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  traceId: text("trace_id").notNull(),
+  sessionId: text("session_id"),
+  source: text("source").notNull(),
+  status: text("status").notNull().default("pending"),
+  label: text("label"),
+  correctedScore: doublePrecision("corrected_score"),
+  judgeScoreAtQueue: doublePrecision("judge_score_at_queue"),
+  note: text("note"),
+  reviewedBy: text("reviewed_by"),
+  reviewedAt: timestamp("reviewed_at", { mode: "date" }),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+});
+
+// See schema.sqlite.ts's monitorRules for the full comment.
+export const monitorRules = pgTable("monitor_rules", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  name: text("name").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  filter: jsonb("filter"),
+  sampleRate: doublePrecision("sample_rate").notNull().default(1),
+  action: text("action").notNull(),
+  actionConfig: jsonb("action_config"),
+  firedCount: integer("fired_count").notNull().default(0),
+  lastFiredAt: timestamp("last_fired_at", { mode: "date" }),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+});
+
+// See schema.sqlite.ts's pairwiseComparisons for the full comment.
+export const pairwiseComparisons = pgTable("pairwise_comparisons", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  batchId: text("batch_id").notNull(),
+  runAId: text("run_a_id").notNull(),
+  runBId: text("run_b_id").notNull(),
+  questionIndex: integer("question_index"),
+  query: text("query"),
+  winner: text("winner").notNull(),
+  presentedFirst: text("presented_first").notNull(),
+  bothOrders: boolean("both_orders").notNull().default(false),
+  flipped: boolean("flipped").notNull().default(false),
+  justification: text("justification"),
+  judgeModel: text("judge_model"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+});
+
+// See schema.sqlite.ts's playgroundProfiles for the full comment.
+export const playgroundProfiles = pgTable("playground_profiles", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  name: text("name").notNull(),
+  description: text("description"),
+  promptId: text("prompt_id"),
+  config: jsonb("config").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});

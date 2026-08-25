@@ -156,6 +156,95 @@ export const signalSchema = z
 
 export const signalsResponseSchema = z.object({ signals: z.array(signalSchema) }).strict();
 
+// ---- GET /agent-monitoring/review-queue -------------------------------------------------------
+
+export const reviewQueueItemSchema = z
+  .object({
+    _id: z.string(),
+    traceId: z.string(),
+    sessionId: z.string().optional(),
+    source: z.enum(["manual", "rule", "signal"]),
+    status: z.enum(["pending", "labeled", "skipped"]),
+    label: z.enum(["good", "bad"]).optional(),
+    correctedScore: z.number().nullable(),
+    judgeScoreAtQueue: z.number().nullable(),
+    note: z.string().optional(),
+    reviewedBy: z.string().optional(),
+    reviewedAt: isoDate.nullable(),
+    createdAt: isoDate,
+    trace: z
+      .object({
+        agentName: z.string().optional(),
+        query: z.string(),
+        responsePreview: z.string(),
+        error: z.string().optional(),
+        model: z.string().optional(),
+        latencyMs: z.number().nullable(),
+        seenAt: isoDate.nullable(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+
+// ---- GET /agent-monitoring/rules --------------------------------------------------------------
+
+export const ruleSchema = z
+  .object({
+    _id: z.string(),
+    name: z.string(),
+    enabled: z.boolean(),
+    filter: z
+      .object({
+        scopeMode: z.enum(["all", "selected"]).optional(),
+        agentIds: z.array(z.string()).optional(),
+        model: z.string().optional(),
+        status: z.enum(["any", "error"]).optional(),
+        contains: z.string().optional(),
+      })
+      .strict(),
+    sampleRate: z.number(),
+    action: z.enum(["review", "dataset", "webhook"]),
+    actionConfig: z.object({ datasetId: z.string().optional(), url: z.string().optional() }).strict(),
+    firedCount: z.number(),
+    lastFiredAt: isoDate.nullable(),
+    createdAt: isoDate,
+  })
+  .strict();
+
+export const rulesResponseSchema = z.object({ rules: z.array(ruleSchema) }).strict();
+
+export const reviewQueueResponseSchema = z
+  .object({ items: z.array(reviewQueueItemSchema), pending: z.number(), cap: z.number() })
+  .strict();
+
+// ---- GET /evaluate/runs/pairwise --------------------------------------------------------------
+
+export const pairwiseSummarySchema = z
+  .object({
+    total: z.number(),
+    aWins: z.number(),
+    bWins: z.number(),
+    ties: z.number(),
+    winner: z.enum(["a", "b", "tie"]),
+    // null unless the batch judged both orders - there is no flip rate to report otherwise.
+    flipRate: z.number().nullable(),
+  })
+  .strict();
+
+export const pairwiseBatchSummarySchema = z
+  .object({
+    batchId: z.string(),
+    runAId: z.string(),
+    runBId: z.string(),
+    judgeModel: z.string().nullable(),
+    summary: pairwiseSummarySchema,
+    createdAt: isoDate,
+  })
+  .strict();
+
+export const pairwiseListResponseSchema = z.object({ comparisons: z.array(pairwiseBatchSummarySchema) }).strict();
+
 // ---- GET /agent-monitoring/judge-scorers -----------------------------------------------------
 
 export const judgeScorerSchema = z
@@ -251,6 +340,27 @@ export const WIRE_CONTRACT = [
     summary: "Monitoring signals",
     response: signalsResponseSchema,
     name: "SignalsResponse",
+  },
+  {
+    method: "get" as const,
+    path: "/agent-monitoring/rules",
+    summary: "Automation rules: filter + sample + route",
+    response: rulesResponseSchema,
+    name: "RulesResponse",
+  },
+  {
+    method: "get" as const,
+    path: "/evaluate/runs/pairwise",
+    summary: "Head-to-head comparisons between two evaluation runs",
+    response: pairwiseListResponseSchema,
+    name: "PairwiseListResponse",
+  },
+  {
+    method: "get" as const,
+    path: "/agent-monitoring/review-queue",
+    summary: "Human-review queue for traces that raised no signal",
+    response: reviewQueueResponseSchema,
+    name: "ReviewQueueResponse",
   },
   {
     method: "get" as const,
