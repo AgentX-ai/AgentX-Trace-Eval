@@ -677,3 +677,20 @@ export type PgSchema = {
   evaluationAnalyses: typeof evaluationAnalyses;
   appSettings: typeof appSettings;
 };
+
+// See schema.sqlite.ts's reviewQueueItems for the full comment.
+export const reviewQueueItems = pgTable("review_queue_items", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  traceId: text("trace_id").notNull(),
+  sessionId: text("session_id"),
+  source: text("source").notNull(),
+  status: text("status").notNull().default("pending"),
+  label: text("label"),
+  correctedScore: doublePrecision("corrected_score"),
+  judgeScoreAtQueue: doublePrecision("judge_score_at_queue"),
+  note: text("note"),
+  reviewedBy: text("reviewed_by"),
+  reviewedAt: timestamp("reviewed_at", { mode: "date" }),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+});

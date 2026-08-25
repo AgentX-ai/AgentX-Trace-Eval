@@ -1019,3 +1019,31 @@ export type SqliteSchema = {
   evaluationAnalyses: typeof evaluationAnalyses;
   appSettings: typeof appSettings;
 };
+
+// Human-review queue for traces that did NOT raise a signal - the "annotation queue" half of
+// review. Signals arrive here implicitly (Review's signal stream); rows in THIS table are traces
+// a human asked for (source "manual") or an automation rule sampled (source "rule"), so a
+// reviewer can label ordinary traffic instead of only what fired. A label is ground truth:
+// core/monitor/outcomeCalibration.ts reads it next to the judge's own score, which is how
+// sampled labels retune judges even when nothing was flagged.
+export const reviewQueueItems = sqliteTable("review_queue_items", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  traceId: text("trace_id").notNull(),
+  sessionId: text("session_id"),
+  // "manual" = a person sent this trace over; "rule" = an automation rule sampled it;
+  // "signal" is reserved for a future signal->queue bridge (Review reads signals directly today).
+  source: text("source").notNull(),
+  status: text("status").notNull().default("pending"),
+  // The human verdict: "good" | "bad". Null while pending.
+  label: text("label"),
+  // Optional numeric correction, offered only when a judge score exists to correct - this is the
+  // pair calibration consumes (judgeScoreAtQueue vs correctedScore).
+  correctedScore: real("corrected_score"),
+  // The judge's own rating for this trace at queue time (latest online-eval event), if any.
+  judgeScoreAtQueue: real("judge_score_at_queue"),
+  note: text("note"),
+  reviewedBy: text("reviewed_by"),
+  reviewedAt: integer("reviewed_at", { mode: "timestamp_ms" }),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});

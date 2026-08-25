@@ -156,6 +156,41 @@ export const signalSchema = z
 
 export const signalsResponseSchema = z.object({ signals: z.array(signalSchema) }).strict();
 
+// ---- GET /agent-monitoring/review-queue -------------------------------------------------------
+
+export const reviewQueueItemSchema = z
+  .object({
+    _id: z.string(),
+    traceId: z.string(),
+    sessionId: z.string().optional(),
+    source: z.enum(["manual", "rule", "signal"]),
+    status: z.enum(["pending", "labeled", "skipped"]),
+    label: z.enum(["good", "bad"]).optional(),
+    correctedScore: z.number().nullable(),
+    judgeScoreAtQueue: z.number().nullable(),
+    note: z.string().optional(),
+    reviewedBy: z.string().optional(),
+    reviewedAt: isoDate.nullable(),
+    createdAt: isoDate,
+    trace: z
+      .object({
+        agentName: z.string().optional(),
+        query: z.string(),
+        responsePreview: z.string(),
+        error: z.string().optional(),
+        model: z.string().optional(),
+        latencyMs: z.number().nullable(),
+        seenAt: isoDate.nullable(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+
+export const reviewQueueResponseSchema = z
+  .object({ items: z.array(reviewQueueItemSchema), pending: z.number(), cap: z.number() })
+  .strict();
+
 // ---- GET /agent-monitoring/judge-scorers -----------------------------------------------------
 
 export const judgeScorerSchema = z
@@ -251,6 +286,13 @@ export const WIRE_CONTRACT = [
     summary: "Monitoring signals",
     response: signalsResponseSchema,
     name: "SignalsResponse",
+  },
+  {
+    method: "get" as const,
+    path: "/agent-monitoring/review-queue",
+    summary: "Human-review queue for traces that raised no signal",
+    response: reviewQueueResponseSchema,
+    name: "ReviewQueueResponse",
   },
   {
     method: "get" as const,

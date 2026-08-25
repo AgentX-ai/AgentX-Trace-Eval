@@ -575,6 +575,22 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       project_id TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS review_queue_items (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      trace_id TEXT NOT NULL,
+      session_id TEXT,
+      source TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      label TEXT,
+      corrected_score REAL,
+      judge_score_at_queue REAL,
+      note TEXT,
+      reviewed_by TEXT,
+      reviewed_at INTEGER,
+      created_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS monitor_events (
       id TEXT PRIMARY KEY,
       signal_id TEXT,
@@ -1689,6 +1705,22 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL,
       project_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS review_queue_items (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      trace_id TEXT NOT NULL,
+      session_id TEXT,
+      source TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      label TEXT,
+      corrected_score DOUBLE PRECISION,
+      judge_score_at_queue DOUBLE PRECISION,
+      note TEXT,
+      reviewed_by TEXT,
+      reviewed_at TIMESTAMP,
+      created_at TIMESTAMP NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS monitor_events (

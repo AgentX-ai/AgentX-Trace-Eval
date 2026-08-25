@@ -15,6 +15,7 @@ export const EXPORT_ENTITIES = {
   traces: { table: "traces", sinceColumn: "createdAt" },
   signals: { table: "monitorSignals", sinceColumn: "lastSeenAt" },
   "signal-feedback": { table: "monitorSignalFeedback", sinceColumn: "createdAt" },
+  "review-queue": { table: "reviewQueueItems", sinceColumn: "createdAt" },
   events: { table: "monitorEvents", sinceColumn: "createdAt" },
   classifications: { table: "monitorClassifications", sinceColumn: "createdAt" },
   runs: { table: "evaluationRuns", sinceColumn: "createdAt" },
