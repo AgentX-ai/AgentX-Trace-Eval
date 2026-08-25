@@ -50,6 +50,22 @@ function listenWithRetry(app: Express, port: number, maxAttempts = 20, delayMs =
 }
 
 async function main() {
+  // Boot-window shutdown: the port starts answering (listenWithRetry below) BEFORE the real
+  // drain-and-flush handlers register at the end of main, and the per-project bootstraps in
+  // between can take real time (slower still under coverage instrumentation). A SIGTERM landing
+  // in that window - a container manager stopping a just-started engine, the test harness - used
+  // to take Node's default disposition: hard kill, exit 143, WAL unflushed. These early handlers
+  // close the DB and exit 0; the real handlers replace them once the server can drain properly.
+  const earlyShutdown = (signal: NodeJS.Signals) => {
+    logger.info(`${signal} received during boot, closing the database and exiting.`);
+    void Promise.resolve()
+      .then(() => closeDb())
+      .catch((err: unknown) => logger.error({ err }, "Error closing database during boot shutdown"))
+      .finally(() => process.exit(0));
+  };
+  process.on("SIGINT", earlyShutdown);
+  process.on("SIGTERM", earlyShutdown);
+
   // Awaited once here (picks better-sqlite3 vs bun:sqlite depending on runtime, see db.ts) so
   // every route handler can call the synchronous getDb() without needing to know that. Also runs
   // the one-time migration that creates the "Default" project (reusing config.json's pre-existing
@@ -250,6 +266,8 @@ async function main() {
     });
     server.closeIdleConnections();
   };
+  process.removeListener("SIGINT", earlyShutdown);
+  process.removeListener("SIGTERM", earlyShutdown);
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 }

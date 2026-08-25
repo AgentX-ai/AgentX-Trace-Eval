@@ -14,7 +14,8 @@
     "db:migrate": "tsx --env-file-if-exists=.env src/storage/migrate.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p .",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test:coverage": "c8 --temp-directory .c8-tmp --include 'src/**' --exclude 'src/test/**' --exclude '**/*.test.ts' -r text-summary --check-coverage --lines 40 --statements 40 --functions 25 --branches 50 vitest run"
   },
   "dependencies": {
     "@agentx/judge-core": "*",

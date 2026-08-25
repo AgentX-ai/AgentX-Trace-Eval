@@ -47,9 +47,13 @@ jobs:
         run: yarn workspace @agentx/judge-core test
 
       # The integration suites boot the real engine per file, so this outruns the job default.
-      - name: Test engine
-        run: yarn workspace @agentx/engine test
-        timeout-minutes: 15
+      # Coverage is a RATCHET, not a target: c8 merges the spawned engine processes' V8 coverage
+      # (they exit gracefully on SIGTERM, so it flushes) and the floors sit under the measured
+      # baseline (45% lines / 30% functions at introduction). Raise the floors when coverage
+      # rises; never lower them to make a PR pass.
+      - name: Test engine (with coverage ratchet)
+        run: yarn workspace @agentx/engine test:coverage
+        timeout-minutes: 20
 
   postgres:
     name: engine on Postgres
