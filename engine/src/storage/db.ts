@@ -329,6 +329,14 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
         .prepare("SELECT COUNT(*) AS n FROM pragma_table_info('evaluation_settings') WHERE name = 'seeded'")
         .all() as Array<{ n: number }>
     )[0]!.n > 0;
+  // Same pre-DDL posture for the sampling simplification: topics_sample_rate is backfilled from
+  // the legacy sampled-coverage rate exactly once, at the upgrade that introduces the column.
+  const topicsSampleRateColumnPreexists =
+    (
+      sqlite
+        .prepare("SELECT COUNT(*) AS n FROM pragma_table_info('projects') WHERE name = 'topics_sample_rate'")
+        .all() as Array<{ n: number }>
+    )[0]!.n > 0;
   // CREATE UNIQUE INDEX IF NOT EXISTS only checks the index *name* - on a pre-existing install
   // that already created these 3 with their old (pre-multi-project) column sets, the IF NOT
   // EXISTS in ensureProjectScopedUniqueIndexes (run at the end of this function) would otherwise
@@ -1028,6 +1036,9 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN builtin_key TEXT"],
     ["session_scores", "ALTER TABLE session_scores ADD COLUMN findings TEXT"],
     ["projects", "ALTER TABLE projects ADD COLUMN organization_id TEXT"],
+    // Sampling simplification: Topics gets its own rate; the legacy coverage_mode/sample_rate
+    // pair stays writable but unread (see schema.sqlite.ts's projects.coverageMode block).
+    ["projects", "ALTER TABLE projects ADD COLUMN topics_sample_rate REAL NOT NULL DEFAULT 1"],
     ["app_settings", "ALTER TABLE app_settings ADD COLUMN auth_secret TEXT"],
     ["app_settings", "ALTER TABLE app_settings ADD COLUMN metric_pack_seeded_at INTEGER"],
     ["app_settings", "ALTER TABLE app_settings ADD COLUMN metric_pack_version INTEGER"],
@@ -1052,6 +1063,14 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
   // exists (a user scorer that happens to reuse a seed name must not be reclassified later).
   if (!settingsSeededColumnPreexists) {
     sqlite.exec(`UPDATE evaluation_settings SET seeded = 1 WHERE name IN (${SEEDED_SETTINGS_BACKFILL_NAMES})`);
+  }
+
+  // One-shot sampling-simplification backfill: a project that had sampled coverage was paying
+  // for Topics at that rate, so the new Topics-owned rate inherits it. Projects on "all"
+  // coverage keep the default 1. Never reruns once the column exists - the user may have since
+  // set the Topics rate deliberately.
+  if (!topicsSampleRateColumnPreexists) {
+    sqlite.exec(`UPDATE projects SET topics_sample_rate = sample_rate WHERE coverage_mode = 'sampled'`);
   }
 
   ensureTraceSpanIdUnique(statement => sqlite.exec(statement));
@@ -1420,6 +1439,13 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     (
       await pool.query(
         "SELECT COUNT(*)::int AS n FROM information_schema.columns WHERE table_name = 'evaluation_settings' AND column_name = 'seeded'"
+      )
+    ).rows[0].n > 0;
+  // See bootstrapSqlite's identical block: one-shot topics_sample_rate backfill guard.
+  const topicsSampleRateColumnPreexists =
+    (
+      await pool.query(
+        "SELECT COUNT(*)::int AS n FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'topics_sample_rate'"
       )
     ).rows[0].n > 0;
   // See bootstrapSqlite's identical comment: CREATE UNIQUE INDEX IF NOT EXISTS only checks the
@@ -2066,6 +2092,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS gemini_api_key TEXT;
     ALTER TABLE outcome_reports ADD COLUMN IF NOT EXISTS is_negative BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS topics_enabled BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS topics_sample_rate DOUBLE PRECISION NOT NULL DEFAULT 1;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS coherence_sweep_enabled BOOLEAN NOT NULL DEFAULT true;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS disabled_builtin_patterns JSONB;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS enabled_builtin_patterns JSONB;
@@ -2104,6 +2131,11 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
   // One-shot `seeded` backfill - see bootstrapSqlite's identical block for the rationale.
   if (!settingsSeededColumnPreexists) {
     await pool.query(`UPDATE evaluation_settings SET seeded = TRUE WHERE name IN (${SEEDED_SETTINGS_BACKFILL_NAMES})`);
+  }
+
+  // One-shot sampling-simplification backfill - see bootstrapSqlite's identical block.
+  if (!topicsSampleRateColumnPreexists) {
+    await pool.query(`UPDATE projects SET topics_sample_rate = sample_rate WHERE coverage_mode = 'sampled'`);
   }
 
   await migrateOnlineEvaluatorsToConfigsPostgres(pool);

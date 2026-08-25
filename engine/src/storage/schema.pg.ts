@@ -13,6 +13,7 @@ export const projects = pgTable("projects", {
   retentionDays: integer("retention_days").notNull().default(30),
   latencyThresholdMs: integer("latency_threshold_ms").notNull().default(20000),
   topicsEnabled: boolean("topics_enabled").notNull().default(false),
+  topicsSampleRate: doublePrecision("topics_sample_rate").notNull().default(1),
   coherenceSweepEnabled: boolean("coherence_sweep_enabled").notNull().default(true),
   enabledBuiltinPatterns: jsonb("enabled_builtin_patterns"),
   organizationId: text("organization_id"),

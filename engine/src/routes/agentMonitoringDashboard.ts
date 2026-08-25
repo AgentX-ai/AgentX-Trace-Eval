@@ -1361,14 +1361,25 @@ agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: 
     retentionDays?: number;
     latencyThresholdMs?: number;
     topicsEnabled?: boolean;
+    topicsSampleRate?: number;
     coherenceSweepEnabled?: boolean;
     enabledBuiltinPatterns?: string[];
   } = {};
+  // coverageMode/sampleRate are LEGACY: stored for old clients, read by no monitoring consumer
+  // (see schema.sqlite.ts's projects.coverageMode block).
   if (typeof body.coverageMode === "string") patch.coverageMode = body.coverageMode;
   if (typeof body.sampleRate === "number") patch.sampleRate = body.sampleRate;
   if (typeof body.retentionDays === "number") patch.retentionDays = body.retentionDays;
   if (typeof body.latencyThresholdMs === "number") patch.latencyThresholdMs = body.latencyThresholdMs;
   if (typeof body.topicsEnabled === "boolean") patch.topicsEnabled = body.topicsEnabled;
+  if (body.topicsSampleRate !== undefined) {
+    const checked = validateSampleRateParam(body.topicsSampleRate);
+    if (!checked.ok) {
+      res.status(400).json({ error: `topicsSampleRate: ${checked.error}` });
+      return;
+    }
+    patch.topicsSampleRate = checked.sampleRate;
+  }
   if (typeof body.coherenceSweepEnabled === "boolean") patch.coherenceSweepEnabled = body.coherenceSweepEnabled;
   if (Array.isArray(body.enabledBuiltinPatterns)) {
     const keys = (body.enabledBuiltinPatterns as unknown[]).filter((k): k is string => typeof k === "string");

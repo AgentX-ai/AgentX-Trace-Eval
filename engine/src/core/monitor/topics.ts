@@ -131,7 +131,9 @@ export async function runClassification(
   if (!defaults.topicsEnabled) {
     return;
   }
-  if (!passesSampleRate(defaults.sampleRate)) {
+  // Topics' own rate (an LLM call per classified trace) - no longer piggybacks on the legacy
+  // coverage sample rate.
+  if (!passesSampleRate(defaults.topicsSampleRate)) {
     return;
   }
 

@@ -374,20 +374,19 @@ export async function runMonitorCheck(
 ): Promise<void> {
   const agentId = ctx.agentId ?? null;
   const profile = agentId ? await getProfileRow(db, agentId) : null;
-  // sampleRate/retentionDays/latency threshold are project-level (core/project/projects.ts's
+  // retentionDays/latency threshold are project-level (core/project/projects.ts's
   // MonitoringDefaults) - a single request-scoped fetch, applied uniformly to every agent in this
   // project rather than each agent's own (now-inert) profile fields.
   const defaults = await getMonitoringDefaults(db);
   if (profile && !profile.enabled) {
     return;
   }
-  // Not gated on `profile` (it was, until this was fixed): monitoring is always-on per trace,
-  // while profile rows only exist for agents someone configured explicitly - so gating this
-  // project-level setting on one made it a silent no-op for a default install. topics.ts's
-  // runClassification always read it unconditionally; both consumers now agree.
-  if (!passesSampleRate(defaults.sampleRate)) {
-    return;
-  }
+  // No project-level sampling gate here (there was one, reading the legacy coverage
+  // sample_rate): detection is cheap text checks and runs on ALL ingested traffic - the vendor
+  // consensus (Langfuse/LangSmith/Braintrust) is that sampling belongs on the scorers that
+  // spend LLM money, and each pattern with semantic conditions still has its own sampleRate
+  // gate below. The Settings coverage knob was also a trap: "All traffic" mode never reset the
+  // stored rate, silently under-monitoring.
 
   const scoped = ctx.patternIds && ctx.patternIds.length > 0;
 
