@@ -1,6 +1,6 @@
 {
   "name": "@agentx/judge-core",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "LLM-as-judge prompt template + multi-provider (OpenAI/Anthropic) scoring call, shared between AgentX-web-api and AgentX-trace-eval's engine so the two don't maintain separate copies.",
   "license": "Apache-2.0",
   "type": "module",
