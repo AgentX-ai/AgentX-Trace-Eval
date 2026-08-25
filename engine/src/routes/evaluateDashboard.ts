@@ -18,6 +18,7 @@ import {
   updateDataset,
   extractSimilarityConfig,
   extractCodeScorers,
+  listDatasetActivity,
   type SimilarityConfig,
 } from "../core/evaluate/datasets.js";
 import type { CodeScorerConfig } from "../core/evaluate/codeScorer.js";
@@ -196,14 +197,22 @@ async function getMergedEvaluationSettings(db: Db, id: string) {
 }
 
 async function listMergedEvaluationSettings(db: Db) {
-  const datasetWires = await listDatasets(db);
+  // Activity is read once for the whole list, not per dataset - see listDatasetActivity.
+  const [datasetWires, activity] = await Promise.all([listDatasets(db), listDatasetActivity(db)]);
   const merged = await Promise.all(
     datasetWires.map(async d => {
       const settingsRow = await getEvaluationSettingsRow(db, d._id);
+      const own = activity.get(d._id);
       return {
         ...d,
         judgePrompt: settingsRow?.judgePrompt ?? undefined,
         judgeModel: settingsRow?.judgeModel ?? undefined,
+        // A dataset always has a v0 version row from creation, so the fallback only fires for
+        // rows written before version seeding existed.
+        updatedAt: own?.lastEditedAt ?? d.createdAt,
+        // null means "never run" and is shown as exactly that. It is never inferred from an
+        // absent value elsewhere.
+        lastRun: own?.lastRun ?? null,
         creator: LOCAL_USER,
       };
     })

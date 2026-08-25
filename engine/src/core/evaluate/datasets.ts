@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import type { CodeScorerConfig } from "./codeScorer.js";
 import { recordDatasetVersionIfChanged } from "./versions.js";
@@ -193,6 +193,119 @@ export async function getDataset(db: Db, id: string) {
     )[0] as DatasetRow | undefined;
   }
   return row ? toWire(row) : null;
+}
+
+// Activity for the datasets list: when each dataset was last edited, and the last eval run that
+// used it. Both are facts the list page needs and neither lives on the dataset row - the edit
+// timestamp is the newest dataset_versions entry (seeded at creation, so it is never empty), and
+// the run is the newest evaluation_runs row for that dataset.
+//
+// Two grouped reads for the whole page rather than one pair per dataset: a list of 20 datasets
+// would otherwise be 40 round trips. Raw fields go on the wire - which run, when, what it was
+// tagged, how it ended - and the UI composes the sentence; the engine does not decide phrasing.
+export type DatasetLastRun = {
+  runId: string;
+  version: string | null;
+  runSource: string | null;
+  status: string;
+  at: Date;
+};
+
+export type DatasetActivity = {
+  lastEditedAt: Date | null;
+  lastRun: DatasetLastRun | null;
+};
+
+export async function listDatasetActivity(db: Db): Promise<Map<string, DatasetActivity>> {
+  const versionCond = eq(db.schema.datasetVersions.projectId, db.projectId);
+  const runCond = eq(db.schema.evaluationRuns.projectId, db.projectId);
+
+  type VersionRow = { datasetId: string; createdAt: Date };
+  type RunRow = {
+    id: string;
+    datasetId: string;
+    version: string | null;
+    runSource: string | null;
+    status: string;
+    createdAt: Date;
+  };
+
+  const versionRows = (
+    db.kind === "sqlite"
+      ? db.db
+          .select({
+            datasetId: db.schema.datasetVersions.datasetId,
+            createdAt: db.schema.datasetVersions.createdAt,
+          })
+          .from(db.schema.datasetVersions)
+          .where(versionCond)
+          .orderBy(desc(db.schema.datasetVersions.createdAt))
+          .all()
+      : await db.db
+          .select({
+            datasetId: db.schema.datasetVersions.datasetId,
+            createdAt: db.schema.datasetVersions.createdAt,
+          })
+          .from(db.schema.datasetVersions)
+          .where(versionCond)
+          .orderBy(desc(db.schema.datasetVersions.createdAt))
+  ) as VersionRow[];
+
+  const runRows = (
+    db.kind === "sqlite"
+      ? db.db
+          .select({
+            id: db.schema.evaluationRuns.id,
+            datasetId: db.schema.evaluationRuns.datasetId,
+            version: db.schema.evaluationRuns.version,
+            runSource: db.schema.evaluationRuns.runSource,
+            status: db.schema.evaluationRuns.status,
+            createdAt: db.schema.evaluationRuns.createdAt,
+          })
+          .from(db.schema.evaluationRuns)
+          .where(runCond)
+          .orderBy(desc(db.schema.evaluationRuns.createdAt))
+          .all()
+      : await db.db
+          .select({
+            id: db.schema.evaluationRuns.id,
+            datasetId: db.schema.evaluationRuns.datasetId,
+            version: db.schema.evaluationRuns.version,
+            runSource: db.schema.evaluationRuns.runSource,
+            status: db.schema.evaluationRuns.status,
+            createdAt: db.schema.evaluationRuns.createdAt,
+          })
+          .from(db.schema.evaluationRuns)
+          .where(runCond)
+          .orderBy(desc(db.schema.evaluationRuns.createdAt))
+  ) as RunRow[];
+
+  const activity = new Map<string, DatasetActivity>();
+  const entry = (id: string) => {
+    const existing = activity.get(id);
+    if (existing) return existing;
+    const fresh: DatasetActivity = { lastEditedAt: null, lastRun: null };
+    activity.set(id, fresh);
+    return fresh;
+  };
+  // Rows arrive newest-first, so the first one seen per dataset is the answer.
+  for (const row of versionRows) {
+    const e = entry(row.datasetId);
+    if (!e.lastEditedAt) e.lastEditedAt = row.createdAt;
+  }
+  for (const row of runRows) {
+    const e = entry(row.datasetId);
+    if (!e.lastRun) {
+      e.lastRun = {
+        runId: row.id,
+        version: row.version,
+        runSource: row.runSource,
+        status: row.status,
+        at: row.createdAt,
+      };
+    }
+  }
+  return activity;
 }
 
 export async function listDatasets(db: Db) {
