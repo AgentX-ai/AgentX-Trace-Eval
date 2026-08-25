@@ -42,6 +42,7 @@ import {
   verificationRequired,
 } from "../auth/betterAuth.js";
 import { mailerConfigured } from "../auth/mailer.js";
+import { openapiRouter } from "./openapi.js";
 
 export type ApiV1Deps = {
   credentialLimit: RequestHandler;
@@ -228,6 +229,9 @@ export function registerApiV1(app: Express, deps: ApiV1Deps): void {
   // Bulk NDJSON export for backup/migration (routes/exportData.ts) - data-plane like everything
   // else keyed by x-api-key; the key alone scopes what leaves the box.
   router.use("/export", dataPlaneLimit, apiKey, exportRouter);
+  // The published wire contract (src/contract/wire.ts) - no API key: it describes shapes, it
+  // holds no data, and generators/CI need to fetch it before they have a key.
+  router.use("/", dataPlaneLimit, openapiRouter);
 
   app.use("/api/v1", router);
 }

@@ -17,6 +17,10 @@ The checks CI enforces and the conventions it cannot.
   never the primary name.
 - **No placebo knobs**: a control that stores state nothing reads is a bug, not a feature flag.
   If a setting stops gating behavior, mark it legacy in the schema comment and stop rendering it.
+- **Wire contract**: dashboard-facing response shapes live in `src/contract/wire.ts` (strict
+  zod schemas, published at `GET /api/v1/openapi.json`, enforced against live responses by
+  `contract.integration.test.ts`). Changing a covered response means updating the contract in
+  the same commit; putting a new endpoint under contract is one registry row.
 - **Body validation**: new/changed routes validate with `validateBody(schema)`
   (`src/routes/validateBody.ts`) - shape/range in the schema, cross-data checks in the handler.
   Never the silent `typeof`-skip pattern it replaced. Unknown keys strip; mistyped fields 400.

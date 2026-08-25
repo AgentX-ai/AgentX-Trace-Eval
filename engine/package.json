@@ -34,7 +34,8 @@
     "protobufjs": "^8.7.1",
     "re2js": "^2.8.6",
     "umap-js": "^1.4.0",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
