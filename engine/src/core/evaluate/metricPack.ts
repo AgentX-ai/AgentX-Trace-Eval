@@ -21,6 +21,8 @@ type PackConfig = {
   rejectionCriteria: string;
   evaluationCriteria: string;
   judgePrompt?: string;
+  // Reference-centric rubric (offline-only) - see evaluationSettings.requiresExpected.
+  requiresExpected?: boolean;
 };
 
 const METRIC_PACK: PackConfig[] = [
@@ -97,6 +99,7 @@ For each chunk, decide whether it is relevant to the query, then rate how well t
   },
   {
     name: "RAG: Contextual Recall",
+    requiresExpected: true,
     // v2 - offline-focused: {expected} comes from the dataset case's reference answer.
     description:
       "Does the retrieved context cover everything the EXPECTED answer needs? Offline metric (needs a reference answer) - a low score means retrieval is missing source material.",
@@ -137,6 +140,7 @@ export async function ensureMetricPackConfigs(db: Db): Promise<number> {
       rejectionCriteria: config.rejectionCriteria,
       evaluationCriteria: config.evaluationCriteria,
       judgePrompt: config.judgePrompt,
+      requiresExpected: config.requiresExpected ?? false,
       seeded: true,
     });
     created++;

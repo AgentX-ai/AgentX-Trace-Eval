@@ -70,6 +70,9 @@ type ResolvedRunConfig = {
   // The judge's tool-context level (settings-only - datasets have no such column):
   // "none" | "simple" (default, the historical trajectory behavior) | "detailed".
   toolContext: string;
+  // Reference-centric rubric (RAG: Contextual Recall etc.): items without expectedResults are
+  // skipped with an explicit reason instead of judging an empty reference.
+  requiresExpected: boolean;
   similarityConfig: SimilarityConfig;
   codeScorers: CodeScorerConfig[];
   questions: Array<{
@@ -112,6 +115,7 @@ export async function resolveRunConfig(
     judgePrompt: (settings?.judgePrompt ?? "").trim() || DEFAULT_JUDGE_PROMPT,
     judgeModel: settings?.judgeModel ?? DEFAULT_JUDGE_MODEL,
     toolContext: settings?.toolContext ?? "simple",
+    requiresExpected: settings?.requiresExpected ?? false,
     similarityConfig: (source?.similarityConfig as SimilarityConfig | null) ?? {},
     codeScorers: ((source?.codeScorers as CodeScorerConfig[] | null) ?? []).filter(s => s.enabled),
     questions,
@@ -319,27 +323,38 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
     !resultContext && item.traceId ? await getTraceRetrievalContext(db, item.traceId).catch(() => null) : null;
   const retrievalContext = resultContext ?? traceContext ?? mainQ?.retrievalContext;
 
+  // Two grading modes: a reference-centric rubric has nothing to grade without this item's
+  // expected results - skip the judge call (rating null, explicit reason) rather than let it
+  // score an empty reference. Similarity/code scorers still run; they have their own inputs.
+  const judgePromise: Promise<{ rating: number | null; justification: string; judgeError: Error | null }> =
+    config.requiresExpected && !expected
+      ? Promise.resolve({
+          rating: null,
+          justification:
+            "Skipped: this scorer needs a reference answer (requiresExpected) and the case has no expected results.",
+          judgeError: null,
+        })
+      : scoreAgainstCriteria(config, {
+          input: item.input?.query || "",
+          output: actual || "",
+          expected,
+          judgeGuideline: mainQ?.judgeGuideline,
+          // For {context}-referencing judge prompts (the RAG metric pack) - dynamic per-result
+          // context first, then linked-trace retrievals, then the case's pinned chunks.
+          context: retrievalContext,
+          // "none" strips the trajectory too - conversation + expected results only.
+          trajectory: config.toolContext !== "none" ? (trajectory ?? undefined) : undefined,
+          toolDefinitions: itemToolDefinitions ?? undefined,
+        }).then(
+          result => ({ ...result, judgeError: null as Error | null }),
+          (err: unknown) => ({
+            rating: null,
+            justification: "",
+            judgeError: err instanceof Error ? err : new Error(String(err)),
+          })
+        );
   const [judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore, codeScorerResults] = await Promise.all([
-    // Resolved, never rejected - the same isolation the code scorers below already have.
-    scoreAgainstCriteria(config, {
-      input: item.input?.query || "",
-      output: actual || "",
-      expected,
-      judgeGuideline: mainQ?.judgeGuideline,
-      // For {context}-referencing judge prompts (the RAG metric pack) - dynamic per-result
-      // context first, then linked-trace retrievals, then the case's pinned chunks.
-      context: retrievalContext,
-      // "none" strips the trajectory too - conversation + expected results only.
-      trajectory: config.toolContext !== "none" ? (trajectory ?? undefined) : undefined,
-      toolDefinitions: itemToolDefinitions ?? undefined,
-    }).then(
-      result => ({ ...result, judgeError: null as Error | null }),
-      (err: unknown) => ({
-        rating: null,
-        justification: "",
-        judgeError: err instanceof Error ? err : new Error(String(err)),
-      })
-    ),
+    judgePromise,
     config.similarityConfig.vectorSimilarity?.enabled
       ? computeVectorSimilarity(expected, actual, config.similarityConfig.vectorSimilarity.model)
       : Promise.resolve(null),

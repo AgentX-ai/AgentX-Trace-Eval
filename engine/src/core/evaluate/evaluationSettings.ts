@@ -42,6 +42,10 @@ export type CreateEvaluationSettingsInput = {
   // How much tool context the judge sees: "none" | "simple" | "detailed" (see the schema
   // column). Defaults to "simple", the historical behavior.
   toolContext?: JudgeToolContext;
+  // Reference-centric rubric: meaningless without a case's expected_results (RAG: Contextual
+  // Recall, or a custom "matches the reference" prompt). Online enable is refused and offline
+  // runs skip reference-less items. Default false.
+  requiresExpected?: boolean;
   // Set ONLY by the engine's seed paths (Example judge, RAG metric packs): marks quick-start
   // template rows so the dashboard can tell a clean account from one the user built in. Not
   // accepted from any write surface, never inherited by clones, immutable after create.
@@ -66,6 +70,7 @@ export type EvaluationSettingsRow = {
   isDefault: boolean;
   status: string;
   toolContext: string;
+  requiresExpected: boolean;
   seeded: boolean;
   createdAt: Date;
 };
@@ -86,6 +91,7 @@ function toWire(row: EvaluationSettingsRow) {
     isDefault: row.isDefault,
     status: row.status,
     toolContext: normalizeToolContext(row.toolContext),
+    requiresExpected: row.requiresExpected ?? false,
     seeded: row.seeded ?? false,
     createdAt: row.createdAt,
   };
@@ -126,6 +132,7 @@ export async function createEvaluationSettings(db: Db, input: CreateEvaluationSe
     isDefault: input.isDefault ?? false,
     status: input.status ?? "published",
     toolContext: normalizeToolContext(input.toolContext),
+    requiresExpected: input.requiresExpected ?? false,
     seeded: input.seeded ?? false,
     createdAt: new Date(),
   };
@@ -202,6 +209,7 @@ export async function patchEvaluationSettings(db: Db, id: string, patch: Partial
     isDefault: patch.isDefault ?? existing.isDefault,
     status: patch.status ?? existing.status,
     toolContext: patch.toolContext !== undefined ? normalizeToolContext(patch.toolContext) : existing.toolContext,
+    requiresExpected: patch.requiresExpected ?? existing.requiresExpected,
   };
   const patchCond = and(eq(db.schema.evaluationSettings.id, id), eq(db.schema.evaluationSettings.projectId, db.projectId));
   if (db.kind === "sqlite") {

@@ -172,6 +172,8 @@ export const judgeScorerSchema = z
         judgePrompt: z.string().optional(),
         judgeModel: z.string().optional(),
         toolContext: z.enum(["none", "simple", "detailed"]),
+        // Reference-centric rubric: offline-only, online enable is a 409.
+        requiresExpected: z.boolean(),
       })
       .strict(),
     offline: z

@@ -1040,6 +1040,8 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     // Sampling simplification: Topics gets its own rate; the legacy coverage_mode/sample_rate
     // pair stays writable but unread (see schema.sqlite.ts's projects.coverageMode block).
     ["projects", "ALTER TABLE projects ADD COLUMN topics_sample_rate REAL NOT NULL DEFAULT 1"],
+    // Two grading modes: reference-centric rubrics are offline-only (see schema comment).
+    ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN requires_expected INTEGER NOT NULL DEFAULT 0"],
     ["app_settings", "ALTER TABLE app_settings ADD COLUMN auth_secret TEXT"],
     ["app_settings", "ALTER TABLE app_settings ADD COLUMN metric_pack_seeded_at INTEGER"],
     ["app_settings", "ALTER TABLE app_settings ADD COLUMN metric_pack_version INTEGER"],
@@ -1073,6 +1075,10 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
   if (!topicsSampleRateColumnPreexists) {
     sqlite.exec(`UPDATE projects SET topics_sample_rate = sample_rate WHERE coverage_mode = 'sampled'`);
   }
+
+  // Safe to run every boot: only seeded metric-pack rows are touched, and the flag is what the
+  // seed would have written (a user clearing it on a CLONE is unaffected - clones aren't seeded).
+  sqlite.exec(`UPDATE evaluation_settings SET requires_expected = 1 WHERE seeded = 1 AND name = 'RAG: Contextual Recall'`);
 
   ensureTraceSpanIdUnique(statement => sqlite.exec(statement));
   ensureVersionUnique(statement => sqlite.exec(statement));
@@ -2096,6 +2102,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     ALTER TABLE outcome_reports ADD COLUMN IF NOT EXISTS is_negative BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS topics_enabled BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS topics_sample_rate DOUBLE PRECISION NOT NULL DEFAULT 1;
+    ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS requires_expected BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS coherence_sweep_enabled BOOLEAN NOT NULL DEFAULT true;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS disabled_builtin_patterns JSONB;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS enabled_builtin_patterns JSONB;
@@ -2140,6 +2147,9 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
   if (!topicsSampleRateColumnPreexists) {
     await pool.query(`UPDATE projects SET topics_sample_rate = sample_rate WHERE coverage_mode = 'sampled'`);
   }
+
+  // See bootstrapSqlite's identical seeded-Recall backfill comment.
+  await pool.query(`UPDATE evaluation_settings SET requires_expected = true WHERE seeded = true AND name = 'RAG: Contextual Recall'`);
 
   await migrateOnlineEvaluatorsToConfigsPostgres(pool);
   await enforceJudgeScorerCardinalityPostgres(pool);
