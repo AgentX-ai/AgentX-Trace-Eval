@@ -6,6 +6,7 @@ import { callJudgeJson, computeEmbedding, DEFAULT_JUDGE_MODEL } from "../evaluat
 import { passesSampleRate } from "./routing.js";
 import { getMonitoringDefaults } from "../project/projects.js";
 import type { MonitoringWindow } from "./events.js";
+import { logger } from "../../log.js";
 
 // Third per-trace background pass, alongside detect.ts's runMonitorCheck (pattern matching) and
 // onlineEvaluators.ts's runOnlineEvaluators (sampled judge scoring) - same fire-and-forget shape,
@@ -174,7 +175,7 @@ export async function runClassification(
       embedding,
     });
   } catch (err) {
-    console.error("Trace classification failed:", err instanceof Error ? err.message : err);
+    logger.error({ err: err instanceof Error ? err.message : err }, "Trace classification failed:");
   }
 }
 

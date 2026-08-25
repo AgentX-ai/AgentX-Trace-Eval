@@ -20,6 +20,7 @@ import { upsertSignal } from "./signals.js";
 import { recordEvent } from "./events.js";
 import { acquireSweepLease } from "../shared/sweepLease.js";
 import { SESSION_BASELINE_KEY } from "./builtinEvaluators.js";
+import { logger } from "../../log.js";
 
 // The idle-session sweep: session-scoped Online Evaluators' only trigger. Sessions have no end
 // event, so "when do we judge a conversation?" is answered the same way Braintrust's trace/group
@@ -174,7 +175,7 @@ async function judgeSessionAgainstEvaluator(
     ? await getEvaluationSettingsRow(db, evaluator.evaluationSettingsId)
     : null;
   if (!settings) {
-    console.error(`Session sweep: evaluator "${evaluator.name}" has no valid evaluator config, skipping`);
+    logger.error(`Session sweep: evaluator "${evaluator.name}" has no valid evaluator config, skipping`);
     return null;
   }
   const spans = (await listSessionSpans(db, sessionId)) as SpanWire[];
@@ -432,9 +433,9 @@ export async function sweepSessionsOnce(): Promise<{ judged: number }> {
         } catch (err) {
           // Isolated per session+evaluator, same posture as every other detector loop - one
           // failing judge call (missing key, provider outage) never blocks the rest of the sweep.
-          console.error(
-            `Session sweep: evaluator "${evaluator.name}" failed on session ${session.sessionId}:`,
-            err instanceof Error ? err.message : err
+          logger.error(
+            { err },
+            `Session sweep: evaluator "${evaluator.name}" failed on session ${session.sessionId}`
           );
         }
       }
@@ -463,7 +464,7 @@ export function startSessionSweep(): void {
     // lease times out on its own. The manual /session-sweep/run route bypasses this on purpose.
     acquireSweepLease(getDb(), "session-sweep", 5 * 60_000)
       .then(acquired => (acquired ? sweepSessionsOnce() : null))
-      .catch(err => console.error("Session sweep failed:", err instanceof Error ? err.message : err))
+      .catch((err: unknown) => logger.error({ err }, "Session sweep failed"))
       .finally(() => {
         sweeping = false;
       });

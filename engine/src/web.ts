@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { logger } from "./log.js";
 
 // Locates web/index.html without relying on Bun-specific asset embedding (which would need a
 // different, non-portable code path under plain Node/tsx dev mode, see storage/db.ts's
@@ -66,7 +67,7 @@ export async function downloadWebBundle(): Promise<string | null> {
   const webDir = resolveWebBundleDir(sourceDir, process.execPath);
   const tarPath = path.join(os.tmpdir(), `agentx-web-${process.pid}.tar.gz`);
   try {
-    console.log(`Dev mode: web UI not found - downloading the prebuilt dashboard bundle...`);
+    logger.info(`Dev mode: web UI not found - downloading the prebuilt dashboard bundle...`);
     const resp = await fetch(WEB_BUNDLE_URL, { signal: AbortSignal.timeout(60_000) });
     if (!resp.ok) {
       throw new Error(`HTTP ${resp.status}`);
@@ -80,12 +81,10 @@ export async function downloadWebBundle(): Promise<string | null> {
     if (!fs.existsSync(indexHtml)) {
       throw new Error("bundle extracted but web/index.html is missing");
     }
-    console.log(`Dev mode: dashboard bundle installed into ${webDir}`);
+    logger.info(`Dev mode: dashboard bundle installed into ${webDir}`);
     return indexHtml;
   } catch (err) {
-    console.log(
-      `Dev mode: dashboard download failed (${err instanceof Error ? err.message : err}) - continuing API-only.`
-    );
+    logger.info({ err }, "Dev mode: dashboard download failed - continuing API-only.");
     return null;
   } finally {
     fs.rmSync(tarPath, { force: true });

@@ -4,6 +4,7 @@ import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { getAgentNamesById } from "./agents.js";
 import { listSignalRows } from "./signals.js";
 import { listOnlineEvaluatorRows } from "./onlineEvaluators.js";
+import { logger } from "../../log.js";
 
 // Overview's "Needs attention" digest: the open failure signals with enough context to triage
 // from the dashboard's front page - per-signal 14-day occurrence sparkline, week-over-week
@@ -149,7 +150,7 @@ async function getCachedInsight(db: Db, items: AttentionItem[]): Promise<string 
         // Cache the miss so a missing judge key doesn't retry a doomed LLM call on every
         // Overview poll; a changed signal set (new key) tries again naturally.
         insightCache.set(db.projectId, { key, value: null });
-        console.error("Attention insight generation failed:", err instanceof Error ? err.message : err);
+        logger.error({ err: err instanceof Error ? err.message : err }, "Attention insight generation failed:");
       })
       .finally(() => insightInFlight.delete(flightId));
   }

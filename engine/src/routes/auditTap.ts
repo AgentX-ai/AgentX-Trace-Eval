@@ -3,6 +3,7 @@ import { getDb } from "../storage/db.js";
 import { recordAuditEvent, type AuditActorType } from "../core/audit/auditLog.js";
 import { resolveProjectByApiKey } from "../core/project/projects.js";
 import { authMode, getSessionUser } from "../auth/betterAuth.js";
+import { logger } from "../log.js";
 
 // The audit tap (P2.2): a response-finish observer that turns control-plane activity into
 // append-only audit_events rows (core/audit/auditLog.ts). Two deliberate boundaries:
@@ -168,7 +169,7 @@ export function auditControlPlaneTap(req: Request, res: Response, next: NextFunc
         ip: req.ip ?? null,
         projectId: req.projectId ?? null,
       });
-    })().catch(err => console.error("Audit tap failed (request unaffected):", err));
+    })().catch((err: unknown) => logger.error({ err }, "Audit tap failed (request unaffected)"));
   });
   next();
 }
@@ -223,7 +224,7 @@ export function auditAuthTap(req: Request, res: Response, next: NextFunction): v
         summary: email ? { email } : null,
         ip: req.ip ?? null,
       });
-    })().catch(err => console.error("Auth audit tap failed (request unaffected):", err));
+    })().catch((err: unknown) => logger.error({ err }, "Auth audit tap failed (request unaffected)"));
   });
   next();
 }

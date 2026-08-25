@@ -38,6 +38,7 @@ import type { SimilarityConfig } from "./datasets.js";
 import { runCodeScorer, type CodeScorerConfig, type CodeScorerResult } from "./codeScorer.js";
 import { extractWebhookUrls, notifyWebhooks } from "../monitor/webhooks.js";
 import { listProfileRows } from "../monitor/profiles.js";
+import { logger } from "../../log.js";
 import {
   scoreAgainstCriteria,
   generateSmokeTestVariants,
@@ -342,9 +343,11 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
     config.similarityConfig.vectorSimilarity?.enabled
       ? computeVectorSimilarity(expected, actual, config.similarityConfig.vectorSimilarity.model)
       : Promise.resolve(null),
-    config.similarityConfig.jaccardSimilarity?.enabled ? computeJaccardSimilarity(expected, actual) : null,
-    config.similarityConfig.bleuScore?.enabled ? computeBleuScore(expected, actual) : null,
-    config.similarityConfig.rougeScore?.enabled ? computeRougeScore(expected, actual) : null,
+    // Sync metrics wrapped explicitly - Promise.all accepts plain values, but the explicit
+    // resolve marks "synchronous on purpose" for the await-thenable lint rule.
+    Promise.resolve(config.similarityConfig.jaccardSimilarity?.enabled ? computeJaccardSimilarity(expected, actual) : null),
+    Promise.resolve(config.similarityConfig.bleuScore?.enabled ? computeBleuScore(expected, actual) : null),
+    Promise.resolve(config.similarityConfig.rougeScore?.enabled ? computeRougeScore(expected, actual) : null),
     // Each code scorer isolates its own failure into { score: null, error } (see codeScorer.ts's
     // runCodeScorer) - a broken/timed-out scorer never rejects this Promise.all or takes down the
     // judge rating / similarity scores alongside it.
@@ -478,7 +481,10 @@ export async function appendResults(
           // anywhere except this one result's justification field, effectively invisible unless a
           // caller went looking at the exact result row. Surfacing it here at least gets it into
           // agentx-server's own logs.
-          console.error("Evaluate: judge scoring failed for run %s (%s):", runId, item.idempotencyKey, scored.judgeError);
+          logger.error(
+            { err: scored.judgeError, runId, itemKey: item.idempotencyKey },
+            "Evaluate: judge scoring failed"
+          );
         } else {
           rating = scored.rating;
           justification = scored.justification;
@@ -486,7 +492,7 @@ export async function appendResults(
       } catch (err) {
         status = "skipped";
         justification = err instanceof Error ? err.message : "Scoring failed";
-        console.error(`Evaluate: scoring failed for run ${runId} (${item.idempotencyKey}):`, err);
+        logger.error({ err: err }, `Evaluate: scoring failed for run ${runId} (${item.idempotencyKey}):`);
       }
     }
 

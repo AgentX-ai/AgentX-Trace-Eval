@@ -86,6 +86,25 @@ describe("sampling simplification", () => {
     ).toBe(0.25);
   });
 
+  it("mistyped fields are named 400s, unknown keys are stripped (validateBody exemplar)", async () => {
+    const key = await newProject("validation-shape");
+    // The old typeof-checks silently IGNORED a mistyped field - the caller believed a setting
+    // was applied while nothing changed. Now it is a 400 naming the field.
+    const bad = await engine.json(
+      "/api/v1/agent-monitoring/settings/monitoring-defaults",
+      post({ retentionDays: "thirty" }, key, "PUT")
+    );
+    expect(bad.status).toBe(400);
+    expect(JSON.stringify(bad.body)).toContain("retentionDays");
+    // Unknown keys (a legacy client sending retired fields) are stripped, not rejected.
+    const ok = await engine.json(
+      "/api/v1/agent-monitoring/settings/monitoring-defaults",
+      post({ retentionDays: 7, redactionMode: "strict", someFutureField: true }, key, "PUT")
+    );
+    expect(ok.status).toBe(200);
+    expect((ok.body as { monitoringDefaults: { retentionDays: number } }).monitoringDefaults.retentionDays).toBe(7);
+  });
+
   it("upgrade backfills topicsSampleRate from a sampled legacy rate exactly once", async () => {
     const first = await startEngine();
     const home = first.home;

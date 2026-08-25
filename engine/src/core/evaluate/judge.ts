@@ -10,6 +10,7 @@ import { checkAndRecordJudgeCall } from "../shared/usage.js";
 // would bill one party's key for another party's usage.
 const envKey = (name: string): string | null => (isMultiTenant() ? null : process.env[name] || null);
 import { getPortabilityModelRaw, type PortabilityModelRow } from "./models.js";
+import { logger } from "../../log.js";
 import {
   callJudgeJson as callJudgeJsonShared,
   getProviderForModel,
@@ -281,7 +282,7 @@ export async function computeVectorSimilarity(
   try {
     return await computeVectorSimilarityShared(expected, actual, client, model);
   } catch (err) {
-    console.error("Vector similarity computation failed:", err);
+    logger.error({ err: err }, "Vector similarity computation failed:");
     return null;
   }
 }
@@ -307,7 +308,7 @@ export async function computeEmbedding(text: string, model: string = DEFAULT_EMB
     const response = await client.embeddings.create({ model, input: trimmed });
     return response.data?.[0]?.embedding ?? null;
   } catch (err) {
-    console.error("Embedding computation failed:", err);
+    logger.error({ err: err }, "Embedding computation failed:");
     return null;
   }
 }
@@ -583,7 +584,7 @@ Original question: ${query}`;
       : [];
     return variants.slice(0, count);
   } catch (err) {
-    console.error("Smoke test variant generation failed:", err);
+    logger.error({ err: err }, "Smoke test variant generation failed:");
     return [];
   }
 }

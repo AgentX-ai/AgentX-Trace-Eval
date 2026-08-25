@@ -28,7 +28,7 @@ const AUTH_OPTIONS = {
   ],
 };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const expectedTables = getAuthTables(AUTH_OPTIONS as any);
 
 // drizzle keeps the column list on the table object; the exact accessor differs between the

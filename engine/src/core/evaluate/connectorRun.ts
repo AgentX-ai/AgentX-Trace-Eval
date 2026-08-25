@@ -3,6 +3,7 @@ import type { Db } from "../../storage/db.js";
 import { getDataset } from "./datasets.js";
 import { getAgentConnectorRow, callAgentConnector, type AgentConnectorRow } from "./agentConnectors.js";
 import { initRun, appendResults, finalizeRun, failRun } from "./runs.js";
+import { logger } from "../../log.js";
 
 // Drives a dataset's questions through a customer's own deployed agent (via an Agent Connector,
 // see agentConnectors.ts) instead of requiring the SDK to push pre-computed results - closes the
@@ -114,7 +115,7 @@ async function driveConnectorRun(
     }
     await finalizeRun(db, runId);
   } catch (err) {
-    console.error(`Connector-driven run ${runId} failed:`, err instanceof Error ? err.message : err);
+    logger.error({ err: err instanceof Error ? err.message : err }, `Connector-driven run ${runId} failed:`);
     await failRun(db, runId);
   }
 }

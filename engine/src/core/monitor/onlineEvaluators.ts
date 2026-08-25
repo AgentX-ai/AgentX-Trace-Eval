@@ -11,6 +11,7 @@ import {
   isDatasetTwinSettingsId,
 } from "../evaluate/evaluationSettings.js";
 import { renderTraceTrajectory, renderUsedToolDefinitions, getTraceRetrievalContext } from "../trace/trajectory.js";
+import { logger } from "../../log.js";
 
 // The ONLINE PROFILE of an LLM Judge Scorer (core/monitor/judgeScorers.ts is the unified
 // surface): a real judge scoring sampled live traffic continuously, producing a rating over
@@ -340,7 +341,7 @@ export async function runOnlineEvaluators(
     // but is handled defensively the same isolated-skip way a judge failure below is.
     const settings = evaluator.evaluationSettingsId ? await getEvaluationSettingsRow(db, evaluator.evaluationSettingsId) : null;
     if (!settings) {
-      console.error(`Online evaluator "${evaluator.name}" has no valid evaluator config, skipping`);
+      logger.error(`Online evaluator "${evaluator.name}" has no valid evaluator config, skipping`);
       continue;
     }
 
@@ -370,7 +371,7 @@ export async function runOnlineEvaluators(
       // One evaluator failing (missing API key, provider outage) must not skip every other
       // evaluator after it for this trace - isolated per-evaluator, same reasoning as
       // detect.ts's per-pattern isolation.
-      console.error(`Online evaluator "${evaluator.name}" failed to score:`, err instanceof Error ? err.message : err);
+      logger.error({ err: err instanceof Error ? err.message : err }, `Online evaluator "${evaluator.name}" failed to score:`);
       continue;
     }
 

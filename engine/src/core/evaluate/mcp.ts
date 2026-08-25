@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { UnauthorizedError, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import { logger } from "../../log.js";
 import type {
   JsonSchemaValidator,
   jsonSchemaValidator,
@@ -228,7 +229,7 @@ export async function loadMcpTools(input: {
         session.transportKind = kind;
         return { authRequired: true, authorizationUrl: session.authorizationUrl, sessionId: session.id };
       }
-      console.error(`[mcp] ${kind} connect to ${session.serverUrl} failed (session ${session.id}):`, err);
+      logger.error({ err: err }, `[mcp] ${kind} connect to ${session.serverUrl} failed (session ${session.id}):`);
       firstError = firstError ?? err;
     }
   }
@@ -332,7 +333,7 @@ export async function finishMcpAuth(sessionId: string, code: string): Promise<{ 
     session.authorizationUrl = undefined;
     return { ok: true };
   } catch (err) {
-    console.error(`[mcp] token exchange failed for session ${sessionId}:`, err);
+    logger.error({ err: err }, `[mcp] token exchange failed for session ${sessionId}:`);
     const message = err instanceof Error ? err.message : "token exchange failed";
     return { error: `Authorization failed: ${message.slice(0, 180)}` };
   }

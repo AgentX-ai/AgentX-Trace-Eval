@@ -4,7 +4,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Boots the REAL engine the way a user does - `tsx src/index.ts`, its own main(), its own SQLite
 // file. The failures worth catching are runtime ones (a rejection that kills the process, a
@@ -15,10 +15,15 @@ const engineRoot = path.resolve(here, "../..");
 
 // tsx lives in engine/node_modules under a plain install and in the workspace root's
 // node_modules once yarn/bun hoists it - resolve whichever exists rather than hard-coding one.
-function tsxCli(): string {
+// The LOADER entry, not the CLI: `node --import <loader> src/index.ts` runs the engine in ONE
+// process, so `child` IS the engine and its exit code is the engine's. The old CLI form spawned
+// the engine as tsx's grandchild; the group-kill SIGTERM then hit the wrapper too, and the
+// wrapper's own exit code (143 under the default disposition, seen flakily once V8 coverage
+// instrumentation slowed it) is what the tests read - a harness artifact, not an engine bug.
+function tsxLoader(): string {
   const candidates = [
-    path.join(engineRoot, "node_modules", "tsx", "dist", "cli.mjs"),
-    path.join(engineRoot, "..", "node_modules", "tsx", "dist", "cli.mjs"),
+    path.join(engineRoot, "node_modules", "tsx", "dist", "loader.mjs"),
+    path.join(engineRoot, "..", "node_modules", "tsx", "dist", "loader.mjs"),
   ];
   const found = candidates.find(candidate => fs.existsSync(candidate));
   if (!found) {
@@ -56,8 +61,8 @@ async function createThrowawayDatabase(): Promise<{ url: string; drop: () => Pro
   };
 }
 
-async function freePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
     const srv = net.createServer();
     srv.once("error", reject);
     srv.listen(0, "127.0.0.1", () => {
@@ -102,7 +107,7 @@ export async function startEngine(
 
   const child: ChildProcess = spawn(
     process.execPath,
-    [tsxCli(), path.join(engineRoot, "src", "index.ts")],
+    ["--import", pathToFileURL(tsxLoader()).href, path.join(engineRoot, "src", "index.ts")],
     {
       cwd: engineRoot,
       env: {
