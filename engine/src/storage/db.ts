@@ -12,6 +12,7 @@ import * as sqliteSchema from "./schema.sqlite.js";
 import * as pgSchema from "./schema.pg.js";
 import { seedExampleDataIfEmpty } from "../core/seed.js";
 import { getDefaultProject } from "../core/project/projects.js";
+import { logger } from "../log.js";
 
 export const AGENTX_HOME = process.env.AGENTX_HOME || path.join(os.homedir(), ".agentx");
 
@@ -297,9 +298,9 @@ function ensureProjectScopedUniqueIndexes(exec: (statement: string) => void): vo
     try {
       exec(statement);
     } catch (err) {
-      console.warn(
-        `Could not create the unique index from \`${statement}\`: ${err instanceof Error ? err.message : String(err)}\n` +
-          `  This usually means duplicate rows already exist for that key.`
+      logger.warn(
+        { err },
+        `Could not create the unique index from \`${statement}\` - this usually means duplicate rows already exist for that key.`
       );
     }
   }
@@ -1106,8 +1107,9 @@ const TOOL_SCHEMA_VERSION_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS tool_schema
 // Same posture as the traces index above: an install that already collected duplicates keeps
 // booting, with the query to find them.
 function warnVersionIndexFailed(err: unknown): void {
-  console.warn(
-    `Could not create the tool_schema_versions(project_id, tool_schema_id, version) unique index: ${err instanceof Error ? err.message : String(err)}\n` +
+  logger.warn(
+    { err },
+    `Could not create the tool_schema_versions(project_id, tool_schema_id, version) unique index.\n` +
       `  This usually means duplicate version numbers already exist. Find them with:\n` +
       `    SELECT project_id, tool_schema_id, version, count(*) FROM tool_schema_versions\n` +
       `    GROUP BY project_id, tool_schema_id, version HAVING count(*) > 1;`
@@ -1145,8 +1147,9 @@ const TRACE_SPAN_ID_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS traces_project_id
 // An install that already accumulated duplicates cannot create the index until they are cleaned
 // up. That is the operator's data, so warn with the query rather than deleting rows for them.
 function warnTraceSpanIdIndexFailed(err: unknown): void {
-  console.warn(
-    `Could not create the traces(project_id, span_id) unique index: ${err instanceof Error ? err.message : String(err)}\n` +
+  logger.warn(
+    { err },
+    `Could not create the traces(project_id, span_id) unique index.\n` +
       `  This usually means duplicate spans already exist. Find them with:\n` +
       `    SELECT project_id, span_id, count(*) FROM traces WHERE span_id IS NOT NULL\n` +
       `    GROUP BY project_id, span_id HAVING count(*) > 1;\n` +
@@ -2147,9 +2150,9 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
     try {
       await pool.query(statement);
     } catch (err) {
-      console.warn(
-        `Could not create the unique index from \`${statement}\`: ${err instanceof Error ? err.message : String(err)}\n` +
-          `  This usually means duplicate rows already exist for that key.`
+      logger.warn(
+        { err },
+        `Could not create the unique index from \`${statement}\` - this usually means duplicate rows already exist for that key.`
       );
     }
   }

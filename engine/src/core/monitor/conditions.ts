@@ -4,6 +4,7 @@
 // module never imports the LLM layer; core/monitor/detect.ts passes the real judge, tests can pass
 // the fast heuristic below. (regexSafety.js is the one import, and is itself pure.)
 import { compileUserRegex, hasNestedQuantifier } from "./regexSafety.js";
+import { logger } from "../../log.js";
 
 export type PatternMatchTarget = "response" | "userMessage" | "trace";
 
@@ -79,9 +80,9 @@ async function evaluateDetector(condition: PatternCondition, text: string, seman
     // here. RE2 below would run it in linear time anyway; the skip stays so the operator is told
     // the pattern is wrong rather than left wondering why it never fires.
     if (hasNestedQuantifier(value)) {
-      console.error(
-        "Skipping monitor regex %s: nested unbounded quantifiers can take exponential time. Edit the pattern to remove the nesting.",
-        JSON.stringify(value)
+      logger.error(
+        { pattern: value },
+        "Skipping monitor regex: nested unbounded quantifiers can take exponential time. Edit the pattern to remove the nesting."
       );
       return { matched: false };
     }
@@ -90,7 +91,7 @@ async function evaluateDetector(condition: PatternCondition, text: string, seman
     if (!compiled.ok) {
       // Reaches here only for a row stored before save-time validation, or one using syntax RE2
       // does not accept (lookaround, backreferences). Silence would look like "never matches".
-      console.error("Skipping monitor regex %s: %s", JSON.stringify(value), compiled.error);
+      logger.error({ err: compiled.error, pattern: value }, "Skipping monitor regex: it does not compile");
       return { matched: false };
     }
     return { matched: compiled.regex.test(text) };

@@ -20,6 +20,7 @@ import {
 } from "./toolSchemas.js";
 import { validatePromptProposal, validateToolSchemaProposal } from "./proposalValidation.js";
 import { acquireSweepLease } from "../shared/sweepLease.js";
+import { logger } from "../../log.js";
 
 // The Improvement Inbox's producer: a background sweep that notices when a registered prompt or
 // tool schema has accumulated enough fresh failure evidence, then does the expensive thinking on
@@ -244,7 +245,7 @@ export async function sweepImprovementsOnce(scoped?: Db): Promise<{ created: num
         });
         created++;
       } catch (err) {
-        console.error(`Improvement sweep (tool ${schema.name}) failed:`, err instanceof Error ? err.message : err);
+        logger.error({ err: err instanceof Error ? err.message : err }, `Improvement sweep (tool ${schema.name}) failed:`);
       }
     }
 
@@ -295,7 +296,7 @@ export async function sweepImprovementsOnce(scoped?: Db): Promise<{ created: num
         });
         created++;
       } catch (err) {
-        console.error(`Improvement sweep (prompt ${prompt.name}) failed:`, err instanceof Error ? err.message : err);
+        logger.error({ err: err instanceof Error ? err.message : err }, `Improvement sweep (prompt ${prompt.name}) failed:`);
       }
     }
     });
@@ -318,7 +319,7 @@ export function startImprovementSweep(): void {
     // manual /improve/inbox/sweep/run route bypasses this on purpose.
     acquireSweepLease(getDb(), "improvement-sweep", 15 * 60_000)
       .then(acquired => (acquired ? sweepImprovementsOnce() : null))
-      .catch(err => console.error("Improvement sweep failed:", err instanceof Error ? err.message : err))
+      .catch((err: unknown) => logger.error({ err }, "Improvement sweep failed"))
       .finally(() => {
         sweeping = false;
       });

@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { nanoid } from "nanoid";
+import { logger } from "../log.js";
 
 // Outbound email for AGENTX_AUTH=enabled features (verification, password reset, invitations).
 // Transport picked from env, checked in order:
@@ -65,6 +66,6 @@ export async function sendMail(mail: Mail): Promise<void> {
 // invitation still returns its link; a signup still succeeds). Errors land in the log.
 export function sendMailInBackground(mail: Mail): void {
   void sendMail(mail).catch(err => {
-    console.error(`Email to ${mail.to} failed:`, err instanceof Error ? err.message : err);
+    logger.error({ err: err instanceof Error ? err.message : err }, `Email to ${mail.to} failed:`);
   });
 }

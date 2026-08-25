@@ -1,3 +1,4 @@
+import { logger } from "../../log.js";
 // LangSmith-style "webhook automation" equivalent: monitor_profiles.channels was persisted from
 // the start (dashboard's per-agent settings dialog) but self-host never had any notification
 // delivery - nothing interpreted it. No new schema: a channel entry of the form `webhook:<url>`
@@ -54,11 +55,11 @@ export function notifyWebhooks(urls: string[], signal: WebhookSignal): void {
         // fetch only rejects on transport failure, so a 404 from a mistyped Slack URL was
         // indistinguishable from a delivered notification.
         if (!res.ok) {
-          console.error(`Monitor webhook delivery failed (${url}): responded ${res.status}`);
+          logger.error(`Monitor webhook delivery failed (${url}): responded ${res.status}`);
         }
       })
       .catch(err => {
-        console.error(`Monitor webhook delivery failed (${url}):`, err instanceof Error ? err.message : err);
+        logger.error({ err: err instanceof Error ? err.message : err }, `Monitor webhook delivery failed (${url}):`);
       });
   }
 }

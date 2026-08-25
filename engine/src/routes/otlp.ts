@@ -10,6 +10,7 @@ import { runClassification } from "../core/monitor/topics.js";
 import { decodeProtobufExportRequest, encodeProtobufResponse } from "../otel/protoTypes.js";
 import { normalizeExportRequest } from "../otel/normalize.js";
 import { otelSpanToIngestInput, reconstructParentToolCalls } from "../otel/mapping.js";
+import { logger } from "../log.js";
 
 // A real OTLP/HTTP trace receiver: point any OpenTelemetry SDK/exporter or the Collector's
 // otlphttpexporter at this base URL (http://localhost:<port>/api/v1/otel) and it works, same as
@@ -147,12 +148,12 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
         },
         { agentId, traceId }
       ).catch(err => {
-        console.error("Monitor check failed:", err instanceof Error ? err.message : err);
+        logger.error({ err: err instanceof Error ? err.message : err }, "Monitor check failed:");
       });
     }
 
     runOnlineEvaluators(db, { input: input.input, output: input.output, metadata: input.metadata }, { agentId, traceId }).catch(err => {
-      console.error("Online evaluator scoring failed:", err instanceof Error ? err.message : err);
+      logger.error({ err: err instanceof Error ? err.message : err }, "Online evaluator scoring failed:");
     });
 
     runCustomEvaluators(
@@ -165,11 +166,11 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
       },
       { agentId, traceId }
     ).catch(err => {
-      console.error("Custom evaluator scoring failed:", err instanceof Error ? err.message : err);
+      logger.error({ err: err instanceof Error ? err.message : err }, "Custom evaluator scoring failed:");
     });
 
     runClassification(db, { input: input.input, output: input.output }, { agentId, traceId }).catch(err => {
-      console.error("Trace classification failed:", err instanceof Error ? err.message : err);
+      logger.error({ err: err instanceof Error ? err.message : err }, "Trace classification failed:");
     });
   }
 });

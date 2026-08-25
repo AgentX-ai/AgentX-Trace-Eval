@@ -8,6 +8,7 @@ import { recordEvent, pruneRetentionData } from "./events.js";
 import { extractWebhookUrls, notifyWebhooks } from "./webhooks.js";
 import { matchesAgentScope, passesSampleRate } from "./routing.js";
 import { getMonitoringDefaults } from "../project/projects.js";
+import { logger } from "../../log.js";
 
 // Built-in template scorers. Deliberately short: operational run outcomes (trace errors, failed
 // tool calls, empty responses, latency) are facts the trace itself records - classified into the
@@ -345,7 +346,7 @@ async function detectCustomPatterns(db: Db, trace: TraceLike, agentId: string | 
       // A "semantic" condition failing (missing judge API key, provider outage) must not silently
       // skip every other pattern after it, or the entire healthy-tally/failure detection for this
       // trace - isolated per-pattern rather than letting the whole sweep abort partway.
-      console.error(`Pattern "${pattern.name}" failed to evaluate:`, err instanceof Error ? err.message : err);
+      logger.error({ err: err instanceof Error ? err.message : err }, `Pattern "${pattern.name}" failed to evaluate:`);
       continue;
     }
     if (!outcome.overall) continue;
@@ -407,7 +408,7 @@ export async function runMonitorCheck(
           semanticJudge: llmSemanticJudge,
         });
       } catch (err) {
-        console.error(`Pattern "${pattern.name}" failed to evaluate:`, err instanceof Error ? err.message : err);
+        logger.error({ err: err instanceof Error ? err.message : err }, `Pattern "${pattern.name}" failed to evaluate:`);
         continue;
       }
       if (outcome.overall) {

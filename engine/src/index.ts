@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { Server } from "node:http";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import { requireApiKey } from "./auth/apiKey.js";
@@ -13,6 +14,7 @@ import { registerAuthRoutes, registerApiV1 } from "./routes/apiV1.js";
 import { findWebIndexHtml, downloadWebBundle } from "./web.js";
 import { startSessionSweep } from "./core/monitor/sessionSweep.js";
 import { startImprovementSweep } from "./core/evaluate/improvementSweep.js";
+import { logger } from "./log.js";
 
 const PORT = Number(process.env.PORT || 4700);
 const isDev = process.argv.includes("--dev");
@@ -85,9 +87,23 @@ async function main() {
   const ACCESS_LOG_IGNORE = ["/health"];
   app.use((req, res, next) => {
     const start = Date.now();
+    // One structured line per request with a correlation id; the id is echoed in the
+    // X-Request-Id header so an operator can match a browser failure to its log line.
+    const reqId = randomUUID();
+    res.setHeader("X-Request-Id", reqId);
     res.on("finish", () => {
       if (ACCESS_LOG_IGNORE.includes(req.path)) return;
-      console.log(`${req.method} ${req.originalUrl} ${res.statusCode} ${Date.now() - start}ms`);
+      logger.info(
+        {
+          reqId,
+          method: req.method,
+          url: req.originalUrl,
+          status: res.statusCode,
+          ms: Date.now() - start,
+          projectId: (req as Request & { projectId?: string }).projectId ?? null,
+        },
+        "request"
+      );
     });
     next();
   });
@@ -129,9 +145,7 @@ async function main() {
   // reads it). `next` is unused but must stay declared - Express detects error middleware by arity.
    
   app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
-    // %s placeholders, not interpolation: a URL containing "%s" would otherwise be read as a
-    // format specifier and swallow the error argument that follows.
-    console.error("Unhandled error in %s %s:", req.method, req.originalUrl, err);
+    logger.error({ err, method: req.method, url: req.originalUrl }, "Unhandled request error");
     // Handlers that respond and then keep working (routes/ingest.ts's POST /traces) can fail with
     // the response already on the wire - nothing left to send.
     if (res.headersSent) {
@@ -167,19 +181,19 @@ async function main() {
   startSessionSweep();
   startImprovementSweep();
   const defaultProject = await getDefaultProject(getDb());
-  console.log(`AgentX self-host engine listening on http://localhost:${PORT}`);
-  console.log(`Default project API key: ${defaultProject?.apiKey}`);
-  console.log(`Point the SDK here with:`);
-  console.log(`  AGENTX_API_BASE_URL=http://localhost:${PORT}/api/v1`);
-  console.log(`  AGENTX_API_KEY=${defaultProject?.apiKey}`);
+  logger.info(`AgentX self-host engine listening on http://localhost:${PORT}`);
+  logger.info(`Default project API key: ${defaultProject?.apiKey}`);
+  logger.info(`Point the SDK here with:`);
+  logger.info(`  AGENTX_API_BASE_URL=http://localhost:${PORT}/api/v1`);
+  logger.info(`  AGENTX_API_KEY=${defaultProject?.apiKey}`);
   // Printed in both modes, not just dev: web/ isn't committed, so a source checkout started with
   // `yarn start` (no --dev, hence no auto-download) serves the API fine and 404s every non-API
   // GET. Without this the only symptom is a bare "Cannot GET /" in the browser and nothing at all
   // in the log to explain it.
   if (!webIndexHtml) {
-    console.log(`Web UI not found (expected web/index.html next to this checkout) - serving the API only.`);
-    console.log(isDev ? `Fetch it manually with:` : `Start with \`yarn dev --dev\` to fetch it automatically, or fetch it manually with:`);
-    console.log(
+    logger.info(`Web UI not found (expected web/index.html next to this checkout) - serving the API only.`);
+    logger.info(isDev ? `Fetch it manually with:` : `Start with \`yarn dev --dev\` to fetch it automatically, or fetch it manually with:`);
+    logger.info(
       `  mkdir -p web && curl -fsSL https://github.com/AgentX-ai/AgentX-Trace-Eval/releases/latest/download/agentx-web.tar.gz | tar -xz -C web`
     );
   }
@@ -210,9 +224,9 @@ async function main() {
       return;
     }
     shuttingDown = true;
-    console.log(`\n${signal} received, shutting down gracefully...`);
+    logger.info(`\n${signal} received, shutting down gracefully...`);
     const forceExit = setTimeout(() => {
-      console.error("Shutdown timed out after 10s, forcing exit.");
+      logger.error("Shutdown timed out after 10s, forcing exit.");
       process.exit(1);
     }, 10_000);
     forceExit.unref();
@@ -223,15 +237,15 @@ async function main() {
     server.close(async err => {
       clearTimeout(forceAllConnectionsClosed);
       if (err) {
-        console.error("Error while closing HTTP server:", err);
+        logger.error({ err: err }, "Error while closing HTTP server:");
       }
       try {
         await closeDb();
       } catch (dbErr) {
-        console.error("Error while closing database:", dbErr);
+        logger.error({ err: dbErr }, "Error while closing database:");
       }
       clearTimeout(forceExit);
-      console.log("Shutdown complete.");
+      logger.info("Shutdown complete.");
       process.exit(err ? 1 : 0);
     });
     server.closeIdleConnections();
@@ -244,17 +258,17 @@ async function main() {
 // which turns any one missed `await` - a background sweep, a detached check, a library's timer -
 // into an outage for every project on the box. Log it loudly and keep serving.
 process.on("unhandledRejection", reason => {
-  console.error("Unhandled promise rejection (engine kept running):", reason);
+  logger.error({ err: reason }, "Unhandled promise rejection (engine kept running):");
 });
 // An uncaught exception keeps Node's fatal default: it can leave whatever threw halfway through,
 // and carrying on from there is how a crash becomes silent corruption. This only adds the log
 // line. (SQLite is safe: WAL mode is crash-safe, it is the checkpoint that is skipped.)
 process.on("uncaughtException", err => {
-  console.error("Uncaught exception, exiting:", err);
+  logger.error({ err: err }, "Uncaught exception, exiting:");
   process.exit(1);
 });
 
 main().catch(err => {
-  console.error("agentx engine failed to start:", err);
+  logger.error({ err: err }, "agentx engine failed to start:");
   process.exit(1);
 });

@@ -6,6 +6,7 @@ import { resolveAgentId } from "../monitor/agents.js";
 import { listPortabilityModels, estimateCostUSD } from "../evaluate/models.js";
 import { getClassificationForTrace } from "../monitor/topics.js";
 import { unixNanosToDate } from "../shared/unixNano.js";
+import { logger } from "../../log.js";
 
 // Mirrors the wire payload agentx.tracing.tracer.Tracer._send builds in the Python SDK
 // (agentx/tracing/tracer.py); see AgentX-Python for the exact field list this was checked
@@ -125,7 +126,7 @@ export async function ingestTrace(
   // operator is trying to debug. The warning is what surfaces the client-side bug.
   const startedAt = unixNanosToDate(payload.started_at_unix_nano);
   if (payload.started_at_unix_nano && !startedAt) {
-    console.warn(`Ignoring unparseable started_at_unix_nano "${payload.started_at_unix_nano}" on trace "${payload.name}"`);
+    logger.warn(`Ignoring unparseable started_at_unix_nano "${payload.started_at_unix_nano}" on trace "${payload.name}"`);
   }
   const row = {
     id,

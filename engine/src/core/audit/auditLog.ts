@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, gte, inArray, type SQL } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { logger } from "../../log.js";
 
 // The append-only audit trail (P2.2 of the enterprise improvement plan). Two functions, by
 // design: record and list. There is no update, no delete, and no route that reaches either -
@@ -52,7 +53,7 @@ export async function recordAuditEvent(db: Db, input: AuditEventInput): Promise<
       await db.db.insert(db.schema.auditEvents).values(row);
     }
   } catch (err) {
-    console.error("Audit event write failed (request unaffected):", err);
+    logger.error({ err: err }, "Audit event write failed (request unaffected):");
   }
 }
 

@@ -32,6 +32,7 @@ async function countTracesToday(db: Db): Promise<number> {
 import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
 import { runCustomEvaluators } from "../core/monitor/customEvaluators.js";
 import { runClassification } from "../core/monitor/topics.js";
+import { logger } from "../log.js";
 
 // Path matters here: AgentX-Python's IngestClient builds its endpoint as
 // f"{base_url}/ingest/traces" (agentx/tracing/ingest_client.py). Mounting this router at
@@ -128,7 +129,7 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
     traceForMonitor,
     parsed.data.monitor ? { agentId, traceId, patternIds: parsed.data.pattern_ids } : { agentId, traceId }
   ).catch(err => {
-    console.error("Monitor check failed:", err instanceof Error ? err.message : err);
+    logger.error({ err: err instanceof Error ? err.message : err }, "Monitor check failed:");
   });
 
   // Independent of the `monitor` flag above: online evaluators are a server-side-configured
@@ -138,13 +139,13 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
     { input: parsed.data.input, output: parsed.data.output, metadata: parsed.data.metadata },
     { agentId, traceId }
   ).catch(err => {
-    console.error("Online evaluator scoring failed:", err instanceof Error ? err.message : err);
+    logger.error({ err: err instanceof Error ? err.message : err }, "Online evaluator scoring failed:");
   });
 
   // Same independent, opt-in-by-creating-one posture as online evaluators above - see
   // core/monitor/customEvaluators.ts.
   runCustomEvaluators(scopedDb(req), traceForMonitor, { agentId, traceId }).catch(err => {
-    console.error("Custom evaluator scoring failed:", err instanceof Error ? err.message : err);
+    logger.error({ err: err instanceof Error ? err.message : err }, "Custom evaluator scoring failed:");
   });
 
   // Third independent pass, same fire-and-forget shape - see core/monitor/topics.ts. Opt-in via
@@ -155,7 +156,7 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
     { input: parsed.data.input, output: parsed.data.output },
     { agentId, traceId }
   ).catch(err => {
-    console.error("Trace classification failed:", err instanceof Error ? err.message : err);
+    logger.error({ err: err instanceof Error ? err.message : err }, "Trace classification failed:");
   });
 });
 

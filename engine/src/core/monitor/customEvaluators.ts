@@ -6,6 +6,7 @@ import { recordEvent } from "./events.js";
 import { loadScorerSpans, runScriptScorer, type ScorerSpan } from "./scriptScorer.js";
 import { getTraceRow } from "../trace/ingest.js";
 import { upsertSignal } from "./signals.js";
+import { logger } from "../../log.js";
 
 // Promoted out of core/monitor/conditions.ts's Pattern-condition "external" detector - same
 // call-out-and-await-a-verdict shape as Online Evaluators (onlineEvaluators.ts), just with a URL
@@ -335,7 +336,7 @@ export async function runCustomEvaluators(
       // per-evaluator, same reasoning as onlineEvaluators.ts / detect.ts's per-pattern isolation.
       // No Signal is raised for the evaluator's own call failure, same posture a broken judge
       // config already has in runOnlineEvaluators.
-      console.error(`Custom evaluator "${evaluator.name}" failed to call ${evaluator.url}:`, err instanceof Error ? err.message : err);
+      logger.error({ err: err instanceof Error ? err.message : err }, `Custom evaluator "${evaluator.name}" failed to call ${evaluator.url}:`);
       continue;
     }
 
@@ -404,7 +405,7 @@ async function runCodeKind(
   );
 
   if (result.error) {
-    console.error(`Code scorer "${evaluator.name}" failed:`, result.error);
+    logger.error({ err: result.error }, `Code scorer "${evaluator.name}" failed:`);
     await recordEvent(db, {
       signalId: null,
       patternKey: `custom-eval:${evaluator.id}`,
