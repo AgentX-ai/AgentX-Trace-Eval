@@ -27,7 +27,7 @@ async function signUp(email: string, password: string, name: string): Promise<st
 
 // engine.json types body as unknown; these tests assert deep into responses, so one loose
 // cast at the access site keeps the assertions readable.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const bodyOf = (res: { body: unknown }): any => res.body;
 
 const asUser = (cookie: string, init: RequestInit = {}): RequestInit & { apiKey: null } => ({

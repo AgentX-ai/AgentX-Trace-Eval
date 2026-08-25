@@ -38,7 +38,7 @@ const asUser = (cookie: string, init: RequestInit = {}): RequestInit & { apiKey:
   headers: { ...(init.headers as Record<string, string> | undefined), cookie },
 });
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 const bodyOf = (res: { body: unknown }): any => res.body;
 
 let carolCookie = "";

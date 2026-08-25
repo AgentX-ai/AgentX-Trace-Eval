@@ -43,7 +43,7 @@ export function isExportEntity(value: string): value is ExportEntity {
 
 // drizzle's sqlite and pg table types don't unify, so the registry lookup narrows through `any`
 // in this one spot; the two schemas are kept structurally parallel by auth/schemaParity.test.ts.
-/* eslint-disable @typescript-eslint/no-explicit-any */
+ 
 function entityTable(db: Db, entity: ExportEntity): any {
   return (db.schema as Record<string, any>)[EXPORT_ENTITIES[entity].table];
 }
@@ -82,4 +82,4 @@ export async function fetchExportBatch(
     .limit(EXPORT_BATCH);
   return db.kind === "sqlite" ? q.all() : await q;
 }
-/* eslint-enable @typescript-eslint/no-explicit-any */
+ 

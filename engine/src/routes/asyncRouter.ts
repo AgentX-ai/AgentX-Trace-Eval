@@ -38,7 +38,7 @@ export function asyncRouter(): IRouter {
   const router = Router();
   for (const method of WRAPPED_METHODS) {
     const original = router[method].bind(router) as (...args: unknown[]) => unknown;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     (router as any)[method] = (...args: unknown[]) =>
       original(...args.map(arg => (typeof arg === "function" ? asyncHandler(arg as RequestHandler) : arg)));
   }

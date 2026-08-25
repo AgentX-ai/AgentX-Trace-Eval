@@ -342,9 +342,11 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
     config.similarityConfig.vectorSimilarity?.enabled
       ? computeVectorSimilarity(expected, actual, config.similarityConfig.vectorSimilarity.model)
       : Promise.resolve(null),
-    config.similarityConfig.jaccardSimilarity?.enabled ? computeJaccardSimilarity(expected, actual) : null,
-    config.similarityConfig.bleuScore?.enabled ? computeBleuScore(expected, actual) : null,
-    config.similarityConfig.rougeScore?.enabled ? computeRougeScore(expected, actual) : null,
+    // Sync metrics wrapped explicitly - Promise.all accepts plain values, but the explicit
+    // resolve marks "synchronous on purpose" for the await-thenable lint rule.
+    Promise.resolve(config.similarityConfig.jaccardSimilarity?.enabled ? computeJaccardSimilarity(expected, actual) : null),
+    Promise.resolve(config.similarityConfig.bleuScore?.enabled ? computeBleuScore(expected, actual) : null),
+    Promise.resolve(config.similarityConfig.rougeScore?.enabled ? computeRougeScore(expected, actual) : null),
     // Each code scorer isolates its own failure into { score: null, error } (see codeScorer.ts's
     // runCodeScorer) - a broken/timed-out scorer never rejects this Promise.all or takes down the
     // judge rating / similarity scores alongside it.

@@ -92,6 +92,8 @@ import {
 } from "../core/project/projects.js";
 import { maskSecret } from "../core/shared/maskSecret.js";
 import { validateSeverityParam } from "../core/shared/severity.js";
+import { z } from "zod";
+import { validateBody } from "./validateBody.js";
 import { validateSampleRateParam } from "../core/shared/sampleRate.js";
 
 // Mounted at /api/v1/agent-monitoring - the paths AgentX-web-front's dashboard actually calls
@@ -1353,54 +1355,48 @@ agentMonitoringDashboardRouter.get("/settings", async (req: Request, res: Respon
 // Project-level monitoring defaults (coverage/sample rate/retention -
 // see core/project/projects.ts's MonitoringDefaults) - moved here from being per-agent
 // AgentMonitoringProfile fields, see core/monitor/profiles.ts's toWire comment.
-agentMonitoringDashboardRouter.put("/settings/monitoring-defaults", async (req: Request, res: Response) => {
-  const body = req.body ?? {};
-  const patch: {
-    coverageMode?: string;
-    sampleRate?: number;
-    retentionDays?: number;
-    latencyThresholdMs?: number;
-    topicsEnabled?: boolean;
-    topicsSampleRate?: number;
-    coherenceSweepEnabled?: boolean;
-    enabledBuiltinPatterns?: string[];
-  } = {};
-  // coverageMode/sampleRate are LEGACY: stored for old clients, read by no monitoring consumer
-  // (see schema.sqlite.ts's projects.coverageMode block).
-  if (typeof body.coverageMode === "string") patch.coverageMode = body.coverageMode;
-  if (typeof body.sampleRate === "number") patch.sampleRate = body.sampleRate;
-  if (typeof body.retentionDays === "number") patch.retentionDays = body.retentionDays;
-  if (typeof body.latencyThresholdMs === "number") patch.latencyThresholdMs = body.latencyThresholdMs;
-  if (typeof body.topicsEnabled === "boolean") patch.topicsEnabled = body.topicsEnabled;
-  if (body.topicsSampleRate !== undefined) {
-    const checked = validateSampleRateParam(body.topicsSampleRate);
-    if (!checked.ok) {
-      res.status(400).json({ error: `topicsSampleRate: ${checked.error}` });
-      return;
+// The exemplar for validateBody: shape/range checks live in the schema (a mistyped field is a
+// named 400, not the old silent typeof-skip), unknown keys are stripped for legacy clients, and
+// only cross-data checks (the known-scorer-keys list) stay in the handler.
+// coverageMode/sampleRate are LEGACY: stored for old clients, read by no monitoring consumer
+// (see schema.sqlite.ts's projects.coverageMode block).
+const monitoringDefaultsPatchSchema = z
+  .object({
+    coverageMode: z.enum(["all", "sampled"]).optional(),
+    sampleRate: z.number().min(0).max(1).optional(),
+    retentionDays: z.number().int().min(0).optional(),
+    latencyThresholdMs: z.number().int().min(0).optional(),
+    topicsEnabled: z.boolean().optional(),
+    topicsSampleRate: z.number().min(0).max(1).optional(),
+    coherenceSweepEnabled: z.boolean().optional(),
+    enabledBuiltinPatterns: z.array(z.string()).optional(),
+  })
+  .strip();
+
+agentMonitoringDashboardRouter.put(
+  "/settings/monitoring-defaults",
+  validateBody(monitoringDefaultsPatchSchema),
+  async (req: Request, res: Response) => {
+    const patch = req.body as z.infer<typeof monitoringDefaultsPatchSchema>;
+    if (patch.enabledBuiltinPatterns) {
+      // Reject unknown keys instead of storing them: a typo'd key used to be accepted verbatim,
+      // enable nothing, and report nothing - the config-as-code caller believed a scorer was on
+      // while nothing ran (deep-dive round 3, bug #2). Silent no-op config is the same failure
+      // class the removed redaction placebo was.
+      const known = new Set<string>(BUILT_IN_MONITOR_PATTERNS.map(p => p.key));
+      const unknown = patch.enabledBuiltinPatterns.filter(k => !known.has(k));
+      if (unknown.length > 0) {
+        res.status(400).json({
+          error: `Unknown template scorer key(s): ${unknown.join(", ")}`,
+          knownKeys: [...known],
+        });
+        return;
+      }
     }
-    patch.topicsSampleRate = checked.sampleRate;
+    const monitoringDefaults = await updateMonitoringDefaults(scopedDb(req), patch);
+    res.status(200).json({ monitoringDefaults });
   }
-  if (typeof body.coherenceSweepEnabled === "boolean") patch.coherenceSweepEnabled = body.coherenceSweepEnabled;
-  if (Array.isArray(body.enabledBuiltinPatterns)) {
-    const keys = (body.enabledBuiltinPatterns as unknown[]).filter((k): k is string => typeof k === "string");
-    // Reject unknown keys instead of storing them: a typo'd key used to be accepted verbatim,
-    // enable nothing, and report nothing - the config-as-code caller believed a scorer was on
-    // while nothing ran (deep-dive round 3, bug #2). Silent no-op config is the same failure
-    // class the removed redaction placebo was.
-    const known = new Set<string>(BUILT_IN_MONITOR_PATTERNS.map(p => p.key));
-    const unknown = keys.filter(k => !known.has(k));
-    if (unknown.length > 0) {
-      res.status(400).json({
-        error: `Unknown template scorer key(s): ${unknown.join(", ")}`,
-        knownKeys: [...known],
-      });
-      return;
-    }
-    patch.enabledBuiltinPatterns = keys;
-  }
-  const monitoringDefaults = await updateMonitoringDefaults(scopedDb(req), patch);
-  res.status(200).json({ monitoringDefaults });
-});
+);
 
 agentMonitoringDashboardRouter.put("/settings/llm-keys", async (req: Request, res: Response) => {
   const body = req.body ?? {};

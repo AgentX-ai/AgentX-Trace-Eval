@@ -38,6 +38,11 @@ jobs:
           yarn workspace @agentx/judge-core typecheck
           yarn workspace @agentx/engine typecheck
 
+      # Async discipline the compiler can't enforce: no-floating-promises et al. - see
+      # engine/eslint.config.mjs for why the rule set is deliberately narrow.
+      - name: Lint engine
+        run: yarn workspace @agentx/engine lint
+
       - name: Test judge-core
         run: yarn workspace @agentx/judge-core test
 

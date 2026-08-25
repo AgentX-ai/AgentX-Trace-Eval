@@ -11,7 +11,7 @@ import { runWithTenancy } from "./requestContext.js";
 // Db from it via withProjectId(getDb(), req.projectId) before calling into project-scoped core
 // functions (traces, agents, patterns, datasets, ...).
 declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
+   
   namespace Express {
     interface Request {
       projectId?: string;

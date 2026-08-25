@@ -56,8 +56,8 @@ async function createThrowawayDatabase(): Promise<{ url: string; drop: () => Pro
   };
 }
 
-async function freePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
     const srv = net.createServer();
     srv.once("error", reject);
     srv.listen(0, "127.0.0.1", () => {

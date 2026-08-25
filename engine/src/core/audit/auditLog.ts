@@ -70,7 +70,7 @@ export type AuditListFilters = {
 export async function listAuditEvents(db: Db, filters: AuditListFilters = {}): Promise<AuditEventRow[]> {
   // Same one-spot `any` narrowing as core/export/exportData.ts: the sqlite/pg table types
   // don't unify, and the two schemas are kept parallel by auth/schemaParity.test.ts.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   const t: any = db.schema.auditEvents;
   const conds: SQL[] = [];
   if (filters.since) {
@@ -90,7 +90,7 @@ export async function listAuditEvents(db: Db, filters: AuditListFilters = {}): P
   }
   const limit = Math.min(Math.max(filters.limit ?? 200, 1), 1000);
   const where = conds.length ? and(...conds) : undefined;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   const q = (db.db as any).select().from(t).where(where).orderBy(desc(t.createdAt)).limit(limit);
   const rows = db.kind === "sqlite" ? q.all() : await q;
   return rows as AuditEventRow[];

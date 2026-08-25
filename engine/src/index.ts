@@ -127,7 +127,7 @@ async function main() {
   // because Express only reaches an error handler that comes AFTER the failing layer. Same
   // statusCode-carrying JSON shape as the /api 404 above (AgentX-web-front's axios interceptor
   // reads it). `next` is unused but must stay declared - Express detects error middleware by arity.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+   
   app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     // %s placeholders, not interpolation: a URL containing "%s" would otherwise be read as a
     // format specifier and swallow the error argument that follows.
