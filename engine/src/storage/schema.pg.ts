@@ -727,3 +727,15 @@ export const pairwiseComparisons = pgTable("pairwise_comparisons", {
   judgeModel: text("judge_model"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
 });
+
+// See schema.sqlite.ts's playgroundProfiles for the full comment.
+export const playgroundProfiles = pgTable("playground_profiles", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  name: text("name").notNull(),
+  description: text("description"),
+  promptId: text("prompt_id"),
+  config: jsonb("config").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+});

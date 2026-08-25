@@ -25,6 +25,7 @@ export const EXPORT_ENTITIES = {
   // Head-to-head verdicts are judged work with real judge spend behind them; losing them on a
   // restore would mean re-running (and re-paying for) every comparison.
   "pairwise-comparisons": { table: "pairwiseComparisons", sinceColumn: "createdAt" },
+  "playground-profiles": { table: "playgroundProfiles", sinceColumn: "createdAt" },
   datasets: { table: "datasets", sinceColumn: "createdAt" },
   feedback: { table: "userFeedback", sinceColumn: "createdAt" },
   outcomes: { table: "outcomeReports", sinceColumn: "reportedAt" },

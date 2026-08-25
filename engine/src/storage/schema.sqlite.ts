@@ -1104,3 +1104,27 @@ export const pairwiseComparisons = sqliteTable("pairwise_comparisons", {
   judgeModel: text("judge_model"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
+
+// A saved Playground workbench: the whole setup a person had configured - system messages, tool
+// and MCP rows, model selection, scorers, and test input - so it can be reopened later or handed
+// to a teammate. "Save as prompt" only ever captured the prompt text, which meant the tools
+// someone had just wired up were gone on reload.
+//
+// The workbench itself lives in one `config` JSON blob rather than a column per field, the same
+// posture playground_runs takes with its snapshot: the Playground grows fields regularly and the
+// engine has no reason to understand each one. What the engine DOES enforce is the shape (zod, at
+// the route) and one exclusion - an MCP OAuth session handle is never stored here, see
+// core/evaluate/playgroundProfiles.ts.
+export const playgroundProfiles = sqliteTable("playground_profiles", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  name: text("name").notNull(),
+  description: text("description"),
+  // Which registry prompt (prompts.id) the messages came from, if any - kept as its own column
+  // because a profile pointing at a deleted prompt is worth being able to find.
+  promptId: text("prompt_id"),
+  // { messages, tools, models, scorers, testInput } - see PlaygroundProfileConfig.
+  config: text("config", { mode: "json" }).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});

@@ -605,6 +605,17 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       created_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS playground_profiles (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      name TEXT NOT NULL,
+      description TEXT,
+      prompt_id TEXT,
+      config TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS pairwise_comparisons (
       id TEXT PRIMARY KEY,
       project_id TEXT,
@@ -1766,6 +1777,17 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       fired_count INTEGER NOT NULL DEFAULT 0,
       last_fired_at TIMESTAMP,
       created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS playground_profiles (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      name TEXT NOT NULL,
+      description TEXT,
+      prompt_id TEXT,
+      config JSONB NOT NULL,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS pairwise_comparisons (
