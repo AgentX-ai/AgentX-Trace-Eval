@@ -52,6 +52,7 @@ import {
   listOnlineEvaluatorsWire,
   getOnlineEvaluatorRow,
   InvalidEvaluationSettingsIdError,
+  ReferenceCentricScorerError,
 } from "../core/monitor/onlineEvaluators.js";
 import {
   BuiltinJudgeScorerError,
@@ -503,6 +504,10 @@ agentMonitoringDashboardRouter.post("/online-evaluators", async (req: Request, r
       res.status(400).json({ error: err.message });
       return;
     }
+    if (err instanceof ReferenceCentricScorerError) {
+      res.status(409).json({ error: err.message });
+      return;
+    }
     throw err;
   }
 });
@@ -534,6 +539,10 @@ agentMonitoringDashboardRouter.put("/online-evaluators/:evaluatorId", async (req
   } catch (err) {
     if (err instanceof InvalidEvaluationSettingsIdError) {
       res.status(400).json({ error: err.message });
+      return;
+    }
+    if (err instanceof ReferenceCentricScorerError) {
+      res.status(409).json({ error: err.message });
       return;
     }
     throw err;
@@ -618,14 +627,22 @@ agentMonitoringDashboardRouter.post("/judge-scorers", async (req: Request, res: 
   const online = parsed.online
     ? { ...parsed.online, agentIds: await resolveAgentIds(scopedDb(req), parsed.online.agentIds) }
     : parsed.online;
-  const judgeScorer = await createJudgeScorer(scopedDb(req), {
-    name: body.name.trim(),
-    description: typeof body.description === "string" ? body.description : undefined,
-    judge: body.judge && typeof body.judge === "object" ? body.judge : undefined,
-    offline: body.offline && typeof body.offline === "object" ? body.offline : undefined,
-    online,
-  });
-  res.status(201).json({ judgeScorer });
+  try {
+    const judgeScorer = await createJudgeScorer(scopedDb(req), {
+      name: body.name.trim(),
+      description: typeof body.description === "string" ? body.description : undefined,
+      judge: body.judge && typeof body.judge === "object" ? body.judge : undefined,
+      offline: body.offline && typeof body.offline === "object" ? body.offline : undefined,
+      online,
+    });
+    res.status(201).json({ judgeScorer });
+  } catch (err) {
+    if (err instanceof ReferenceCentricScorerError) {
+      res.status(409).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
 });
 
 agentMonitoringDashboardRouter.put("/judge-scorers/:id", async (req: Request, res: Response) => {
@@ -652,7 +669,7 @@ agentMonitoringDashboardRouter.put("/judge-scorers/:id", async (req: Request, re
     }
     res.status(200).json({ judgeScorer });
   } catch (err) {
-    if (err instanceof BuiltinJudgeScorerError) {
+    if (err instanceof BuiltinJudgeScorerError || err instanceof ReferenceCentricScorerError) {
       res.status(409).json({ error: err.message });
       return;
     }
@@ -669,7 +686,7 @@ agentMonitoringDashboardRouter.delete("/judge-scorers/:id", async (req: Request,
     }
     res.status(204).send();
   } catch (err) {
-    if (err instanceof BuiltinJudgeScorerError) {
+    if (err instanceof BuiltinJudgeScorerError || err instanceof ReferenceCentricScorerError) {
       res.status(409).json({ error: err.message });
       return;
     }

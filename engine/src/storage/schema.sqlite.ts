@@ -162,6 +162,10 @@ export const evaluationSettings = sqliteTable("evaluation_settings", {
   // metadata.tools first with the registry as a by-name fallback, plus a one-line mention of
   // advertised-but-unused tools).
   toolContext: text("tool_context").notNull().default("simple"),
+  // Reference-centric rubric: the judge's task is meaningless without a dataset case's
+  // expected_results (e.g. RAG: Contextual Recall). Gates online enable (409) and skips
+  // reference-less items in offline runs - see the "two grading modes" docs section.
+  requiresExpected: integer("requires_expected", { mode: "boolean" }).notNull().default(false),
   // True for rows the engine itself seeded (the Example judge, the RAG metric packs): quick-start
   // templates, not the user's own scorers. The dashboard's first-run starter state keys on it -
   // never inherited by clones, never settable through the write surfaces.

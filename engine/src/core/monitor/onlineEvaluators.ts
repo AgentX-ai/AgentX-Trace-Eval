@@ -86,6 +86,21 @@ function toWire(row: OnlineEvaluatorRow) {
 // "name is required" validation error.
 export class InvalidEvaluationSettingsIdError extends Error {}
 
+// Two grading modes: a reference-centric rubric (requiresExpected - e.g. RAG: Contextual Recall)
+// has nothing to grade on live traffic, where no trace carries expected results. Enabling it
+// online would produce confident-looking scores of nothing, so the engine refuses loudly (409)
+// on BOTH surfaces (this legacy one and judgeScorers.ts's unified one route through here).
+export class ReferenceCentricScorerError extends Error {}
+
+async function assertScorableOnline(db: Db, evaluationSettingsId: string): Promise<void> {
+  const row = await getEvaluationSettingsRow(db, evaluationSettingsId);
+  if (row?.requiresExpected) {
+    throw new ReferenceCentricScorerError(
+      `"${row.name}" needs a reference answer (requiresExpected) - it can only grade offline dataset runs, not live traffic. Disable requiresExpected or keep live scoring off.`
+    );
+  }
+}
+
 async function assertEvaluationSettingsExists(db: Db, evaluationSettingsId: string): Promise<void> {
   const row = await getEvaluationSettingsRow(db, evaluationSettingsId);
   if (!row) {
@@ -130,6 +145,9 @@ async function resolveBindableSettingsId(db: Db, evaluationSettingsId: string, s
 
 export async function createOnlineEvaluator(db: Db, input: CreateOnlineEvaluatorInput) {
   const evaluationSettingsId = await resolveBindableSettingsId(db, input.evaluationSettingsId);
+  if (input.enabled !== false) {
+    await assertScorableOnline(db, evaluationSettingsId);
+  }
   const row: OnlineEvaluatorRow = {
     id: nanoid(),
     projectId: db.projectId,
@@ -214,6 +232,11 @@ export async function updateOnlineEvaluator(db: Db, id: string, input: UpdateOnl
     scope: input_.scope !== undefined ? (input_.scope === "session" ? "session" : "trace") : existing.scope,
     idleSeconds: input_.idleSeconds ?? existing.idleSeconds,
   };
+  // Gate on the POST-patch state: an update that flips enabled on (or repoints the binding)
+  // for a reference-centric rubric is the same mistake as creating it enabled.
+  if (updated.enabled && updated.evaluationSettingsId) {
+    await assertScorableOnline(db, updated.evaluationSettingsId);
+  }
   const setValues = {
     name: updated.name,
     evaluationSettingsId: updated.evaluationSettingsId,

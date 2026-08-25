@@ -463,3 +463,39 @@ describe("judge preview endpoints (Try it on a real trace/session)", () => {
     expect(body.dailyTraces).toBeGreaterThanOrEqual(0);
   });
 });
+
+describe("two grading modes: reference-centric rubrics are offline-only", () => {
+  it("seeded RAG: Contextual Recall carries requiresExpected and refuses online enable", async () => {
+    const list = await api("/agent-monitoring/judge-scorers");
+    const scorers = (list.body as { judgeScorers: { _id: string; name: string; judge: { requiresExpected: boolean } }[] })
+      .judgeScorers;
+    const recall = scorers.find(s => s.name === "RAG: Contextual Recall");
+    expect(recall?.judge.requiresExpected).toBe(true);
+    // Faithfulness stays dual-surface.
+    expect(scorers.find(s => s.name === "RAG: Faithfulness")?.judge.requiresExpected).toBe(false);
+    const enable = await api(`/agent-monitoring/judge-scorers/${recall!._id}`, {
+      method: "PUT",
+      body: JSON.stringify({ online: { enabled: true } }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(enable.status).toBe(409);
+    expect((enable.body as { error: string }).error).toContain("reference answer");
+  });
+
+  it("creating a scorer with requiresExpected + enabled online is a 409; offline-only create works", async () => {
+    const refused = await api("/agent-monitoring/judge-scorers", postJson({
+      name: "exact-match judge",
+      judge: { acceptanceCriteria: "Matches the reference", requiresExpected: true },
+      online: { enabled: true, sampleRate: 0.1 },
+    }));
+    expect(refused.status).toBe(409);
+    const ok = await api("/agent-monitoring/judge-scorers", postJson({
+      name: "exact-match judge",
+      judge: { acceptanceCriteria: "Matches the reference", requiresExpected: true },
+    }));
+    expect(ok.status).toBe(201);
+    const wire = (ok.body as { judgeScorer: { judge: { requiresExpected: boolean }; online: null } }).judgeScorer;
+    expect(wire.judge.requiresExpected).toBe(true);
+    expect(wire.online).toBeNull();
+  });
+});

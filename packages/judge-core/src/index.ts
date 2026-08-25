@@ -223,24 +223,33 @@ export const REFERENCE_FREE_EXPECTED_PLACEHOLDER =
 
 // Deliberately compact (simplified 2026-08 from a ~30-line rulebook at Robin's request): the
 // JSON response shape is enforced by callJudgeJson's schema, not by prose, so the prompt only
-// needs the scoring semantics. Every rule below preserves the intent of the long version:
-// expected-results-as-ground-truth, exact-fact strictness, no style credit, tools optional.
-export const DEFAULT_JUDGE_PROMPT = `You are an expert AI evaluator. Score the agent response against the expected results.
+// needs the scoring semantics.
+//
+// Criteria-anchored, reference-guided (2026-08, "two grading modes" alignment): a scorer is one
+// rubric serving BOTH surfaces - offline dataset runs (which always carry expected_results) and
+// online live scoring (which never does). The old default made Expected Results THE rubric, so
+// the same scorer answered a different question on each surface ("matches the reference?" vs.
+// the reference-free sibling's "meets the criteria?") and the two score streams weren't
+// comparable. Now both modes anchor on the evaluation criteria - the constant across surfaces -
+// and a reference answer, when present, adds factual strictness on top (the industry
+// "reference-guided grading" pattern) instead of replacing the rubric. Exact-fact strictness,
+// no style credit, and tools-optional all survive from the long version.
+export const DEFAULT_JUDGE_PROMPT = `You are an expert AI evaluator. Score the agent response against the evaluation criteria provided with this request. A reference answer ("Expected Results") is also provided: treat it as ground truth for factual claims.
 
 **User Query:** {input}
 
 **Agent Response:**
 {output}
 
-**Expected Results:**
+**Expected Results (reference answer - ground truth for facts):**
 {expected}
 
-Rate 0-10 (0 = completely wrong, 5 = partially correct, 10 = perfect) with a concise justification, written in the same language as the query.
+Rate 0-10 (0 = fails the criteria completely, 5 = partially meets them, 10 = fully meets them) with a concise justification, written in the same language as the query.
 
 Rules:
-- The Expected Results are ground truth by definition. Score only how well the response agrees with them - never fact-check, dispute, or second-guess them with outside knowledge.
-- Specific facts (dates, numbers, names) must match exactly; a wrong core fact scores low (0-3) no matter how detailed or well-written the response is, and extra context never compensates.
-- Completeness counts: the response should cover every aspect of the Expected Results, stay on topic, and be clear.
+- The evaluation criteria are the rubric. Score how well the response meets them; the Expected Results tell you which facts are true - never fact-check, dispute, or second-guess them with outside knowledge.
+- Specific facts (dates, numbers, names) that contradict the Expected Results score low (0-3) no matter how detailed or well-written the response is, and extra context never compensates.
+- Completeness counts: the response should cover what the criteria and the Expected Results call for, stay on topic, and be clear.
 - Tools are optional unless the test explicitly requires them; references listed in the trace count as retrieval context, so do not penalize a missing explicit tool call.`;
 
 // ---------------------------------------------------------------------------

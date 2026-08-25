@@ -44,6 +44,8 @@ export type JudgeScorerJudgeInput = {
   // "detailed" (simple + definitions for the tools actually used + a one-line unused-tools
   // mention). See evaluation_settings.toolContext.
   toolContext?: string;
+  // Reference-centric rubric: offline-only. Enabling online scoring on such a scorer is a 409.
+  requiresExpected?: boolean;
 };
 
 export type JudgeScorerOfflineInput = {
@@ -119,6 +121,9 @@ export function toJudgeScorerWire(settings: EvaluationSettingsRow, evaluator: On
       judgePrompt: settings.judgePrompt ?? undefined,
       judgeModel: settings.judgeModel ?? undefined,
       toolContext: normalizeToolContext(settings.toolContext),
+      // Reference-centric rubric: offline-only (online enable is refused, reference-less
+      // offline items are skipped) - the "two grading modes" exception flag.
+      requiresExpected: settings.requiresExpected ?? false,
     },
     offline: {
       numberOfRequests: settings.numberOfRequests,
@@ -203,6 +208,7 @@ export async function createJudgeScorer(db: Db, input: CreateJudgeScorerInput) {
     judgePrompt: input.judge?.judgePrompt,
     judgeModel: input.judge?.judgeModel,
     toolContext: input.judge?.toolContext !== undefined ? normalizeToolContext(input.judge.toolContext) : undefined,
+    requiresExpected: input.judge?.requiresExpected,
     isDefault: input.offline?.isDefault,
     status: input.offline?.status,
   });
@@ -252,6 +258,7 @@ export async function updateJudgeScorer(db: Db, id: string, patch: UpdateJudgeSc
       if (patch.judge[key] !== undefined) settingsPatch[key] = patch.judge[key];
     }
     if (patch.judge.toolContext !== undefined) settingsPatch.toolContext = normalizeToolContext(patch.judge.toolContext);
+    if (patch.judge.requiresExpected !== undefined) settingsPatch.requiresExpected = patch.judge.requiresExpected;
   }
   if (patch.offline) {
     if (patch.offline.numberOfRequests !== undefined) settingsPatch.numberOfRequests = patch.offline.numberOfRequests;
