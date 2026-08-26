@@ -1,0 +1,43 @@
+# Four ecosystems, because this repo ships from four of them: the yarn workspace (engine +
+# packages/judge-core), the Go CLI, the workflows themselves, and the Dockerfile's base images.
+#
+# The github-actions entry is the one that is easy to forget and most worth having. Every workflow
+# here pins its actions to a full commit SHA rather than a moving tag, which is the right call for
+# supply-chain reasons and has exactly one cost: a pinned SHA never updates, so a security fix in
+# an action is invisible until someone re-reads the pin by hand. This turns that into a PR.
+#
+# Grouped and monthly on purpose. Ungrouped weekly dependency PRs are how a small project ends up
+# with a permanently red, permanently ignored PR queue; one batched PR per ecosystem per month is
+# a review a maintainer actually does.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      npm:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: gomod
+    directory: /cli
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
