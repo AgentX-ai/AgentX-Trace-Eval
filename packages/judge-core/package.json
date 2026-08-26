@@ -28,11 +28,11 @@
     "openai": ">=4"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^0.27.3",
+    "@anthropic-ai/sdk": "^0.120.0",
     "@types/node": "^22.5.0",
     "openai": "^4.58.1",
     "tsup": "^8.5.0",
     "typescript": "^5.5.4",
-    "vitest": "^4.0.5"
+    "vitest": "^4.1.11"
   }
 }
