@@ -12,8 +12,7 @@ import {
   computeRunGate,
   recordGateResult,
   computeLiveStatistics,
-  MAX_BATCH_SIZE,
-} from "../core/evaluate/runs.js";
+  MAX_BATCH_SIZE, getRunResults, type RunResultRow,} from "../core/evaluate/runs.js";
 import { createPrompt, getPromptForSdk, listPromptsForSdk } from "../core/evaluate/prompts.js";
 import { runEvaluationAnalysis, getEvaluationAnalysisStatus, getEvaluationAnalysisRow } from "../core/evaluate/analysis.js";
 import { handleCasePreview, handleSuggestExpected, handleAddCase } from "./curationHandlers.js";
@@ -224,12 +223,25 @@ evaluationsRouter.get("/runs/:runId/report", async (req: Request, res: Response)
     res.status(404).json({ error: "No analysis found for this run. POST /runs/:runId/analyze first." });
     return;
   }
+  // A report that cannot point at its failures is a summary. The hosted platform sends
+  // lowScoringCases; this route silently omitted it, so the SDK's Report.low_scoring_cases was
+  // [] forever on self-host. Derived from the run's own rows: rating at or below the middle.
+  const results = await getRunResults(db, runId);
+  const lowScoringCases = results
+    .filter((r: RunResultRow) => r.rating != null && (r.rating as number) <= 5)
+    .map((r: RunResultRow) => ({
+      query: r.input?.query ?? null,
+      response: r.output?.text ?? null,
+      rating: r.rating,
+      justification: r.justification ?? null,
+    }));
   res.status(200).json({
     ...(row.analysis ?? {}),
     runId,
     datasetId: run.datasetId,
     status: row.status,
     statistics: row.statistics ?? null,
+    lowScoringCases,
   });
 });
 

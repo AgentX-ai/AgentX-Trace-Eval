@@ -244,7 +244,9 @@ export const DEFAULT_JUDGE_PROMPT = `You are an expert AI evaluator. Score the a
 **Expected Results (reference answer - ground truth for facts):**
 {expected}
 
-Rate 0-10 (0 = fails the criteria completely, 5 = partially meets them, 10 = fully meets them) with a concise justification written in the language the query itself is written in (if unclear, English).
+Rate 0-10 (0 = fails the criteria completely, 5 = partially meets them, 10 = fully meets them) with a concise justification.
+
+**LANGUAGE:** Write the justification in the language the User Query itself is written in - an English query gets an English justification. If the query's language is unclear or mixed, write in English.
 
 Rules:
 - The evaluation criteria are the rubric. Score how well the response meets them; the Expected Results tell you which facts are true - never fact-check, dispute, or second-guess them with outside knowledge.
