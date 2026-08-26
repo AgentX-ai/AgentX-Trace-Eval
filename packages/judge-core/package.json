@@ -1,6 +1,6 @@
 {
   "name": "@agentx/judge-core",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "LLM-as-judge prompt template + multi-provider (OpenAI/Anthropic) scoring call, shared between AgentX-web-api and AgentX-trace-eval's engine so the two don't maintain separate copies.",
   "license": "Apache-2.0",
   "type": "module",
@@ -28,7 +28,7 @@
     "openai": ">=4"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^0.27.3",
+    "@anthropic-ai/sdk": "^0.120.0",
     "@types/node": "^22.5.0",
     "openai": "^7.5.0",
     "tsup": "^8.5.0",
