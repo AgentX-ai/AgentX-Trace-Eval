@@ -3,6 +3,7 @@ import { and, eq, gte, isNull, lt } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { getTraceRow } from "../trace/ingest.js";
 import { getAgentNamesById } from "./agents.js";
+import { productionTracesOnly } from "../trace/evalTraffic.js";
 
 // Matches AgentX-web-front's MonitoringWindow (src/types/agentMonitoring.ts).
 export type MonitoringWindow = "24h" | "7d" | "30d";
@@ -196,7 +197,8 @@ export async function listEventsSince(db: Db, since: Date): Promise<EventRow[]> 
 }
 
 async function listTraceLatenciesSince(db: Db, since: Date): Promise<number[]> {
-  const cond = and(gte(db.schema.traces.createdAt, since), eq(db.schema.traces.projectId, db.projectId));
+  // Production only: a nightly eval's latencies are not the fleet's P95.
+  const cond = and(gte(db.schema.traces.createdAt, since), eq(db.schema.traces.projectId, db.projectId), productionTracesOnly(db));
   const rows = (
     db.kind === "sqlite"
       ? db.db.select({ latencyMs: db.schema.traces.latencyMs }).from(db.schema.traces).where(cond).all()
@@ -458,7 +460,8 @@ export type MonitoringTopFailingResponse = {
 // MCP-registered tools are included like any other), where the signal path only flags the first
 // failed call of a trace and knows no denominator for a rate.
 async function listToolCallStatsSince(db: Db, since: Date): Promise<Map<string, { total: number; failures: number }>> {
-  const cond = and(gte(db.schema.traces.createdAt, since), eq(db.schema.traces.projectId, db.projectId));
+  // Production only - eval datasets deliberately include failing tool calls.
+  const cond = and(gte(db.schema.traces.createdAt, since), eq(db.schema.traces.projectId, db.projectId), productionTracesOnly(db));
   const rows = (
     db.kind === "sqlite"
       ? db.db.select({ toolCalls: db.schema.traces.toolCalls }).from(db.schema.traces).where(cond).all()

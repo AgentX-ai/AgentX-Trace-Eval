@@ -101,6 +101,15 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
     return;
   }
 
+  // Eval-run traffic never triggers monitoring on its own: the run's evaluator already judges
+  // every case, so detection would double-count, online judges would double-bill, and topics
+  // would classify synthetic questions. This is server-side belt to the SDK's monitor=False
+  // suspenders - a caller that stamps source but forgets the flag is still safe. An EXPLICIT
+  // monitor=true wins: that is someone deliberately pointing checks at eval traffic.
+  if (parsed.data.source === "eval-run" && parsed.data.monitor !== true) {
+    return;
+  }
+
   // Checked in the background, after responding: no background job queue in self-host (see plan
   // task #110), this is the same in-process fire-and-forget shape, just no longer blocking the
   // response the caller is actually waiting on. A caller polling client.monitor.signals or
@@ -177,11 +186,14 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
 // Cursor-paginated, matching src/data/queries/evaluate/useGetProductionTraces.ts's params/
 // response shape exactly, see core/trace/ingest.ts's listTracesPaginated.
 ingestRouter.get("/traces", async (req: Request, res: Response) => {
-  const { limit, cursor, framework, search } = req.query;
+  const { limit, cursor, framework, search, source } = req.query;
   const result = await listTracesPaginated(scopedDb(req), {
     limit: limit ? Number(limit) : undefined,
     cursor: typeof cursor === "string" ? cursor : undefined,
     framework: typeof framework === "string" ? framework : undefined,
+    // "production" | "eval" | "all"; absent = all, for SDK/API compatibility. The dashboard's
+    // Live Traces sends "production" by default.
+    source: source === "production" || source === "eval" || source === "all" ? source : undefined,
     search: typeof search === "string" ? search : undefined,
   });
   res.status(200).json(result);

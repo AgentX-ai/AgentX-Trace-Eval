@@ -82,6 +82,11 @@ export const traces = sqliteTable("traces", {
   // concept. spanId/parentSpanId let a session's rows (sessionId = the OTel traceId) be assembled
   // into a tree; startedAt is the absolute span start (otherwise only the derived latencyMs
   // duration survives ingestion, never enough on its own for a waterfall's relative positioning).
+  // Where this trace came from: null = production traffic; "eval-run" = produced inside an
+  // offline evaluation run (stamped by the SDK's execute()). The monitor surfaces exclude
+  // eval-run traffic so a nightly eval cannot skew production KPIs; cost keeps it, split out,
+  // because eval spend is real spend. See core/trace/evalTraffic.ts.
+  source: text("source"),
   spanId: text("span_id"),
   parentSpanId: text("parent_span_id"),
   startedAt: integer("started_at", { mode: "timestamp_ms" }),
