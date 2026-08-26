@@ -95,6 +95,8 @@ export const traceListItemSchema = z
     toolCalls: z.unknown().optional(),
     sessionId: z.string().optional(),
     spanId: z.string().optional(),
+    // "eval-run" for traffic produced inside an offline evaluation; absent for production.
+    trafficSource: z.string().optional(),
     parentSpanId: z.string().optional(),
     startedAt: isoDate.optional(),
     source: z.literal("sdk"),

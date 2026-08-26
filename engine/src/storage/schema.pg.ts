@@ -42,6 +42,11 @@ export const traces = pgTable("traces", {
   cacheReadTokens: integer("cache_read_tokens"),
   cacheWriteTokens: integer("cache_write_tokens"),
   // See schema.sqlite.ts's traces.spanId/parentSpanId/startedAt for the full comment.
+  // Where this trace came from: null = production traffic; "eval-run" = produced inside an
+  // offline evaluation run (stamped by the SDK's execute()). The monitor surfaces exclude
+  // eval-run traffic so a nightly eval cannot skew production KPIs; cost keeps it, split out,
+  // because eval spend is real spend. See core/trace/evalTraffic.ts.
+  source: text("source"),
   spanId: text("span_id"),
   parentSpanId: text("parent_span_id"),
   startedAt: timestamp("started_at", { mode: "date" }),

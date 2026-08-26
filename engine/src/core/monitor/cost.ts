@@ -2,6 +2,7 @@ import { and, eq, gte } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { listPortabilityModels, estimateCostUSD, normalizeModelId } from "../evaluate/models.js";
 import type { MonitoringWindow } from "./events.js";
+import { EVAL_RUN_SOURCE } from "../trace/evalTraffic.js";
 
 // Overview's "Total LLM cost" chart (Braintrust-style stacked bar, but stacked by model rather
 // than token type - self-host doesn't track cache-read/cache-write tokens per trace today, and
@@ -24,7 +25,7 @@ function windowConfig(window: MonitoringWindow): { days: number; bucketHours: nu
   }
 }
 
-type CostTraceRow = { model: string | null; inputTokens: number | null; outputTokens: number | null; createdAt: Date };
+type CostTraceRow = { model: string | null; inputTokens: number | null; outputTokens: number | null; createdAt: Date; source: string | null };
 
 async function listCostTracesSince(db: Db, since: Date): Promise<CostTraceRow[]> {
   const cond = and(gte(db.schema.traces.createdAt, since), eq(db.schema.traces.projectId, db.projectId));
@@ -39,6 +40,7 @@ async function listCostTracesSince(db: Db, since: Date): Promise<CostTraceRow[]>
             inputTokens: db.schema.traces.inputTokens,
             outputTokens: db.schema.traces.outputTokens,
             createdAt: db.schema.traces.createdAt,
+            source: db.schema.traces.source,
           })
           .from(db.schema.traces)
           .where(cond)
@@ -49,11 +51,16 @@ async function listCostTracesSince(db: Db, since: Date): Promise<CostTraceRow[]>
             inputTokens: db.schema.traces.inputTokens,
             outputTokens: db.schema.traces.outputTokens,
             createdAt: db.schema.traces.createdAt,
+            source: db.schema.traces.source,
           })
           .from(db.schema.traces)
           .where(cond);
   return rows as CostTraceRow[];
 }
+
+// The reserved stack key for spend from eval-run traffic. Eval spend is real money, so the
+// chart INCLUDES it - split into its own segment - where the monitor KPIs exclude it entirely.
+export const EVAL_COST_KEY = "eval runs";
 
 export type CostTrendPoint = {
   label: string;
@@ -144,8 +151,12 @@ export async function getCostTrend(db: Db, window: MonitoringWindow): Promise<Co
       continue;
     }
     const bucket = buckets[index]!;
-    bucket[matchedId] = (bucket[matchedId] ?? 0) + cost;
-    totalsByModel[matchedId] = (totalsByModel[matchedId] ?? 0) + cost;
+    // Eval-run spend goes into its own segment rather than the model's: the question this chart
+    // answers is "what is production costing me, and what is evaluation costing me" - folding
+    // eval spend into gpt-4o-mini's bar would hide the second answer inside the first.
+    const key = row.source === EVAL_RUN_SOURCE ? EVAL_COST_KEY : matchedId;
+    bucket[key] = (bucket[key] ?? 0) + cost;
+    totalsByModel[key] = (totalsByModel[key] ?? 0) + cost;
     totalCost += cost;
   }
 
