@@ -345,10 +345,17 @@ every feature above.
 
 ## Contributing
 
-Issues and PRs are welcome. There's no separate `CONTRIBUTING.md` yet - for anything beyond a
-small fix, please open an issue first to discuss the approach. Run `yarn install` at the repo root
-(a workspace install covering `engine/` and `packages/judge-core/` together), and see
-[Building from source](#building-from-source) for the dev loop and smoke test.
+Issues and PRs are welcome. For anything beyond a small fix, please open an issue first to discuss
+the approach. Run `yarn install` at the repo root (a workspace install covering `engine/` and
+`packages/judge-core/` together), and see [Building from source](#building-from-source) for the dev
+loop and smoke test.
+
+[CONTRIBUTING.md](CONTRIBUTING.md) lists the checks CI runs and how to reproduce each one locally.
+[engine/CONTRIBUTING.md](engine/CONTRIBUTING.md) has the engine's own conventions, which are the
+substance of a code review here: wire casing, the response contract, body validation, per-dialect
+queries, migrations.
+
+Vulnerabilities go to [SECURITY.md](SECURITY.md), privately, rather than to a public issue.
 
 ## License
 

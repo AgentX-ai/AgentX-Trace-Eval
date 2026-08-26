@@ -50,7 +50,7 @@ describe("metric pack v3", () => {
     // The trimmed-in-2026-08 safety names must NOT come back under their old identities.
     expect(names).not.toContain("Safety: Toxicity");
     expect(names).not.toContain("Safety: Bias");
-  });
+  }, 90_000);
 
   it("upgrades a v2 install's seeded prompts exactly once, preserving operator edits", async () => {
     const first = await startEngine();

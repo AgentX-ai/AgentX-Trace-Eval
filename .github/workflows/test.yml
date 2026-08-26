@@ -108,13 +108,44 @@ jobs:
           go-version-file: cli/go.mod
           cache: false
 
+      # gofmt is the whole formatting standard for Go, so "we all run gofmt" costs nothing to
+      # enforce and stops the first unformatted file from turning every later diff into noise.
+      # `gofmt -l` lists offenders and exits 0 either way, hence the explicit emptiness check.
+      - name: Format
+        working-directory: cli
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean. Run: gofmt -w ." >&2
+            echo "$unformatted" >&2
+            gofmt -d .
+            exit 1
+          fi
+
       - name: Vet
         working-directory: cli
         run: go vet ./...
 
+      # -race, because the CLI's whole job is process supervision: cmd/server.go spawns the engine
+      # and juggles its stdio, signals, and shutdown across goroutines, which is exactly the shape
+      # of code where a data race hides behind a passing test. The suite runs in seconds, so the
+      # detector's overhead buys a real class of bug for no meaningful time.
       - name: Test
         working-directory: cli
-        run: go test ./...
+        run: go test -race ./...
+
+  shell:
+    name: shell scripts
+    # install.sh is piped straight into bash from a curl one-liner in the README, and build.sh and
+    # scripts/ are what a contributor runs to produce a real distribution. A quoting bug in any of
+    # them fails on someone else's machine, after the merge. shellcheck is preinstalled on the
+    # GitHub runner image, so this is a check with no install step and no new action to pin.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
+      - name: Shellcheck
+        run: shellcheck install.sh build.sh scripts/*.sh
 
   binary:
     name: compiled binary

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/AgentX-ai/AgentX-trace-eval/security/advisories/new
+    about: Please report privately rather than as a public issue. See SECURITY.md.
