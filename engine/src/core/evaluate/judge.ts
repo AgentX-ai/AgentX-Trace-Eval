@@ -522,6 +522,17 @@ export async function callModelWithTools(
 
     messages.push({ role: "assistant", content: message?.content ?? null, tool_calls: toolCallsInRound });
     for (const call of toolCallsInRound) {
+      // openai v7: tool_calls is a union of function and custom tool calls. Everything this loop
+      // executes came from the function tools we sent, so a non-function member (a model echoing
+      // a custom tool we never offered) is answered with an error result rather than crashed on.
+      if (call.type !== "function") {
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify({ error: `Unsupported tool call type: ${call.type}` }),
+        });
+        continue;
+      }
       let args: Record<string, unknown> = {};
       try {
         args = JSON.parse(call.function.arguments || "{}");
