@@ -40,10 +40,9 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
     "@types/express": "^4.17.21",
-    "@types/node": "^22.5.0",
+    "@types/node": "^24.13.3",
     "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.23.1",
-    "bun-types": "^1.4.0",
     "c8": "^12.0.0",
     "eslint": "^10.9.1",
     "tsx": "^4.19.0",

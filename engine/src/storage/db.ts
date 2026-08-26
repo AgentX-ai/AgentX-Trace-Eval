@@ -1,4 +1,7 @@
-/// <reference types="bun-types" />
+// `bun:sqlite` is declared locally in src/types/bun-sqlite.d.ts rather than via
+// `/// <reference types="bun-types" />`: pulling in all of bun-types merges Bun's own overloads
+// into NodeJS.Process and (with @types/node >= 24) hides inherited EventEmitter signatures,
+// breaking plain Node code like process.removeListener("SIGINT", ...) in index.ts.
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
