@@ -6,7 +6,8 @@
     "engine"
   ],
   "resolutions": {
-    "**/tsup/esbuild": "^0.28.1"
+    "**/tsup/esbuild": "^0.28.1",
+    "@types/node": "^24.13.3"
   },
   "scripts": {
     "test": "yarn workspace @agentx/judge-core build && yarn workspace @agentx/judge-core test && yarn workspace @agentx/engine test && yarn test:cli",
