@@ -30,7 +30,7 @@ COPY packages/judge-core packages/judge-core
 RUN yarn workspace @agentx/judge-core build
 
 # --- build: compile the engine to a single native binary (Bun) ---
-FROM oven/bun:1.3.14 AS build
+FROM oven/bun:1.4.0 AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules node_modules
 COPY --from=deps /app/packages/judge-core packages/judge-core
