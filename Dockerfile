@@ -12,7 +12,7 @@
 # Run:   docker run -p 4700:4700 -v agentx-data:/data agentx-selfhost
 
 # --- deps: workspace install + judge-core build (Node/Yarn) ---
-FROM node:24-slim AS deps
+FROM node:25-slim AS deps
 WORKDIR /app
 # python3/make/g++: better-sqlite3 (engine/package.json) has a native addon needing a real build
 # toolchain to compile from source (no prebuilt binary for every platform/arch combo) - it's a
