@@ -24,14 +24,10 @@ type SpanWire = {
   metadata?: unknown;
 };
 
-// A span is a retrieval if it says so (metadata.kind, stamped by the SDK's record_retrieval /
-// trace_retrieval and the LangChain handler) - the "Retrieval N" name test is only a fallback
-// for traces recorded before the marker existed, so custom names like "kb_search" still count.
-export function isRetrievalSpan(span: { name: string; metadata?: unknown }): boolean {
-  const kind = (span.metadata as { kind?: unknown } | null | undefined)?.kind;
-  if (typeof kind === "string") return kind === "retrieval";
-  return /^retriev/i.test(span.name);
-}
+// Was its own copy of the retrieval test; now one line onto the shared classifier, so this and
+// the Code-scorer sandbox and the dashboard's span buckets cannot drift apart again.
+import { isRetrievalSpan } from "./spanKind.js";
+export { isRetrievalSpan };
 
 const MAX_STEPS = 40;
 const MAX_FIELD = 300;

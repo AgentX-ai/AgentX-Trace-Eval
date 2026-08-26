@@ -1,3 +1,4 @@
+import { resolveSpanKind } from "../trace/spanKind.js";
 import { and, eq, gte } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { listPortabilityModels, normalizeModelId, type PortabilityModel } from "../evaluate/models.js";
@@ -236,8 +237,10 @@ export async function getMonitorMetrics(
     });
   }
 
-  // Tool child spans are named after their tool - build the name set so the Spans card can tell
-  // a tool span from a chain/step span.
+  // Tool child spans are named after their tool. This name set is now only a LAST resort, for a
+  // span that states no kind and carries no tool calls of its own - it is the weakest of the
+  // three rules that used to live here, and it misattributes any span that happens to share a
+  // tool's name. The classifier (core/trace/spanKind.ts) is consulted first.
   const toolNames = new Set<string>();
   for (const row of filtered) for (const tc of toolCallList(row.toolCalls)) toolNames.add(tc.name);
 
@@ -279,10 +282,18 @@ export async function getMonitorMetrics(
   for (const row of filtered) {
     const idx = Math.min(bucketCount - 1, Math.max(0, Math.floor((row.createdAt.getTime() - start) / bucketMs)));
     const bucket = buckets[idx]!;
-    if (row.model) {
+    const kind = resolveSpanKind({
+      spanKind: (row as { spanKind?: unknown }).spanKind,
+      metadata: (row as { metadata?: unknown }).metadata,
+      name: row.name,
+      model: row.model,
+      toolCalls: row.toolCalls,
+      parentSpanId: row.parentSpanId,
+    });
+    if (kind === "llm") {
       bucket.spansLlm++;
-      facetModels.add(row.model);
-    } else if (row.parentSpanId && toolNames.has(row.name)) {
+      if (row.model) facetModels.add(row.model);
+    } else if (kind === "tool" || (row.parentSpanId && toolNames.has(row.name))) {
       bucket.spansTool++;
     } else {
       bucket.spansOther++;

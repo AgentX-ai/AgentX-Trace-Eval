@@ -1,3 +1,4 @@
+import { normalizeSpanKind } from "../core/trace/spanKind.js";
 import type { NormalizedSpan } from "./normalize.js";
 import type { IngestTraceInput } from "../core/trace/ingest.js";
 
@@ -211,6 +212,23 @@ export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
   const cacheReadTokens = numAttr(attrs["gen_ai.usage.cache_read_input_tokens"]);
   const cacheWriteTokens = numAttr(attrs["gen_ai.usage.cache_creation_input_tokens"]);
 
+  // The span kind, as STATED by whoever instrumented this. We were already reading
+  // gen_ai.tool.name and mlflow.spanType to reconstruct tool_calls, then throwing the
+  // classification itself away - so a span that arrived properly typed still reached the UI
+  // untyped and got guessed at. Every vocabulary here is folded onto ours by normalizeSpanKind:
+  // OpenInference's openinference.span.kind, OTel's gen_ai.operation.name, MLflow's spanType,
+  // and Langfuse's langfuse.observation.type.
+  const statedKind =
+    normalizeSpanKind(strAttr(attrs["openinference.span.kind"])) ??
+    normalizeSpanKind(strAttr(attrs["gen_ai.operation.name"])) ??
+    normalizeSpanKind(mlflowAttr(attrs["mlflow.spanType"])) ??
+    normalizeSpanKind(strAttr(attrs["langfuse.observation.type"])) ??
+    // A span carrying gen_ai.tool.name IS the tool call, whatever else it says.
+    (strAttr(attrs["gen_ai.tool.name"]) ? ("tool" as const) : null) ??
+    // Last: a model attribute means the span is the LLM call, which is the same rule the engine
+    // infers by anyway - stating it here just means the UI never has to.
+    (model ? ("llm" as const) : null);
+
   const latencyNanos = span.endTimeUnixNano - span.startTimeUnixNano;
   const latencyMs = latencyNanos > 0n ? Number(latencyNanos / 1_000_000n) : undefined;
 
@@ -240,6 +258,7 @@ export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
     // normalize.ts's idToHex falls back to "" (not null/undefined) for malformed wire ids, so
     // these are guarded to "" -> undefined rather than trusting truthiness alone would already
     // catch it (it does, but the intent is worth being explicit about here).
+    span_kind: statedKind ?? undefined,
     span_id: span.spanIdHex || undefined,
     parent_span_id: span.parentSpanIdHex || undefined,
     started_at_unix_nano: span.startTimeUnixNano > 0n ? span.startTimeUnixNano.toString() : undefined,

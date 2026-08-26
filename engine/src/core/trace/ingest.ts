@@ -7,6 +7,7 @@ import { listPortabilityModels, estimateCostUSD } from "../evaluate/models.js";
 import { getClassificationForTrace } from "../monitor/topics.js";
 import { unixNanosToDate } from "../shared/unixNano.js";
 import { logger } from "../../log.js";
+import { normalizeSpanKind, resolveSpanKind } from "./spanKind.js";
 
 // Mirrors the wire payload agentx.tracing.tracer.Tracer._send builds in the Python SDK
 // (agentx/tracing/tracer.py); see AgentX-Python for the exact field list this was checked
@@ -28,6 +29,7 @@ const INGEST_CAMEL_ALIASES: Record<string, string> = {
   cacheReadTokens: "cache_read_tokens",
   cacheWriteTokens: "cache_write_tokens",
   spanId: "span_id",
+  spanKind: "span_kind",
   parentSpanId: "parent_span_id",
   startedAtUnixNano: "started_at_unix_nano",
   patternIds: "pattern_ids",
@@ -58,6 +60,11 @@ export const ingestTraceSchema = z.preprocess(foldCamelAliases, z.object({
   framework: z.string().optional(),
   model: z.string().optional(),
   tool_calls: z.array(z.record(z.unknown())).optional(),
+  // What kind of step this is, stated by the producer: "llm" | "tool" | "retrieval" | "agent" |
+  // ... Other vocabularies (OpenInference, OTel GenAI, Langfuse, MLflow) are folded onto ours by
+  // normalizeSpanKind, so an already-instrumented span does not need the producer to change.
+  // Unrecognized values are stored as null rather than as a fact nobody stated.
+  span_kind: z.string().optional(),
   metadata: z.record(z.unknown()).optional(),
   session_id: z.string().optional(),
   performance_summary: z.record(z.unknown()).optional(),
@@ -138,6 +145,7 @@ export async function ingestTrace(
     framework: payload.framework ?? null,
     model: payload.model ?? null,
     toolCalls: payload.tool_calls ?? null,
+    spanKind: normalizeSpanKind(payload.span_kind),
     metadata: payload.metadata ?? null,
     sessionId: payload.session_id ?? null,
     performanceSummary: payload.performance_summary ?? null,
@@ -205,6 +213,7 @@ export type TraceRow = {
   cacheReadTokens: number | null;
   cacheWriteTokens: number | null;
   spanId: string | null;
+  spanKind: string | null;
   parentSpanId: string | null;
   startedAt: Date | null;
   createdAt: Date;
@@ -228,6 +237,9 @@ function toWire(row: TraceRow) {
     toolCalls: row.toolCalls ?? undefined,
     sessionId: row.sessionId ?? undefined,
     spanId: row.spanId ?? undefined,
+    // Always resolved, never the raw column: the engine classifies once, so no reader has to
+    // re-derive it and disagree (see core/trace/spanKind.ts).
+    spanKind: resolveSpanKind(row),
     parentSpanId: row.parentSpanId ?? undefined,
     startedAt: row.startedAt ? row.startedAt.toISOString() : undefined,
     source: "sdk" as const,
@@ -256,6 +268,7 @@ export function toTraceDetailWire(row: TraceRow) {
     toolCalls: row.toolCalls ?? undefined,
     sessionId: row.sessionId ?? undefined,
     spanId: row.spanId ?? undefined,
+    spanKind: resolveSpanKind(row),
     parentSpanId: row.parentSpanId ?? undefined,
     startedAt: row.startedAt ? row.startedAt.toISOString() : undefined,
     metadata: row.metadata ?? undefined,

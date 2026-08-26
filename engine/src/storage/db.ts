@@ -380,6 +380,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
       output_tokens INTEGER,
       cache_read_tokens INTEGER,
       cache_write_tokens INTEGER,
+      span_kind TEXT,
       span_id TEXT,
       parent_span_id TEXT,
       started_at INTEGER,
@@ -1029,6 +1030,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
     // project_id column, backfilled to one auto-created "Default" project by
     // backfillDefaultProjectSqlite below - see that function's comment for why portability_models/
     // app_settings are deliberately excluded from this list (they stay instance-wide).
+    ["traces", "ALTER TABLE traces ADD COLUMN span_kind TEXT"],
     ["traces", "ALTER TABLE traces ADD COLUMN project_id TEXT"],
     ["agents", "ALTER TABLE agents ADD COLUMN project_id TEXT"],
     ["datasets", "ALTER TABLE datasets ADD COLUMN project_id TEXT"],
@@ -1554,6 +1556,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       output_tokens INTEGER,
       cache_read_tokens INTEGER,
       cache_write_tokens INTEGER,
+      span_kind TEXT,
       span_id TEXT,
       parent_span_id TEXT,
       started_at TIMESTAMP,
