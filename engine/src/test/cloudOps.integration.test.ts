@@ -52,7 +52,7 @@ beforeAll(async () => {
     AGENTX_MULTI_TENANT: "true",
     AGENTX_ADMIN_TOKEN: ADMIN_TOKEN,
     AGENTX_EMAIL_DEBUG_DIR: mailDir,
-    AGENTX_QUOTA_TRACES_PER_DAY: "6",
+    AGENTX_QUOTA_TRACES_PER_DAY: "12",
     AGENTX_QUOTA_JUDGE_CALLS_PER_DAY: "1",
   });
   carolCookie = await signUp("carol@tenant.test", "Carol");
@@ -92,19 +92,21 @@ describe("mailer", () => {
 
 describe("quotas", () => {
   it("caps daily root-trace ingest per project, children ride free", async () => {
-    // The tenant's seeded example project starts with 3 starter traces, but their createdAt is
-    // backdated ~10 minutes (seed.ts stamps startedAt for a believable timeline, and ingest
-    // uses startedAt as createdAt) - so in the first minutes after LOCAL midnight they fall
-    // outside the quota's dayStart() window and don't count. Compute today's usage instead of
-    // assuming 3, so this test doesn't fail between 00:00 and 00:10.
+    // The tenant's project is seeded with example traces whose count has grown before and will
+    // again (it broke this test at 6 seeded roots against a quota of 6). So: never assume the
+    // seed size. Compute today's usage from the trace list (seeded rows are backdated a few
+    // minutes, so right after local midnight some fall outside the quota's dayStart() window),
+    // and assert the quota leaves headroom - if seeding ever meets or exceeds the quota again,
+    // this line names the real problem instead of the loop below silently doing nothing.
+    const QUOTA = 12;
     const midnight = new Date();
     midnight.setHours(0, 0, 0, 0);
     const listed = await engine.json("/api/v1/ingest/traces?limit=100", { apiKey: carolKey });
     const usedToday = (bodyOf(listed).traces as { createdAt: string }[]).filter(
       t => new Date(t.createdAt) >= midnight
     ).length;
-    const room = 6 - usedToday;
-    expect(room).toBeGreaterThan(0);
+    const room = QUOTA - usedToday;
+    expect(room, `seeding uses ${usedToday} of the ${QUOTA}/day test quota - raise the quota env above`).toBeGreaterThan(0);
     for (let i = 0; i < room; i++) {
       const ok = await engine.json("/api/v1/ingest/traces", {
         ...json({ name: "quota-agent", input: `q${i}`, output: "a" }),

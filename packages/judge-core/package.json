@@ -18,7 +18,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && tsc -p tsconfig.build.json --emitDeclarationOnly --declarationDir dist",
     "dev": "tsup --watch",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p ."
@@ -32,7 +32,7 @@
     "@types/node": "^22.5.0",
     "openai": "^7.5.0",
     "tsup": "^8.5.0",
-    "typescript": "^5.5.4",
-    "vitest": "^4.1.11"
+    "typescript": "^6.0.3",
+    "vitest": "^4.0.5"
   }
 }
