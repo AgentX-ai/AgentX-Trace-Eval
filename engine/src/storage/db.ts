@@ -10,7 +10,7 @@ import { drizzle as drizzlePg, type NodePgDatabase } from "drizzle-orm/node-post
 import { Pool } from "pg";
 import * as sqliteSchema from "./schema.sqlite.js";
 import * as pgSchema from "./schema.pg.js";
-import { seedExampleDataIfEmpty } from "../core/seed.js";
+import { seedFreshInstall } from "../core/seed.js";
 import { getDefaultProject } from "../core/project/projects.js";
 import { logger } from "../log.js";
 
@@ -65,32 +65,31 @@ export async function initDb(): Promise<Db> {
   const url = process.env.AGENTX_DB_URL;
   if (url && url.startsWith("postgres")) {
     const pool = new Pool({ connectionString: url });
-    await bootstrapPostgres(pool);
+    const { freshInstall } = await bootstrapPostgres(pool);
     // "" is a deliberate never-matches-a-real-project sentinel - see the Db type's own comment.
     cached = { kind: "postgres", db: drizzlePg(pool, { schema: pgSchema }), schema: pgSchema, projectId: "" };
     closeHandle = () => pool.end();
     await seedPortabilityModelsIfEmpty(cached);
     await ensureRealWorldPortabilityModels(cached);
-    // seedExampleDataIfEmpty writes project-scoped rows (datasets, agents, traces, ...), so it
-    // needs a real projectId, not `cached`'s never-matches sentinel (see the Db type's own
-    // comment) - backfillDefaultProjectPostgres above already guarantees a default project
-    // exists by this point. The `?? cached` fallback is unreachable in practice, kept only so a
-    // violated invariant here degrades to today's existing (broken) behavior instead of a new,
-    // different crash.
-    const defaultProject = await getDefaultProject(cached);
-    await seedExampleDataIfEmpty(defaultProject ? withProjectId(cached, defaultProject.id) : cached);
+    // The example content goes into its own "Example" project, created here on a fresh install
+    // only - Default is left genuinely empty so the first trace someone sends is the first row
+    // they see. See core/seed.ts.
+    await seedFreshInstall(cached, { freshInstall });
     return cached;
   }
 
   const sqlitePath = url?.startsWith("sqlite:") ? url.slice("sqlite:".length) : defaultSqlitePath();
   fs.mkdirSync(path.dirname(sqlitePath), { recursive: true });
 
+  // Set by whichever sqlite driver branch runs below; both bootstrap the same schema.
+  let freshInstall = false;
+
   if (isBun) {
     const { Database: BunDatabase } = await import("bun:sqlite");
     const { drizzle: drizzleBun } = await import("drizzle-orm/bun-sqlite");
     const sqlite = new BunDatabase(sqlitePath);
     sqlite.exec("PRAGMA journal_mode = WAL;");
-    bootstrapSqlite(sqlite);
+    ({ freshInstall } = bootstrapSqlite(sqlite));
     cached = {
       kind: "sqlite",
       db: drizzleBun(sqlite, { schema: sqliteSchema }) as unknown as BetterSQLite3Database<typeof sqliteSchema>,
@@ -105,7 +104,7 @@ export async function initDb(): Promise<Db> {
     const { drizzle: drizzleSqlite } = await import("drizzle-orm/better-sqlite3");
     const sqlite = new BetterSqlite3(sqlitePath);
     sqlite.pragma("journal_mode = WAL");
-    bootstrapSqlite(sqlite);
+    ({ freshInstall } = bootstrapSqlite(sqlite));
     cached = { kind: "sqlite", db: drizzleSqlite(sqlite, { schema: sqliteSchema }), schema: sqliteSchema, projectId: "" };
     closeHandle = () => {
       sqlite.close();
@@ -113,9 +112,8 @@ export async function initDb(): Promise<Db> {
   }
   await seedPortabilityModelsIfEmpty(cached);
   await ensureRealWorldPortabilityModels(cached);
-  // See the postgres branch above for why this needs a real projectId, not `cached` directly.
-  const defaultProject = await getDefaultProject(cached);
-  await seedExampleDataIfEmpty(defaultProject ? withProjectId(cached, defaultProject.id) : cached);
+  // See the postgres branch above.
+  await seedFreshInstall(cached, { freshInstall });
   return cached;
 }
 
@@ -320,7 +318,7 @@ const SEEDED_SETTINGS_BACKFILL_NAMES = [
   .map(name => `'${name}'`)
   .join(", ");
 
-function bootstrapSqlite(sqlite: SqliteHandle): void {
+function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean } {
   // Checked BEFORE any DDL runs: `seeded` is backfilled by name exactly once, at the upgrade
   // that introduces the column (see the UPDATE after columnMigrations). Running it on every
   // boot could misclassify a user's scorer that happens to share a seed name.
@@ -1145,7 +1143,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
   migrateOnlineEvaluatorsToConfigsSqlite(sqlite);
   enforceJudgeScorerCardinalitySqlite(sqlite);
   backfillAgentsSqlite(sqlite);
-  backfillDefaultProjectSqlite(sqlite);
+  const { freshInstall } = backfillDefaultProjectSqlite(sqlite);
 
   // One-way Topics migration: the toggle moved from per-agent monitor_profiles.topics_enabled to
   // project-level projects.topics_enabled. Copy "any agent had it on" up to the project, then
@@ -1160,6 +1158,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): void {
   `);
 
   ensureProjectScopedUniqueIndexes(statement => sqlite.exec(statement));
+  return { freshInstall };
 }
 
 // prompt_versions has had this index since it shipped; tool_schema_versions never got the
@@ -1499,7 +1498,7 @@ function backfillAgentsSqlite(sqlite: SqliteHandle): void {
 // INTEGER epoch, BOOLEAN instead of INTEGER 0/1, DOUBLE PRECISION instead of REAL) matching
 // schema.pg.ts. Replace with real drizzle-kit migrations once the schema stabilizes, see plan
 // task #107 (same note as bootstrapSqlite).
-async function bootstrapPostgres(pool: Pool): Promise<void> {
+async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boolean }> {
   // See bootstrapSqlite: checked BEFORE any DDL so the one-shot `seeded` backfill below runs
   // only at the upgrade that introduces the column.
   const settingsSeededColumnPreexists =
@@ -2270,7 +2269,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
   await migrateOnlineEvaluatorsToConfigsPostgres(pool);
   await enforceJudgeScorerCardinalityPostgres(pool);
   await backfillAgentsPostgres(pool);
-  await backfillDefaultProjectPostgres(pool);
+  const { freshInstall } = await backfillDefaultProjectPostgres(pool);
 
   for (const statement of PROJECT_SCOPED_UNIQUE_INDEXES) {
     try {
@@ -2282,6 +2281,7 @@ async function bootstrapPostgres(pool: Pool): Promise<void> {
       );
     }
   }
+  return { freshInstall };
 }
 
 // Postgres mirror of migrateOnlineEvaluatorsToConfigsSqlite above - see that function's comment
@@ -2481,7 +2481,7 @@ function readExistingLocalApiKey(): string | null {
 // register a second project afterward. Safe to re-run: only creates a project if none exist yet
 // (an already-migrated install just reuses the existing Default project's id), and only backfills
 // rows still NULL.
-function backfillDefaultProjectSqlite(sqlite: SqliteHandle): void {
+function backfillDefaultProjectSqlite(sqlite: SqliteHandle): { freshInstall: boolean } {
   const existing = sqlite.prepare(`SELECT id FROM projects ORDER BY created_at ASC LIMIT 1`).all() as {
     id: string;
   }[];
@@ -2506,11 +2506,12 @@ function backfillDefaultProjectSqlite(sqlite: SqliteHandle): void {
   for (const table of PROJECT_SCOPED_TABLES) {
     sqlite.prepare(`UPDATE ${table} SET project_id = ? WHERE project_id IS NULL`).run(defaultProjectId);
   }
+  return { freshInstall: existing.length === 0 };
 }
 
 // Postgres mirror of backfillDefaultProjectSqlite above - see that function's comment for the
 // full rationale.
-async function backfillDefaultProjectPostgres(pool: Pool): Promise<void> {
+async function backfillDefaultProjectPostgres(pool: Pool): Promise<{ freshInstall: boolean }> {
   const { rows: existing } = await pool.query<{ id: string }>(`SELECT id FROM projects ORDER BY created_at ASC LIMIT 1`);
   let defaultProjectId: string;
   if (existing.length > 0) {
@@ -2533,4 +2534,5 @@ async function backfillDefaultProjectPostgres(pool: Pool): Promise<void> {
   for (const table of PROJECT_SCOPED_TABLES) {
     await pool.query(`UPDATE ${table} SET project_id = $1 WHERE project_id IS NULL`, [defaultProjectId]);
   }
+  return { freshInstall: existing.length === 0 };
 }
