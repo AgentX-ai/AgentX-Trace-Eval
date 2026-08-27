@@ -47,6 +47,11 @@ export const traces = pgTable("traces", {
   // and an inferred one are deliberately different things, and for the fallback ladder that
   // classifies the null rows.
   spanKind: text("span_kind"),
+  // Where this trace came from: null = production traffic; "eval-run" = produced inside an
+  // offline evaluation run (stamped by the SDK's execute()). The monitor surfaces exclude
+  // eval-run traffic so a nightly eval cannot skew production KPIs; cost keeps it, split out,
+  // because eval spend is real spend. See core/trace/evalTraffic.ts.
+  source: text("source"),
   spanId: text("span_id"),
   parentSpanId: text("parent_span_id"),
   startedAt: timestamp("started_at", { mode: "date" }),

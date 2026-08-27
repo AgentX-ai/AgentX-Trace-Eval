@@ -4,8 +4,9 @@ import { startEngine, postJson, type TestEngine } from "./server.js";
 
 // P2.3 generic OIDC SSO: the env trio (AGENTX_OIDC_ISSUER/CLIENT_ID/CLIENT_SECRET) must light
 // up an "oidc" provider end-to-end against a stub issuer: /auth/config advertises it (with the
-// AGENTX_OIDC_NAME button label), and POST /auth/sign-in/oauth2 performs real OIDC discovery
-// against the issuer and returns an authorization URL pointing at it. The full round trip
+// AGENTX_OIDC_NAME button label), the engine performs real OIDC discovery against the issuer
+// (better-auth >= 1.7 does this once at boot, when the generic provider registers), and
+// POST /auth/sign-in/social returns an authorization URL pointing at it. The full round trip
 // (IdP login -> callback -> session) is verified against a real IdP per release, per the plan;
 // what CI pins is that the engine's half of the handshake is genuinely wired, not advertised.
 
@@ -70,8 +71,8 @@ describe("with the env trio set", () => {
   });
 
   it("performs discovery against the issuer and returns its authorization URL", async () => {
-    const res = await engine.json("/api/v1/auth/sign-in/oauth2", {
-      ...postJson({ providerId: "oidc", callbackURL: "http://localhost:3000" }),
+    const res = await engine.json("/api/v1/auth/sign-in/social", {
+      ...postJson({ provider: "oidc", callbackURL: "http://localhost:3000" }),
       apiKey: null,
     });
     expect(res.status).toBe(200);
@@ -84,7 +85,7 @@ describe("with the env trio set", () => {
 });
 
 describe("without the env trio", () => {
-  it("advertises nothing and the oauth2 sign-in route rejects the unknown provider", async () => {
+  it("advertises nothing and the social sign-in route rejects the unknown provider", async () => {
     const engine = await startEngine({ AGENTX_AUTH: "enabled" });
     try {
       const cfg = await engine.json("/api/v1/auth/config", { apiKey: null });
@@ -92,8 +93,8 @@ describe("without the env trio", () => {
       expect(body.socialProviders).not.toContain("oidc");
       expect(body.ssoLabel).toBeUndefined();
 
-      const res = await engine.json("/api/v1/auth/sign-in/oauth2", {
-        ...postJson({ providerId: "oidc", callbackURL: "http://localhost:3000" }),
+      const res = await engine.json("/api/v1/auth/sign-in/social", {
+        ...postJson({ provider: "oidc", callbackURL: "http://localhost:3000" }),
         apiKey: null,
       });
       expect(res.status).toBeGreaterThanOrEqual(400);

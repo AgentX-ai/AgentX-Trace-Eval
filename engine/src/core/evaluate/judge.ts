@@ -125,12 +125,23 @@ type ModelRouting = {
   keyLabel: "OpenAI" | "Anthropic" | "Gemini";
   envVar: "OPENAI_API_KEY" | "ANTHROPIC_API_KEY" | "GEMINI_API_KEY";
   isGemini: boolean;
+  // Custom baseURL (vLLM/Ollama/LM Studio/...) - like isGemini, marks an OpenAI-compat endpoint
+  // that reuses the OpenAI code path but may not implement every native-OpenAI feature (strict
+  // json_schema structured outputs being the current example, see callJudgeJson below).
+  isCustom: boolean;
 };
 
 async function resolveModelRouting(model: string): Promise<ModelRouting> {
   const custom = await getPortabilityModelRaw(getDb(), model);
   if (custom?.provider === "custom" && custom.baseUrl) {
-    return { provider: "openai", openaiClient: getCustomClient(custom), keyLabel: "OpenAI", envVar: "OPENAI_API_KEY", isGemini: false };
+    return {
+      provider: "openai",
+      openaiClient: getCustomClient(custom),
+      keyLabel: "OpenAI",
+      envVar: "OPENAI_API_KEY",
+      isGemini: false,
+      isCustom: true,
+    };
   }
   if (custom?.provider === "gemini" || (!custom && model.startsWith("gemini-"))) {
     return {
@@ -139,6 +150,7 @@ async function resolveModelRouting(model: string): Promise<ModelRouting> {
       keyLabel: "Gemini",
       envVar: "GEMINI_API_KEY",
       isGemini: true,
+      isCustom: false,
     };
   }
   const provider = getProviderForModel(model);
@@ -148,6 +160,7 @@ async function resolveModelRouting(model: string): Promise<ModelRouting> {
     keyLabel: provider === "openai" ? "OpenAI" : "Anthropic",
     envVar: provider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY",
     isGemini: false,
+    isCustom: false,
   };
 }
 
@@ -222,13 +235,33 @@ ${criteria.evaluationCriteria ? `**Evaluation Criteria:** ${criteria.evaluationC
   const judgeResult = await callJudgeJson({
     model: criteria.judgeModel,
     jsonSchema: SCORE_SCHEMA,
+    // Both SCORE_SCHEMA properties are required, so OpenAI's strict structured outputs apply:
+    // the decoder cannot produce unparseable JSON at all on that path.
+    strictSchema: true,
     userMessage: `${substitutedPrompt}\n${additionalContext}`,
   });
   const payload = judgeResult.payload as { rating: number; justification: string } | null;
   if (!payload) {
-    return { rating: 0, justification: "Scoring failed: no result returned from the judge model" };
+    // A judge that returned nothing usable is a FAILURE, not a verdict. This used to return
+    // rating 0, which offline was averaged into the run/gate as if the agent had answered
+    // terribly, and online raised a real Signal - a provider hiccup indistinguishable from a
+    // catastrophic answer. Throwing routes every caller onto its existing failure path
+    // (offline: status "skipped", rating null; online: judge_failure event, no Signal).
+    throw new JudgeFailedError(judgeResult.failureReason ?? "emptyResponse");
   }
   return { rating: payload.rating, justification: payload.justification };
+}
+
+// The judge model was reachable but produced no usable verdict (empty response or unparseable
+// JSON, after judge-core's automatic retry). Distinct from the setup errors thrown by
+// callJudgeJson below (missing API key, quota) so callers can label the failure precisely.
+export class JudgeFailedError extends Error {
+  readonly failureReason: string;
+  constructor(failureReason: string) {
+    super(`Judge scoring failed: the judge model returned no usable verdict (${failureReason}, retried once)`);
+    this.name = "JudgeFailedError";
+    this.failureReason = failureReason;
+  }
 }
 
 export async function callJudgeJson({
@@ -236,16 +269,19 @@ export async function callJudgeJson({
   model,
   jsonSchema,
   maxTokens,
+  strictSchema,
 }: {
   userMessage: string;
   model: string;
   jsonSchema: object;
   maxTokens?: number;
+  // Pass only for schemas whose every property is required - see judge-core's callJudgeJson.
+  strictSchema?: boolean;
 }): Promise<JudgeCallResult> {
   // Metering + daily quota, both scoped by the request's tenancy context (see
   // core/shared/usage.ts). Every judge path in the engine funnels through here.
   await checkAndRecordJudgeCall(model);
-  const { provider, openaiClient, keyLabel, envVar } = await resolveModelRouting(model);
+  const { provider, openaiClient, keyLabel, envVar, isGemini, isCustom } = await resolveModelRouting(model);
   if (provider === "anthropic" && !(await getAnthropic())) {
     throw new Error(
       `Judge model "${model}" needs an Anthropic API key. Set ANTHROPIC_API_KEY and restart agentx-server.`
@@ -260,6 +296,10 @@ export async function callJudgeJson({
     model,
     jsonSchema,
     maxTokens,
+    // Strict structured outputs only on the real OpenAI endpoint - the OpenAI-compat layers
+    // (Gemini, vLLM/Ollama/... custom baseURLs) don't reliably implement json_schema strict
+    // mode, and a rejected request would turn a fine judge model into a scoring failure.
+    strictSchema: strictSchema && !isGemini && !isCustom,
     openaiClient,
     anthropicClient: await getAnthropic(),
   });
@@ -522,6 +562,17 @@ export async function callModelWithTools(
 
     messages.push({ role: "assistant", content: message?.content ?? null, tool_calls: toolCallsInRound });
     for (const call of toolCallsInRound) {
+      // openai v7: tool_calls is a union of function and custom tool calls. Everything this loop
+      // executes came from the function tools we sent, so a non-function member (a model echoing
+      // a custom tool we never offered) is answered with an error result rather than crashed on.
+      if (call.type !== "function") {
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify({ error: `Unsupported tool call type: ${call.type}` }),
+        });
+        continue;
+      }
       let args: Record<string, unknown> = {};
       try {
         args = JSON.parse(call.function.arguments || "{}");

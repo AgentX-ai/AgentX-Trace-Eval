@@ -8,6 +8,7 @@ import { getClassificationForTrace } from "../monitor/topics.js";
 import { unixNanosToDate } from "../shared/unixNano.js";
 import { logger } from "../../log.js";
 import { normalizeSpanKind, resolveSpanKind } from "./spanKind.js";
+import { EVAL_RUN_SOURCE, normalizeTraceSource, productionTracesOnly } from "./evalTraffic.js";
 
 // Mirrors the wire payload agentx.tracing.tracer.Tracer._send builds in the Python SDK
 // (agentx/tracing/tracer.py); see AgentX-Python for the exact field list this was checked
@@ -65,6 +66,10 @@ export const ingestTraceSchema = z.preprocess(foldCamelAliases, z.object({
   // normalizeSpanKind, so an already-instrumented span does not need the producer to change.
   // Unrecognized values are stored as null rather than as a fact nobody stated.
   span_kind: z.string().optional(),
+  // Where this trace came from. "eval-run" marks traffic produced inside an offline evaluation
+  // run (the SDK's execute() stamps it); the monitor surfaces exclude it. Unknown words store as
+  // null rather than as a category nobody defined.
+  source: z.string().optional(),
   metadata: z.record(z.unknown()).optional(),
   session_id: z.string().optional(),
   performance_summary: z.record(z.unknown()).optional(),
@@ -146,6 +151,7 @@ export async function ingestTrace(
     model: payload.model ?? null,
     toolCalls: payload.tool_calls ?? null,
     spanKind: normalizeSpanKind(payload.span_kind),
+    source: normalizeTraceSource(payload.source),
     metadata: payload.metadata ?? null,
     sessionId: payload.session_id ?? null,
     performanceSummary: payload.performance_summary ?? null,
@@ -214,6 +220,7 @@ export type TraceRow = {
   cacheWriteTokens: number | null;
   spanId: string | null;
   spanKind: string | null;
+  source: string | null;
   parentSpanId: string | null;
   startedAt: Date | null;
   createdAt: Date;
@@ -242,6 +249,8 @@ function toWire(row: TraceRow) {
     spanKind: resolveSpanKind(row),
     parentSpanId: row.parentSpanId ?? undefined,
     startedAt: row.startedAt ? row.startedAt.toISOString() : undefined,
+    // "eval-run" for traces produced inside an offline evaluation; absent for production.
+    trafficSource: row.source ?? undefined,
     source: "sdk" as const,
     createdAt: row.createdAt.toISOString(),
     inputTokens: row.inputTokens,
@@ -271,6 +280,7 @@ export function toTraceDetailWire(row: TraceRow) {
     spanKind: resolveSpanKind(row),
     parentSpanId: row.parentSpanId ?? undefined,
     startedAt: row.startedAt ? row.startedAt.toISOString() : undefined,
+    trafficSource: row.source ?? undefined,
     metadata: row.metadata ?? undefined,
     performanceSummary: row.performanceSummary ?? undefined,
     source: "sdk" as const,
@@ -315,7 +325,13 @@ export async function toTraceDetailWireWithCost(db: Db, row: TraceRow) {
 // evolving this GET response shape for the dashboard doesn't risk SDK compatibility.
 export async function listTracesPaginated(
   db: Db,
-  { limit = 50, cursor, framework, search }: { limit?: number; cursor?: string; framework?: string; search?: string }
+  {
+    limit = 50,
+    cursor,
+    framework,
+    search,
+    source,
+  }: { limit?: number; cursor?: string; framework?: string; search?: string; source?: "production" | "eval" | "all" }
 ) {
   const pageSize = Math.min(Math.max(limit, 1), 100);
 
@@ -335,6 +351,10 @@ export async function listTracesPaginated(
   // only changes what the top-level list itself enumerates.
   const conditions: SQL[] = [isNull(db.schema.traces.parentSpanId), eq(db.schema.traces.projectId, db.projectId)];
   if (framework) conditions.push(eq(db.schema.traces.framework, framework));
+  // "production" (the Live Traces default) hides eval-run traffic; "eval" shows only it; "all"
+  // (and absent, for SDK/API compatibility) filters nothing.
+  if (source === "production") conditions.push(productionTracesOnly(db));
+  if (source === "eval") conditions.push(eq(db.schema.traces.source, EVAL_RUN_SOURCE));
   // Database-side search (the dashboard's Live Traces box) - a LIKE across the columns a person
   // actually greps traffic by: agent name, input/output text, model, error, and the trace/session
   // ids (so a pasted id resolves). SQLite LIKE is already case-insensitive for ASCII; Postgres

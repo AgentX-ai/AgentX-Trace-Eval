@@ -442,6 +442,11 @@ export async function previewJudgeScore(
     const startedAt = Date.now();
     const verdict = await judgeSessionWithDraftCriteria(db, target.sessionId, draft);
     if (!verdict) return null;
+    if (verdict.rating === null) {
+      // Same posture as the trace path below (where scoreAgainstCriteria throws): a judge that
+      // produced nothing usable is a 502 to the preview rail, not a null score card.
+      throw new Error("The judge model returned no usable verdict for this session. Try again.");
+    }
     return { sessionId: target.sessionId, ...verdict, latencyMs: Date.now() - startedAt };
   }
   const row = await latestScorableTrace(db, target.traceId);

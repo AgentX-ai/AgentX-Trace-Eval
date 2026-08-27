@@ -13,6 +13,7 @@ import type { Db } from "../storage/db.js";
 import { scopedDb } from "../auth/apiKey.js";
 import {
   createDataset,
+  deleteDataset,
   getDataset,
   listDatasets,
   updateDataset,
@@ -40,6 +41,7 @@ import {
 import {
   getRunRowFull,
   getRunResults,
+  computeCaseStatistics,
   listRunRows,
   getVersionComparison,
   compareRuns,
@@ -374,7 +376,15 @@ evaluateDashboardRouter.get("/ci/gates/preview", async (req: Request, res: Respo
     res.status(400).json({ error: "At least one check is required: failUnder and/or noRegression" });
     return;
   }
-  const result = await previewLatestRunGate(scopedDb(req), datasetId, { failUnder, noRegression });
+  // Same optional tolerance the SDK gate route accepts - without it this preview always used
+  // the 0.5 default and could disagree with the CI verdict it exists to predict.
+  const toleranceRaw = req.query.tolerance;
+  const tolerance = typeof toleranceRaw === "string" && toleranceRaw !== "" ? Number(toleranceRaw) : undefined;
+  if (tolerance !== undefined && (!Number.isFinite(tolerance) || tolerance < 0)) {
+    res.status(400).json({ error: "tolerance must be a non-negative number" });
+    return;
+  }
+  const result = await previewLatestRunGate(scopedDb(req), datasetId, { failUnder, noRegression, tolerance });
   if ("error" in result) {
     res.status(422).json(result);
     return;
@@ -614,7 +624,10 @@ evaluateDashboardRouter.post("/datasets/:datasetId/run-with-connector", async (r
     res.status(404).json({ error: "Agent connector not found" });
     return;
   }
-  const result = await startConnectorRun(scopedDb(req), req.params.datasetId!, body.connectorId);
+  const result = await startConnectorRun(scopedDb(req), req.params.datasetId!, body.connectorId, {
+    // Optional named subset: only cases tagged with this split run (original indexes kept).
+    split: typeof body.split === "string" ? body.split : undefined,
+  });
   if (!result) {
     res.status(404).json({ error: "Dataset not found" });
     return;
@@ -1259,6 +1272,65 @@ evaluateDashboardRouter.get("/evaluationSettings/:id", async (req: Request, res:
   res.status(200).json(settings);
 });
 
+// Dataset deletion existed nowhere (every sibling resource had one). Removes the dataset, its
+// twin grading config, and both version histories; keeps runs (history). 409 when a live scorer
+// profile is bound to the twin.
+evaluateDashboardRouter.delete("/datasets/:id", async (req: Request, res: Response) => {
+  const result = await deleteDataset(scopedDb(req), req.params.id!);
+  if (!result.ok && result.reason === "not_found") {
+    res.status(404).json({ error: "Dataset not found" });
+    return;
+  }
+  if (!result.ok) {
+    res.status(409).json({ error: "This dataset's grading config is attached to a live scorer - detach it first." });
+    return;
+  }
+  res.status(200).json({ deleted: true });
+});
+
+// Round-trips the NDJSON export (core/export/exportData.ts's "datasets" entity) or any
+// wire-shaped dataset object: creates a NEW dataset + twin config with a fresh id. Ids are never
+// reused - an import is a copy, not a restore-in-place. passthrough() keeps the flat similarity
+// flags (vectorSimilarity etc.) visible to extractSimilarityConfig below.
+const datasetImportSchema = z
+  .object({
+    dataset: z
+      .object({
+        name: z.string().min(1),
+        description: z.string().optional(),
+        numberOfRequests: z.number().int().min(1).max(10).optional(),
+        acceptanceCriteria: z.string().optional(),
+        rejectionCriteria: z.string().optional(),
+        evaluationCriteria: z.string().optional(),
+        questions: z.array(z.record(z.unknown())).optional(),
+      })
+      .passthrough(),
+  })
+  .strip();
+
+evaluateDashboardRouter.post("/datasets/import", validateBody(datasetImportSchema), async (req: Request, res: Response) => {
+  const body = req.body as z.infer<typeof datasetImportSchema>;
+  const source = body.dataset;
+  const id = nanoid();
+  const questions = Array.isArray(source.questions) ? source.questions : [];
+  const shared = {
+    id,
+    name: source.name,
+    description: source.description,
+    numberOfRequests: source.numberOfRequests,
+    similarityConfig: extractSimilarityConfig(source),
+    codeScorers: extractCodeScorers(source),
+    acceptanceCriteria: source.acceptanceCriteria,
+    rejectionCriteria: source.rejectionCriteria,
+    evaluationCriteria: source.evaluationCriteria,
+  };
+  const [datasetWire] = await Promise.all([
+    createDataset(scopedDb(req), { ...shared, questions }),
+    createEvaluationSettings(scopedDb(req), shared),
+  ]);
+  res.status(201).json({ ...datasetWire, creator: LOCAL_USER });
+});
+
 evaluateDashboardRouter.post("/evaluationSettings/create", async (req: Request, res: Response) => {
   const body = req.body ?? {};
   if (typeof body.name !== "string" || !body.name.trim()) {
@@ -1390,7 +1462,11 @@ function toResultWire(r: RunResultRow, evaluationSettingsQuestions: unknown, dat
   return {
     message: "",
     responseMessage: r.output?.text ?? (r.error ? `Error: ${r.error.type}: ${r.error.message}` : ""),
-    rating: r.rating ?? 0,
+    // null stays null: "the judge skipped this" and "the judge gave it a 0" are different facts
+    // (the ?? 0 coercion here used to erase exactly that distinction).
+    rating: r.rating ?? null,
+    // scored | skipped | failed - lets the run view label unscored rows instead of hiding them.
+    status: r.status ?? "scored",
     justification: r.justification ?? "",
     questionIndex: r.questionIndex ?? undefined,
     runNumber: r.runNumber ?? undefined,
@@ -1438,7 +1514,12 @@ async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) 
       minRating: rated.length ? Math.min(...rated) : null,
       maxRating: rated.length ? Math.max(...rated) : null,
       ratedCount: rated.length,
+      skippedCount: results.filter(r => r.status === "skipped").length,
+      failedCount: results.filter(r => r.status === "failed").length,
     },
+    // Per-case repetition spread (cases with 2+ rated rows) - lets the run view show
+    // "this case flakes between X and Y" instead of one flattened average.
+    caseStatistics: computeCaseStatistics(results),
     // Frontend's AnalysisPanel reads this straight off the evaluation object (evaluation.analysis),
     // not off the /analyze/:id/status or /metrics endpoints - those only drive polling and the
     // judge-evidence table. See core/evaluate/analysis.ts's top comment for what's in/out of scope.

@@ -17,11 +17,15 @@ import {
 // the JUDGE'S OWN CRITERIA from the disagreements - the same evidence -> propose -> validate ->
 // human-approved publish loop prompts and tool schemas already have, pointed at the evaluator.
 //
-// Ground truth comes from two streams, in priority order:
+// Ground truth comes from three streams, in priority order (richest first):
 //   1. Signal-triage corrections (monitor_signal_feedback.correctedScore + rationale, attributed
 //      to this evaluator via the event the human was correcting) - a human explicitly re-scoring
-//      this judge's verdict, with reasoning. The richest label there is, previously write-only.
-//   2. Outcome reports by trace (isNegative), which already include end-user feedback votes via
+//      this judge's verdict, with reasoning. A row queued for autotune without a numeric
+//      re-score counts too: queuing a specific verdict IS disputing it.
+//   2. Human review labels (review_queue_items: good|bad + optional correctedScore + note) -
+//      the deliberate label-and-calibrate stream, keyed by trace. This is what catches the
+//      judge quietly PASSING bad answers, which signal triage structurally cannot see.
+//   3. Outcome reports by trace (isNegative), which already include end-user feedback votes via
 //      the feedback API's dual-write.
 //
 // What makes THIS loop stronger than the prompt/tool ones: judging is exactly reproducible
@@ -35,7 +39,7 @@ const VALIDATE_CONTROL_CAP = 6;
 const DEFAULT_BAD_THRESHOLD = 5;
 
 export type GroundTruth = {
-  source: "correction" | "outcome" | "feedback";
+  source: "correction" | "review" | "outcome" | "feedback";
   isBad: boolean;
   // The human's own words: a correction's rationale, or an outcome/feedback reason.
   detail: string | null;
@@ -74,7 +78,17 @@ type FeedbackCorrectionRow = {
   metric: string;
   correctedScore: number | null;
   rationale: string;
+  queuedForAutotune: boolean | null;
   createdAt: Date;
+};
+
+type ReviewLabelRow = {
+  traceId: string;
+  label: string | null;
+  correctedScore: number | null;
+  note: string | null;
+  reviewedBy: string | null;
+  reviewedAt: Date | null;
 };
 
 type OutcomeRow = { traceId: string | null; isNegative: boolean; reason: string | null; reportedBy: string | null; reportedAt: Date };
@@ -95,19 +109,44 @@ export async function getEvaluatorCalibration(
       e.onlineEvaluatorId === evaluatorId && e.rating !== null && e.traceId !== null
   );
 
-  // Corrections keyed by the event the human was re-scoring; outcomes keyed by trace. Two shapes
-  // count as a correction: an explicit re-score (correctedScore set, from the Feedback dialog) and
-  // a "false-positive" resolution from the Signal inbox (no score - the human said "this flag was
-  // wrong", which is a verdict, not a number, so none is fabricated for it).
-  const feedbackCond = eq(db.schema.monitorSignalFeedback.projectId, db.projectId);
+  // Corrections keyed by the event the human was re-scoring; review labels and outcomes keyed
+  // by trace. Three shapes count as a correction: an explicit re-score (correctedScore set, from
+  // the Feedback dialog), a "false-positive" resolution from the Signal inbox (no score - the
+  // human said "this flag was wrong", which is a verdict, not a number, so none is fabricated
+  // for it), and a row queued for autotune (queuing a specific verdict disputes it). Corrections
+  // are windowed on createdAt like every other stream - an ancient correction must not count
+  // against this window's events just because the event happens to fall inside it.
+  const feedbackCond = and(
+    eq(db.schema.monitorSignalFeedback.projectId, db.projectId),
+    gte(db.schema.monitorSignalFeedback.createdAt, since)
+  );
   const corrections = (
     (db.kind === "sqlite"
       ? db.db.select().from(db.schema.monitorSignalFeedback).where(feedbackCond).all()
       : await db.db.select().from(db.schema.monitorSignalFeedback).where(feedbackCond)) as FeedbackCorrectionRow[]
-  ).filter(c => c.correctedScore !== null || c.metric === "false-positive");
+  ).filter(c => c.correctedScore !== null || c.metric === "false-positive" || c.queuedForAutotune === true);
   const correctionByEvent = new Map<string, FeedbackCorrectionRow>();
   for (const c of corrections) {
     if (c.eventId) correctionByEvent.set(c.eventId, c); // later rows overwrite: latest correction wins
+  }
+
+  // Labeled human-review rows, windowed on reviewedAt: the calibration pair the review queue
+  // exists to produce (this stream was previously collected and displayed but fed nothing).
+  const reviewCond = and(
+    eq(db.schema.reviewQueueItems.projectId, db.projectId),
+    eq(db.schema.reviewQueueItems.status, "labeled")
+  );
+  const reviewRows = (
+    (db.kind === "sqlite"
+      ? db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).all()
+      : await db.db.select().from(db.schema.reviewQueueItems).where(reviewCond)) as ReviewLabelRow[]
+  ).filter(r => r.label && r.traceId && r.reviewedAt && r.reviewedAt.getTime() >= since.getTime());
+  const reviewByTrace = new Map<string, ReviewLabelRow>();
+  for (const r of reviewRows) {
+    const existing = reviewByTrace.get(r.traceId);
+    if (!existing || (r.reviewedAt?.getTime() ?? 0) > (existing.reviewedAt?.getTime() ?? 0)) {
+      reviewByTrace.set(r.traceId, r);
+    }
   }
 
   const outcomesCond = and(eq(db.schema.outcomeReports.projectId, db.projectId), gte(db.schema.outcomeReports.reportedAt, since));
@@ -132,7 +171,9 @@ export async function getEvaluatorCalibration(
 
   for (const event of events) {
     const correction = correctionByEvent.get(event.id);
+    const review = reviewByTrace.get(event.traceId);
     const outcome = outcomeByTrace.get(event.traceId);
+    const judgedBad = event.rating < threshold;
     let groundTruth: GroundTruth | null = null;
     if (correction && correction.correctedScore !== null) {
       groundTruth = {
@@ -152,6 +193,24 @@ export async function getEvaluatorCalibration(
         correctedScore: null,
         reportedBy: null,
       };
+    } else if (correction && correction.queuedForAutotune) {
+      // Queued-for-autotune without a re-score: the human disputed THIS verdict, so ground
+      // truth is its inverse.
+      groundTruth = {
+        source: "correction",
+        isBad: !judgedBad,
+        detail: correction.rationale,
+        correctedScore: null,
+        reportedBy: null,
+      };
+    } else if (review) {
+      groundTruth = {
+        source: "review",
+        isBad: review.label === "bad",
+        detail: review.note,
+        correctedScore: review.correctedScore,
+        reportedBy: review.reviewedBy,
+      };
     } else if (outcome) {
       groundTruth = {
         source: outcome.reportedBy?.startsWith("end-user") ? "feedback" : "outcome",
@@ -163,8 +222,6 @@ export async function getEvaluatorCalibration(
     }
     if (!groundTruth) continue;
     withGroundTruth++;
-
-    const judgedBad = event.rating < threshold;
     const agree = judgedBad === groundTruth.isBad;
     if (agree) agreements++;
     else if (judgedBad) overFlagged++;

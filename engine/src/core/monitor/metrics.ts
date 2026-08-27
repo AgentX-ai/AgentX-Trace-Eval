@@ -2,6 +2,7 @@ import { resolveSpanKind } from "../trace/spanKind.js";
 import { and, eq, gte } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { listPortabilityModels, normalizeModelId, type PortabilityModel } from "../evaluate/models.js";
+import { productionTracesOnly } from "../trace/evalTraffic.js";
 
 // The Monitor metrics grid (claude.design Monitor.dc.html): one bucketed pass over the window's
 // trace rows powering every card - spans by kind, latency percentiles, tokens, priced cost,
@@ -160,7 +161,8 @@ export async function getMonitorMetrics(
   let rows: Row[];
   if (db.kind === "sqlite") {
     const t = db.schema.traces;
-    const cond = and(gte(t.createdAt, since), eq(t.projectId, db.projectId));
+    // Production only: the span/latency/token buckets describe live traffic, not eval harnesses.
+    const cond = and(gte(t.createdAt, since), eq(t.projectId, db.projectId), productionTracesOnly(db));
     rows = db.db
       .select({
         id: t.id,
@@ -182,7 +184,7 @@ export async function getMonitorMetrics(
       .all() as Row[];
   } else {
     const t = db.schema.traces;
-    const cond = and(gte(t.createdAt, since), eq(t.projectId, db.projectId));
+    const cond = and(gte(t.createdAt, since), eq(t.projectId, db.projectId), productionTracesOnly(db));
     rows = (await db.db
       .select({
         id: t.id,

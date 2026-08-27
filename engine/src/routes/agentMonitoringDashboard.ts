@@ -978,14 +978,48 @@ agentMonitoringDashboardRouter.post(
       res.status(404).json({ error: "Online evaluator (or its evaluator config) not found" });
       return;
     }
-    const updated = await patchEvaluationSettings(scopedDb(req), evaluator.evaluationSettingsId, {
-      acceptanceCriteria: body.acceptanceCriteria,
-      rejectionCriteria: body.rejectionCriteria,
-      evaluationCriteria: body.evaluationCriteria,
-      // Only when the tuning proposal actually revised the prompt - an absent field leaves the
-      // config's prompt untouched, so criteria-only tunes keep their old publish behavior.
-      ...(typeof body.judgePrompt === "string" && body.judgePrompt.trim() ? { judgePrompt: body.judgePrompt } : {}),
-    });
+    // Provenance gate: publishing a tuned rubric requires the validation that measured it
+    // (POST .../tune/validate's verdict + counts), and a measured REGRESSION is refused unless
+    // the caller explicitly forces it. The verdict is stamped into the version history, so a
+    // tuned-and-validated rubric change is distinguishable from a hand edit forever after.
+    const validation = body.validation as
+      | { verdict?: string; netAgreementGain?: number; fixed?: number; brokenControls?: number }
+      | undefined;
+    const force = body.force === true;
+    if (!force) {
+      if (!validation || typeof validation.verdict !== "string") {
+        res.status(409).json({
+          error:
+            "Publishing tuned criteria requires the validation result (run POST .../tune/validate and pass its verdict as `validation`), or force: true to publish unvalidated.",
+        });
+        return;
+      }
+      if (validation.verdict === "regressed") {
+        res.status(409).json({
+          error:
+            "Validation measured a net regression on this judge's own cases - not published. Re-generate the proposal, or pass force: true to publish anyway.",
+        });
+        return;
+      }
+    }
+    const provenance = validation?.verdict
+      ? `[judge tuning: validated ${validation.verdict}${
+          typeof validation.netAgreementGain === "number" ? `, net agreement ${validation.netAgreementGain >= 0 ? "+" : ""}${validation.netAgreementGain}` : ""
+        }]`
+      : "[judge tuning: published without validation]";
+    const updated = await patchEvaluationSettings(
+      scopedDb(req),
+      evaluator.evaluationSettingsId,
+      {
+        acceptanceCriteria: body.acceptanceCriteria,
+        rejectionCriteria: body.rejectionCriteria,
+        evaluationCriteria: body.evaluationCriteria,
+        // Only when the tuning proposal actually revised the prompt - an absent field leaves the
+        // config's prompt untouched, so criteria-only tunes keep their old publish behavior.
+        ...(typeof body.judgePrompt === "string" && body.judgePrompt.trim() ? { judgePrompt: body.judgePrompt } : {}),
+      },
+      { versionProvenance: provenance }
+    );
     if (!updated) {
       res.status(404).json({ error: "Evaluator config not found" });
       return;

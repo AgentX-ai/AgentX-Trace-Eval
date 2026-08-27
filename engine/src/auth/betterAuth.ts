@@ -245,8 +245,11 @@ function buildAuth(db: Db, opts: InitAuthOpts) {
           invitation: { modelName: "auth_invitation" },
         },
       }),
-      // Generic OIDC SSO (sign-in route: POST /auth/sign-in/oauth2 with providerId "oidc",
-      // callback: <public URL>/api/v1/auth/oauth2/callback/oidc). Inert without the env trio.
+      // Generic OIDC SSO. Since better-auth 1.7 the provider is a first-class social provider:
+      // sign-in goes through POST /auth/sign-in/social with provider "oidc", the IdP callback
+      // is <public URL>/api/v1/auth/callback/oidc (the old /auth/oauth2/callback/oidc is gone,
+      // so IdP apps registered against it must update their redirect URI), and OIDC discovery
+      // runs once here at boot instead of per sign-in. Inert without the env trio.
       genericOAuth({ config: genericOAuthConfigFromEnv() }),
     ],
   });

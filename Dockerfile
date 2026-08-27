@@ -12,7 +12,7 @@
 # Run:   docker run -p 4700:4700 -v agentx-data:/data agentx-selfhost
 
 # --- deps: workspace install + judge-core build (Node/Yarn) ---
-FROM node:24-slim AS deps
+FROM node:25-slim AS deps
 WORKDIR /app
 # python3/make/g++: better-sqlite3 (engine/package.json) has a native addon needing a real build
 # toolchain to compile from source (no prebuilt binary for every platform/arch combo) - it's a
@@ -25,12 +25,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
 COPY package.json yarn.lock ./
 COPY engine/package.json engine/package.json
 COPY packages/judge-core/package.json packages/judge-core/package.json
+# Every workspace's package.json must be present or the install resolves a smaller dependency
+# set than the lockfile describes - today @agentx/eval's devDeps happen to coincide with
+# judge-core's, but the first dep unique to it would break --frozen-lockfile (or silently
+# under-install) right here. Its SOURCE never ships in the image; the engine doesn't import it.
+COPY packages/agentx-eval/package.json packages/agentx-eval/package.json
 RUN yarn install --frozen-lockfile
 COPY packages/judge-core packages/judge-core
 RUN yarn workspace @agentx/judge-core build
 
 # --- build: compile the engine to a single native binary (Bun) ---
-FROM oven/bun:1.3.14 AS build
+FROM oven/bun:1.4.0 AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules node_modules
 COPY --from=deps /app/packages/judge-core packages/judge-core

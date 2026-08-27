@@ -38,8 +38,17 @@ const SWEEP_INTERVAL_MS = 60_000;
 // Bounds one sweep's judge spend on a busy instance - anything left over is picked up next tick.
 const MAX_JUDGED_PER_SWEEP = 5;
 // How far back the sweep looks for candidate sessions - anything older was either already scored
-// or has been idle so long that scoring it now answers no live monitoring question.
-const CANDIDATE_WINDOW = "24h" as const;
+// or has been idle so long that scoring it now answers no live monitoring question. Tunable for
+// backfill after downtime (AGENTX_SESSION_SWEEP_WINDOW_HOURS): sessions idle longer than the
+// window are otherwise never judged, and the dashboard's ifStale route was the only recovery.
+function candidateWindow(): "24h" | "7d" | "30d" {
+  const hours = Number(process.env.AGENTX_SESSION_SWEEP_WINDOW_HOURS || 24);
+  if (!Number.isFinite(hours) || hours <= 24) return "24h";
+  return hours <= 24 * 7 ? "7d" : "30d";
+}
+// Round-robin offset so the per-tick budget is not always consumed in project list order - a
+// busy first project used to starve every project after it indefinitely.
+let sweepTick = 0;
 // Every session judge returns structured FINDINGS alongside the score: per-step citations with a
 // short category tag - what the session detail's judge rail renders and uses to flag turns.
 const FINDINGS_SCHEMA_PROP = {
@@ -310,6 +319,12 @@ export async function runSessionEvaluatorCheck(db: Db, sessionId: string, evalua
   if (!verdict) {
     return null;
   }
+  if (verdict.rating === null) {
+    // A human clicked Re-run and the judge produced nothing usable - surface it as an error
+    // instead of persisting a null score (which would both display as a broken verdict and
+    // mark the session fresh, suppressing the sweep's own retry).
+    throw new Error("The judge model returned no usable verdict for this session. Try again.");
+  }
   return insertSessionScore(db, {
     sessionId,
     kind: `online-eval:${evaluator.id}`,
@@ -327,7 +342,11 @@ export async function runSessionEvaluatorCheck(db: Db, sessionId: string, evalua
 // route (used by tests/demos); startSessionSweep below is the production path.
 export async function sweepSessionsOnce(): Promise<{ judged: number }> {
   const baseDb = getDb();
-  const projects = await listProjectRows(baseDb);
+  const allProjects = await listProjectRows(baseDb);
+  // Rotate the starting project each tick so the shared MAX_JUDGED_PER_SWEEP budget reaches
+  // every project over time instead of being eaten by whichever lists first.
+  const offset = allProjects.length > 0 ? sweepTick++ % allProjects.length : 0;
+  const projects = [...allProjects.slice(offset), ...allProjects.slice(0, offset)];
   let judged = 0;
 
   for (const project of projects) {
@@ -346,7 +365,7 @@ export async function sweepSessionsOnce(): Promise<{ judged: number }> {
     const evaluators = (await listOnlineEvaluatorRows(db)).filter(e => e.enabled && e.scope === "session");
     if (evaluators.length === 0) return;
 
-    const { sessions } = await listSessions(db, CANDIDATE_WINDOW);
+    const { sessions } = await listSessions(db, candidateWindow());
     const now = Date.now();
 
     for (const session of sessions) {
@@ -372,6 +391,28 @@ export async function sweepSessionsOnce(): Promise<{ judged: number }> {
           const verdict = await judgeSessionAgainstEvaluator(db, session.sessionId, session.spanCount, evaluator);
           if (!verdict) continue;
           judged++;
+          if (verdict.rating === null) {
+            // The judge returned no usable verdict (empty/unparseable, after judge-core's
+            // retry). Do NOT insert a session score: a null-rating score row would mark the
+            // session "fresh" and silently suppress every future attempt until new activity.
+            // Leaving it unscored lets the next sweep tick retry; the failure itself is
+            // recorded as a rating-null event (excluded from ratings/calibration by the
+            // rating !== null filters every reader already applies).
+            await recordEvent(db, {
+              signalId: null,
+              patternKey: `online-eval:${evaluator.id}`,
+              type: "online_eval_judge_failure",
+              severity: "low",
+              polarity: "score",
+              agentId: session.agentId,
+              traceId: verdict.anchorTraceId,
+              onlineEvaluatorId: evaluator.id,
+              rating: null,
+              justification: "Judge returned no usable verdict for this session",
+              sessionId: session.sessionId,
+            });
+            continue;
+          }
           await insertSessionScore(db, {
             sessionId: session.sessionId,
             kind,

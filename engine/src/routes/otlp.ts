@@ -6,6 +6,7 @@ import { ingestTraceSchema, ingestTrace, type IngestTraceInput } from "../core/t
 import { runMonitorCheck } from "../core/monitor/detect.js";
 import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
 import { runCustomEvaluators } from "../core/monitor/customEvaluators.js";
+import { runRules } from "../core/monitor/rules.js";
 import { runClassification } from "../core/monitor/topics.js";
 import { decodeProtobufExportRequest, encodeProtobufResponse } from "../otel/protoTypes.js";
 import { normalizeExportRequest } from "../otel/normalize.js";
@@ -167,6 +168,23 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
       { agentId, traceId }
     ).catch(err => {
       logger.error({ err: err instanceof Error ? err.message : err }, "Custom evaluator scoring failed:");
+    });
+
+    // Automation rules run on OTel traffic exactly like SDK traffic - an OTel-instrumented
+    // install previously got zero rule-driven review sampling, dataset curation, or webhooks,
+    // silently (routes/ingest.ts had this call, this path did not).
+    runRules(
+      db,
+      {
+        input: input.input,
+        output: input.output,
+        error: input.error ?? null,
+        model: input.model ?? null,
+        name: input.name ?? null,
+      },
+      { agentId, traceId }
+    ).catch(err => {
+      logger.error({ err: err instanceof Error ? err.message : err }, "Automation rules failed:");
     });
 
     runClassification(db, { input: input.input, output: input.output }, { agentId, traceId }).catch(err => {

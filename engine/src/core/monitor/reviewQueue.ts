@@ -195,6 +195,25 @@ export async function queueTraceForReview(db: Db, input: QueueForReviewInput): P
   return { ok: true, item: toWire(row, trace) };
 }
 
+// The queue-time snapshot races the online judges: rules and judging launch concurrently at
+// ingest, so a rule-queued trace is almost always snapshotted BEFORE its judge finishes -
+// null judge score on exactly the sampled traffic the queue exists to calibrate. Lazily
+// re-resolve (and persist) when the score is still missing on a pending row; by list/label
+// time the judge has long finished, so this converges after one read.
+async function backfillJudgeScore(db: Db, row: ReviewRow): Promise<ReviewRow> {
+  if (row.judgeScoreAtQueue !== null || row.status !== "pending") return row;
+  const score = await latestJudgeScore(db, row.traceId);
+  if (score === null) return row;
+  const updated = { ...row, judgeScoreAtQueue: score };
+  const cond = eq(db.schema.reviewQueueItems.id, row.id);
+  if (db.kind === "sqlite") {
+    await db.db.update(db.schema.reviewQueueItems).set({ judgeScoreAtQueue: score }).where(cond);
+  } else {
+    await db.db.update(db.schema.reviewQueueItems).set({ judgeScoreAtQueue: score }).where(cond);
+  }
+  return updated;
+}
+
 export async function listReviewQueue(
   db: Db,
   filter: { status?: string; source?: string } = {},
@@ -203,7 +222,7 @@ export async function listReviewQueue(
   let rows = await listRows(db);
   if (filter.status && filter.status !== "all") rows = rows.filter(r => r.status === filter.status);
   if (filter.source && filter.source !== "all") rows = rows.filter(r => r.source === filter.source);
-  const page = rows.slice(0, limit);
+  const page = await Promise.all(rows.slice(0, limit).map(row => backfillJudgeScore(db, row)));
   const traces = await traceSummaries(db, page.map(r => r.traceId));
   return {
     items: page.map(row => toWire(row, traces.get(row.traceId))),
@@ -221,8 +240,11 @@ export type LabelReviewInput = {
 };
 
 export async function labelReviewItem(db: Db, id: string, input: LabelReviewInput) {
-  const existing = await getRow(db, id);
+  let existing = await getRow(db, id);
   if (!existing) return null;
+  // The label is the moment the calibration pair is sealed - last chance to recover a judge
+  // score the queue-time snapshot raced past.
+  existing = await backfillJudgeScore(db, existing);
   const status = input.status ?? (input.label ? "labeled" : existing.status);
   const updated: ReviewRow = {
     ...existing,
@@ -259,28 +281,10 @@ export async function deleteReviewItem(db: Db, id: string): Promise<boolean> {
 // Calibration input: labeled rows where a judge had also scored the trace. "agreed" means the
 // judge's verdict matched the human's - with a corrected score when the reviewer gave one,
 // otherwise the label read against the scorer's own alert threshold midpoint (5/10).
-export type ReviewCalibrationPair = {
-  traceId: string;
-  judgeScore: number;
-  label: ReviewLabel;
-  correctedScore: number | null;
-  agreed: boolean;
-};
-
-export async function reviewCalibrationPairs(db: Db): Promise<ReviewCalibrationPair[]> {
-  const rows = await listRows(db);
-  return rows
-    .filter(r => r.status === "labeled" && r.label && r.judgeScoreAtQueue != null)
-    .map(r => {
-      const judgeScore = r.judgeScoreAtQueue!;
-      const label = r.label as ReviewLabel;
-      const judgeSaysGood = judgeScore >= 5;
-      return {
-        traceId: r.traceId,
-        judgeScore,
-        label,
-        correctedScore: r.correctedScore,
-        agreed: label === "good" ? judgeSaysGood : !judgeSaysGood,
-      };
-    });
-}
+// Review labels feed calibration in two places, neither of which lives here anymore:
+// - per-scorer: core/monitor/judgeTuning.ts joins labeled rows (by trace, windowed on
+//   reviewedAt) into getEvaluatorCalibration's ground truth, which is also exactly what makes
+//   a review label become judge-tuning evidence;
+// - global: core/monitor/outcomeCalibration.ts counts labeled rows against recorded verdicts.
+// (An earlier standalone reviewCalibrationPairs() helper computed pairs nothing consumed - it
+// was removed when the real joins above landed.)

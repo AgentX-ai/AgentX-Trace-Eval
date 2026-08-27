@@ -4,6 +4,7 @@ import type { MonitoringWindow } from "./events.js";
 import { getAgentNamesById } from "./agents.js";
 import { listOnlineEvaluatorRows } from "./onlineEvaluators.js";
 import { SESSION_BASELINE_KEY } from "./builtinEvaluators.js";
+import { productionTracesOnly } from "../trace/evalTraffic.js";
 
 // The Sessions surface under Observe: one row per conversation (traces sharing a session_id),
 // the level Live Traces deliberately doesn't show (one row = one interaction there). Turn count
@@ -77,6 +78,8 @@ export async function listSessions(db: Db, window: MonitoringWindow): Promise<Se
   const cond = and(
     gte(db.schema.traces.createdAt, since),
     isNotNull(db.schema.traces.sessionId),
+    // Production only: an eval run's per-case sessions are not conversations anyone held.
+    productionTracesOnly(db),
     eq(db.schema.traces.projectId, db.projectId)
   );
   const rows = (

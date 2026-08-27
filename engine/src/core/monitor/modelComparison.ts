@@ -2,6 +2,7 @@ import { and, eq, gte } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { listPortabilityModels, estimateCostUSD, normalizeModelId } from "../evaluate/models.js";
 import type { MonitoringWindow } from "./events.js";
+import { productionTracesOnly } from "../trace/evalTraffic.js";
 
 // Overview's "Model comparison" table - how each LLM actually performing in production stacks up
 // on quality, latency, cost, and volume, side by side. The production complement to the
@@ -47,7 +48,7 @@ type ComparisonEventRow = {
 // union), and the codebase's existing idiom for cross-dialect fetches is full rows + a cast (see
 // events.ts's listEventsSince). Volume is the same windowed set getKpis already pulls.
 async function listComparisonTracesSince(db: Db, since: Date): Promise<ComparisonTraceRow[]> {
-  const cond = and(gte(db.schema.traces.createdAt, since), eq(db.schema.traces.projectId, db.projectId));
+  const cond = and(gte(db.schema.traces.createdAt, since), eq(db.schema.traces.projectId, db.projectId), productionTracesOnly(db));
   // Every row, not just root spans - same reasoning as cost.ts's listCostTracesSince: an OTel
   // session's individual LLM-call spans each carry their own model/tokens, and filtering to roots
   // would undercount both spend and volume.

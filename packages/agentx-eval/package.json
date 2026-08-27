@@ -1,8 +1,9 @@
 {
-  "name": "@agentx/judge-core",
-  "version": "0.1.16",
-  "description": "LLM-as-judge prompt template + multi-provider (OpenAI/Anthropic) scoring call, shared between AgentX-web-api and AgentX-trace-eval's engine so the two don't maintain separate copies.",
+  "name": "@agentx/eval",
+  "version": "0.1.0",
+  "description": "Minimal TypeScript client for the AgentX self-host engine's evaluation CI surface: datasets, runs, batched result submission, finalize, CI gate, and pairwise comparison. Zero runtime dependencies (Node 18+ global fetch).",
   "license": "Apache-2.0",
+  "private": false,
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -23,14 +24,11 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p ."
   },
-  "peerDependencies": {
-    "@anthropic-ai/sdk": ">=0.24",
-    "openai": ">=4"
+  "engines": {
+    "node": ">=18"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^0.120.0",
     "@types/node": "^24.13.3",
-    "openai": "^7.5.0",
     "tsup": "^8.5.0",
     "typescript": "^6.0.3",
     "vitest": "^4.0.5"

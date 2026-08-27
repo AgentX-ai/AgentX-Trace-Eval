@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { scoreAgainstCriteria, DEFAULT_JUDGE_PROMPT, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { matchesAgentScope, passesSampleRate } from "./routing.js";
-import { recordEvent } from "./events.js";
+import { recordEvent, listEventsSince } from "./events.js";
 import { upsertSignal } from "./signals.js";
 import {
   cloneEvaluationSettings,
@@ -304,11 +304,32 @@ type ScorableTrace = { input?: unknown; output?: unknown; metadata?: unknown };
 // opt in by creating one, not per SDK call), same as a LangSmith Rule fires from server config,
 // not a client-side flag. Callers MUST wrap this in a try/catch: a judge failure (missing API key,
 // provider outage) must never break trace ingestion, which is the endpoint's actual job.
+// Daily brake specifically for trace-scope judging, on top of the global judge quota
+// (AGENTX_QUOTA_JUDGE_CALLS_PER_DAY): N enabled evaluators x sampled traffic is otherwise
+// unbounded, and the global quota also starves offline runs when live traffic spikes. Counts
+// today's online-eval events (scores + failures) per project. Unset = unlimited, unchanged.
+async function onlineJudgeBudgetExhausted(db: Db): Promise<boolean> {
+  const cap = Number(process.env.AGENTX_QUOTA_ONLINE_JUDGE_CALLS_PER_DAY || 0);
+  if (!Number.isFinite(cap) || cap <= 0) return false;
+  const midnight = new Date();
+  midnight.setHours(0, 0, 0, 0);
+  const rows = await listEventsSince(db, midnight);
+  const spent = rows.filter(
+    r => r.onlineEvaluatorId && (r.type === "online_eval_score" || r.type === "online_eval_judge_failure")
+  ).length;
+  if (spent >= cap) {
+    logger.warn({ spent, cap }, "Online judge daily cap reached - skipping live scoring until midnight");
+    return true;
+  }
+  return false;
+}
+
 export async function runOnlineEvaluators(
   db: Db,
   trace: ScorableTrace,
   ctx: { agentId: string | null; traceId: string | null }
 ): Promise<void> {
+  if (await onlineJudgeBudgetExhausted(db)) return;
   const evaluators = await listOnlineEvaluatorRows(db);
   const inputText = typeof trace.input === "string" ? trace.input : JSON.stringify(trace.input ?? "");
   const outputText = typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output ?? "");
@@ -391,10 +412,29 @@ export async function runOnlineEvaluators(
         }
       ));
     } catch (err) {
-      // One evaluator failing (missing API key, provider outage) must not skip every other
-      // evaluator after it for this trace - isolated per-evaluator, same reasoning as
-      // detect.ts's per-pattern isolation.
+      // One evaluator failing (missing API key, provider outage, unusable judge output) must not
+      // skip every other evaluator after it for this trace - isolated per-evaluator, same
+      // reasoning as detect.ts's per-pattern isolation. The failure is recorded as its own
+      // event type with rating null: every ratings/calibration/tuning read already filters on
+      // rating !== null, so a failure can never masquerade as a verdict (it used to surface as
+      // a rating-0 event that raised a real Signal), while the row still leaves a durable,
+      // countable record instead of only a log line. Mirrors how custom evaluators record
+      // their failures as matched-null events (events.ts).
       logger.error({ err: err instanceof Error ? err.message : err }, `Online evaluator "${evaluator.name}" failed to score:`);
+      await recordEvent(db, {
+        signalId: null,
+        patternKey: `online-eval:${evaluator.id}`,
+        type: "online_eval_judge_failure",
+        severity: "low",
+        polarity: "score",
+        agentId: ctx.agentId,
+        traceId: ctx.traceId,
+        onlineEvaluatorId: evaluator.id,
+        rating: null,
+        justification: err instanceof Error ? err.message : String(err),
+      }).catch(recordErr => {
+        logger.error({ err: recordErr }, "Failed to record judge_failure event");
+      });
       continue;
     }
 

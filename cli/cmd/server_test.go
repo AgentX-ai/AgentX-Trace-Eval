@@ -129,8 +129,13 @@ func TestBuildEngineCommandFallsBackToTheSourceCheckout(t *testing.T) {
 	if strings.Join(cmd.Args[1:], " ") != "dev -- --dev" {
 		t.Fatalf("got args %v, want [dev -- --dev]", cmd.Args[1:])
 	}
-	if cmd.Dir != filepath.Join(dir, "engine") {
-		t.Fatalf("got working dir %q, want the engine directory", cmd.Dir)
+	// Symlink-resolved on both sides: macOS TempDirs live under /var, which is a symlink to
+	// /private/var, so Getwd-derived paths and t.TempDir() differ by prefix while naming the
+	// same directory.
+	gotDir, _ := filepath.EvalSymlinks(cmd.Dir)
+	wantDir, _ := filepath.EvalSymlinks(filepath.Join(dir, "engine"))
+	if gotDir != wantDir {
+		t.Fatalf("got working dir %q, want the engine directory %q", cmd.Dir, wantDir)
 	}
 }
 
