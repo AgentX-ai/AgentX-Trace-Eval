@@ -7,6 +7,7 @@ import { listPortabilityModels, estimateCostUSD } from "../evaluate/models.js";
 import { getClassificationForTrace } from "../monitor/topics.js";
 import { unixNanosToDate } from "../shared/unixNano.js";
 import { logger } from "../../log.js";
+import { normalizeSpanKind, resolveSpanKind } from "./spanKind.js";
 import { EVAL_RUN_SOURCE, normalizeTraceSource, productionTracesOnly } from "./evalTraffic.js";
 
 // Mirrors the wire payload agentx.tracing.tracer.Tracer._send builds in the Python SDK
@@ -29,6 +30,7 @@ const INGEST_CAMEL_ALIASES: Record<string, string> = {
   cacheReadTokens: "cache_read_tokens",
   cacheWriteTokens: "cache_write_tokens",
   spanId: "span_id",
+  spanKind: "span_kind",
   parentSpanId: "parent_span_id",
   startedAtUnixNano: "started_at_unix_nano",
   patternIds: "pattern_ids",
@@ -59,6 +61,11 @@ export const ingestTraceSchema = z.preprocess(foldCamelAliases, z.object({
   framework: z.string().optional(),
   model: z.string().optional(),
   tool_calls: z.array(z.record(z.unknown())).optional(),
+  // What kind of step this is, stated by the producer: "llm" | "tool" | "retrieval" | "agent" |
+  // ... Other vocabularies (OpenInference, OTel GenAI, Langfuse, MLflow) are folded onto ours by
+  // normalizeSpanKind, so an already-instrumented span does not need the producer to change.
+  // Unrecognized values are stored as null rather than as a fact nobody stated.
+  span_kind: z.string().optional(),
   // Where this trace came from. "eval-run" marks traffic produced inside an offline evaluation
   // run (the SDK's execute() stamps it); the monitor surfaces exclude it. Unknown words store as
   // null rather than as a category nobody defined.
@@ -143,6 +150,7 @@ export async function ingestTrace(
     framework: payload.framework ?? null,
     model: payload.model ?? null,
     toolCalls: payload.tool_calls ?? null,
+    spanKind: normalizeSpanKind(payload.span_kind),
     source: normalizeTraceSource(payload.source),
     metadata: payload.metadata ?? null,
     sessionId: payload.session_id ?? null,
@@ -211,6 +219,7 @@ export type TraceRow = {
   cacheReadTokens: number | null;
   cacheWriteTokens: number | null;
   spanId: string | null;
+  spanKind: string | null;
   source: string | null;
   parentSpanId: string | null;
   startedAt: Date | null;
@@ -235,6 +244,9 @@ function toWire(row: TraceRow) {
     toolCalls: row.toolCalls ?? undefined,
     sessionId: row.sessionId ?? undefined,
     spanId: row.spanId ?? undefined,
+    // Always resolved, never the raw column: the engine classifies once, so no reader has to
+    // re-derive it and disagree (see core/trace/spanKind.ts).
+    spanKind: resolveSpanKind(row),
     parentSpanId: row.parentSpanId ?? undefined,
     startedAt: row.startedAt ? row.startedAt.toISOString() : undefined,
     // "eval-run" for traces produced inside an offline evaluation; absent for production.
@@ -265,6 +277,7 @@ export function toTraceDetailWire(row: TraceRow) {
     toolCalls: row.toolCalls ?? undefined,
     sessionId: row.sessionId ?? undefined,
     spanId: row.spanId ?? undefined,
+    spanKind: resolveSpanKind(row),
     parentSpanId: row.parentSpanId ?? undefined,
     startedAt: row.startedAt ? row.startedAt.toISOString() : undefined,
     trafficSource: row.source ?? undefined,

@@ -1,3 +1,4 @@
+import { resolveSpanKind } from "../trace/spanKind.js";
 import vm from "node:vm";
 import { spawn } from "node:child_process";
 import type { Db } from "../../storage/db.js";
@@ -62,12 +63,19 @@ export type ScorerSpan = {
   started_at: string | null;
 };
 
+// One classifier for the whole engine (core/trace/spanKind.ts). This used to be its own rule and
+// disagreed with the timeline's: a plain child span arrived here as "span" while the UI drew it
+// as a tool. Note the vocabulary shift that came with unifying - an unclassifiable child span is
+// now "chain" rather than "span", and a root span is "agent" rather than falling through.
 function classifySpan(row: TraceRow): string {
-  const metadata = row.metadata as { kind?: unknown } | null;
-  if (metadata && metadata.kind === "retrieval") return "retrieval";
-  if (row.model) return "llm";
-  if (Array.isArray(row.toolCalls) && row.toolCalls.length > 0) return "tool";
-  return "span";
+  return resolveSpanKind({
+    spanKind: (row as { spanKind?: unknown }).spanKind,
+    metadata: row.metadata,
+    name: row.name,
+    model: row.model,
+    toolCalls: (row as { toolCalls?: unknown }).toolCalls,
+    parentSpanId: (row as { parentSpanId?: string | null }).parentSpanId ?? null,
+  });
 }
 
 function toScorerSpan(row: TraceRow): ScorerSpan {

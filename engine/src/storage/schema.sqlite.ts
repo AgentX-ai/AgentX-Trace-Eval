@@ -82,6 +82,11 @@ export const traces = sqliteTable("traces", {
   // concept. spanId/parentSpanId let a session's rows (sessionId = the OTel traceId) be assembled
   // into a tree; startedAt is the absolute span start (otherwise only the derived latencyMs
   // duration survives ingestion, never enough on its own for a waterfall's relative positioning).
+  // What kind of step this span is - "llm" | "tool" | "retrieval" | "agent" | ... - as STATED by
+  // whoever produced it, null when nobody said. See core/trace/spanKind.ts for why a stated kind
+  // and an inferred one are deliberately different things, and for the fallback ladder that
+  // classifies the null rows.
+  spanKind: text("span_kind"),
   // Where this trace came from: null = production traffic; "eval-run" = produced inside an
   // offline evaluation run (stamped by the SDK's execute()). The monitor surfaces exclude
   // eval-run traffic so a nightly eval cannot skew production KPIs; cost keeps it, split out,
