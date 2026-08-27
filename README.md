@@ -308,10 +308,12 @@ this Governance dashboard. Rather than open-sourcing it, only its **build output
 every merge to that repo's main builds the dashboard in self-host mode and publishes
 `agentx-web.tar.gz` as an `eval-front-v<series>.<n>` release **on that repo** - the dashboard's
 own versioned channel (the series, e.g. 0.3, is bumped manually via that repo's
-`.github/web-release-series` file; `<n>` auto-increments per merge). When a release is cut here
-(tag push -> `release.yml`), the workflow fetches the newest of those bundles and attaches it
-alongside the engine binaries, so each release is an immutable engine+dashboard pair frozen at
-tag time. `install.sh`, `build.sh`, and the `Dockerfile` all
+`.github/web-release-series` file; `<n>` auto-increments per merge). Releases here work the
+same way: every merge to main that passes the Tests workflow triggers `release.yml`, which
+versions itself as `v<series>.<n>` from this repo's `.github/release-series` file (series
+bumped manually, `<n>` auto-incremented), fetches the newest of those dashboard bundles, and
+publishes engine binaries + dashboard together - each release an immutable engine+dashboard
+pair, no hand-pushed tags. `install.sh`, `build.sh`, and the `Dockerfile` all
 fetch the bundle from this repo's releases - nobody installing or building this repo, including
 outside contributors, ever needs access to that private repo.
 
