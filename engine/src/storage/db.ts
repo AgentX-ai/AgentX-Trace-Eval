@@ -1361,6 +1361,9 @@ function judgeScorerCloneTargets(evaluators: JudgeScorerBindingRow[], datasetIds
 const JUDGE_SCORER_CLONE_COLUMNS =
   "name, description, number_of_requests, similarity_config, code_scorers, acceptance_criteria, " +
   "rejection_criteria, evaluation_criteria, judge_prompt, judge_model";
+// The SELECT half suffixes the name: a clone that keeps its source's exact name is
+// indistinguishable in every list UI ("which Production Quality Bar did I just edit?").
+const JUDGE_SCORER_CLONE_SELECT = JUDGE_SCORER_CLONE_COLUMNS.replace("name,", "name || ' (copy)',");
 
 function enforceJudgeScorerCardinalitySqlite(sqlite: SqliteHandle): void {
   const evaluators = sqlite
@@ -1381,7 +1384,7 @@ function enforceJudgeScorerCardinalitySqlite(sqlite: SqliteHandle): void {
     sqlite
       .prepare(
         `INSERT INTO evaluation_settings (id, ${JUDGE_SCORER_CLONE_COLUMNS}, is_default, status, created_at, project_id)
-         SELECT ?, ${JUDGE_SCORER_CLONE_COLUMNS}, 0, status, ?, project_id
+         SELECT ?, ${JUDGE_SCORER_CLONE_SELECT}, 0, status, ?, project_id
          FROM evaluation_settings WHERE id = (SELECT evaluation_settings_id FROM monitor_online_evaluators WHERE id = ?)`
       )
       .run(cloneId, now, evaluatorId);
@@ -2352,7 +2355,7 @@ async function enforceJudgeScorerCardinalityPostgres(pool: Pool): Promise<void> 
     const cloneId = nanoid();
     await pool.query(
       `INSERT INTO evaluation_settings (id, ${JUDGE_SCORER_CLONE_COLUMNS}, is_default, status, created_at, project_id)
-       SELECT $1, ${JUDGE_SCORER_CLONE_COLUMNS}, FALSE, status, NOW(), project_id
+       SELECT $1, ${JUDGE_SCORER_CLONE_SELECT}, FALSE, status, NOW(), project_id
        FROM evaluation_settings WHERE id = (SELECT evaluation_settings_id FROM monitor_online_evaluators WHERE id = $2)`,
       [cloneId, evaluatorId]
     );
