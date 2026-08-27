@@ -243,6 +243,9 @@ export async function cloneEvaluationSettings(db: Db, id: string): Promise<strin
   const clone: EvaluationSettingsRow = {
     ...existing,
     id: nanoid(),
+    // A verbatim-name clone is indistinguishable from its source in every list UI, and "which
+    // of these identical rows did my edit land on?" is a support ticket. Label it.
+    name: `${existing.name} (copy)`,
     isDefault: false,
     // A clone always exists because of user activity (a legacy binding, a copy) - it is the
     // user's row even when the source was an engine-seeded template.
