@@ -552,6 +552,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean } {
       polarity TEXT NOT NULL DEFAULT 'failure',
       status TEXT NOT NULL DEFAULT 'open',
       review_status TEXT,
+      resolution_reason TEXT,
       recommended_actions TEXT,
       summary TEXT NOT NULL,
       root_cause TEXT,
@@ -981,6 +982,7 @@ function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean } {
     ["monitor_patterns", "ALTER TABLE monitor_patterns ADD COLUMN agent_ids TEXT"],
     ["monitor_profiles", "ALTER TABLE monitor_profiles ADD COLUMN channels TEXT"],
     ["monitor_signals", "ALTER TABLE monitor_signals ADD COLUMN review_status TEXT"],
+    ["monitor_signals", "ALTER TABLE monitor_signals ADD COLUMN resolution_reason TEXT"],
     ["monitor_signals", "ALTER TABLE monitor_signals ADD COLUMN recommended_actions TEXT"],
     ["monitor_events", "ALTER TABLE monitor_events ADD COLUMN online_evaluator_id TEXT"],
     ["monitor_events", "ALTER TABLE monitor_events ADD COLUMN rating REAL"],
@@ -1731,6 +1733,7 @@ async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boolean }>
       polarity TEXT NOT NULL DEFAULT 'failure',
       status TEXT NOT NULL DEFAULT 'open',
       review_status TEXT,
+      resolution_reason TEXT,
       recommended_actions JSONB,
       summary TEXT NOT NULL,
       root_cause TEXT,
@@ -2150,6 +2153,7 @@ async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boolean }>
     ALTER TABLE monitor_patterns ADD COLUMN IF NOT EXISTS agent_ids JSONB;
     ALTER TABLE monitor_profiles ADD COLUMN IF NOT EXISTS channels JSONB;
     ALTER TABLE monitor_signals ADD COLUMN IF NOT EXISTS review_status TEXT;
+    ALTER TABLE monitor_signals ADD COLUMN IF NOT EXISTS resolution_reason TEXT;
     ALTER TABLE monitor_signals ADD COLUMN IF NOT EXISTS recommended_actions JSONB;
     ALTER TABLE monitor_events ADD COLUMN IF NOT EXISTS online_evaluator_id TEXT;
     ALTER TABLE monitor_events ADD COLUMN IF NOT EXISTS rating DOUBLE PRECISION;

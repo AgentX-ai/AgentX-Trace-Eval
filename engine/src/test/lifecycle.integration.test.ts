@@ -206,7 +206,7 @@ describe("built-in monitor detection", () => {
 
     const patched = await engine.json(`/api/v1/agent-monitoring/signals/${signalId}`, {
       method: "PATCH",
-      body: JSON.stringify({ status: "resolved" }),
+      body: JSON.stringify({ status: "resolved", resolutionReason: "fixed" }),
       headers: { "content-type": "application/json" },
     });
     expect(patched.status).toBeLessThan(300);

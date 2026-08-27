@@ -193,7 +193,7 @@ describe("signal deduplication and counting", () => {
     const signal = await waitForCount(projectKey, "pii-in-response", 1);
 
     const patched = await engine.json(`/api/v1/agent-monitoring/signals/${signal!._id}`, {
-      ...post({ status: "resolved" }, projectKey),
+      ...post({ status: "resolved", resolutionReason: "wont_fix" }, projectKey),
       method: "PATCH",
     });
     expect(patched.status).toBeLessThan(300);

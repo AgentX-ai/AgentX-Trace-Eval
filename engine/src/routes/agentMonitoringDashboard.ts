@@ -1259,13 +1259,33 @@ agentMonitoringDashboardRouter.get("/signals/:signalId", async (req: Request, re
   res.status(200).json({ signal, feedback });
 });
 
-agentMonitoringDashboardRouter.patch("/signals/:signalId", async (req: Request, res: Response) => {
-  const body = req.body ?? {};
+// Triage lifecycle, validated: the status enum was previously unchecked free text on the field
+// every triage filter keys on. "resolved" requires a reason ("fixed" | "false_positive" |
+// "wont_fix") - the GitHub code-scanning dismissal model - so fixed-rate and false-positive-rate
+// stay queryable facts. "archived" remains accepted for legacy rows; new closes should be
+// resolved + wont_fix.
+const signalPatchSchema = z
+  .object({
+    status: z.enum(["open", "triaged", "resolved", "archived", "reopened"]).optional(),
+    severity: z.string().optional(),
+    reviewStatus: z.string().optional(),
+    recommendedActions: z.array(z.string()).optional(),
+    resolutionReason: z.enum(["fixed", "false_positive", "wont_fix"]).optional(),
+  })
+  .strip();
+
+agentMonitoringDashboardRouter.patch("/signals/:signalId", validateBody(signalPatchSchema), async (req: Request, res: Response) => {
+  const body = req.body as z.infer<typeof signalPatchSchema>;
+  if (body.status === "resolved" && !body.resolutionReason) {
+    res.status(400).json({ error: 'Resolving a signal requires resolutionReason: "fixed", "false_positive", or "wont_fix"' });
+    return;
+  }
   const signal = await updateSignal(scopedDb(req), req.params.signalId!, {
     status: body.status,
     severity: body.severity,
     reviewStatus: body.reviewStatus,
     recommendedActions: body.recommendedActions,
+    resolutionReason: body.resolutionReason,
   });
   if (!signal) {
     res.status(404).json({ error: "Signal not found" });

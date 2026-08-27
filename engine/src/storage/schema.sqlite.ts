@@ -380,6 +380,10 @@ export const monitorSignals = sqliteTable(
     polarity: text("polarity").notNull().default("failure"),
     status: text("status").notNull().default("open"),
     reviewStatus: text("review_status"),
+    // Why a resolved signal was closed: "fixed" | "false_positive" | "wont_fix". Null while
+    // open/triaged, cleared on reopen. What makes "fixed rate" and "false-positive rate" real
+    // queryable facts instead of vocabulary accidents (the GitHub code-scanning dismissal model).
+    resolutionReason: text("resolution_reason"),
     recommendedActions: text("recommended_actions", { mode: "json" }),
     summary: text("summary").notNull(),
     rootCause: text("root_cause"),

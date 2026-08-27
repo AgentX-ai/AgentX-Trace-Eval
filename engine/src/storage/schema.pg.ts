@@ -249,6 +249,8 @@ export const monitorSignals = pgTable(
     polarity: text("polarity").notNull().default("failure"),
     status: text("status").notNull().default("open"),
     reviewStatus: text("review_status"),
+    // See schema.sqlite.ts's comment - resolution reason for closed signals.
+    resolutionReason: text("resolution_reason"),
     recommendedActions: jsonb("recommended_actions"),
     summary: text("summary").notNull(),
     rootCause: text("root_cause"),

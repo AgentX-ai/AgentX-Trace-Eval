@@ -112,6 +112,10 @@ monitorRouter.put("/profiles/:agentId", async (req: Request, res: Response) => {
     retentionDays: body.retentionDays,
     thresholdOverrides: body.thresholdOverrides,
     approvalPolicy: body.approvalPolicy,
+    // Webhook channels ("webhook:<url>") from the SDK: the dashboard route always forwarded
+    // this field; this route silently dropped it, so client.monitor.profile.update(channels=)
+    // was accepted and did nothing.
+    channels: body.channels,
   });
   res.status(200).json({ profile });
 });
