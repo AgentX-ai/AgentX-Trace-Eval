@@ -169,6 +169,10 @@ monitorRouter.post("/online-evaluators", async (req: Request, res: Response) => 
       enabled: body.enabled,
       alertThreshold: body.alertThreshold,
       severity: body.severity,
+      // Session scope from the SDK: previously only the dashboard could create a session-scoped
+      // evaluator - this route silently dropped both fields.
+      scope: body.scope,
+      idleSeconds: body.idleSeconds,
     });
     res.status(201).json({ evaluator });
   } catch (err) {
@@ -210,6 +214,8 @@ monitorRouter.put("/online-evaluators/:id", async (req: Request, res: Response) 
       enabled: body.enabled,
       alertThreshold: body.alertThreshold,
       severity: body.severity,
+      scope: body.scope,
+      idleSeconds: body.idleSeconds,
     });
     if (!evaluator) {
       res.status(404).json({ error: "Online evaluator not found" });

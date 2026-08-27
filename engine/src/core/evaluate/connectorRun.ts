@@ -37,7 +37,8 @@ export type ConnectorRunResult = { runId: string; questionCount: number };
 export async function startConnectorRun(
   db: Db,
   datasetId: string,
-  connectorId: string
+  connectorId: string,
+  options: { split?: string } = {}
 ): Promise<ConnectorRunResult | null> {
   const dataset = await getDataset(db, datasetId);
   if (!dataset) {
@@ -48,34 +49,52 @@ export async function startConnectorRun(
     return null;
   }
 
-  const initResult = await initRun(db, { datasetId, runSource: "connector" });
+  const split = options.split?.trim() || undefined;
+  const initResult = await initRun(db, { datasetId, runSource: "connector", split });
   if (!initResult) {
     return null;
   }
   const { runId } = initResult;
-  const questions = ((dataset.questions as DatasetQuestion[] | undefined) ?? []).filter(q => q.main_question?.query);
+  // Original questionIndexes are preserved through split filtering, so per-case comparisons
+  // line up between a "smoke" split run and a full run of the same dataset.
+  const cases = ((dataset.questions as DatasetQuestion[] | undefined) ?? [])
+    .map((question, questionIndex) => ({ question, questionIndex }))
+    .filter(({ question }) => question.main_question?.query)
+    .filter(
+      ({ question }) =>
+        !split ||
+        (Array.isArray((question.main_question as { splits?: unknown }).splits) &&
+          ((question.main_question as { splits?: string[] }).splits ?? []).includes(split))
+    );
+  // numberOfRequests was stored, versioned, and read by nothing server-side; connector runs now
+  // honor it - each case runs N times (runNumber 1..N), same shape the SDK submits.
+  const repetitions = Math.max(1, Math.min(10, (dataset as { numberOfRequests?: number }).numberOfRequests ?? 1));
 
   // Fire-and-forget: driveConnectorRun awaits internally but this call site doesn't, so the HTTP
   // response can return now. Errors are handled inside driveConnectorRun itself (failRun on an
   // unexpected failure) - nothing here should ever reject and become an unhandled rejection.
-  void driveConnectorRun(db, runId, questions, connector);
+  void driveConnectorRun(db, runId, cases, connector, repetitions);
 
-  return { runId, questionCount: questions.length };
+  return { runId, questionCount: cases.length };
 }
 
 async function driveConnectorRun(
   db: Db,
   runId: string,
-  questions: DatasetQuestion[],
-  connector: AgentConnectorRow
+  cases: Array<{ question: DatasetQuestion; questionIndex: number }>,
+  connector: AgentConnectorRow,
+  repetitions: number
 ): Promise<void> {
   try {
     const batchId = nanoid();
-    for (let i = 0; i < questions.length; i += CONNECTOR_RUN_CONCURRENCY) {
-      const chunk = questions.slice(i, i + CONNECTOR_RUN_CONCURRENCY);
+    // Expand repetitions up front so the concurrency window applies across them too.
+    const workItems = cases.flatMap(({ question, questionIndex }) =>
+      Array.from({ length: repetitions }, (_, r) => ({ question, questionIndex, runNumber: r + 1 }))
+    );
+    for (let i = 0; i < workItems.length; i += CONNECTOR_RUN_CONCURRENCY) {
+      const chunk = workItems.slice(i, i + CONNECTOR_RUN_CONCURRENCY);
       const results = await Promise.all(
-        chunk.map(async (question, offsetInChunk) => {
-          const questionIndex = i + offsetInChunk;
+        chunk.map(async ({ question, questionIndex, runNumber }) => {
           const query = question.main_question!.query!;
           // Isolated per-question, same posture as runCustomEvaluators/runOnlineEvaluators - a
           // failing connector call becomes this one question's {error}, never aborts the run.
@@ -93,6 +112,7 @@ async function driveConnectorRun(
             return {
               idempotencyKey: nanoid(),
               questionIndex,
+              runNumber,
               input: { query },
               output: { text: response.output },
               traceId: response.traceId,
@@ -102,6 +122,7 @@ async function driveConnectorRun(
             return {
               idempotencyKey: nanoid(),
               questionIndex,
+              runNumber,
               input: { query },
               error: {
                 type: "connector_error",

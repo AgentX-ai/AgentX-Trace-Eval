@@ -385,14 +385,24 @@ export async function getKpis(db: Db, window: MonitoringWindow): Promise<Monitor
 export async function getScorerActivity(
   db: Db,
   window: MonitoringWindow
-): Promise<{ window: MonitoringWindow; activity: Record<string, { count: number; buckets: number[] }> }> {
+): Promise<{
+  window: MonitoringWindow;
+  activity: Record<string, { count: number; buckets: number[]; judgeFailures?: number }>;
+}> {
   const { days } = windowConfig(window);
   const bucketMs = 24 * 60 * 60 * 1000;
   const since = new Date(Date.now() - days * bucketMs);
   const rows = await listEventsSince(db, since);
-  const activity: Record<string, { count: number; buckets: number[] }> = {};
+  const activity: Record<string, { count: number; buckets: number[]; judgeFailures?: number }> = {};
   const start = since.getTime();
   for (const row of rows) {
+    // Judge failures (provider outage, unusable output) get their own counter per scorer -
+    // previously a failing judge was indistinguishable from a quiet one on the Scorers list.
+    if (row.type === "online_eval_judge_failure" && row.patternKey) {
+      const entry = (activity[row.patternKey] ??= { count: 0, buckets: new Array(days).fill(0) });
+      entry.judgeFailures = (entry.judgeFailures ?? 0) + 1;
+      continue;
+    }
     if (!row.signalId || row.patternKey === "healthy-response") continue;
     const entry = (activity[row.patternKey] ??= { count: 0, buckets: new Array(days).fill(0) });
     entry.count++;

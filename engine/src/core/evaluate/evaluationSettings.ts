@@ -186,7 +186,12 @@ export async function updateEvaluationSettings(db: Db, id: string, input: Update
 // EvaluationConfigsTab.tsx's "Make default" action sends only `{ isDefault: true }`). A full
 // replace would null out every other field on a payload like that; merging onto the existing row
 // keeps whatever wasn't sent untouched, same pattern as core/monitor/signals.ts's updateSignal.
-export async function patchEvaluationSettings(db: Db, id: string, patch: Partial<UpdateEvaluationSettingsInput>) {
+export async function patchEvaluationSettings(
+  db: Db,
+  id: string,
+  patch: Partial<UpdateEvaluationSettingsInput>,
+  options?: { versionProvenance?: string }
+) {
   const existing = await getEvaluationSettingsRow(db, id);
   if (!existing) {
     return null;
@@ -219,7 +224,7 @@ export async function patchEvaluationSettings(db: Db, id: string, patch: Partial
   }
   const after = await getEvaluationSettings(db, id);
   if (after) {
-    await recordEvaluationSettingsVersionIfChanged(db, id, before, after);
+    await recordEvaluationSettingsVersionIfChanged(db, id, before, after, options?.versionProvenance);
   }
   return after;
 }

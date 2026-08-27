@@ -36,6 +36,12 @@ export const EXPORT_ENTITIES = {
   // it a backup captured the binding but not what it judges WITH (deep-dive gap, closed with
   // the LLM Judge Scorer unification).
   "evaluation-settings": { table: "evaluationSettings", sinceColumn: "createdAt" },
+  // Version histories and analysis narratives: rubric-edit snapshots (incl. judge-tuning
+  // provenance stamps) and whole-run analyses are paid-for, unreproducible work - a "full
+  // backup" that dropped them lost every historical rubric and every report.
+  "dataset-versions": { table: "datasetVersions", sinceColumn: "createdAt" },
+  "evaluation-settings-versions": { table: "evaluationSettingsVersions", sinceColumn: "createdAt" },
+  "evaluation-analyses": { table: "evaluationAnalyses", sinceColumn: "createdAt" },
   "custom-evaluators": { table: "customEvaluators", sinceColumn: "createdAt" },
 } as const;
 

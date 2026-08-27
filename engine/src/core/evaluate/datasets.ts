@@ -175,6 +175,45 @@ export async function updateDataset(
   return after;
 }
 
+// Removes the dataset, its twin grading config (dashboard-created datasets share one id with an
+// evaluation_settings row), and both version histories. Runs that referenced the dataset are
+// deliberately KEPT - they are history, and every run reader already degrades to a bare id when
+// the dataset is gone. Refused when the twin config is bound to a live scorer profile (should
+// not happen - dataset twins are excluded from the scorer catalog - but legacy bindings exist).
+export async function deleteDataset(
+  db: Db,
+  id: string
+): Promise<{ ok: true } | { ok: false; reason: "not_found" | "scorer_attached" }> {
+  const existing = await getDataset(db, id);
+  if (!existing) return { ok: false, reason: "not_found" };
+  const { findEvaluatorBoundToSettings } = await import("../monitor/onlineEvaluators.js");
+  if (await findEvaluatorBoundToSettings(db, id)) {
+    return { ok: false, reason: "scorer_attached" };
+  }
+  const datasetCond = and(eq(db.schema.datasets.id, id), eq(db.schema.datasets.projectId, db.projectId));
+  const twinCond = and(eq(db.schema.evaluationSettings.id, id), eq(db.schema.evaluationSettings.projectId, db.projectId));
+  const datasetVersionsCond = and(
+    eq(db.schema.datasetVersions.datasetId, id),
+    eq(db.schema.datasetVersions.projectId, db.projectId)
+  );
+  const settingsVersionsCond = and(
+    eq(db.schema.evaluationSettingsVersions.evaluationSettingsId, id),
+    eq(db.schema.evaluationSettingsVersions.projectId, db.projectId)
+  );
+  if (db.kind === "sqlite") {
+    await db.db.delete(db.schema.datasetVersions).where(datasetVersionsCond);
+    await db.db.delete(db.schema.evaluationSettingsVersions).where(settingsVersionsCond);
+    await db.db.delete(db.schema.evaluationSettings).where(twinCond);
+    await db.db.delete(db.schema.datasets).where(datasetCond);
+  } else {
+    await db.db.delete(db.schema.datasetVersions).where(datasetVersionsCond);
+    await db.db.delete(db.schema.evaluationSettingsVersions).where(settingsVersionsCond);
+    await db.db.delete(db.schema.evaluationSettings).where(twinCond);
+    await db.db.delete(db.schema.datasets).where(datasetCond);
+  }
+  return { ok: true };
+}
+
 export async function getDataset(db: Db, id: string) {
   const cond = and(eq(db.schema.datasets.id, id), eq(db.schema.datasets.projectId, db.projectId));
   let row: DatasetRow | undefined;

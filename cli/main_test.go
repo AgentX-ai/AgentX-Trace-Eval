@@ -3,9 +3,21 @@ package main
 import (
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
+
+// The engine stand-in for dispatch tests: `true` looked up on PATH rather than a hardcoded
+// /bin/true, which does not exist on macOS (it lives in /usr/bin there).
+func trueBin(t *testing.T) string {
+	t.Helper()
+	path, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("no `true` binary on PATH")
+	}
+	return path
+}
 
 // One binary answers to two names, and which name it was invoked under decides whether the first
 // argument is a subcommand or a flag. Getting that wrong means `agentx-server --dev` reads --dev
@@ -14,7 +26,7 @@ import (
 func TestServerBinaryNameSkipsSubcommandDispatch(t *testing.T) {
 	// Dispatched straight into RunServer, so the argument reaching it is --engine-bin, not a
 	// subcommand. /bin/true stands in for the engine so nothing real is launched.
-	code, out := captureRun(t, []string{"agentx-server", "--engine-bin", "/bin/true"})
+	code, out := captureRun(t, []string{"agentx-server", "--engine-bin", trueBin(t)})
 	if code != 0 {
 		t.Fatalf("exit %d, output: %s", code, out)
 	}
@@ -27,7 +39,7 @@ func TestServerBinaryNameToleratesTheWindowsSuffix(t *testing.T) {
 	// Bare name rather than a C:\... path: filepath.Base only treats backslash as a separator on
 	// Windows, so a literal Windows path here would be testing the host's filepath rules, not the
 	// suffix trimming this is about.
-	code, out := captureRun(t, []string{"agentx-server.exe", "--engine-bin", "/bin/true"})
+	code, out := captureRun(t, []string{"agentx-server.exe", "--engine-bin", trueBin(t)})
 	if code != 0 {
 		t.Fatalf("exit %d, output: %s", code, out)
 	}
@@ -37,7 +49,7 @@ func TestServerBinaryNameToleratesTheWindowsSuffix(t *testing.T) {
 }
 
 func TestServerBinaryNameWorksFromAnAbsolutePath(t *testing.T) {
-	code, out := captureRun(t, []string{"/usr/local/bin/agentx-server", "--engine-bin", "/bin/true"})
+	code, out := captureRun(t, []string{"/usr/local/bin/agentx-server", "--engine-bin", trueBin(t)})
 	if code != 0 {
 		t.Fatalf("exit %d, output: %s", code, out)
 	}
@@ -47,7 +59,7 @@ func TestServerBinaryNameWorksFromAnAbsolutePath(t *testing.T) {
 }
 
 func TestAgentxServerSubcommand(t *testing.T) {
-	code, out := captureRun(t, []string{"agentx", "server", "--engine-bin", "/bin/true"})
+	code, out := captureRun(t, []string{"agentx", "server", "--engine-bin", trueBin(t)})
 	if code != 0 {
 		t.Fatalf("exit %d, output: %s", code, out)
 	}

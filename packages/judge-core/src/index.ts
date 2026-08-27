@@ -20,7 +20,15 @@ export type TokenUsage = { inputTokens: number; outputTokens: number };
 // error object instead of relying on this package's own console.error fallback below, which
 // still fires unconditionally as a baseline for callers that don't inspect these fields.
 export type JudgeFailureReason = "emptyResponse" | "parseError";
-export type JudgeCallResult = { payload: unknown; usage: TokenUsage | null; error?: unknown; failureReason?: JudgeFailureReason };
+// `retried` is set when the call recovered (or failed again) via the one automatic retry below;
+// usage on a retried result is the SUM across both attempts, so metering stays honest.
+export type JudgeCallResult = {
+  payload: unknown;
+  usage: TokenUsage | null;
+  error?: unknown;
+  failureReason?: JudgeFailureReason;
+  retried?: boolean;
+};
 export type LlmProvider = "openai" | "anthropic";
 
 export function getProviderForModel(model: string): LlmProvider {
@@ -43,11 +51,42 @@ function stripJsonFences(text: string): string {
     .trim();
 }
 
+function sumUsage(a: TokenUsage | null, b: TokenUsage | null): TokenUsage | null {
+  if (!a) return b;
+  if (!b) return a;
+  return { inputTokens: a.inputTokens + b.inputTokens, outputTokens: a.outputTokens + b.outputTokens };
+}
+
+// Recursively stamps `additionalProperties: false` onto every object level - the one shape
+// requirement OpenAI's strict json_schema mode adds that authors reasonably omit. It does NOT
+// touch `required`: strict mode demands every property be required, and silently requiring an
+// author's optional field would change semantics, so a not-all-required schema passed with
+// strictSchema simply fails the API call (surfaced as a normal judge error) instead of being
+// quietly rewritten.
+function toStrictSchema(schema: object): Record<string, unknown> {
+  const clone = JSON.parse(JSON.stringify(schema)) as Record<string, unknown>;
+  const walk = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    const obj = node as Record<string, unknown>;
+    if (obj.type === "object" && obj.properties && obj.additionalProperties === undefined) {
+      obj.additionalProperties = false;
+    }
+    Object.values(obj).forEach(walk);
+  };
+  walk(clone);
+  return clone;
+}
+
 export async function callJudgeJson({
   userMessage,
   model,
   jsonSchema,
   maxTokens = 1200,
+  strictSchema = false,
   openaiClient,
   anthropicClient,
 }: {
@@ -58,13 +97,59 @@ export async function callJudgeJson({
   // schema (e.g. a full qualitative report) should pass a larger value or Anthropic will
   // truncate the JSON mid-object.
   maxTokens?: number;
+  // Opt-in OpenAI strict structured outputs (json_schema, strict: true) - the decoder then
+  // cannot emit invalid JSON at all. Only pass for schemas whose every property is required
+  // (strict mode's own rule); other providers ignore it. Off by default so existing callers
+  // with optional-field schemas (the analysis narrative) keep their behavior.
+  strictSchema?: boolean;
+  openaiClient?: OpenAI | null;
+  anthropicClient?: Anthropic | null;
+}): Promise<JudgeCallResult> {
+  const first = await callJudgeJsonOnce({ userMessage, model, jsonSchema, maxTokens, strictSchema, openaiClient, anthropicClient });
+  // One automatic retry on a recoverable model failure (empty response or unparseable JSON),
+  // with the failure spelled out - a single flaky generation should not permanently lose a
+  // verdict. Client-missing returns (payload null, no failureReason) are not retried: the
+  // second call would fail identically.
+  if (first.payload !== null || !first.failureReason) {
+    return first;
+  }
+  const note =
+    first.failureReason === "parseError"
+      ? "your previous reply was not valid JSON and could not be parsed"
+      : "your previous reply was empty";
+  const retry = await callJudgeJsonOnce({
+    userMessage: `${userMessage}\n\nIMPORTANT: ${note}. Respond again with ONLY the JSON object - no prose, no markdown fences.`,
+    model,
+    jsonSchema,
+    maxTokens,
+    strictSchema,
+    openaiClient,
+    anthropicClient,
+  });
+  return { ...retry, usage: sumUsage(first.usage, retry.usage), retried: true };
+}
+
+async function callJudgeJsonOnce({
+  userMessage,
+  model,
+  jsonSchema,
+  maxTokens,
+  strictSchema,
+  openaiClient,
+  anthropicClient,
+}: {
+  userMessage: string;
+  model: string;
+  jsonSchema: object;
+  maxTokens: number;
+  strictSchema: boolean;
   openaiClient?: OpenAI | null;
   anthropicClient?: Anthropic | null;
 }): Promise<JudgeCallResult> {
   const provider = getProviderForModel(model);
 
   if (provider === "openai") {
-    return callOpenAIJson({ userMessage, model, jsonSchema, client: openaiClient ?? null });
+    return callOpenAIJson({ userMessage, model, jsonSchema, maxTokens, strictSchema, client: openaiClient ?? null });
   }
 
   if (!anthropicClient) {
@@ -72,6 +157,9 @@ export async function callJudgeJson({
     return { payload: null, usage: null };
   }
 
+  // No temperature/top_p/top_k here on purpose: Anthropic removed traditional sampling
+  // parameters from Claude Opus 4.7+ frontier models, so passing them would error on current
+  // models. Determinism comes from the schema + prompt, not sampling knobs.
   const response = await anthropicClient.messages.create({
     model,
     max_tokens: maxTokens,
@@ -117,11 +205,15 @@ async function callOpenAIJson({
   userMessage,
   model,
   jsonSchema,
+  maxTokens,
+  strictSchema,
   client,
 }: {
   userMessage: string;
   model: string;
   jsonSchema: object;
+  maxTokens: number;
+  strictSchema: boolean;
   client: OpenAI | null;
 }): Promise<JudgeCallResult> {
   if (!client) {
@@ -129,13 +221,25 @@ async function callOpenAIJson({
     return { payload: null, usage: null };
   }
 
-  const enhancedUserMessage = `${userMessage}\n\nIMPORTANT: Your response must strictly conform to this JSON schema:\n${JSON.stringify(jsonSchema, null, 2)}`;
+  // With strict structured outputs the decoder enforces the schema, so pasting it into the
+  // prompt is redundant tokens; without it, the pasted schema is the only shape guidance.
+  const enhancedUserMessage = strictSchema
+    ? userMessage
+    : `${userMessage}\n\nIMPORTANT: Your response must strictly conform to this JSON schema:\n${JSON.stringify(jsonSchema, null, 2)}`;
 
   const response = await client.responses.create({
     model,
     temperature: isReasoningModel(model) ? undefined : 0,
+    // Reasoning models spend max_output_tokens on hidden reasoning BEFORE the JSON, so the
+    // caller's per-judgment budget (sized for the visible answer) would truncate mid-object -
+    // give them generous headroom instead of the literal value.
+    max_output_tokens: isReasoningModel(model) ? Math.max(maxTokens, 8192) : maxTokens,
     input: enhancedUserMessage,
-    text: { format: { type: "json_object" as const } },
+    text: {
+      format: strictSchema
+        ? { type: "json_schema" as const, name: "judgment", strict: true, schema: toStrictSchema(jsonSchema) }
+        : { type: "json_object" as const },
+    },
   });
 
   const usage: TokenUsage | null =
