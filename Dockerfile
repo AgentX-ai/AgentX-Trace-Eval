@@ -25,6 +25,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
 COPY package.json yarn.lock ./
 COPY engine/package.json engine/package.json
 COPY packages/judge-core/package.json packages/judge-core/package.json
+# Every workspace's package.json must be present or the install resolves a smaller dependency
+# set than the lockfile describes - today @agentx/eval's devDeps happen to coincide with
+# judge-core's, but the first dep unique to it would break --frozen-lockfile (or silently
+# under-install) right here. Its SOURCE never ships in the image; the engine doesn't import it.
+COPY packages/agentx-eval/package.json packages/agentx-eval/package.json
 RUN yarn install --frozen-lockfile
 COPY packages/judge-core packages/judge-core
 RUN yarn workspace @agentx/judge-core build
