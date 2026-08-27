@@ -30,7 +30,6 @@ const EXEMPT = new Set(["otlp.ts POST /v1/traces"]);
 // Frozen 2026-08. Delete an entry when its route moves to validateBody(); never add one.
 const KNOWN_UNVALIDATED = [
   "agentMonitoringDashboard.ts PATCH /profiles/:agentId/approval-policy",
-  "agentMonitoringDashboard.ts PATCH /signals/:signalId",
   "agentMonitoringDashboard.ts POST /agents",
   "agentMonitoringDashboard.ts POST /custom-evaluators",
   "agentMonitoringDashboard.ts POST /custom-evaluators/dry-run",

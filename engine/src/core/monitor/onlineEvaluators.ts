@@ -306,22 +306,47 @@ type ScorableTrace = { input?: unknown; output?: unknown; metadata?: unknown };
 // provider outage) must never break trace ingestion, which is the endpoint's actual job.
 // Daily brake specifically for trace-scope judging, on top of the global judge quota
 // (AGENTX_QUOTA_JUDGE_CALLS_PER_DAY): N enabled evaluators x sampled traffic is otherwise
-// unbounded, and the global quota also starves offline runs when live traffic spikes. Counts
-// today's online-eval events (scores + failures) per project. Unset = unlimited, unchanged.
-async function onlineJudgeBudgetExhausted(db: Db): Promise<boolean> {
+// unbounded, and the global quota also starves offline runs when live traffic spikes.
+// Unset = unlimited, unchanged.
+//
+// Reservation, not read-back: judging is fire-and-forget per trace, so a burst of ingests all
+// counting today's recorded events would each see the pre-burst count and blow straight through
+// the cap (the exact flood the cap exists for). Instead each judge call RESERVES a slot in a
+// serialized in-process counter, seeded once per day from the durable event log (scores +
+// failures) so restarts don't reset the budget. In-process is the right scope for self-host's
+// single process; multi-replica drift is bounded at one burst per replica.
+const onlineJudgeSpend = new Map<string, { day: string; count: number }>();
+let onlineJudgeReservationChain: Promise<void> = Promise.resolve();
+async function reserveOnlineJudgeCall(db: Db): Promise<boolean> {
   const cap = Number(process.env.AGENTX_QUOTA_ONLINE_JUDGE_CALLS_PER_DAY || 0);
-  if (!Number.isFinite(cap) || cap <= 0) return false;
-  const midnight = new Date();
-  midnight.setHours(0, 0, 0, 0);
-  const rows = await listEventsSince(db, midnight);
-  const spent = rows.filter(
-    r => r.onlineEvaluatorId && (r.type === "online_eval_score" || r.type === "online_eval_judge_failure")
-  ).length;
-  if (spent >= cap) {
-    logger.warn({ spent, cap }, "Online judge daily cap reached - skipping live scoring until midnight");
-    return true;
-  }
-  return false;
+  if (!Number.isFinite(cap) || cap <= 0) return true;
+  let granted = false;
+  const reserve = async () => {
+    const day = new Date().toDateString();
+    const key = db.projectId ?? "";
+    let entry = onlineJudgeSpend.get(key);
+    if (!entry || entry.day !== day) {
+      const midnight = new Date();
+      midnight.setHours(0, 0, 0, 0);
+      const rows = await listEventsSince(db, midnight);
+      const spent = rows.filter(
+        r => r.onlineEvaluatorId && (r.type === "online_eval_score" || r.type === "online_eval_judge_failure")
+      ).length;
+      entry = { day, count: spent };
+      onlineJudgeSpend.set(key, entry);
+    }
+    if (entry.count >= cap) {
+      logger.warn({ spent: entry.count, cap }, "Online judge daily cap reached - skipping live scoring until midnight");
+      return;
+    }
+    entry.count++;
+    granted = true;
+  };
+  // Serialized so concurrent traces cannot double-spend the same slot; errors never break the
+  // chain for the next caller.
+  onlineJudgeReservationChain = onlineJudgeReservationChain.then(reserve, reserve);
+  await onlineJudgeReservationChain;
+  return granted;
 }
 
 export async function runOnlineEvaluators(
@@ -329,7 +354,6 @@ export async function runOnlineEvaluators(
   trace: ScorableTrace,
   ctx: { agentId: string | null; traceId: string | null }
 ): Promise<void> {
-  if (await onlineJudgeBudgetExhausted(db)) return;
   const evaluators = await listOnlineEvaluatorRows(db);
   const inputText = typeof trace.input === "string" ? trace.input : JSON.stringify(trace.input ?? "");
   const outputText = typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output ?? "");
@@ -388,6 +412,10 @@ export async function runOnlineEvaluators(
       logger.error(`Online evaluator "${evaluator.name}" has no valid evaluator config, skipping`);
       continue;
     }
+
+    // One reserved slot per judge call, taken BEFORE the call - see reserveOnlineJudgeCall.
+    // Refusal stops this trace's remaining evaluators too: the budget is gone either way.
+    if (!(await reserveOnlineJudgeCall(db))) return;
 
     let rating: number;
     let justification: string;

@@ -15,6 +15,8 @@ export type SignalRow = {
   polarity: string;
   status: string;
   reviewStatus: string | null;
+  // "fixed" | "false_positive" | "wont_fix" while status is resolved; null otherwise.
+  resolutionReason: string | null;
   recommendedActions: string[] | null;
   summary: string;
   rootCause: string | null;
@@ -60,6 +62,7 @@ function toWire(
     polarity: row.polarity,
     status: row.status,
     reviewStatus: row.reviewStatus ?? undefined,
+    resolutionReason: row.resolutionReason ?? undefined,
     recommendedActions: row.recommendedActions ?? undefined,
     summary: row.summary,
     rootCause: row.rootCause ?? undefined,
@@ -138,6 +141,7 @@ export async function upsertSignal(
       polarity: detected.polarity ?? "failure",
       status: "open",
       reviewStatus: null,
+      resolutionReason: null,
       recommendedActions: null,
       summary: detected.summary,
       rootCause: detected.rootCause ?? null,
@@ -176,11 +180,27 @@ export async function upsertSignal(
     // signal at once would otherwise both write the same count and lose one sighting.
     occurrenceCount: sql`${db.schema.monitorSignals.occurrenceCount} + 1`,
     lastSeenAt: now,
-    // An archived signal is a shelf, not a grave: the dashboard hides it from every filter except
-    // "Archived", so a recurrence bumping only counts would be invisible. Re-firing reopens it
-    // into the active list; every other status keeps the operator's triage decision untouched.
-    status: existing?.status === "archived" ? "reopened" : (existing?.status ?? "open"),
+    // A closed signal is a shelf, not a grave: re-firing reopens it into the active list
+    // whether it was archived OR resolved - a "fixed" claim that recurs is a regression, the
+    // single most important thing to surface (Sentry's regressed semantics). The resolution
+    // reason clears on reopen; every other status keeps the operator's triage decision.
+    ...(existing && (existing.status === "archived" || existing.status === "resolved")
+      ? { status: "reopened", resolutionReason: null }
+      : { status: existing?.status ?? "open" }),
   };
+  // A resolved-as-FIXED signal re-firing is free ops ground truth: the fix claim was wrong.
+  // Recorded as a negative outcome on the recurring trace so judge calibration sees it, same
+  // stream client.outcomes.report feeds by hand.
+  if (existing?.status === "resolved" && existing.resolutionReason === "fixed" && ctx.traceId) {
+    const { createOutcomeReport } = await import("../outcomes/outcomeReports.js");
+    await createOutcomeReport(db, {
+      traceId: ctx.traceId,
+      outcome: "signal_regressed",
+      isNegative: true,
+      reason: `"${existing.summary.slice(0, 140)}" was resolved as fixed but fired again`,
+      reportedBy: "engine:signal-regression",
+    }).catch(() => undefined);
+  }
   const updatedRows = (
     db.kind === "sqlite"
       ? db.db.update(db.schema.monitorSignals).set(setValues).where(cond).returning().all()
@@ -196,9 +216,16 @@ export async function upsertSignal(
     type: detected.type,
     severity: detected.severity,
     polarity: detected.polarity ?? "failure",
-    status: existing?.status === "archived" ? "reopened" : (existing?.status ?? "open"),
+    status:
+      existing && (existing.status === "archived" || existing.status === "resolved")
+        ? "reopened"
+        : (existing?.status ?? "open"),
     reviewStatus: existing?.reviewStatus ?? null,
     recommendedActions: existing?.recommendedActions ?? null,
+    resolutionReason:
+      existing && (existing.status === "archived" || existing.status === "resolved")
+        ? null
+        : (existing?.resolutionReason ?? null),
     summary: detected.summary,
     rootCause: detected.rootCause ?? existing?.rootCause ?? null,
     agentId,
@@ -319,6 +346,7 @@ export type UpdateSignalInput = Partial<{
   severity: string;
   reviewStatus: string;
   recommendedActions: string[];
+  resolutionReason: string;
 }>;
 
 // Every current caller (SignalRow.tsx in AgentX-web-front) only ever sends `status`
@@ -330,18 +358,24 @@ export async function updateSignal(db: Db, id: string, patch: UpdateSignalInput)
   if (!existing) {
     return null;
   }
+  const nextStatus = patch.status ?? existing.status;
   const updated: SignalRow = {
     ...existing,
-    status: patch.status ?? existing.status,
+    status: nextStatus,
     severity: patch.severity ?? existing.severity,
     reviewStatus: patch.reviewStatus ?? existing.reviewStatus,
     recommendedActions: patch.recommendedActions ?? existing.recommendedActions,
+    // The reason travels with resolved and only resolved - set alongside it, kept while
+    // resolved, cleared the moment the signal is anything else.
+    resolutionReason:
+      nextStatus === "resolved" ? (patch.resolutionReason ?? existing.resolutionReason) : null,
   };
   const setValues = {
     status: updated.status,
     severity: updated.severity,
     reviewStatus: updated.reviewStatus,
     recommendedActions: updated.recommendedActions,
+    resolutionReason: updated.resolutionReason,
   };
   const updateCond = and(eq(db.schema.monitorSignals.id, id), eq(db.schema.monitorSignals.projectId, db.projectId));
   if (db.kind === "sqlite") {
