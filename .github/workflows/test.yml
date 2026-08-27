@@ -37,6 +37,7 @@ jobs:
         run: |
           yarn workspace @agentx/judge-core typecheck
           yarn workspace @agentx/engine typecheck
+          yarn workspace @agentx/eval typecheck
 
       # Async discipline the compiler can't enforce: no-floating-promises et al. - see
       # engine/eslint.config.mjs for why the rule set is deliberately narrow.
@@ -45,6 +46,11 @@ jobs:
 
       - name: Test judge-core
         run: yarn workspace @agentx/judge-core test
+
+      # The TypeScript CI SDK pins the /custom-agent-evaluations wire contract from the
+      # consumer side (stub-server tests, no engine needed).
+      - name: Test @agentx/eval
+        run: yarn workspace @agentx/eval build && yarn workspace @agentx/eval test
 
       # The integration suites boot the real engine per file, so this outruns the job default.
       # Coverage is a RATCHET, not a target: c8 merges the spawned engine processes' V8 coverage

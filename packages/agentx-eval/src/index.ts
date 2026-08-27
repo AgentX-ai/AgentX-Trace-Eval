@@ -193,7 +193,13 @@ class HttpClient implements EvalTransport {
 
   constructor(apiKey: string, baseUrl: string, fetchFn: typeof fetch) {
     this.apiKey = apiKey;
-    this.baseUrl = baseUrl.replace(/\/+$/, "");
+    // Trailing slashes trimmed without a regex: CodeQL flags an anchored /\/+$/ over
+    // caller-provided input as potentially polynomial, and the loop is just as clear.
+    let trimmed = baseUrl;
+    while (trimmed.endsWith("/")) {
+      trimmed = trimmed.slice(0, -1);
+    }
+    this.baseUrl = trimmed;
     this.fetchFn = fetchFn;
   }
 
