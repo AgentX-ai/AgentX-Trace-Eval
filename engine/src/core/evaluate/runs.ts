@@ -170,6 +170,11 @@ export async function initRun(
     evaluationSubject?: unknown;
     runSource?: string;
     sdk?: unknown;
+    // Named case subset: only cases tagged with this split (main_question.splits) run. The
+    // driver (SDK or connector) does the filtering - original questionIndexes are preserved so
+    // per-case comparisons still line up across full and split runs. Recorded on the subject
+    // for display ("smoke" runs are visibly smoke runs).
+    split?: string;
   }
 ) {
   const dataset = await getDatasetRow(db, input.datasetId);
@@ -178,13 +183,17 @@ export async function initRun(
   }
   const id = nanoid();
   const smokeTestVariants = await generateSmokeTestVariantsForDataset(dataset.questions);
+  const subject =
+    input.split && input.split.trim()
+      ? { ...((input.evaluationSubject as Record<string, unknown> | null) ?? {}), split: input.split.trim() }
+      : input.evaluationSubject ?? null;
   const runRow = {
     id,
     projectId: db.projectId,
     datasetId: input.datasetId,
     evaluationSettingsId: input.evaluationSettingsId ?? null,
-    evaluationSubject: input.evaluationSubject ?? null,
-    version: extractVersion(input.evaluationSubject),
+    evaluationSubject: subject,
+    version: extractVersion(subject),
     runSource: input.runSource ?? "sdk",
     sdkInfo: input.sdk ?? null,
     smokeTestVariants,
@@ -458,7 +467,18 @@ export async function appendResults(
   let accepted = 0;
   let duplicates = 0;
   let failedValidation = 0;
-  const scoredResults: { idempotencyKey: string; rating: number | null; justification: string | null }[] = [];
+  const scoredResults: {
+    idempotencyKey: string;
+    rating: number | null;
+    justification: string | null;
+    status: string;
+    vectorSimilarity: number | null;
+    jaccardSimilarity: number | null;
+    bleuScore: number | null;
+    rougeScore: number | null;
+    codeScorerResults: CodeScorerResult[] | null;
+    deduped?: boolean;
+  }[] = [];
 
   for (const item of results) {
     if (!item.idempotencyKey || (!item.output?.text && !item.error)) {
@@ -469,7 +489,21 @@ export async function appendResults(
     const existing = await getExistingResult(db, runId, item.idempotencyKey);
     if (existing) {
       duplicates++;
-      scoredResults.push({ idempotencyKey: item.idempotencyKey, rating: existing.rating, justification: existing.justification });
+      // A duplicate returns everything the first submission returned - the retrying client is
+      // owed the same payload, not a rating-and-justification subset that silently drops the
+      // similarity metrics and code-scorer output.
+      scoredResults.push({
+        idempotencyKey: item.idempotencyKey,
+        rating: existing.rating,
+        justification: existing.justification,
+        status: existing.status ?? "scored",
+        vectorSimilarity: existing.vectorSimilarity,
+        jaccardSimilarity: existing.jaccardSimilarity,
+        bleuScore: existing.bleuScore,
+        rougeScore: existing.rougeScore,
+        codeScorerResults: existing.codeScorerResults,
+        deduped: true,
+      });
       continue;
     }
 
@@ -546,7 +580,17 @@ export async function appendResults(
     }
 
     accepted++;
-    scoredResults.push({ idempotencyKey: item.idempotencyKey, rating, justification });
+    scoredResults.push({
+      idempotencyKey: item.idempotencyKey,
+      rating,
+      justification,
+      status,
+      vectorSimilarity: similarity.vectorSimilarity,
+      jaccardSimilarity: similarity.jaccardSimilarity,
+      bleuScore: similarity.bleuScore,
+      rougeScore: similarity.rougeScore,
+      codeScorerResults: codeScorerResults.length > 0 ? codeScorerResults : null,
+    });
   }
 
   return {
@@ -561,7 +605,16 @@ export async function appendResults(
 }
 
 async function getExistingResult(db: Db, runId: string, idempotencyKey: string) {
-  type Row = { rating: number | null; justification: string | null };
+  type Row = {
+    rating: number | null;
+    justification: string | null;
+    status: string | null;
+    vectorSimilarity: number | null;
+    jaccardSimilarity: number | null;
+    bleuScore: number | null;
+    rougeScore: number | null;
+    codeScorerResults: CodeScorerResult[] | null;
+  };
   const cond = and(
     eq(db.schema.evaluationRunResults.runId, runId),
     eq(db.schema.evaluationRunResults.idempotencyKey, idempotencyKey),
@@ -578,7 +631,13 @@ async function getExistingResult(db: Db, runId: string, idempotencyKey: string) 
 // ---------------------------------------------------------------------------
 
 async function getRunRow(db: Db, id: string) {
-  type Row = { id: string; datasetId: string; evaluationSettingsId: string | null; status: string };
+  type Row = {
+    id: string;
+    datasetId: string;
+    evaluationSettingsId: string | null;
+    status: string;
+    evaluationSubject: unknown;
+  };
   const cond = and(eq(db.schema.evaluationRuns.id, id), eq(db.schema.evaluationRuns.projectId, db.projectId));
   if (db.kind === "sqlite") {
     return db.db.select().from(db.schema.evaluationRuns).where(cond).all()[0] as Row | undefined;
@@ -594,18 +653,70 @@ export async function computeLiveStatistics(db: Db, runId: string) {
   const cond = and(eq(db.schema.evaluationRunResults.runId, runId), eq(db.schema.evaluationRunResults.projectId, db.projectId));
   const results = (
     db.kind === "sqlite"
-      ? db.db.select({ rating: db.schema.evaluationRunResults.rating }).from(db.schema.evaluationRunResults).where(cond).all()
-      : await db.db.select({ rating: db.schema.evaluationRunResults.rating }).from(db.schema.evaluationRunResults).where(cond)
-  ) as { rating: number | null }[];
+      ? db.db
+          .select({ rating: db.schema.evaluationRunResults.rating, status: db.schema.evaluationRunResults.status })
+          .from(db.schema.evaluationRunResults)
+          .where(cond)
+          .all()
+      : await db.db
+          .select({ rating: db.schema.evaluationRunResults.rating, status: db.schema.evaluationRunResults.status })
+          .from(db.schema.evaluationRunResults)
+          .where(cond)
+  ) as { rating: number | null; status: string | null }[];
   const rated = results.filter(r => r.rating != null).map(r => r.rating as number);
   return {
     averageRating: rated.length ? rated.reduce((a, b) => a + b, 0) / rated.length : null,
     minRating: rated.length ? Math.min(...rated) : null,
     maxRating: rated.length ? Math.max(...rated) : null,
     ratedCount: rated.length,
+    // A run with 30 judge-skipped rows used to be indistinguishable on the wire from a run with
+    // 30 fewer cases. skipped = judge could not score (failure/no reference); failed = the
+    // submitted result itself carried an error.
+    skippedCount: results.filter(r => r.status === "skipped").length,
+    failedCount: results.filter(r => r.status === "failed").length,
   };
 }
 
+
+// Per-case repetition statistics: when a case ran more than once (runNumber > 1, or repeated
+// submissions), surface mean/min/max/variance ACROSS its repetitions instead of flattening -
+// "this case flakes between 2 and 9" was previously unanswerable from any endpoint even though
+// every repetition row was stored. Smoke-test variants are excluded (phrasing robustness is its
+// own signal); cases with a single rated row are omitted (no spread to report).
+export function computeCaseStatistics(
+  results: Array<{ questionIndex: number | null; rating: number | null; isSmokeTestVariant?: boolean }>
+): Array<{
+  questionIndex: number;
+  ratedCount: number;
+  averageRating: number;
+  minRating: number;
+  maxRating: number;
+  ratingVariance: number;
+}> {
+  const byCase = new Map<number, number[]>();
+  for (const r of results) {
+    if (r.isSmokeTestVariant || r.rating == null || r.questionIndex == null) continue;
+    const list = byCase.get(r.questionIndex) ?? [];
+    list.push(r.rating);
+    byCase.set(r.questionIndex, list);
+  }
+  const out: ReturnType<typeof computeCaseStatistics> = [];
+  for (const [questionIndex, ratings] of byCase) {
+    if (ratings.length < 2) continue;
+    const mean = ratings.reduce((a, b) => a + b, 0) / ratings.length;
+    const variance = ratings.reduce((a, b) => a + (b - mean) ** 2, 0) / ratings.length;
+    out.push({
+      questionIndex,
+      ratedCount: ratings.length,
+      averageRating: Math.round(mean * 100) / 100,
+      minRating: Math.min(...ratings),
+      maxRating: Math.max(...ratings),
+      ratingVariance: Math.round(variance * 100) / 100,
+    });
+  }
+  out.sort((a, b) => a.questionIndex - b.questionIndex);
+  return out;
+}
 
 // One-trace offline evaluation: grade a previously-ingested trace's recorded input/output
 // against a dataset's (or standalone config's) criteria - the self-host implementation of the
@@ -683,6 +794,12 @@ export async function finalizeRun(db: Db, runId: string) {
   if (!run) {
     return null;
   }
+  // Terminal states are terminal: finalizing an already-completed run is an idempotent no-op
+  // (retried SDK finalize calls), but a FAILED run must never be quietly flipped to completed -
+  // appendResults already refuses terminal runs (409), and this closes the same door here.
+  if (run.status === "failed") {
+    return { runId, status: "failed" as const, liveStatistics: await computeLiveStatistics(db, runId) };
+  }
   const updateCond = and(eq(db.schema.evaluationRuns.id, runId), eq(db.schema.evaluationRuns.projectId, db.projectId));
   if (db.kind === "sqlite") {
     await db.db.update(db.schema.evaluationRuns).set({ status: "completed" }).where(updateCond);
@@ -748,6 +865,11 @@ export async function getRun(db: Db, runId: string) {
     rougeScore: r.rougeScore ?? null,
     codeScorerResults: r.codeScorerResults ?? null,
     isSmokeTestVariant: r.isSmokeTestVariant ?? false,
+    smokeTestVariantText: r.smokeTestVariantText ?? null,
+    // scored | skipped (judge could not score) | failed (the submitted result carried an
+    // error). Previously stored and never surfaced, so a client could not tell a skipped row
+    // from a missing one.
+    status: r.status ?? "scored",
     error: r.error ?? null,
   }));
 
@@ -760,6 +882,9 @@ export async function getRun(db: Db, runId: string) {
     runId: run.id,
     datasetId: run.datasetId,
     evaluationSettingsId: run.evaluationSettingsId,
+    // What this run was ABOUT (subject identity, version tag, split) - previously only the
+    // dashboard wire carried it, so an SDK reader could not see its own run's split.
+    evaluationSubject: run.evaluationSubject ?? null,
     status: run.status,
     resultCount: results.length,
     averageRating,
@@ -768,7 +893,13 @@ export async function getRun(db: Db, runId: string) {
       minRating: rated.length ? Math.min(...rated) : null,
       maxRating: rated.length ? Math.max(...rated) : null,
       ratedCount: rated.length,
+      skippedCount: (results as { status?: string | null }[]).filter(r => r.status === "skipped").length,
+      failedCount: (results as { status?: string | null }[]).filter(r => r.status === "failed").length,
     },
+    // Per-case repetition spread (only cases with 2+ rated rows) - see computeCaseStatistics.
+    caseStatistics: computeCaseStatistics(
+      results as Array<{ questionIndex: number | null; rating: number | null; isSmokeTestVariant?: boolean }>
+    ),
     results: resultRows,
   };
 }
@@ -821,9 +952,12 @@ export async function computeRunGate(
       db.kind === "sqlite"
         ? db.db.select().from(db.schema.evaluationRuns).where(cond).all()
         : await db.db.select().from(db.schema.evaluationRuns).where(cond)
-    ) as { id: string; status: string | null; createdAt: Date }[];
+    ) as { id: string; status: string | null; createdAt: Date; runSource: string | null }[];
     const candidates = rows
-      .filter(r => r.id !== runId && r.status === "completed" && r.createdAt < runRow.createdAt)
+      // Single-trace evaluations (POST /ingest/traces/:id/evaluate) share the dataset id when
+      // the target is a dataset twin - a 1-case score must never become the no_regression
+      // baseline for a full run.
+      .filter(r => r.id !== runId && r.status === "completed" && r.runSource !== "trace-eval" && r.createdAt < runRow.createdAt)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .slice(0, 5);
     for (const candidate of candidates) {
@@ -920,6 +1054,7 @@ export async function listRunRows(db: Db): Promise<FullRunRow[]> {
 }
 
 export type RunResultRow = {
+  idempotencyKey: string;
   questionIndex: number | null;
   runNumber: number | null;
   input: { query?: string } | null;
@@ -938,6 +1073,8 @@ export type RunResultRow = {
   codeScorerResults: CodeScorerResult[] | null;
   rating: number | null;
   justification: string | null;
+  // scored | skipped (judge could not score) | failed (submitted result carried an error).
+  status: string | null;
   createdAt: Date;
 };
 
@@ -1035,8 +1172,12 @@ export async function previewLatestRunGate(
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.evaluationRuns).where(cond).all()
       : await db.db.select().from(db.schema.evaluationRuns).where(cond)
-  ) as { id: string; status: string | null; createdAt: Date }[];
-  const latest = rows.filter(r => r.status === "completed").sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+  ) as { id: string; status: string | null; createdAt: Date; runSource: string | null }[];
+  const latest = rows
+    // Same exclusion as computeRunGate's baseline walk: a single-trace evaluation on a dataset
+    // twin must not be previewed as "the latest run".
+    .filter(r => r.status === "completed" && r.runSource !== "trace-eval")
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
   if (!latest) return { error: "No completed runs on this dataset yet" };
   const gate = await computeRunGate(db, latest.id, opts);
   return gate ?? { error: "Run not found" };

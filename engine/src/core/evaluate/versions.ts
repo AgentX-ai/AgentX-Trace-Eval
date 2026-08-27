@@ -197,7 +197,11 @@ export async function recordEvaluationSettingsVersionIfChanged(
   db: Db,
   evaluationSettingsId: string,
   before: Record<string, unknown> | null,
-  after: Record<string, unknown>
+  after: Record<string, unknown>,
+  // Where this version came from, when it wasn't a plain hand edit - e.g. judge tuning's
+  // publish stamps its validation verdict here so the history can tell a measured, validated
+  // rubric change apart from a manual tweak.
+  provenance?: string
 ): Promise<void> {
   const changeSummary = buildChangeSummary(before, after, SETTINGS_SNAPSHOT_FIELDS, SETTINGS_FIELD_LABELS);
   if (!changeSummary) {
@@ -208,7 +212,7 @@ export async function recordEvaluationSettingsVersionIfChanged(
     projectId: db.projectId,
     evaluationSettingsId,
     snapshot: pick(after, SETTINGS_SNAPSHOT_FIELDS),
-    changeSummary,
+    changeSummary: provenance ? `${provenance} ${changeSummary}` : changeSummary,
     createdAt: new Date(),
   };
   if (db.kind === "sqlite") {

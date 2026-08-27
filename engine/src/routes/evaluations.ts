@@ -1,7 +1,14 @@
 import type { Request, Response } from "express";
 import { asyncRouter } from "./asyncRouter.js";
 import { scopedDb } from "../auth/apiKey.js";
-import { createDataset, getDataset, listDatasets, extractSimilarityConfig, extractCodeScorers } from "../core/evaluate/datasets.js";
+import {
+  createDataset,
+  deleteDataset,
+  getDataset,
+  listDatasets,
+  extractSimilarityConfig,
+  extractCodeScorers,
+} from "../core/evaluate/datasets.js";
 import { createEvaluationSettings, getEvaluationSettings, listEvaluationSettings } from "../core/evaluate/evaluationSettings.js";
 import {
   initRun,
@@ -27,7 +34,7 @@ import { handleCasePreview, handleSuggestExpected, handleAddCase } from "./curat
 // analysis.ts as the dashboard's /evaluate/analyze routes rather than reimplementing it.
 // Synchronous here where hosted AgentX queues a durable job; see the analyze route below.
 //
-// Still not ported: list_models and get_missing_results.
+// Still not ported: list_models.
 export const evaluationsRouter = asyncRouter();
 
 evaluationsRouter.post("/datasets", async (req: Request, res: Response) => {
@@ -53,6 +60,19 @@ evaluationsRouter.post("/datasets", async (req: Request, res: Response) => {
 
 evaluationsRouter.get("/datasets", async (req: Request, res: Response) => {
   res.status(200).json({ datasets: await listDatasets(scopedDb(req)) });
+});
+
+evaluationsRouter.delete("/datasets/:id", async (req: Request, res: Response) => {
+  const result = await deleteDataset(scopedDb(req), req.params.id!);
+  if (!result.ok && result.reason === "not_found") {
+    res.status(404).json({ error: "Dataset not found" });
+    return;
+  }
+  if (!result.ok) {
+    res.status(409).json({ error: "This dataset's grading config is attached to a live scorer - detach it first." });
+    return;
+  }
+  res.status(200).json({ deleted: true });
 });
 
 // Curation: production -> golden dataset. Three-step contract (preview builds the case from a
@@ -116,12 +136,19 @@ evaluationsRouter.get("/evaluation-settings/:id", async (req: Request, res: Resp
 });
 
 evaluationsRouter.post("/runs", async (req: Request, res: Response) => {
-  const { datasetId, evaluationSettingsId, evaluationSubject, runSource, sdk } = req.body ?? {};
+  const { datasetId, evaluationSettingsId, evaluationSubject, runSource, sdk, split } = req.body ?? {};
   if (typeof datasetId !== "string" || !datasetId) {
     res.status(400).json({ error: "datasetId is required" });
     return;
   }
-  const run = await initRun(scopedDb(req), { datasetId, evaluationSettingsId, evaluationSubject, runSource, sdk });
+  const run = await initRun(scopedDb(req), {
+    datasetId,
+    evaluationSettingsId,
+    evaluationSubject,
+    runSource,
+    sdk,
+    split: typeof split === "string" ? split : undefined,
+  });
   if (!run) {
     res.status(404).json({ error: "Dataset not found" });
     return;
@@ -156,6 +183,24 @@ evaluationsRouter.post("/runs/:runId/results", async (req: Request, res: Respons
   } catch (err) {
     res.status(409).json({ error: err instanceof Error ? err.message : "Unable to append results" });
   }
+});
+
+// Resume support for the SDK's execute(): the idempotency keys this run has already accepted.
+// The client derives its keys deterministically from (runId, caseId, runNumber), so the set is
+// all it needs to skip re-running (and re-paying for) already-submitted cases after a crash or
+// network failure mid-run. Kept on the /missing-results path the SDK has always called; the
+// legacy `missing` field stays an empty array because the engine cannot know the client's full
+// case list - the client computes "missing" as its own keys minus submittedKeys.
+evaluationsRouter.get("/runs/:runId/missing-results", async (req: Request, res: Response) => {
+  const db = scopedDb(req);
+  const runId = req.params.runId!;
+  const run = await getRun(db, runId);
+  if (!run) {
+    res.status(404).json({ error: "Run not found" });
+    return;
+  }
+  const submittedKeys = (await getRunResults(db, runId)).map(r => r.idempotencyKey).filter(Boolean);
+  res.status(200).json({ runId, submittedKeys, submittedCount: submittedKeys.length, missing: [] });
 });
 
 evaluationsRouter.post("/runs/:runId/finalize", async (req: Request, res: Response) => {
@@ -228,7 +273,9 @@ evaluationsRouter.get("/runs/:runId/report", async (req: Request, res: Response)
   // [] forever on self-host. Derived from the run's own rows: rating at or below the middle.
   const results = await getRunResults(db, runId);
   const lowScoringCases = results
-    .filter((r: RunResultRow) => r.rating != null && (r.rating as number) <= 5)
+    // Smoke-test variants are excluded, matching every other aggregation (compareRuns etc.):
+    // a paraphrase scoring low is consistency signal, not a failing dataset case to fix.
+    .filter((r: RunResultRow) => !r.isSmokeTestVariant && r.rating != null && (r.rating as number) <= 5)
     .map((r: RunResultRow) => ({
       query: r.input?.query ?? null,
       response: r.output?.text ?? null,

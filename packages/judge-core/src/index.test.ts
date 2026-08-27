@@ -92,7 +92,7 @@ describe("callJudgeJson", () => {
     expect(result).toEqual({ payload: null, usage: null });
   });
 
-  it("returns a null payload with parseError when the model's response isn't valid JSON", async () => {
+  it("retries once on invalid JSON, then returns parseError with payload still null", async () => {
     const client = {
       messages: {
         create: vi.fn().mockResolvedValue({
@@ -110,11 +110,113 @@ describe("callJudgeJson", () => {
       anthropicClient: client as any,
     });
 
+    // One automatic retry, with the failure spelled out in the second message.
+    expect(client.messages.create).toHaveBeenCalledTimes(2);
+    const secondMessage = client.messages.create.mock.calls[1]![0].messages[0].content as string;
+    expect(secondMessage).toContain("not valid JSON");
     // payload must stay null on a parse failure (see callAnthropicJson's own comment: returning
     // the raw string used to leak a char-indexed object into persisted analysis fields). The raw
     // text stays reachable for logging via error/failureReason.
     expect(result.payload).toBeNull();
     expect(result.failureReason).toBe("parseError");
+    expect(result.retried).toBe(true);
     expect(result.usage).toBeNull();
+  });
+
+  it("recovers a verdict when the retry parses, summing usage across both attempts", async () => {
+    const client = {
+      messages: {
+        create: vi
+          .fn()
+          .mockResolvedValueOnce({ content: [{ type: "text", text: "garbage" }], usage: { input_tokens: 10, output_tokens: 2 } })
+          .mockResolvedValueOnce({
+            content: [{ type: "text", text: '{"rating": 7, "justification": "ok"}' }],
+            usage: { input_tokens: 12, output_tokens: 6 },
+          }),
+      },
+    };
+
+    const result = await callJudgeJson({
+      userMessage: "grade this",
+      model: "claude-3-5-sonnet-latest",
+      jsonSchema: { type: "object" },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      anthropicClient: client as any,
+    });
+
+    expect(result.payload).toEqual({ rating: 7, justification: "ok" });
+    expect(result.retried).toBe(true);
+    expect(result.usage).toEqual({ inputTokens: 22, outputTokens: 8 });
+  });
+
+  it("does not retry when the client is missing (a second call would fail identically)", async () => {
+    const result = await callJudgeJson({
+      userMessage: "grade this",
+      model: "claude-3-5-sonnet-latest",
+      jsonSchema: { type: "object" },
+    });
+    expect(result.payload).toBeNull();
+    expect(result.retried).toBeUndefined();
+  });
+
+  it("uses strict json_schema output and honors maxTokens on the OpenAI path when strictSchema is set", async () => {
+    const client = {
+      responses: {
+        create: vi.fn().mockResolvedValue({
+          output_text: '{"rating": 8, "justification": "solid"}',
+          usage: { input_tokens: 9, output_tokens: 4 },
+        }),
+      },
+    };
+
+    const schema = {
+      type: "object",
+      properties: { rating: { type: "number" }, justification: { type: "string" } },
+      required: ["rating", "justification"],
+    };
+    const result = await callJudgeJson({
+      userMessage: "grade this",
+      model: "gpt-4.1-mini",
+      jsonSchema: schema,
+      maxTokens: 900,
+      strictSchema: true,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      openaiClient: client as any,
+    });
+
+    expect(result.payload).toEqual({ rating: 8, justification: "solid" });
+    const call = client.responses.create.mock.calls[0]![0];
+    expect(call.max_output_tokens).toBe(900);
+    expect(call.text.format.type).toBe("json_schema");
+    expect(call.text.format.strict).toBe(true);
+    // additionalProperties stamped in for strict mode; required left exactly as authored.
+    expect(call.text.format.schema.additionalProperties).toBe(false);
+    expect(call.text.format.schema.required).toEqual(["rating", "justification"]);
+    // With the decoder enforcing the schema, it is no longer pasted into the prompt.
+    expect(call.input).not.toContain("JSON schema");
+  });
+
+  it("gives reasoning models max_output_tokens headroom instead of the literal budget", async () => {
+    const client = {
+      responses: {
+        create: vi.fn().mockResolvedValue({
+          output_text: '{"rating": 5, "justification": "mid"}',
+          usage: { input_tokens: 9, output_tokens: 4 },
+        }),
+      },
+    };
+
+    await callJudgeJson({
+      userMessage: "grade this",
+      model: "gpt-5.6-luna",
+      jsonSchema: { type: "object" },
+      maxTokens: 1200,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      openaiClient: client as any,
+    });
+
+    const call = client.responses.create.mock.calls[0]![0];
+    expect(call.max_output_tokens).toBe(8192);
+    expect(call.temperature).toBeUndefined();
   });
 });
