@@ -304,16 +304,25 @@ Postgres) to verify against Postgres instead - see the script's own header for t
 ## Dashboard release process
 
 `AgentX-eval-front` (the app that builds into `web/`) is AgentX's private frontend dedicated to
-this Governance dashboard. Rather than open-sourcing it, only its **build output** is public: a
-workflow in that repo builds it in self-host mode and uploads the result as `agentx-web.tar.gz`
-onto this repo's own GitHub releases. `install.sh`, `build.sh`, and the `Dockerfile` all fetch it
-from there - nobody installing or building this repo, including outside contributors, ever needs
-access to that private repo.
+this Governance dashboard. Rather than open-sourcing it, only its **build output** is public:
+every merge to that repo's main builds the dashboard in self-host mode and publishes
+`agentx-web.tar.gz` as an `eval-front-v<series>.<n>` release **on that repo** - the dashboard's
+own versioned channel (the series, e.g. 0.3, is bumped manually via that repo's
+`.github/web-release-series` file; `<n>` auto-increments per merge). When a release is cut here
+(tag push -> `release.yml`), the workflow fetches the newest of those bundles and attaches it
+alongside the engine binaries, so each release is an immutable engine+dashboard pair frozen at
+tag time. `install.sh`, `build.sh`, and the `Dockerfile` all
+fetch the bundle from this repo's releases - nobody installing or building this repo, including
+outside contributors, ever needs access to that private repo.
 
-Maintainers cutting a new dashboard build: in `AgentX-eval-front`'s Actions tab, run "Publish
-self-host web bundle" (optionally targeting a specific release tag here; defaults to whatever's
-currently latest). One-time setup: a fine-grained PAT scoped to this repo with release/contents
-write access, saved as `AgentX-eval-front`'s `SELFHOST_RELEASE_TOKEN` secret.
+One-time setup, one secret per direction:
+
+- this repo's `EVAL_FRONT_RELEASE_TOKEN`: a fine-grained PAT with read access to
+  `AgentX-eval-front` releases, used by `release.yml` to fetch the bundle.
+- `AgentX-eval-front`'s `SELFHOST_RELEASE_TOKEN`: a fine-grained PAT with release/contents write
+  access to this repo, used only by that repo's manual escape hatch - dispatching its "Publish
+  self-host web bundle" workflow with an explicit tag replaces that one release's dashboard in
+  place (e.g. a dashboard hotfix for an already-published release).
 
 ## Project status
 

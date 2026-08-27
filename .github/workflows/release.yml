@@ -4,9 +4,13 @@ name: Release
 # note below) and publishes them as a GitHub Release, matching exactly what install.sh already
 # expects: an `agentx_<os>_<arch>.tar.gz` per platform containing
 # `agentx`, `agentx-server`, `agentx-engine`. Does NOT build the dashboard (agentx-web.tar.gz) —
-# that's a separate, platform-independent asset published by AgentX-web-front's own
-# publish-selfhost-web.yml workflow onto whatever release this creates, see README's "Dashboard
-# release".
+# that's a separate, platform-independent asset AgentX-eval-front's publish-selfhost-web.yml
+# releases into its own `eval-front-v*` channel on every merge to its main; this workflow fetches
+# the newest of those and attaches it here, so a release is an immutable engine+dashboard pair
+# frozen at tag time (see README's "Dashboard release"). Fetching that private repo needs the
+# EVAL_FRONT_RELEASE_TOKEN secret: a token with read access to AgentX-ai/AgentX-eval-front
+# releases (the mirror image of the SELFHOST_RELEASE_TOKEN that repo holds for its manual
+# attach path).
 #
 # Verified (2026-07-31): `bun build --compile --target=bun-linux-x64` run on macOS produces a
 # real linux/amd64 ELF binary that starts, opens its SQLite DB via bun:sqlite, and serves real
@@ -107,6 +111,22 @@ jobs:
           done
           ls -la dist/*.tar.gz
 
+      - name: Fetch newest dashboard bundle from AgentX-eval-front
+        id: web
+        env:
+          GH_TOKEN: ${{ secrets.EVAL_FRONT_RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Fails the release if no eval-front-v* bundle exists or the token can't read it: a release
+          # without its dashboard half is exactly the broken pairing this step exists to end.
+          # (Recovery: fix the token / run eval-front's workflow, then re-run this workflow via
+          # workflow_dispatch against the same tag.)
+          web_tag="$(gh release view --repo AgentX-ai/AgentX-eval-front --json tagName -q .tagName)"
+          gh release download "$web_tag" --repo AgentX-ai/AgentX-eval-front \
+            --pattern agentx-web.tar.gz --dir dist
+          echo "web_tag=$web_tag" >> "$GITHUB_OUTPUT"
+          echo "Bundling dashboard $web_tag"
+
       - name: Create release and upload assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -114,5 +134,6 @@ jobs:
           gh release create "$TAG" dist/*.tar.gz \
             --repo "${{ github.repository }}" \
             --title "$TAG" \
+            --notes "Dashboard: AgentX-eval-front ${{ steps.web.outputs.web_tag }}" \
             --generate-notes \
             --latest
