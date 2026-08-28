@@ -107,22 +107,22 @@ needed. Pin a specific dashboard build instead with
 
 Set these in the environment before starting `agentx-server`:
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `OPENAI_API_KEY` | - | Powers judge scoring / model calls for OpenAI models. Can also be set live from the dashboard's Platform Settings (takes precedence over the env var). |
-| `ANTHROPIC_API_KEY` | - | Same, for Anthropic models. |
-| `GEMINI_API_KEY` | - | Same, for Gemini models. |
-| `AGENTX_DB_URL` | (local SQLite) | Set to a `postgres://...` URL to use Postgres instead of the default SQLite file. |
-| `AGENTX_HOME` | `~/.agentx` | Where the local SQLite database and config live. |
-| `PORT` | `4700` | Port the engine listens on. |
-| `AGENTX_OTEL_MONITOR` | `true` | Set to `false` to stop running Monitor against OTel-ingested spans. |
-| `AGENTX_MONITOR_CHILD_SPANS` | `false` | Set to `true` to also run Monitor against child spans of a traced call, not just top-level ones. |
-| `AGENTX_IMPROVEMENT_SWEEP` | `true` | Set to `false` to disable the background sweep that auto-generates and validates improvement proposals when failure evidence crosses a threshold (the Improvement Inbox). `POST /evaluate/improve/inbox/sweep/run` still triggers one manually. |
-| `AGENTX_SESSION_SWEEP` | `true` | Set to `false` to disable the background sweep that judges idle multi-turn sessions (session-scoped Online Evaluators). `POST /agent-monitoring/session-sweep/run` still triggers one manually. |
-| `AGENTX_AUTH` | `disabled` | Set to `enabled` to require dashboard sign-in (see "Dashboard authentication" below). The default keeps the zero-setup local posture. |
-| `AGENTX_AUTH_SECRET` | (auto-generated) | Session-signing secret for `AGENTX_AUTH=enabled`. Generated and persisted on first enabled boot if unset; set explicitly when running multiple replicas. |
-| `AGENTX_PUBLIC_URL` | - | The externally reachable base URL when running behind a proxy/domain with auth enabled (used for auth callbacks/cookies). |
-| `AGENTX_TRUSTED_ORIGINS` | - | Comma-separated extra origins allowed to make authenticated browser requests (e.g. a dev dashboard on another port). |
+| Variable                     | Default          | Purpose                                                                                                                                                                                                                                         |
+| ---------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENAI_API_KEY`             | -                | Powers judge scoring / model calls for OpenAI models. Can also be set live from the dashboard's Platform Settings (takes precedence over the env var).                                                                                          |
+| `ANTHROPIC_API_KEY`          | -                | Same, for Anthropic models.                                                                                                                                                                                                                     |
+| `GEMINI_API_KEY`             | -                | Same, for Gemini models.                                                                                                                                                                                                                        |
+| `AGENTX_DB_URL`              | (local SQLite)   | Set to a `postgres://...` URL to use Postgres instead of the default SQLite file.                                                                                                                                                               |
+| `AGENTX_HOME`                | `~/.agentx`      | Where the local SQLite database and config live.                                                                                                                                                                                                |
+| `PORT`                       | `4700`           | Port the engine listens on.                                                                                                                                                                                                                     |
+| `AGENTX_OTEL_MONITOR`        | `true`           | Set to `false` to stop running Monitor against OTel-ingested spans.                                                                                                                                                                             |
+| `AGENTX_MONITOR_CHILD_SPANS` | `false`          | Set to `true` to also run Monitor against child spans of a traced call, not just top-level ones.                                                                                                                                                |
+| `AGENTX_IMPROVEMENT_SWEEP`   | `true`           | Set to `false` to disable the background sweep that auto-generates and validates improvement proposals when failure evidence crosses a threshold (the Improvement Inbox). `POST /evaluate/improve/inbox/sweep/run` still triggers one manually. |
+| `AGENTX_SESSION_SWEEP`       | `true`           | Set to `false` to disable the background sweep that judges idle multi-turn sessions (session-scoped Online Evaluators). `POST /agent-monitoring/session-sweep/run` still triggers one manually.                                                 |
+| `AGENTX_AUTH`                | `disabled`       | Set to `enabled` to require dashboard sign-in (see "Dashboard authentication" below). The default keeps the zero-setup local posture.                                                                                                           |
+| `AGENTX_AUTH_SECRET`         | (auto-generated) | Session-signing secret for `AGENTX_AUTH=enabled`. Generated and persisted on first enabled boot if unset; set explicitly when running multiple replicas.                                                                                        |
+| `AGENTX_PUBLIC_URL`          | -                | The externally reachable base URL when running behind a proxy/domain with auth enabled (used for auth callbacks/cookies).                                                                                                                       |
+| `AGENTX_TRUSTED_ORIGINS`     | -                | Comma-separated extra origins allowed to make authenticated browser requests (e.g. a dev dashboard on another port).                                                                                                                            |
 
 Trace ingest and pattern matching on phrase/regex both work with no keys configured at all - only
 judge scoring and semantic pattern detection need a provider key.
@@ -138,8 +138,7 @@ hosting the dashboard on the internet):
 - The first visit shows an owner-setup screen. The first account created becomes the owner of a
   default organization and takes over every existing project on the instance. Later signups join
   that organization as members.
-- Signing in is what grants the dashboard its project list (and each project's API key); the
-  unauthenticated bootstrap endpoint is disabled in this mode.
+- Signing in is what grants the dashboard its project list (and each project's API key);
 - SDK ingest is unchanged in both modes: it authenticates with project API keys, never sessions.
   Enabling or disabling auth never breaks a deployed integration.
 - Identity is standard [better-auth](https://better-auth.com) (email/password out of the box),
@@ -172,27 +171,27 @@ Monitor and Online Evaluators run against every OTel-ingested span by default; s
 
 OTel traffic is a first-class citizen of the full loop, via three attribute conventions:
 
-| Span attribute | Effect |
-| --- | --- |
-| `session.id`, `gen_ai.conversation.id`, or `agentx.session_id` | Groups traces into a conversation on the Sessions surface - session coherence scoring and session-scoped Online Evaluators apply, exactly like SDK traffic. Without one, spans still group by OTel trace id. |
-| `agentx.prompt_name` (+ optional `agentx.version`) | Tags the trace for the Improve loop - prompt-registry evidence gathering and version comparison work as if the SDK's `metadata={"promptName": ...}` had been passed. |
-| `gen_ai.tool.name` on a child span | The tool call is folded up into its root interaction's `tool_calls` (with `success`/`error` from the span's status), lighting up the Tool quality column, the built-in Tool failure check, and Tool Schema evidence. In-batch only: a parent exported in an earlier OTLP batch isn't updated retroactively. |
+| Span attribute                                                 | Effect                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `session.id`, `gen_ai.conversation.id`, or `agentx.session_id` | Groups traces into a conversation on the Sessions surface - session coherence scoring and session-scoped Online Evaluators apply, exactly like SDK traffic. Without one, spans still group by OTel trace id.                                                                                                |
+| `agentx.prompt_name` (+ optional `agentx.version`)             | Tags the trace for the Improve loop - prompt-registry evidence gathering and version comparison work as if the SDK's `metadata={"promptName": ...}` had been passed.                                                                                                                                        |
+| `gen_ai.tool.name` on a child span                             | The tool call is folded up into its root interaction's `tool_calls` (with `success`/`error` from the span's status), lighting up the Tool quality column, the built-in Tool failure check, and Tool Schema evidence. In-batch only: a parent exported in an earlier OTLP batch isn't updated retroactively. |
 
 Known gap: gRPC transport isn't supported (HTTP only).
 
 ## What's in this repo
 
-| Path | What it is |
-| --- | --- |
-| `cli/` | Go CLI (`agentx`/`agentx-server`) - installer glue and process supervisor. Launches the bundled engine binary, opens the browser, handles shutdown. |
-| `engine/` | TypeScript governance engine + HTTP API (Trace, Evaluate, Monitor). Compiles to a single native executable via Bun (`bun build --compile`) so end users never need Node/Bun installed. |
-| `packages/judge-core/` | The LLM-as-judge prompt/scoring logic, published as `@agentx/judge-core` so `engine/` and AgentX's hosted SaaS backend share one implementation. |
-| `web/` | The dashboard - **not tracked in this repo**. Populated by building [AgentX-eval-front](https://github.com/AgentX-ai/AgentX-eval-front) in self-host mode, or by downloading its prebuilt release asset (see [Dashboard release process](#dashboard-release-process)). |
-| `skills/` | Claude Code skills for self-host users to copy into their own `.claude/skills/` - e.g. `improve-prompt/`, which drives the Prompt Registry's propose loop using Claude's own reasoning instead of a server-side judge call. |
-| `install.sh` | The `curl \| bash` installer - downloads the platform binary from GitHub Releases. |
-| `build.sh` | Builds a local `dist/` laid out the same way a real install would, for testing the full distribution without cutting a release. |
-| `Dockerfile` | Multi-stage build producing a container image - see [Docker](#docker). |
-| `scripts/` | `smoke-test.sh` / `smoke_test.py` - end-to-end verification against a real running engine and the real Python SDK. |
+| Path                   | What it is                                                                                                                                                                                                                                                             |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cli/`                 | Go CLI (`agentx`/`agentx-server`) - installer glue and process supervisor. Launches the bundled engine binary, opens the browser, handles shutdown.                                                                                                                    |
+| `engine/`              | TypeScript governance engine + HTTP API (Trace, Evaluate, Monitor). Compiles to a single native executable via Bun (`bun build --compile`) so end users never need Node/Bun installed.                                                                                 |
+| `packages/judge-core/` | The LLM-as-judge prompt/scoring logic, published as `@agentx/judge-core` so `engine/` and AgentX's hosted SaaS backend share one implementation.                                                                                                                       |
+| `web/`                 | The dashboard - **not tracked in this repo**. Populated by building [AgentX-eval-front](https://github.com/AgentX-ai/AgentX-eval-front) in self-host mode, or by downloading its prebuilt release asset (see [Dashboard release process](#dashboard-release-process)). |
+| `skills/`              | Claude Code skills for self-host users to copy into their own `.claude/skills/` - e.g. `improve-prompt/`, which drives the Prompt Registry's propose loop using Claude's own reasoning instead of a server-side judge call.                                            |
+| `install.sh`           | The `curl \| bash` installer - downloads the platform binary from GitHub Releases.                                                                                                                                                                                     |
+| `build.sh`             | Builds a local `dist/` laid out the same way a real install would, for testing the full distribution without cutting a release.                                                                                                                                        |
+| `Dockerfile`           | Multi-stage build producing a container image - see [Docker](#docker).                                                                                                                                                                                                 |
+| `scripts/`             | `smoke-test.sh` / `smoke_test.py` - end-to-end verification against a real running engine and the real Python SDK.                                                                                                                                                     |
 
 ## Building from source
 
@@ -342,7 +341,7 @@ end-user feedback).
 
 **Known gaps:**
 
-- The self-host build ships the full frontend bundle rather than one trimmed to just Governance  - 
+- The self-host build ships the full frontend bundle rather than one trimmed to just Governance -
   tracked as a follow-up in `AgentX-eval-front`.
 - No hot-reload loop between an `AgentX-eval-front` dev server and this engine yet.
 - Autotune's candidate-branch creation/evaluation/merging is out of scope, not deferred: it's

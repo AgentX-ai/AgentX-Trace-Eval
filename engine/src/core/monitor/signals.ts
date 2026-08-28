@@ -383,5 +383,42 @@ export async function updateSignal(db: Db, id: string, patch: UpdateSignalInput)
   } else {
     await db.db.update(db.schema.monitorSignals).set(setValues).where(updateCond);
   }
+
+  // Human verdicts on judge-raised signals are calibration ground truth, and BOTH directions
+  // are recorded here so no client can forget half the loop:
+  //   - Confirm (-> triaged): AGREEMENT - "the flag was right". Symmetric labeling is what makes
+  //     calibration honest; recording only disagreements lets a judge accumulate evidence
+  //     exclusively against itself.
+  //   - Wrong judgement (-> resolved/false_positive): DISAGREEMENT baseline - guaranteed even
+  //     when the user closes the correction dialog without writing a rationale. The dialog's
+  //     detailed correction lands later on the same event and outranks this row in
+  //     judgeTuning.ts (explicit corrections > confirms; latest correction wins).
+  // Written once per transition, pinned to the newest occurrence's event so the label pairs
+  // with the exact verdict.
+  const becameTriaged = nextStatus === "triaged" && existing.status !== "triaged";
+  const becameFalsePositive =
+    nextStatus === "resolved" &&
+    updated.resolutionReason === "false_positive" &&
+    !(existing.status === "resolved" && existing.resolutionReason === "false_positive");
+  if ((becameTriaged || becameFalsePositive) && existing.patternKey.startsWith("online-eval:")) {
+    const occurrences = await listOccurrencesForSignal(db, id); // createdAt ASC - newest last
+    const newest = occurrences[occurrences.length - 1];
+    if (newest) {
+      const { createFeedback, hasCorrectionForEvent } = await import("./feedback.js");
+      // A wrong-judgement resolve that followed the correction dialog already has a richer
+      // disagreement row on this event - the canned baseline must not overwrite it.
+      if (!becameTriaged && (await hasCorrectionForEvent(db, id, newest.id).catch(() => false))) {
+        return toWire(updated);
+      }
+      await createFeedback(db, id, {
+        metric: becameTriaged ? "confirmed" : "false-positive",
+        rationale: becameTriaged
+          ? "Human confirmed the flagged issue during signal review"
+          : "Resolved as wrong judgement during signal review",
+        occurrenceId: newest.id,
+        originalScore: newest.rating ?? undefined,
+      }).catch(() => undefined);
+    }
+  }
   return toWire(updated);
 }

@@ -39,7 +39,7 @@ const VALIDATE_CONTROL_CAP = 6;
 const DEFAULT_BAD_THRESHOLD = 5;
 
 export type GroundTruth = {
-  source: "correction" | "review" | "outcome" | "feedback";
+  source: "correction" | "confirmed" | "review" | "outcome" | "feedback";
   isBad: boolean;
   // The human's own words: a correction's rationale, or an outcome/feedback reason.
   detail: string | null;
@@ -124,10 +124,22 @@ export async function getEvaluatorCalibration(
     (db.kind === "sqlite"
       ? db.db.select().from(db.schema.monitorSignalFeedback).where(feedbackCond).all()
       : await db.db.select().from(db.schema.monitorSignalFeedback).where(feedbackCond)) as FeedbackCorrectionRow[]
-  ).filter(c => c.correctedScore !== null || c.metric === "false-positive" || c.queuedForAutotune === true);
+  ).filter(
+    c =>
+      c.correctedScore !== null || c.metric === "false-positive" || c.metric === "confirmed" || c.queuedForAutotune === true
+  );
   const correctionByEvent = new Map<string, FeedbackCorrectionRow>();
+  const confirmationByEvent = new Map<string, FeedbackCorrectionRow>();
   for (const c of corrections) {
-    if (c.eventId) correctionByEvent.set(c.eventId, c); // later rows overwrite: latest correction wins
+    if (!c.eventId) continue;
+    // Confirms ("the flag was right", written by the Review queue's Confirm - signals.ts) are the
+    // agreement half of the labeling. Kept in their own map so a bare confirm never outranks an
+    // explicit re-score/false-positive on the same event in this latest-wins keying.
+    if (c.metric === "confirmed" && c.correctedScore === null && !c.queuedForAutotune) {
+      confirmationByEvent.set(c.eventId, c);
+    } else {
+      correctionByEvent.set(c.eventId, c); // later rows overwrite: latest correction wins
+    }
   }
 
   // Labeled human-review rows, windowed on reviewedAt: the calibration pair the review queue
@@ -171,6 +183,7 @@ export async function getEvaluatorCalibration(
 
   for (const event of events) {
     const correction = correctionByEvent.get(event.id);
+    const confirmation = confirmationByEvent.get(event.id);
     const review = reviewByTrace.get(event.traceId);
     const outcome = outcomeByTrace.get(event.traceId);
     const judgedBad = event.rating < threshold;
@@ -200,6 +213,17 @@ export async function getEvaluatorCalibration(
         source: "correction",
         isBad: !judgedBad,
         detail: correction.rationale,
+        correctedScore: null,
+        reportedBy: null,
+      };
+    } else if (confirmation) {
+      // "Confirm" in signal review: event-specific human agreement that the flagged response was
+      // genuinely bad. Ranked above the trace-level streams (review/outcome) because it labels
+      // exactly this verdict, below explicit corrections which carry more information.
+      groundTruth = {
+        source: "confirmed",
+        isBad: true,
+        detail: confirmation.rationale,
         correctedScore: null,
         reportedBy: null,
       };

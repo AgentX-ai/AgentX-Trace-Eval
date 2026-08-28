@@ -1509,6 +1509,9 @@ async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) 
     creator: LOCAL_USER,
     executor: LOCAL_USER,
     status: run.status,
+    // Parity with /custom-agent-evaluations/runs summaries - clients listing runs from either
+    // surface can count results without fetching each run's detail.
+    resultCount: results.length,
     liveStatistics: {
       averageRating,
       minRating: rated.length ? Math.min(...rated) : null,
