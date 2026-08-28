@@ -573,10 +573,39 @@ export async function appendResults(
       status,
       createdAt: new Date(),
     };
+    // Conflict-tolerant on (run_id, idempotency_key): the getExistingResult pre-check above is
+    // only a cost saver (skip re-scoring), not a guarantee - a client whose first submission is
+    // still scoring in another request (sync scoring can outlive HTTP timeouts) races this
+    // insert, and the loser used to surface the raw UNIQUE constraint as an error. Losing the
+    // race is a duplicate, not a failure.
+    let won: boolean;
     if (db.kind === "sqlite") {
-      await db.db.insert(db.schema.evaluationRunResults).values(resultRow);
+      const res = await db.db.insert(db.schema.evaluationRunResults).values(resultRow).onConflictDoNothing();
+      won = ((res as { changes?: number })?.changes ?? 1) > 0;
     } else {
-      await db.db.insert(db.schema.evaluationRunResults).values(resultRow);
+      const ret = await db.db
+        .insert(db.schema.evaluationRunResults)
+        .values(resultRow)
+        .onConflictDoNothing()
+        .returning({ id: db.schema.evaluationRunResults.id });
+      won = ret.length > 0;
+    }
+    if (!won) {
+      duplicates++;
+      const winner = await getExistingResult(db, runId, item.idempotencyKey);
+      scoredResults.push({
+        idempotencyKey: item.idempotencyKey,
+        rating: winner?.rating ?? rating,
+        justification: winner?.justification ?? justification,
+        status: winner?.status ?? status,
+        vectorSimilarity: winner?.vectorSimilarity ?? similarity.vectorSimilarity,
+        jaccardSimilarity: winner?.jaccardSimilarity ?? similarity.jaccardSimilarity,
+        bleuScore: winner?.bleuScore ?? similarity.bleuScore,
+        rougeScore: winner?.rougeScore ?? similarity.rougeScore,
+        codeScorerResults: winner?.codeScorerResults ?? (codeScorerResults.length > 0 ? codeScorerResults : null),
+        deduped: true,
+      });
+      continue;
     }
 
     accepted++;

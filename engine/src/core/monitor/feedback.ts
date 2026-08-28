@@ -72,6 +72,25 @@ export async function createFeedback(db: Db, signalId: string, input: CreateFeed
   return toWire(row);
 }
 
+// True when this event already carries feedback judgeTuning.ts would count as a correction
+// (same triple as its corrections filter). Used by signals.ts to skip the canned baseline
+// disagreement write when the correction dialog's detailed row is already in - the baseline
+// must never land AFTER a real rationale and clobber it in latest-wins keying.
+export async function hasCorrectionForEvent(db: Db, signalId: string, eventId: string): Promise<boolean> {
+  const cond = and(
+    eq(db.schema.monitorSignalFeedback.signalId, signalId),
+    eq(db.schema.monitorSignalFeedback.projectId, db.projectId)
+  );
+  const rows =
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.monitorSignalFeedback).where(cond).all()
+      : await db.db.select().from(db.schema.monitorSignalFeedback).where(cond);
+  return (rows as FeedbackRow[]).some(
+    r =>
+      r.eventId === eventId && (r.correctedScore !== null || r.metric === "false-positive" || r.queuedForAutotune === true)
+  );
+}
+
 export async function listFeedbackForSignal(db: Db, signalId: string) {
   const cond = and(eq(db.schema.monitorSignalFeedback.signalId, signalId), eq(db.schema.monitorSignalFeedback.projectId, db.projectId));
   const rows =
