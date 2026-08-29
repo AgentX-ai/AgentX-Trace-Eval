@@ -64,7 +64,7 @@ a future pass" that `topics.ts`'s header defers. Insights is the reason to do it
 
 Topic assignment for a new trace becomes centroid proximity, which means the sweep is
 also a **novelty detector**: a trace whose best cosine to every centroid is below a floor
-is not in any known topic. See §7.
+is not in any known topic. See §8.
 
 ### 3.2 Soft assignment, not argmax
 
@@ -257,7 +257,7 @@ expected answer.
 **Recency must be relative, not absolute.** A two-year-old case for a topic whose behaviour has
 not changed is fine; a three-month-old case for a topic that drifted last week is stale. Raw case
 age would flag the first and miss the second - exactly backwards. Measure recency as case age
-*against centroid movement since that case was added* (7.2 already computes the drift). This is
+*against centroid movement since that case was added* (8.2 already computes the drift). This is
 the case-side complement to the **Stale** topic state, and the two are independent failure modes:
 the traffic moved, or the test rotted.
 
@@ -343,7 +343,111 @@ that breaks it - and shouldn't want to. A coverage number inflated by unreviewed
 generated cases is the exact failure mode §4.2 exists to prevent. Ship it as a stated
 principle, not an omission.
 
-## 7. Ideas worth doing that the obvious version misses
+## 7. Ask the dataset a question
+
+Everything above is a *sweep*: it computes coverage for topics production already produced.
+That leaves an obvious question unanswerable — **"is this specific thing tested?"** — which is
+the question people actually have, in the words they actually have it in. The probe is the
+inverse lookup: type a query, get a calibrated verdict.
+
+It is also, unexpectedly, the cheapest thing in this plan. One embedding call, cosine against
+the cached case embeddings and the topic centroids, no LLM in the verdict path, sub-second.
+
+### 7.1 It must answer three questions, not one
+
+The naive version answers only the first, and is actively misleading for it:
+
+1. **Is there a test for this?** Nearest cases by cosine.
+2. **Does production actually ask this?** Nearest centroid and its traffic share.
+3. **Would it be adequately covered?** The adequacy (§4.8) of the topic it lands in.
+
+Cross the first two and the real product appears:
+
+| | **Production asks this** | **Production doesn't** |
+|---|---|---|
+| **Dataset covers it** | Fine. Show the case, move on. | **Dead test weight** — the off-map finding (§5), reached from the other direction |
+| **Dataset doesn't** | **A real gap.** Offer to generate. | **A hypothesis, not a gap.** Say so plainly. |
+
+That bottom-right cell is why the naive version is dangerous. A query with no coverage *and* no
+traffic is not a hole in the suite - and answering "not covered!" would send a team writing tests
+for things nobody asks. Insights should say: *"nothing in production resembles this either -
+it may be worth testing anyway, but this is not a gap in your coverage of real traffic."*
+Refusing to manufacture work is a feature.
+
+### 7.2 Calibrated verdicts, using the numbers the repo already measured
+
+A raw cosine ("0.62") means nothing to anyone. `curation.ts` has already done the calibration
+work for `text-embedding-3-small` - measured paraphrase pairs at 0.82-0.88, related-but-distinct
+questions at 0.48-0.56 - so the bands come for free and need no second calibration to maintain:
+
+| Similarity | Verdict | Wording |
+|---|---|---|
+| >= 0.75 | **Covered** | "Effectively the same question as an existing case." |
+| 0.56 - 0.75 | **Adjacent** | "Nearest case asks something related, not this." |
+| < 0.56 | **Not covered** | "Nothing in the dataset is close." |
+
+The 0.75 band boundary is deliberately the *same constant* `addCaseToDataset` dedupes on. That
+gives the feature a property worth stating out loud:
+
+> **"Covered" means the dataset would reject this query as a duplicate.**
+
+One threshold, one embedding model, two features that can never disagree with each other. If
+someone recalibrates the constant, both move together.
+
+### 7.3 Show the expected answer, and don't overclaim
+
+Embedding similarity between a query and a case's *query* measures topical resemblance - it does
+not prove the case tests the same behaviour. Two questions can be near-identical in phrasing
+while the case's `expectedResults` asserts something else entirely.
+
+So the result always shows the nearest case's expected answer next to its similarity, and the
+verdict is phrased as evidence rather than judgment. The human makes the final call. Claiming
+"covered" on phrasing alone is the one way this feature loses trust in a single interaction.
+
+### 7.4 Batch mode: coverage against traffic that doesn't exist yet
+
+The single-query probe generalises for free, and the generalisation is the valuable half. Paste
+a list - a PRD's user stories, a support macro export, a compliance checklist, a launch spec -
+and get a coverage report over questions production has *never seen*.
+
+> *"We launch crypto withdrawals next month. Here are the 15 things users will ask. How much of
+> that does our suite cover today?"* — **0 of 15.**
+
+This is forward-looking coverage, and it solves the cold-start problem the rest of this plan
+cannot: the topic map only knows the past, so a brand-new surface is invisible to it until it
+has already shipped and started failing. Batch probe is the pre-launch gate.
+
+### 7.5 Two dividends
+
+**It seeds `declaredRisk` from real behaviour.** §4.6 asks who declares business criticality and
+admits a human has to. Probe queries answer it implicitly: the scenarios people type in are the
+ones they are worried about. Log them, and *"queries probed repeatedly that production has never
+produced"* becomes a ranked candidate list for declared risk - inferred from what the team
+actually fears, not from an LLM guessing at topic labels.
+
+**A gap flows straight into generation.** A "not covered" verdict with traffic nearby is one
+click from §6: if real traces sit near the query, curate those (real user language, always
+preferred, ranked by the MMR selection already specified); if none do, pass the query itself to
+`generateSyntheticCases` as guidance. Same preview -> human -> append landing path, nothing new.
+
+### 7.6 Why this ships in Phase 0
+
+The probe needs **no clustering, no sweep, no topic layer** - only case embeddings and one query
+embedding. It works on day one, before `insight_topics` exists, degrading to "nearest cases, no
+traffic context" (and saying so).
+
+That makes it the best Phase 0 deliverable in the plan: it is the moment the whole idea becomes
+tangible to someone who has not read this document. A coverage percentage is an assertion a
+reader has to take on faith. Typing *"what happens if a customer asks to close their account
+while a refund is pending"* and getting back **"nothing in your dataset is within 0.4 of this"**
+is a demonstration.
+
+```
+POST /insights/probe        { query }            -> verdict, nearest cases, topic, traffic, adequacy
+POST /insights/probe/batch  { queries[] }        -> the same per query, plus a rollup
+```
+
+## 8. Ideas worth doing that the obvious version misses
 
 **7.1 Unknown unknowns - Good-Turing.** The topic map can only show topics we have seen.
 Classification is *sampled* (`topicsSampleRate`), so it is a survey, and surveys have a
@@ -385,7 +489,7 @@ which is why coverage rows key on `(topicId, datasetId)` and not on the dataset 
 last seen in production, and did production behaviour in that topic change since? Surfaces
 tests that are now testing a world that no longer exists. Same data, read backwards.
 
-## 8. Shape of the code
+## 9. Shape of the code
 
 New module directory, mirroring how `core/monitor/` and `core/evaluate/` are organised:
 
@@ -435,18 +539,21 @@ or a UMAP fit.
 | `GET /insights/topics/:id` | the detail panel: traffic share, cases vs target, coverage, risk components, sub-modes, suggested action |
 | `POST /insights/topics/:id/brief` | the generation brief (selected traces, failure evidence, style anchors) |
 | `POST /insights/topics/:id/generate` | topic-grounded synthesis -> preview cases (no write) |
+| `POST /insights/probe` | calibrated verdict for one query: nearest cases, topic, traffic, adequacy |
+| `POST /insights/probe/batch` | the same per query, plus a rollup - the pre-launch gate |
 | `POST /insights/recompute` | force the sweep |
 
 Zod schemas go in `contract/wire.ts` alongside the existing monitor schemas - the
 dashboard (`AgentX-eval-front`, separate private repo) consumes that contract, so the
 wire shape needs to be settled in this plan's review, before UI work starts.
 
-## 9. Phasing
+## 10. Phasing
 
-**Phase 0 - the screen, on data we already have.** Case embedding cache, string-grouped
-topics from existing `intent` values, count-based coverage, three headline tiles, topic
-map states, per-topic panel. Ships the mockup. No clustering, no sweep. Proves the
-concept and settles the wire contract.
+**Phase 0 - the screen, and the probe.** Case embedding cache, string-grouped topics from
+existing `intent` values, count-based coverage, three headline tiles, topic map states,
+per-topic panel - plus the single-query and batch **probe** (§7), which needs none of the
+topic machinery and is the fastest way to make the idea tangible. Ships the mockup. No
+clustering, no sweep. Proves the concept and settles the wire contract.
 
 **Phase 1 - real topics.** Consolidation sweep, centroids, soft assignment,
 facility-location coverage, sub-mode analysis, and the full attribute row (§4.3) including
@@ -468,7 +575,7 @@ Good-Turing unknown mass, CI coverage gate.
 Each phase is independently shippable and each one leaves the product better than it
 found it.
 
-## 10. Open questions - need a decision before Phase 0
+## 11. Open questions - need a decision before Phase 0
 
 1. **Scope of a coverage number.** Per project, per agent, or per (agent x dataset)? An
    agent may run dataset B while topic X is covered only by dataset A, which would report
