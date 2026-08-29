@@ -63,6 +63,7 @@ export type MonitorMetricsBucket = {
   ts: number;
   spansLlm: number;
   spansTool: number;
+  spansRetrieval: number;
   spansOther: number;
   traces: number;
   errors: number;
@@ -92,6 +93,7 @@ export type MonitorMetricsResponse = {
   totals: {
     spansLlm: number;
     spansTool: number;
+    spansRetrieval: number;
     spansOther: number;
     traces: number;
     errors: number;
@@ -257,6 +259,7 @@ export async function getMonitorMetrics(
     ts: start + i * bucketMs,
     spansLlm: 0,
     spansTool: 0,
+    spansRetrieval: 0,
     spansOther: 0,
     traces: 0,
     errors: 0,
@@ -297,6 +300,8 @@ export async function getMonitorMetrics(
       if (row.model) facetModels.add(row.model);
     } else if (kind === "tool" || (row.parentSpanId && toolNames.has(row.name))) {
       bucket.spansTool++;
+    } else if (kind === "retrieval") {
+      bucket.spansRetrieval++;
     } else {
       bucket.spansOther++;
     }
@@ -391,6 +396,7 @@ export async function getMonitorMetrics(
   const sortedAll = allLatencies.sort((a, b) => a - b);
   const totals = {
     spansLlm: buckets.reduce((n, b) => n + b.spansLlm, 0),
+    spansRetrieval: buckets.reduce((n, b) => n + b.spansRetrieval, 0),
     spansTool: buckets.reduce((n, b) => n + b.spansTool, 0),
     spansOther: buckets.reduce((n, b) => n + b.spansOther, 0),
     traces: buckets.reduce((n, b) => n + b.traces, 0),

@@ -21,6 +21,7 @@ export const monitorMetricsBucketSchema = z
     ts: z.number(),
     spansLlm: z.number(),
     spansTool: z.number(),
+    spansRetrieval: z.number(),
     spansOther: z.number(),
     traces: z.number(),
     errors: z.number(),
