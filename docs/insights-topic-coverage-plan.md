@@ -104,7 +104,7 @@ Why this is the right shape:
   `max` is already satisfied. The anti-gaming property falls out of the math instead of
   needing a separate rule.
 - It rewards *spread*: covering three phrasings of a request beats three copies of one.
-- Sub-mode coverage (§4.4) is the same number computed per sub-cluster - one formula, not
+- Sub-mode coverage (§4.5) is the same number computed per sub-cluster - one formula, not
   a second system.
 - It reuses the 0.75 similarity calibration already in `curation.ts`.
 
@@ -113,7 +113,31 @@ Why this is the right shape:
 `degraded: true`. Every embedding path in this repo already returns null on failure; this
 must too. A degraded number is labelled, never silently wrong.
 
-### 4.3 Per-topic target - not a flat constant
+### 4.3 Per-topic attributes - the row behind every tile
+
+Coverage is a verdict; these are the evidence it is computed from, and each is shown in the
+topic detail panel so the verdict is auditable.
+
+| Attribute | Source | Notes |
+|---|---|---|
+| Traffic share | `insight_topics.trafficCount` | Volume |
+| **Unique sessions / customers** | `traces.sessionId`; customer via a configurable `metadata` key | See below - volume alone lies |
+| **Declared business risk** | Human-set per topic, seeded by heuristic | Distinct from observed risk - see 4.6 |
+| Observed failure frequency | `issueType != none`, signals, outcome reports | Its own column, not only a risk input |
+| Approved dataset cases | Assigned cases with a human-reviewed expected answer | "Approved", not "present" |
+| Case diversity | Facility-location value (4.2) | The anti-duplicate term |
+| **Last dataset update** | Max `source.addedAt` over the topic's cases | Case-side staleness |
+| **Ground-truth confidence** | See 4.7 | How much the expected answers are worth |
+
+**Unique sessions matter more than request count.** 500 requests from 3 sessions is one
+customer hammering a retry loop; 500 from 400 sessions is real demand. Weighting a coverage
+target by raw traffic would over-invest in the first. `traces.sessionId` is first-class and
+free. Customer identity is not - there is no customer column, only `traces.metadata`, so
+customer-level counting ships as an opt-in configured metadata key (`insight_settings.customerKey`)
+and degrades to sessions when unset. Volume weight becomes
+`sqrt(requests) * log(1 + uniqueSessions)`, so concentration is discounted without being ignored.
+
+### 4.4 Per-topic target - not a flat constant
 
 The mockup shows "0 / 6 target" and "12 / 10 target". A flat target per topic is wrong:
 a narrow topic is finished at 3 cases, a sprawling one is thin at 20.
@@ -130,7 +154,7 @@ clustering step. **Coverage targets driven by measured semantic diversity, not j
 volume**, is the part of this that ordinary eval tooling does not do. `sqrt` on traffic
 so a 40%-of-traffic topic doesn't demand 40% of the test budget.
 
-### 4.4 Sub-mode coverage: the sharp insight
+### 4.5 Sub-mode coverage: the sharp insight
 
 Within a topic, k-means its trace embeddings into sub-clusters (k from `spread`), then
 compute the same facility-location value per sub-cluster. This produces the finding that
@@ -142,20 +166,7 @@ actually changes what someone does on Monday:
 
 That is a materially better product than a green tile.
 
-### 4.5 The three headline numbers
-
-Matching the mockup exactly:
-
-- **Traffic-weighted coverage** = `SUM_t trafficShare(t) * coverage(t)` -
-  "share of real requests represented by a reviewed test case".
-- **Topic breadth** = `count(coverage(t) >= threshold) / topicCount` - the 5/8 tile.
-- **Risk-weighted coverage** = `SUM_t normRisk(t) * coverage(t)` -
-  "high-impact scenarios adequately tested".
-
-The traffic/risk gap is the headline story: 68% vs 51% says *you test what is common, not
-what is dangerous*. That single sentence is the reason this feature sells.
-
-### 4.6 Risk score, and why it must be explainable
+### 4.6 Risk: declared and observed are two different things
 
 `risk(t)` blends, all joinable through `traceId` today:
 
@@ -168,6 +179,114 @@ what is dangerous*. That single sentence is the reason this feature sells.
 
 The API returns the **components alongside the score**, never a bare number. "High risk"
 that can't be explained gets ignored the second time a user sees it.
+
+But everything in that table is *observed* risk - it is derived from failures that already
+happened. That is circular for exactly the topics this feature exists to catch. The mockup's own
+example makes the point: **Account closure, 10% of traffic, 0 cases, 0% coverage**. It has no
+failure history, because it is barely exercised - so observed risk scores it low and it sinks
+down the queue. The same is true of payment approval, KYC, anything destructive and rare.
+
+So risk is two fields, not one:
+
+- **`observedRisk`** - derived from the table above. Automatic, always available, backward-looking.
+- **`declaredRisk`** - a human-set business criticality per topic (`none`/`low`/`high`/`critical`,
+  reusing `severity.ts`'s vocabulary rather than inventing a fifth scale). Seeded by a one-time
+  LLM pass over topic labels for irreversible or regulated actions (closure, refund, payment,
+  identity, data deletion), then owned by the team. Forward-looking, and the only thing that can
+  rank an untested danger correctly.
+
+`risk(t) = max(observedRisk, declaredRisk)`, deliberately `max` and not a blend: a topic that is
+either demonstrably failing or declared business-critical is risky, and averaging lets one signal
+mask the other. **Risk-weighted coverage is computed on this combined value** - otherwise the
+headline number it produces has the same blind spot as the metric it is meant to correct.
+
+### 4.7 Ground-truth confidence - what a case is actually worth
+
+A dataset case whose `expectedResults` was auto-drafted and rubber-stamped is not worth the same
+as one a reviewer wrote against a real failure. Coverage that treats them alike is measuring
+paperwork. Nothing in the current plan captured this, and the repo already holds the provenance:
+
+| Confidence input | Source | Signal |
+|---|---|---|
+| Human-written vs `suggestExpected`-drafted expected answer | `curation.ts` provenance | Was a person's judgment applied |
+| Reviewer label on the source trace | `review_queue_items.label` - *"A label is ground truth"* | The strongest per-case evidence |
+| Confirmed by a real-world outcome | `outcome_reports` joined via `source.traceId` | Reality agreed |
+| Corrected score vs judge score | `review_queue_items.correctedScore` / `judgeScoreAtQueue` | A human actively disagreed and fixed it |
+| Case has never been run | evaluation run history | Untested test |
+
+`groundTruthConfidence` in [0,1] per case, rolled up per topic. It feeds case adequacy (4.8) and
+is surfaced on its own, because "34 covered topics, but 11 of them rest on unverified expected
+answers" is a finding a team acts on.
+
+### 4.8 Case adequacy - decomposed, then combined carefully
+
+A topic is not covered because it has one dataset row. Adequacy in [0,1] per topic, from six
+factors, each independently displayable:
+
+| Factor | Meaning |
+|---|---|
+| `volume` | Reviewed cases against target (4.4) |
+| `diversity` | Facility-location value (4.2) - variants and phrasings |
+| `edgeCases` | Coverage of the topic's *failure* sub-modes specifically, not just its sub-modes |
+| `groundTruth` | Confidence roll-up (4.7) |
+| `recency` | See the correction below |
+| `reviewerConfidence` | Explicit reviewer signal where one exists |
+
+Then:
+
+```
+                  SUM_t  productionWeight(t) * adequacy(t)
+coverage      =   ------------------------------------------
+                  SUM_t  productionWeight(t)
+```
+
+with `productionWeight` = traffic share, breadth (uniform), or combined risk, giving the three
+headline numbers from one formula.
+
+**Two corrections this decomposition needs, or it will misreport:**
+
+**Do not multiply the factors.** Six factors at a respectable 0.8 each multiply to 0.26. A topic
+that is genuinely decent at everything renders as catastrophic, every topic goes red, and people
+stop reading the page - the classic way a well-intentioned composite score dies. Use a **weighted
+geometric mean** (`exp(SUM w_i * ln f_i)` with `SUM w_i = 1`), which keeps the "one bad factor
+drags the score" property that makes a product attractive here, while staying on the same scale
+as its inputs. Two factors are **gates** rather than terms - zero reviewed cases or zero ground
+truth caps adequacy outright, because no amount of diversity rescues a topic with no verified
+expected answer.
+
+**Recency must be relative, not absolute.** A two-year-old case for a topic whose behaviour has
+not changed is fine; a three-month-old case for a topic that drifted last week is stale. Raw case
+age would flag the first and miss the second - exactly backwards. Measure recency as case age
+*against centroid movement since that case was added* (7.2 already computes the drift). This is
+the case-side complement to the **Stale** topic state, and the two are independent failure modes:
+the traffic moved, or the test rotted.
+
+### 4.9 One number, or four?
+
+Quality-adjusted coverage is **not** a fourth metric sitting beside the other three. It is the
+same three metrics with `adequacy(t)` substituted for the crude "has cases" term - which is what
+4.8's formula already does. Shipping four co-equal percentages would leave a reader asking which
+one is the real one, and they would pick whichever is highest.
+
+So: **three headline numbers, all quality-adjusted**, exactly matching the mockup's tiles:
+
+- **Traffic-weighted coverage** - `productionWeight` = traffic share.
+  *"Share of real requests represented by an adequate test case."*
+- **Topic breadth** - count of topics whose adequacy clears a threshold, over topic count. The 5/8 tile.
+- **Risk-weighted coverage** - `productionWeight` = `max(observedRisk, declaredRisk)`.
+  *"High-impact scenarios adequately tested."*
+
+Plus one secondary number that earns its place precisely because it is a comparison:
+
+> **68% by case presence, 41% quality-adjusted.**
+
+That **honesty delta** is arguably the most valuable figure on the page. A large gap means the
+dataset is a facade - rows exist, confidence does not - and it is the single number that tells a
+team whether their next hour goes into *writing new cases* or *verifying the ones they have*.
+No other eval tool distinguishes those two kinds of work.
+
+The traffic-versus-risk gap remains the headline story (*you test what is common, not what is
+dangerous*); the presence-versus-quality gap is the second story (*you have rows, not tests*).
 
 ## 5. Topic states and the map
 
@@ -290,6 +409,16 @@ engine/src/core/insights/
   Keyed by content hash so an edited case re-embeds and an unchanged one never does.
 - `insight_coverage_snapshots` - projectId, agentId, datasetId, computedAt, the three
   headline numbers, per-topic json. Powers deltas and the CI gate.
+- `insight_topics.declaredRisk` - the human-owned business criticality (§4.6). The only
+  hand-editable field in the whole feature; everything else is derived, which is why it needs a
+  real owner and an edit route rather than a config file.
+- `insight_case_meta` - per (datasetId, caseKey): `groundTruthConfidence`, its component flags,
+  `addedAt`, `lastRunAt`. Separate from `insight_case_embeddings` because confidence changes when
+  a review lands, while the embedding only changes when the text does - different write
+  frequencies, different invalidation.
+- `insight_settings` - per project: `customerKey` (the `traces.metadata` key holding customer
+  identity, §4.3), adequacy factor weights, coverage thresholds. Weights must be inspectable and
+  editable, or the composite score is a black box nobody trusts.
 
 **Compute posture.** Clustering + coverage is far too heavy for a request. Follow
 `improvementSweep.ts`: a leased background sweep (`sweepLease.ts`) on a schedule plus an
@@ -320,8 +449,14 @@ map states, per-topic panel. Ships the mockup. No clustering, no sweep. Proves t
 concept and settles the wire contract.
 
 **Phase 1 - real topics.** Consolidation sweep, centroids, soft assignment,
-facility-location coverage, risk scoring, sub-mode analysis. The numbers become
-defensible.
+facility-location coverage, sub-mode analysis, and the full attribute row (§4.3) including
+unique-session weighting. The numbers become defensible.
+
+**Phase 1.5 - adequacy.** `declaredRisk` and its edit route, ground-truth confidence, the
+six-factor adequacy score with its geometric-mean combination, and the presence-vs-quality
+honesty delta. Worth its own phase rather than folding into Phase 1: it is the step that turns
+three plausible percentages into three defensible ones, and it is where a rushed combination rule
+would quietly poison every number downstream.
 
 **Phase 2 - the flywheel.** Generation briefs, MMR trace selection, topic-grounded
 synthesis, marginal-coverage-per-case ranking. Insights starts producing work, not just
@@ -346,6 +481,14 @@ found it.
    on Overview? It reads as its own thing, but it is only ever acted on from a dataset.
 4. **Do we backfill?** `monitor_classifications.embedding` is explicitly not backfilled
    for older rows. Topics built from a partial history will under-count older traffic.
-5. **Naming.** "Insights" is generic and `attention.ts` already owns the word `insight`
+5. **Who owns `declaredRisk`?** It is the one field a human must set, and the whole
+   risk-weighted number depends on it. Seeding it from an LLM pass over topic labels gets a
+   usable default on day one, but if nobody ever corrects it the feature is ranking danger by
+   guess. Does it belong to whoever owns the agent, or does it need a review step?
+6. **Adequacy weights: shipped default or per-project?** Six factors need six weights. A fixed
+   default is legible and comparable across projects; per-project weights are honest about
+   differing priorities but make two teams' 68% incomparable. Recommendation: ship one default,
+   make it visible, allow override later.
+7. **Naming.** "Insights" is generic and `attention.ts` already owns the word `insight`
    for its one-line digest. *Coverage*, *Gaps*, or *Dataset Fit* are all sharper. Worth
    deciding before it reaches the wire contract and becomes hard to rename.
