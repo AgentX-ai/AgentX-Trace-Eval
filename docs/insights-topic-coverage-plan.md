@@ -1,6 +1,17 @@
 # Insights: production topic coverage of evaluation datasets
 
-**Status:** plan, not implemented. No code changes accompany this document.
+**Status:** Phase 0 is implemented and shipped (`engine/src/core/insights/`,
+`engine/src/routes/insights.ts`). Phases 1-3 below are still design.
+
+Two things changed during implementation, and this document has been corrected rather than left
+describing something the code does not do:
+
+- Coverage is the facility-location value **alone**, never blended with the case count. The first
+  implementation took `min(countRatio, depth)`, which quietly reintroduced duplicate-inflation -
+  the anti-gaming test failed with `expected 0.857 to be less than or equal to 0.287`. See §4.2.
+- Phase 0 assigns cases to topics by **argmax**, not the softmax of §3.2. With intent-string
+  topics there are no real centroid boundaries yet for a soft assignment to smooth over; softmax
+  arrives with the clustering in Phase 1.
 
 ## 1. The idea in one line
 
@@ -549,7 +560,7 @@ wire shape needs to be settled in this plan's review, before UI work starts.
 
 ## 10. Phasing
 
-**Phase 0 - the screen, and the probe.** Case embedding cache, string-grouped topics from
+**Phase 0 - the screen, and the probe.** *(shipped)* Case embedding cache, string-grouped topics from
 existing `intent` values, count-based coverage, three headline tiles, topic map states,
 per-topic panel - plus the single-query and batch **probe** (§7), which needs none of the
 topic machinery and is the fastest way to make the idea tangible. Ships the mockup. No

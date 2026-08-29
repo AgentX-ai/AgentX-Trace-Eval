@@ -1,0 +1,318 @@
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { nanoid } from "nanoid";
+import { openTestDb, type TestDb } from "./dbHarness.js";
+import type { Db } from "../storage/db.js";
+import { getCoverage } from "../core/insights/coverage.js";
+import { probe, probeBatch } from "../core/insights/probe.js";
+import { caseKeyFor } from "../core/insights/cases.js";
+import { createDataset } from "../core/evaluate/datasets.js";
+import { SIMILARITY_BANDS } from "../core/evaluate/curation.js";
+
+// Coverage and the probe are pure functions of two tables nobody can populate through a route in
+// a test: classifying a trace needs an LLM key, and so does embedding a case. Both are driven
+// directly here, with EMBEDDINGS INJECTED rather than computed - deterministic vectors on a unit
+// circle, whose cosines are exactly cos(angle difference), so every assertion about a band
+// boundary is arithmetic rather than a guess about what an embedding model will do that day.
+
+// The one seam these tests need: probing embeds the QUERY, which is the only vector that cannot
+// be pre-seeded into the cache the way case embeddings can. Registered text returns its injected
+// vector; anything unregistered returns null, which is precisely what a missing OPENAI_API_KEY
+// does - so the degraded lexical path stays exercised rather than mocked away.
+const { registered } = vi.hoisted(() => ({ registered: new Map<string, number[]>() }));
+
+vi.mock("../core/evaluate/judge.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../core/evaluate/judge.js")>();
+  return { ...actual, computeEmbedding: async (text: string) => registered.get(text.trim()) ?? null };
+});
+
+let test: TestDb;
+let db: Db;
+
+// A unit vector at `angle` radians, padded into a 4-dimensional space so nothing depends on
+// dimensionality. cosine(unit(a), unit(b)) === cos(a - b).
+const unit = (angle: number): number[] => [Math.cos(angle), Math.sin(angle), 0, 0];
+
+/** Makes `text` embeddable by the mocked embedder above, at the given angle. */
+const registerQuery = (text: string, angle: number): void => {
+  registered.set(text, unit(angle));
+};
+
+// Angles chosen against the real calibration: 0 vs 0.35 rad is cos ~= 0.94 (covered, >= 0.75),
+// 0 vs 1.0 rad is cos ~= 0.54 (adjacent, between 0.56 and 0.75 after clamping - see the explicit
+// assertions below), 0 vs 1.4 rad is cos ~= 0.17 (nothing in common).
+const SAME = 0;
+const NEAR = 0.35;
+const UNRELATED = 1.4;
+
+async function insertRow(handle: Db, table: unknown, values: Record<string, unknown>): Promise<void> {
+  if (handle.kind === "sqlite") {
+    await handle.db.insert(table as Parameters<typeof handle.db.insert>[0]).values(values as never);
+  } else {
+    await handle.db.insert(table as Parameters<typeof handle.db.insert>[0]).values(values as never);
+  }
+}
+
+async function classify(opts: {
+  intent: string;
+  angle: number;
+  sessionId?: string | null;
+  issueType?: string;
+  sentiment?: string;
+}): Promise<void> {
+  const traceId = nanoid();
+  await insertRow(db, db.schema.traces, {
+    id: traceId,
+    name: "insights-agent",
+    input: "q",
+    output: "a",
+    error: null,
+    latencyMs: 10,
+    framework: null,
+    model: null,
+    toolCalls: null,
+    metadata: null,
+    sessionId: opts.sessionId ?? null,
+    performanceSummary: null,
+    inputTokens: null,
+    outputTokens: null,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    spanKind: null,
+    source: null,
+    spanId: null,
+    parentSpanId: null,
+    startedAt: null,
+    createdAt: new Date(),
+    agentId: null,
+    projectId: db.projectId,
+  });
+  await insertRow(db, db.schema.monitorClassifications, {
+    id: nanoid(),
+    traceId,
+    agentId: null,
+    intent: opts.intent,
+    sentiment: opts.sentiment ?? "neutral",
+    issueType: opts.issueType ?? "none",
+    createdAt: new Date(),
+    projectId: db.projectId,
+    embedding: unit(opts.angle),
+  });
+}
+
+// Pre-seeds the embedding cache so nothing in these tests calls out to an embeddings API. This is
+// exactly the row attachCaseEmbeddings would have written.
+async function cacheCaseEmbedding(datasetId: string, query: string, angle: number): Promise<void> {
+  await insertRow(db, db.schema.insightCaseEmbeddings, {
+    id: nanoid(),
+    projectId: db.projectId,
+    datasetId,
+    caseKey: caseKeyFor(query),
+    query,
+    embedding: unit(angle),
+    model: "test-injected",
+    createdAt: new Date(),
+  });
+}
+
+async function newDataset(name: string, queries: { query: string; angle: number }[]): Promise<string> {
+  const created = (await createDataset(db, {
+    name,
+    questions: queries.map(q => ({
+      main_question: { query: q.query, expectedResults: `expected for ${q.query}` },
+      follow_up_questions: [],
+    })),
+  })) as { _id: string };
+  for (const q of queries) {
+    await cacheCaseEmbedding(created._id, q.query, q.angle);
+  }
+  return created._id;
+}
+
+beforeAll(async () => {
+  test = await openTestDb();
+  db = test.scoped(await test.newProject("Insights"));
+}, 60_000);
+
+afterAll(async () => {
+  await test?.close();
+});
+
+describe("the similarity calibration is shared, not copied", () => {
+  it("uses the same threshold coverage claims and dedupe rejection are built on", () => {
+    // The property the feature is sold on: "covered" means addCaseToDataset would reject the
+    // query as a duplicate. If these ever diverge, one of the two is lying to the user.
+    expect(SIMILARITY_BANDS.covered).toBe(0.75);
+    expect(SIMILARITY_BANDS.related).toBeLessThan(SIMILARITY_BANDS.covered);
+  });
+});
+
+describe("coverage over production topics", () => {
+  let datasetId: string;
+
+  beforeAll(async () => {
+    // "password reset": lots of traffic, and a case sitting right on it.
+    for (let i = 0; i < 8; i++) {
+      await classify({ intent: "password reset", angle: SAME, sessionId: `sess-${i}` });
+    }
+    // "account closure": real traffic, failing, and nothing near it in any dataset.
+    for (let i = 0; i < 4; i++) {
+      await classify({ intent: "account closure", angle: UNRELATED, sessionId: `close-${i}`, issueType: "refusal", sentiment: "negative" });
+    }
+    datasetId = await newDataset("suite", [
+      { query: "how do I reset my password", angle: SAME },
+      { query: "reset password link expired", angle: NEAR },
+    ]);
+  });
+
+  it("reports a covered topic and a missing one, and ranks by traffic", async () => {
+    const result = await getCoverage(db, { window: "7d", datasetId });
+    expect(result.insufficientData).toBe(false);
+    expect(result.degraded).toBe(false);
+
+    const topics = Object.fromEntries(result.topics.map(t => [t.topic, t]));
+    expect(topics["password reset"]!.state).toBe("covered");
+    expect(topics["password reset"]!.caseCount).toBe(2);
+    // Its target is higher than the two cases it has, and it is still covered: depth, not count,
+    // is what the verdict is made of. The target is guidance for what to write next.
+    expect(topics["password reset"]!.targetCases).toBeGreaterThan(2);
+    expect(topics["account closure"]!.state).toBe("missing");
+    expect(topics["account closure"]!.caseCount).toBe(0);
+    expect(topics["account closure"]!.coverage).toBe(0);
+    // Busiest topic first - the detail panel reads top-down.
+    expect(result.topics[0]!.topic).toBe("password reset");
+  });
+
+  it("counts unique sessions, not raw request volume", async () => {
+    const result = await getCoverage(db, { window: "7d", datasetId });
+    const reset = result.topics.find(t => t.topic === "password reset")!;
+    // 8 traces, 8 distinct session ids. The retry-loop case is the next test.
+    expect(reset.traceCount).toBe(8);
+    expect(reset.uniqueSessions).toBe(8);
+  });
+
+  it("weights risk toward observed issues rather than sentiment alone", async () => {
+    const result = await getCoverage(db, { window: "7d", datasetId });
+    const closure = result.topics.find(t => t.topic === "account closure")!;
+    expect(closure.riskComponents.issueRate).toBe(1);
+    expect(closure.riskComponents.negativeSentimentRate).toBe(1);
+    expect(closure.risk).toBeGreaterThan(0.9);
+    // A failing, untested topic must drag the risk-weighted number below the traffic-weighted
+    // one. That gap is the headline finding - "you test what is common, not what is dangerous".
+    expect(result.riskWeightedCoverage).toBeLessThan(result.trafficWeightedCoverage);
+  });
+
+  it("does not let duplicate cases inflate coverage", async () => {
+    const before = (await getCoverage(db, { window: "7d", datasetId })).topics.find(t => t.topic === "password reset")!;
+    const padded = await newDataset(
+      "padded",
+      // Six near-identical cases, all sitting on the same point as the traffic. A count-based
+      // metric would read this as far better covered than the two-case dataset; the
+      // facility-location value is already satisfied, so it must not.
+      Array.from({ length: 6 }, (_, i) => ({ query: `please reset my password variant ${i}`, angle: SAME }))
+    );
+    const after = (await getCoverage(db, { window: "7d", datasetId: padded })).topics.find(t => t.topic === "password reset")!;
+    expect(after.caseCount).toBe(6);
+    // Three times the cases, not one point of extra coverage - the max-similarity term was
+    // already satisfied by the first one.
+    expect(after.coverage).toBeLessThanOrEqual(before.coverage + 0.001);
+  });
+
+  it("scales the target with traffic and risk instead of using a flat number", async () => {
+    const result = await getCoverage(db, { window: "7d", datasetId });
+    const reset = result.topics.find(t => t.topic === "password reset")!;
+    const closure = result.topics.find(t => t.topic === "account closure")!;
+    expect(reset.targetCases).toBeGreaterThan(2);
+    // Lower traffic but far higher risk, so its target is not simply proportional to volume.
+    expect(closure.targetCases).toBeGreaterThan(2);
+  });
+
+  it("reports an honesty delta between case presence and real depth", async () => {
+    const result = await getCoverage(db, { window: "7d", datasetId });
+    expect(result.presenceCoverage).toBeGreaterThanOrEqual(result.trafficWeightedCoverage);
+    expect(result.honestyDelta).toBeCloseTo(result.presenceCoverage - result.trafficWeightedCoverage, 3);
+  });
+
+  it("flags cases that match no production topic as off-map", async () => {
+    const orphan = await newDataset("orphan", [{ query: "can I pay in martian dollars", angle: 2.6 }]);
+    const result = await getCoverage(db, { window: "7d", datasetId: orphan });
+    expect(result.offMapCases).toHaveLength(1);
+    expect(result.offMapCases[0]!.query).toBe("can I pay in martian dollars");
+  });
+});
+
+describe("the probe", () => {
+  let datasetId: string;
+
+  beforeAll(async () => {
+    datasetId = await newDataset("probe-suite", [{ query: "how do I reset my password", angle: SAME }]);
+    registerQuery("I need to reset my password", NEAR);
+    registerQuery("how do I reset my password", SAME);
+    registerQuery("close my account", UNRELATED);
+    registerQuery("unrelated to anything on file", 2.9);
+    registerQuery("something with no bearing on this suite", 2.9);
+    // cos(0.75) ~= 0.73: inside the related band, below the covered one. The case that must not
+    // be reported as tested.
+    registerQuery("my password reset link expired, what now", 0.75);
+  });
+
+  it("calls a paraphrase covered, and names the case it matched", async () => {
+    const result = await probe(db, { query: "I need to reset my password", datasetId, window: "7d" });
+    expect(result.verdict).toBe("covered");
+    expect(result.similarity).toBeGreaterThanOrEqual(SIMILARITY_BANDS.covered);
+    expect(result.nearestCases[0]!.query).toBe("how do I reset my password");
+    // Never a bare score: the expected answer comes back so a human can see whether the case
+    // actually asserts what they meant.
+    expect(result.nearestCases[0]!.expectedResults).toContain("expected for");
+  });
+
+  it("distinguishes a real gap from a question nobody asks", async () => {
+    // Both are uncovered. Only one is a gap - and conflating them is what would send a team
+    // writing tests for traffic that does not exist.
+    const real = await probe(db, { query: "close my account", datasetId, window: "7d" });
+    expect(real.verdict).toBe("gap");
+    expect(real.topic!.topic).toBe("account closure");
+    expect(real.explanation).toContain("real gap");
+
+    const hypothetical = await probe(db, { query: "unrelated to anything on file", datasetId, window: "7d" });
+    expect(hypothetical.verdict).toBe("untested-and-unasked");
+    expect(hypothetical.topic).toBeNull();
+    expect(hypothetical.explanation).toContain("not a gap");
+  });
+
+  it("refuses to call a related-but-distinct question covered", async () => {
+    const result = await probe(db, { query: "my password reset link expired, what now", datasetId, window: "7d" });
+    expect(result.verdict).toBe("adjacent");
+    expect(result.similarity).toBeGreaterThanOrEqual(SIMILARITY_BANDS.related);
+    expect(result.similarity).toBeLessThan(SIMILARITY_BANDS.covered);
+    // The wording has to say the existing case will not catch this, or a reader sees a high-ish
+    // number next to a familiar case and assumes they are covered.
+    expect(result.explanation).toContain("not this");
+  });
+
+  it("degrades to lexical matching, and says so, when the query cannot be embedded", async () => {
+    // Never registered, so the mocked embedder returns null exactly as a missing OPENAI_API_KEY
+    // would. The verdict still comes back - on a different, clearly-labelled scale.
+    const result = await probe(db, { query: "reset password", datasetId, window: "7d" });
+    expect(result.degraded).toBe(true);
+    expect(result.bands.covered).toBeLessThan(SIMILARITY_BANDS.covered);
+    expect(result.nearestCases.length).toBeGreaterThan(0);
+  });
+
+  it("returns the bands it judged with, so a raw score is never shown alone", async () => {
+    const result = await probe(db, { query: "how do I reset my password", datasetId, window: "7d" });
+    expect(result.bands).toEqual({ covered: SIMILARITY_BANDS.covered, related: SIMILARITY_BANDS.related });
+  });
+
+  it("rolls a batch up into a pre-launch verdict", async () => {
+    const result = await probeBatch(db, {
+      queries: ["how do I reset my password", "close my account", "  ", "something with no bearing on this suite"],
+      datasetId,
+      window: "7d",
+    });
+    // The blank line is dropped rather than probed.
+    expect(result.rollup.total).toBe(3);
+    expect(result.rollup.covered).toBe(1);
+    expect(result.rollup.gap).toBe(1);
+    expect(result.rollup.untestedAndUnasked).toBe(1);
+  });
+});

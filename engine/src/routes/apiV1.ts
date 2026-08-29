@@ -11,6 +11,7 @@ import { outcomesRouter } from "./outcomes.js";
 import { feedbackRouter } from "./feedback.js";
 import { agentMonitoringDashboardRouter } from "./agentMonitoringDashboard.js";
 import { evaluateDashboardRouter } from "./evaluateDashboard.js";
+import { insightsRouter } from "./insights.js";
 import { otlpRouter } from "./otlp.js";
 import { exportRouter } from "./exportData.js";
 import { auditAuthTap, auditControlPlaneTap } from "./auditTap.js";
@@ -225,6 +226,7 @@ export function registerApiV1(app: Express, deps: ApiV1Deps): void {
   router.use("/admin", credentialLimit, adminRouter);
   router.use("/agent-monitoring", dataPlaneLimit, apiKey, agentMonitoringDashboardRouter);
   router.use("/evaluate", dataPlaneLimit, apiKey, evaluateDashboardRouter);
+  router.use("/insights", dataPlaneLimit, apiKey, insightsRouter);
   router.use("/otel", dataPlaneLimit, apiKey, otlpRouter);
   // Bulk NDJSON export for backup/migration (routes/exportData.ts) - data-plane like everything
   // else keyed by x-api-key; the key alone scopes what leaves the box.

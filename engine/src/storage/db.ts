@@ -667,6 +667,20 @@ function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean } {
 
     CREATE INDEX IF NOT EXISTS monitor_classifications_created_at ON monitor_classifications (created_at);
 
+    CREATE TABLE IF NOT EXISTS insight_case_embeddings (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      dataset_id TEXT NOT NULL,
+      case_key TEXT NOT NULL,
+      query TEXT NOT NULL,
+      embedding TEXT,
+      model TEXT,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS insight_case_embeddings_key ON insight_case_embeddings (project_id, dataset_id, case_key);
+
+
     CREATE TABLE IF NOT EXISTS monitor_online_evaluators (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -1851,6 +1865,20 @@ async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boolean }>
 
     CREATE INDEX IF NOT EXISTS monitor_classifications_created_at ON monitor_classifications (created_at);
 
+    CREATE TABLE IF NOT EXISTS insight_case_embeddings (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      dataset_id TEXT NOT NULL,
+      case_key TEXT NOT NULL,
+      query TEXT NOT NULL,
+      embedding JSONB,
+      model TEXT,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS insight_case_embeddings_key ON insight_case_embeddings (project_id, dataset_id, case_key);
+
+
     CREATE TABLE IF NOT EXISTS monitor_online_evaluators (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -2468,6 +2496,7 @@ const PROJECT_SCOPED_TABLES = [
   "monitor_signal_feedback",
   "monitor_events",
   "monitor_classifications",
+  "insight_case_embeddings",
   "monitor_online_evaluators",
   "prompts",
   "prompt_versions",

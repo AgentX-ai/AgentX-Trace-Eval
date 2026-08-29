@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEngine, postJson, type TestEngine } from "./server.js";
 import {
+  insightsCoverageResponseSchema,
+  insightsProbeBatchResponseSchema,
+  insightsProbeResponseSchema,
   judgeScorersResponseSchema,
   monitoringDefaultsPutResponseSchema,
   monitorMetricsResponseSchema,
@@ -107,6 +110,40 @@ describe("wire contract", () => {
     expect(res.status).toBe(200);
     const parsed = judgeScorersResponseSchema.parse(res.body);
     expect(parsed.judgeScorers.length).toBeGreaterThan(0);
+  });
+
+  it("GET /insights/coverage matches the contract with no classified traffic", async () => {
+    // Topics is opt-in and sampled, so an install with nothing classified yet is the COMMON
+    // first view of this screen - it has to be a clean, parseable empty state rather than a 500.
+    const res = await api("/insights/coverage?window=7d");
+    expect(res.status).toBe(200);
+    const parsed = insightsCoverageResponseSchema.parse(res.body);
+    expect(parsed.insufficientData).toBe(true);
+    expect(parsed.topics).toEqual([]);
+  });
+
+  it("POST /insights/probe matches the contract and validates its body", async () => {
+    const res = await api("/insights/probe", postJson({ query: "how do I reset my password" }));
+    expect(res.status).toBe(200);
+    const parsed = insightsProbeResponseSchema.parse(res.body);
+    // No dataset case is anywhere near it and production has never been classified, so the only
+    // honest answer is the one that does not manufacture a gap.
+    expect(parsed.verdict).toBe("untested-and-unasked");
+    expect(parsed.explanation).toContain("not a gap");
+
+    const empty = await api("/insights/probe", postJson({ query: "   " }));
+    expect(empty.status).toBe(400);
+  });
+
+  it("POST /insights/probe/batch matches the contract", async () => {
+    const res = await api("/insights/probe/batch", postJson({ queries: ["close my account", "refund status"] }));
+    expect(res.status).toBe(200);
+    const parsed = insightsProbeBatchResponseSchema.parse(res.body);
+    expect(parsed.rollup.total).toBe(2);
+    expect(parsed.results).toHaveLength(2);
+
+    const none = await api("/insights/probe/batch", postJson({ queries: [] }));
+    expect(none.status).toBe(400);
   });
 
   it("GET /openapi.json publishes every contract entry", async () => {
