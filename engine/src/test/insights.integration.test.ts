@@ -336,6 +336,90 @@ describe("degradation and pending work are reported honestly", () => {
   });
 });
 
+describe("provisional results do not read as verdicts", () => {
+  it("does not tell you to write a case for a topic whose cases are still indexing", async () => {
+    const scoped = test.scoped(await test.newProject("Indexing"));
+    const saved = db;
+    db = scoped;
+    try {
+      for (let i = 0; i < 4; i++) {
+        await classify({ intent: "refund request", angle: SAME });
+      }
+      for (let i = 0; i < 4; i++) {
+        await classify({ intent: "order tracking", angle: UNRELATED });
+      }
+      const created = (await createDataset(db, {
+        name: "indexing",
+        questions: [
+          { main_question: { query: "I want a refund", expectedResults: "expected for I want a refund" }, follow_up_questions: [] },
+          { main_question: { query: "where is my order", expectedResults: "expected for where is my order" }, follow_up_questions: [] },
+        ],
+      })) as { _id: string };
+      // Only the refund case is indexed. Order tracking therefore has no assigned case yet - but
+      // its case exists and is in the queue, so "curate production traces" is wrong advice.
+      await cacheCaseEmbedding(created._id, "I want a refund", SAME);
+
+      const result = await getCoverage(db, { window: "7d", datasetId: created._id });
+      const tracking = result.topics.find(t => t.topic === "order tracking")!;
+      expect(result.caseEmbeddingsPending).toBe(1);
+      expect(tracking.suggestedAction).toContain("still being indexed");
+      expect(tracking.suggestedAction).not.toContain("Curate the production traces");
+    } finally {
+      db = saved;
+    }
+  });
+
+  it("does not report off-map cases when it is only matching labels", async () => {
+    const scoped = test.scoped(await test.newProject("LexicalOffMap"));
+    const saved = db;
+    db = scoped;
+    try {
+      for (let i = 0; i < 4; i++) {
+        await classify({ intent: "refund request", angle: SAME });
+      }
+      // No cached vectors anywhere, so this runs lexically. Jaccard compares a case's words to a
+      // topic LABEL, which most legitimate cases miss - reporting those as dead test weight was
+      // producing dozens of false "delete this test" entries on real data.
+      await createDataset(db, {
+        name: "lexical",
+        questions: [
+          { main_question: { query: "please issue my money back for order 12345", expectedResults: "issues it" }, follow_up_questions: [] },
+        ],
+      });
+      const result = await getCoverage(db, { window: "7d" });
+      expect(result.degraded).toBe(true);
+      expect(result.offMapCases).toHaveLength(0);
+    } finally {
+      db = saved;
+    }
+  });
+
+  // NOTE: this asserts the tail counts at all, NOT that the unrounded-weight fix works. Rounding
+  // to 3dp only zeroes a weight below 0.0005 of traffic, which needs >4000 classified traces to
+  // reproduce - too slow to seed here. The fix is reasoned, not covered at realistic scale.
+  it("keeps a small traffic tail counting toward the headline number", async () => {
+    const scoped = test.scoped(await test.newProject("Tail"));
+    const saved = db;
+    db = scoped;
+    try {
+      // One dominant topic plus an uncovered tail.
+      for (let i = 0; i < 60; i++) {
+        await classify({ intent: "refund request", angle: SAME });
+      }
+      for (let i = 0; i < 2; i++) {
+        await classify({ intent: "vpn issue", angle: UNRELATED });
+      }
+      const dsId = await newDataset("tail", [{ query: "I want a refund", angle: SAME }]);
+      const result = await getCoverage(db, { window: "7d", datasetId: dsId });
+      // The uncovered tail must hold the number below a clean 1.
+      expect(result.trafficWeightedCoverage).toBeLessThan(1);
+      expect(result.trafficWeightedCoverage).toBeGreaterThan(0.9);
+    } finally {
+      db = saved;
+    }
+  });
+});
+
 describe("the probe", () => {
   let datasetId: string;
 

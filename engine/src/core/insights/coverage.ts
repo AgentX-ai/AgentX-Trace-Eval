@@ -284,9 +284,14 @@ function facilityLocation(assigned: DatasetCase[], group: TopicGroup, sim: Simil
   return total / usable.length;
 }
 
-function suggestedActionFor(state: CoverageState, topic: string, gap: number): string {
+function suggestedActionFor(state: CoverageState, topic: string, gap: number, pending: number): string {
   if (state === "missing") {
-    return `No case covers "${topic}". Curate the production traces in this topic, or generate candidate cases grounded in them.`;
+    // Unembedded cases count toward no topic, so a topic can read "missing" while cases for it sit
+    // in the queue. Telling someone to write a case that already exists is worse than saying
+    // nothing, so the advice waits until there is nothing left to index.
+    return pending > 0
+      ? `No case is assigned to "${topic}" yet, but ${pending} case${pending === 1 ? " is" : "s are"} still being indexed - this may resolve on its own.`
+      : `No case covers "${topic}". Curate the production traces in this topic, or generate candidate cases grounded in them.`;
   }
   if (state === "underrepresented") {
     return `Add roughly ${gap} more case${gap === 1 ? "" : "s"} for "${topic}", covering phrasings the existing ones don't reach.`;
@@ -356,6 +361,12 @@ export async function getCoverage(
       }
     }
     if (!bestGroup || bestScore < sim.bands.related) {
+      // Off-map is only a real finding under embeddings. Lexical matching compares a case's words
+      // against a topic LABEL, which most legitimate cases do not overlap - on real data that
+      // produced 84 "dead test weight" entries that were nothing of the sort.
+      if (sim.kind !== "embedding") {
+        continue;
+      }
       // "Off map" has to mean no topic at all, not "no topic big enough to report". A case whose
       // topic exists but sits under MIN_TRACES_PER_TOPIC is covering real (if rare) traffic, and
       // listing it as dead test weight would be telling the user to delete a good test.
@@ -381,6 +392,9 @@ export async function getCoverage(
     db,
     rows.map(r => r.traceId).filter((id): id is string => !!id)
   );
+
+  type RawTopic = { trafficShare: number; coverage: number; risk: number; caseCount: number };
+  const raw: RawTopic[] = [];
 
   const topics: TopicCoverage[] = groups.map(group => {
     const assigned = assignments.get(group.topic) ?? [];
@@ -408,6 +422,8 @@ export async function getCoverage(
     const state: CoverageState =
       assigned.length === 0 ? "missing" : coverage >= COVERED_THRESHOLD ? "covered" : "underrepresented";
 
+    raw.push({ trafficShare, coverage, risk, caseCount: assigned.length });
+
     const sessions = new Set(
       group.rows.map(r => (r.traceId ? (sessionByTrace.get(r.traceId) ?? `trace:${r.traceId}`) : null)).filter((id): id is string => !!id)
     );
@@ -428,24 +444,27 @@ export async function getCoverage(
         issueRate: Math.round(issueRate * 1000) / 1000,
         negativeSentimentRate: Math.round(negativeSentimentRate * 1000) / 1000,
       },
-      suggestedAction: suggestedActionFor(state, group.topic, Math.max(1, targetCases - assigned.length)),
+      suggestedAction: suggestedActionFor(state, group.topic, Math.max(1, targetCases - assigned.length), pending),
     };
   });
 
   topics.sort((a, b) => b.trafficShare - a.trafficShare);
 
-  const weighted = (weightOf: (t: TopicCoverage) => number, valueOf: (t: TopicCoverage) => number): number => {
-    const totalWeight = topics.reduce((sum, t) => sum + weightOf(t), 0);
+  // Weights and values come from `raw`, not the rounded fields on TopicCoverage. Rounding to 3dp
+  // is for display; feeding it back into the maths drops any topic under 0.0005 of traffic to a
+  // weight of exactly zero, so on a busy install the long tail silently stops counting.
+  const weighted = (weightOf: (t: RawTopic) => number, valueOf: (t: RawTopic) => number): number => {
+    const totalWeight = raw.reduce((sum, t) => sum + weightOf(t), 0);
     if (totalWeight === 0) {
       return 0;
     }
-    return Math.round((topics.reduce((sum, t) => sum + weightOf(t) * valueOf(t), 0) / totalWeight) * 1000) / 1000;
+    return Math.round((raw.reduce((sum, t) => sum + weightOf(t) * valueOf(t), 0) / totalWeight) * 1000) / 1000;
   };
 
   const trafficWeightedCoverage = weighted(t => t.trafficShare, t => t.coverage);
   // A healthy install has zero risk everywhere, and `weighted` returns 0 for a zero denominator -
   // which would render as 0% risk-weighted coverage, indistinguishable from testing nothing.
-  const totalRisk = topics.reduce((sum, t) => sum + t.risk, 0);
+  const totalRisk = raw.reduce((sum, t) => sum + t.risk, 0);
   // Presence: does the topic have any case at all. The crude number the honesty delta measures
   // the real one against.
   const presenceCoverage = weighted(t => t.trafficShare, t => (t.caseCount > 0 ? 1 : 0));
@@ -457,7 +476,7 @@ export async function getCoverage(
     degradedReason,
     insufficientData: false,
     trafficWeightedCoverage,
-    topicBreadth: { covered: topics.filter(t => t.coverage >= COVERED_THRESHOLD).length, total: topics.length },
+    topicBreadth: { covered: raw.filter(t => t.coverage >= COVERED_THRESHOLD).length, total: raw.length },
     riskWeightedCoverage: totalRisk === 0 ? null : weighted(t => t.risk, t => t.coverage),
     presenceCoverage,
     honestyDelta: Math.round((presenceCoverage - trafficWeightedCoverage) * 1000) / 1000,

@@ -200,12 +200,20 @@ export async function deleteDataset(
     eq(db.schema.evaluationSettingsVersions.evaluationSettingsId, id),
     eq(db.schema.evaluationSettingsVersions.projectId, db.projectId)
   );
+  // Cached case embeddings (core/insights/cases.ts) key off datasetId and nothing else deletes
+  // them, so without this they outlive every dataset they ever described.
+  const caseEmbeddingsCond = and(
+    eq(db.schema.insightCaseEmbeddings.datasetId, id),
+    eq(db.schema.insightCaseEmbeddings.projectId, db.projectId)
+  );
   if (db.kind === "sqlite") {
+    await db.db.delete(db.schema.insightCaseEmbeddings).where(caseEmbeddingsCond);
     await db.db.delete(db.schema.datasetVersions).where(datasetVersionsCond);
     await db.db.delete(db.schema.evaluationSettingsVersions).where(settingsVersionsCond);
     await db.db.delete(db.schema.evaluationSettings).where(twinCond);
     await db.db.delete(db.schema.datasets).where(datasetCond);
   } else {
+    await db.db.delete(db.schema.insightCaseEmbeddings).where(caseEmbeddingsCond);
     await db.db.delete(db.schema.datasetVersions).where(datasetVersionsCond);
     await db.db.delete(db.schema.evaluationSettingsVersions).where(settingsVersionsCond);
     await db.db.delete(db.schema.evaluationSettings).where(twinCond);
