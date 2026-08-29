@@ -147,12 +147,11 @@ const normalize = normalizeText;
 // ("what's your refund policy" vs "how long does a refund take") score 0.48-0.56, so 0.75 splits
 // the two populations with real margin on both sides. Recalibrate if the embedding model changes.
 //
-// Exported because core/insights/ reports coverage against these same two populations: its
-// "covered" verdict is DEFINED as "addCaseToDataset would reject this query as a duplicate", so
-// the two features share one constant and can never disagree about what "the same question"
-// means. RELATED is the floor of the related-but-distinct band above - below it, two questions
-// have nothing measurable in common; between the two, they are adjacent but not interchangeable.
-export const SIMILARITY_BANDS = { covered: 0.75, related: 0.56 } as const;
+// Exported so core/insights/ scores against the same two populations: its "covered" verdict means
+// "addCaseToDataset would reject this as a duplicate". `related` is the FLOOR of the measured
+// related band (0.48), not its ceiling - a pair at 0.50 is genuinely related and must not be
+// reported as having nothing in common.
+export const SIMILARITY_BANDS = { covered: 0.75, related: 0.48 } as const;
 
 const DEDUPE_SIMILARITY_THRESHOLD = SIMILARITY_BANDS.covered;
 const DEDUPE_EMBEDDING_CAP = 100;

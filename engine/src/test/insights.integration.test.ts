@@ -106,9 +106,12 @@ async function cacheCaseEmbedding(datasetId: string, query: string, angle: numbe
     id: nanoid(),
     projectId: db.projectId,
     datasetId,
-    caseKey: caseKeyFor(query),
+    caseKey: caseKeyFor(query, `expected for ${query}`),
     query,
+    // Two vectors in two spaces. Seeded to the same angle here so the geometry stays readable;
+    // what matters is that coverage reads embeddingFull and the probe reads embedding.
     embedding: unit(angle),
+    embeddingFull: unit(angle),
     model: "test-injected",
     createdAt: new Date(),
   });
@@ -276,6 +279,63 @@ describe("synonymous intent labels", () => {
   });
 });
 
+describe("degradation and pending work are reported honestly", () => {
+  it("does not report an unembedded case as dead test weight", async () => {
+    const scoped = test.scoped(await test.newProject("Pending"));
+    const saved = db;
+    db = scoped;
+    try {
+      for (let i = 0; i < 4; i++) {
+        await classify({ intent: "refund request", angle: SAME });
+      }
+      // TWO cases, only one with cached vectors. The embedded one puts the run in embedding mode;
+      // the other scores -1 against everything. Calling that "off map" would tell a team to delete
+      // a perfectly good test on its first load, before the cache had finished warming.
+      const created = (await createDataset(db, {
+        name: "half-embedded",
+        questions: [
+          { main_question: { query: "I want a refund", expectedResults: "expected for I want a refund" }, follow_up_questions: [] },
+          { main_question: { query: "not yet embedded", expectedResults: "expected for not yet embedded" }, follow_up_questions: [] },
+        ],
+      })) as { _id: string };
+      await cacheCaseEmbedding(created._id, "I want a refund", SAME);
+
+      const result = await getCoverage(db, { window: "7d", datasetId: created._id });
+      expect(result.degraded).toBe(false);
+      expect(result.caseEmbeddingsPending).toBe(1);
+      expect(result.offMapCases.map(c => c.query)).not.toContain("not yet embedded");
+    } finally {
+      db = saved;
+    }
+  });
+
+  it("says per topic which measure produced the number", async () => {
+    const result = await getCoverage(db, { window: "7d", datasetId: await newDataset("basis", [{ query: "how do I reset my password", angle: SAME }]) });
+    // The global degraded flag cannot answer this: facilityLocation returns null for a topic whose
+    // own traces carry no embeddings even while the run is using them.
+    for (const topic of result.topics) {
+      expect(["depth", "count"]).toContain(topic.coverageBasis);
+    }
+  });
+
+  it("returns null risk-weighted coverage when nothing carries risk, not zero", async () => {
+    const scoped = test.scoped(await test.newProject("NoRisk"));
+    const saved = db;
+    db = scoped;
+    try {
+      // Every topic healthy. 0% here would be indistinguishable from testing nothing at all.
+      for (let i = 0; i < 4; i++) {
+        await classify({ intent: "happy path", angle: SAME, issueType: "none", sentiment: "positive" });
+      }
+      const result = await getCoverage(db, { window: "7d", datasetId: await newDataset("healthy", [{ query: "all good", angle: SAME }]) });
+      expect(result.riskWeightedCoverage).toBeNull();
+      expect(result.trafficWeightedCoverage).toBeGreaterThan(0);
+    } finally {
+      db = saved;
+    }
+  });
+});
+
 describe("the probe", () => {
   let datasetId: string;
 
@@ -332,6 +392,24 @@ describe("the probe", () => {
     expect(result.degraded).toBe(true);
     expect(result.bands.covered).toBeLessThan(SIMILARITY_BANDS.covered);
     expect(result.nearestCases.length).toBeGreaterThan(0);
+  });
+
+  it("will not call a single stray classification a real gap", async () => {
+    const scoped = test.scoped(await test.newProject("Stray"));
+    const saved = db;
+    db = scoped;
+    try {
+      // ONE classification. Below the floor the coverage sweep applies, so it is not a topic - and
+      // treating it as one would fabricate a gap out of a single trace.
+      await classify({ intent: "one-off question", angle: UNRELATED });
+      registerQuery("something nobody really asks", UNRELATED);
+      const dsId = await newDataset("stray-suite", [{ query: "unrelated case", angle: SAME }]);
+      const result = await probe(db, { query: "something nobody really asks", datasetId: dsId, window: "7d" });
+      expect(result.verdict).toBe("untested-and-unasked");
+      expect(result.topic).toBeNull();
+    } finally {
+      db = saved;
+    }
   });
 
   it("returns the bands it judged with, so a raw score is never shown alone", async () => {

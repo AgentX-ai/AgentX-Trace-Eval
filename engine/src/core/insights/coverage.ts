@@ -6,23 +6,20 @@ import { SIMILARITY_BANDS } from "../evaluate/curation.js";
 import { centroid, contentWords, cosine, jaccard, normalizeText } from "../shared/vector.js";
 import { listDatasetCases, attachCaseEmbeddings, type DatasetCase } from "./cases.js";
 
-// Insights, Phase 0: the join between what production does (monitor_classifications) and what the
-// datasets test. Everything here is derived on read - there is no insight_topics table yet, and
-// topics are the `intent` strings the classifier already writes, grouped and normalized. Real
-// centroid clustering is Phase 1; the point of this pass is that the numbers are honest about
-// which of the two they were computed with, never that they are final.
+// The join between what production does (monitor_classifications) and what the datasets test.
+// Derived on read: there is no insight_topics table, and topics are the classifier's own `intent`
+// strings, normalized and merged by centroid proximity.
 //
-// Two similarity regimes, one code path. With embeddings we use cosine and the bands
-// core/evaluate/curation.ts already calibrated for text-embedding-3-small. Without them (no
-// OPENAI_API_KEY, or a dataset whose cases haven't been embedded yet) we fall back to Jaccard
-// over content words, which is a genuinely weaker signal on a different scale - so it carries its
-// own thresholds and every response says `degraded: true`. A degraded number is labelled, never
-// silently passed off as the real one.
+// Two similarity regimes, one code path: cosine with the bands curation.ts calibrated, or - with
+// no embeddings - Jaccard over content words, which is weaker and on a different scale, so it
+// carries its own thresholds and every response says `degraded: true`.
 
 export type CoverageState = "covered" | "underrepresented" | "missing";
 
 export type TopicCoverage = {
   topic: string;
+  /** Which measure produced `coverage` - the global `degraded` flag can't answer this per topic. */
+  coverageBasis: "depth" | "count";
   /** Other intent labels the classifier used for this same topic, merged in. */
   aliases: string[];
   state: CoverageState;
@@ -51,7 +48,8 @@ export type CoverageResult = {
   insufficientData: boolean;
   trafficWeightedCoverage: number;
   topicBreadth: { covered: number; total: number };
-  riskWeightedCoverage: number;
+  /** Null when no topic carries any observed risk - 0% would read as "nothing is tested". */
+  riskWeightedCoverage: number | null;
   /** The same traffic-weighted number computed on case presence alone - see honestyDelta. */
   presenceCoverage: number;
   /**
@@ -66,10 +64,9 @@ export type CoverageResult = {
   caseEmbeddingsPending: number;
 };
 
-// A topic needs at least this many classified traces before it gets a coverage verdict. Below it,
-// one stray classification would become a "missing topic" with a target and a suggested action -
-// noise dressed up as a work item, the same failure getTopicsMap's MIN_POINTS_FOR_MAP guards.
-const MIN_TRACES_PER_TOPIC = 2;
+// Below this, one stray classification becomes a "missing topic" with a target and an action -
+// noise dressed as a work item. Same guard as getTopicsMap's MIN_POINTS_FOR_MAP.
+export const MIN_TRACES_PER_TOPIC = 2;
 
 // Lexical fallback bands. Deliberately NOT the cosine ones: Jaccard over content words runs on a
 // different scale, and reusing 0.75 there would report almost everything as uncovered.
@@ -85,11 +82,9 @@ const TARGET_K_RISK = 3;
 // Coverage at or above this counts the topic as covered for the breadth tile.
 const COVERED_THRESHOLD = 0.7;
 
-// monitor_classifications carries a traceId but no sessionId, so unique-session counts need the
-// one join in this module. It matters: 500 requests from 3 sessions is one customer stuck in a
-// retry loop, 500 from 400 sessions is real demand, and weighting a coverage target by raw
-// request count would over-invest in the first. A trace with no sessionId (SDK calls that never
-// set one) counts as its own session rather than being dropped - it IS a distinct interaction.
+// 500 requests from 3 sessions is one customer in a retry loop; 500 from 400 is real demand, and
+// sizing a target off raw request count would over-invest in the first. A trace with no sessionId
+// counts as its own session - it is still a distinct interaction.
 async function sessionsByTraceId(db: Db, traceIds: string[]): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   if (traceIds.length === 0) {
@@ -126,20 +121,12 @@ export type TopicGroup = {
   words: Set<string>;
 };
 
-// Merge two intent labels into one topic when their trace centroids are this close.
-//
-// Calibrated against real classified traffic, and deliberately NOT curation.ts's 0.75: that one
-// compares two single query strings, this compares centroids of averaged input+output embeddings,
-// which run considerably higher. Measured on a real install:
-//
-//   0.909  "refund request"        vs "request a refund"          <- the same topic, must merge
-//   0.902  "reset password"        vs "reset forgotten password"  <- the same topic, must merge
-//   0.822  "order tracking"        vs "missing package"           <- DIFFERENT, must not merge
-//   0.813  "refund policy inquiry" vs "request a refund"          <- DIFFERENT (rules vs money back)
-//
-// 0.87 splits those populations with ~0.05 of margin on both sides. Reusing 0.75 here would have
-// merged order tracking with missing package, which are genuinely different questions with
-// genuinely different correct answers. Recalibrate if the embedding model changes.
+// Deliberately not curation.ts's 0.75: that compares two query strings, this compares centroids of
+// averaged input+output embeddings, which run higher. Measured on a real install - synonyms at
+// 0.909/0.902 ("refund request"/"request a refund", "reset password"/"reset forgotten password")
+// against distinct neighbours at 0.822/0.813 ("order tracking"/"missing package", "refund policy
+// inquiry"/"request a refund"). 0.87 splits them with ~0.05 either side; 0.75 would have merged
+// questions with different correct answers. Recalibrate if the embedding model changes.
 const TOPIC_MERGE_THRESHOLD = 0.87;
 
 // Group by normalized intent, keep the most common original casing as the display label. The
@@ -176,15 +163,12 @@ export function groupByIntent(rows: ClassificationRow[]): TopicGroup[] {
   return mergeSynonymousTopics(groups);
 }
 
-// The classifier is steered toward reusing existing labels but still coins near-duplicates, and on
-// real traffic that is not cosmetic: an install carrying both "refund request" and "request a
-// refund" reported one as covered and the other as MISSING, inventing a gap that did not exist and
-// splitting one topic's traffic share in half. Merging by centroid proximity is what stops the
-// coverage number being an artifact of how the labeller happened to phrase itself that day.
+// On real traffic an install carrying both "refund request" and "request a refund" reported one
+// covered and the other MISSING - one topic counted twice, half of it a phantom gap. Merging by
+// centroid stops coverage being an artifact of how the labeller phrased itself that day.
 //
-// Seeded greedily from the largest group, and every candidate is compared against the SEED's
-// centroid rather than the growing one - otherwise a chain of pairwise-similar topics (a~b, b~c)
-// collects into one blob even when a and c have nothing to do with each other.
+// Greedy from the largest group; candidates compare against the SEED's centroid, not the growing
+// one, so a chain (a~b, b~c) cannot collect into one blob when a and c are unrelated.
 export function mergeSynonymousTopics(groups: TopicGroup[]): TopicGroup[] {
   const bySize = [...groups].sort((a, b) => b.rows.length - a.rows.length);
   const consumed = new Set<TopicGroup>();
@@ -206,8 +190,12 @@ export function mergeSynonymousTopics(groups: TopicGroup[]): TopicGroup[] {
       if (cosine(seed.centroid, candidate.centroid) >= TOPIC_MERGE_THRESHOLD) {
         consumed.add(candidate);
         seed.aliases.push(candidate.topic);
-        seed.rows.push(...candidate.rows);
-        seed.embeddings.push(...candidate.embeddings);
+        for (const row of candidate.rows) {
+          seed.rows.push(row);
+        }
+        for (const embedding of candidate.embeddings) {
+          seed.embeddings.push(embedding);
+        }
         for (const word of candidate.words) {
           seed.words.add(word);
         }
@@ -236,9 +224,13 @@ function embeddingSimilarity(): Similarity {
   return {
     kind: "embedding",
     bands: SIMILARITY_BANDS,
-    toTopic: (item, group) => (item.embedding && group.centroid ? cosine(item.embedding, group.centroid) : -1),
+    // embeddingFull, not embedding: topic centroids and trace vectors are built from input+output,
+    // so the query-only vector would be a cross-space comparison and score systematically low.
+    toTopic: (item, group) => (item.embeddingFull && group.centroid ? cosine(item.embeddingFull, group.centroid) : -1),
     toTrace: (item, row) =>
-      item.embedding && Array.isArray(row.embedding) && row.embedding.length > 0 ? cosine(item.embedding, row.embedding) : -1,
+      item.embeddingFull && Array.isArray(row.embedding) && row.embedding.length > 0
+        ? cosine(item.embeddingFull, row.embedding)
+        : -1,
   };
 }
 
@@ -263,18 +255,19 @@ function lexicalSimilarity(): Similarity {
   };
 }
 
-// Facility-location: the average, over the topic's traces, of the best similarity any assigned
-// case achieves to that trace. Duplicated cases add nothing because the max is already satisfied,
-// so the metric cannot be inflated by generating near-copies - which matters, because generating
-// cases is the point of the feature. Rescaled from the related band up to the covered band so a
-// case sitting on a trace reads as 1 and an unrelated one as 0.
+// Facility-location: the average, over a topic's traces, of the best similarity any assigned case
+// reaches. A duplicate adds nothing because the max is already satisfied, so the metric cannot be
+// inflated by generating near-copies - which matters, since generating cases is the point.
+// Rescaled across the related..covered band so a case on top of a trace reads 1, an unrelated 0.
 function facilityLocation(assigned: DatasetCase[], group: TopicGroup, sim: Similarity): number | null {
-  if (assigned.length === 0) {
-    return 0;
-  }
   const usable = group.rows.filter(row => Array.isArray(row.embedding) && row.embedding.length > 0);
+  // Regime checked BEFORE the empty-case shortcut: an uncovered topic scores 0 either way, but
+  // returning a number here would label it "depth" on a run that measured no depth at all.
   if (sim.kind !== "embedding" || usable.length === 0) {
     return null;
+  }
+  if (assigned.length === 0) {
+    return 0;
   }
   const { covered, related } = sim.bands;
   let total = 0;
@@ -333,7 +326,7 @@ export async function getCoverage(
       insufficientData: true,
       trafficWeightedCoverage: 0,
       topicBreadth: { covered: 0, total: 0 },
-      riskWeightedCoverage: 0,
+      riskWeightedCoverage: null,
       presenceCoverage: 0,
       honestyDelta: 0,
       topics: [],
@@ -342,12 +335,17 @@ export async function getCoverage(
     };
   }
 
-  // Assign each case to its best-matching topic, or to none when nothing clears the related
-  // band. Argmax, not the softmax the plan specifies for Phase 1: with intent-string topics
-  // there are no real centroid boundaries for a soft assignment to be smoothing over yet.
+  // Argmax, not softmax: with intent-string topics there are no real centroid boundaries for a
+  // soft assignment to smooth over yet.
   const assignments = new Map<string, DatasetCase[]>();
   const offMapCases: CoverageResult["offMapCases"] = [];
   for (const item of cases) {
+    // An unembedded case (cap not yet reached, or a failed call) scores -1 against everything.
+    // Calling that "off map" would flag a good test as dead weight on first load; it is pending,
+    // and `caseEmbeddingsPending` already reports it.
+    if (sim.kind === "embedding" && !item.embeddingFull) {
+      continue;
+    }
     let bestGroup: TopicGroup | null = null;
     let bestScore = -1;
     for (const group of groups) {
@@ -398,13 +396,12 @@ export async function getCoverage(
     const risk = Math.min(1, issueRate * 0.7 + negativeSentimentRate * 0.3);
 
     const targetCases = Math.ceil(TARGET_BASE + TARGET_K_TRAFFIC * Math.sqrt(trafficShare) + TARGET_K_RISK * risk);
-    // Coverage is the facility-location value ALONE whenever embeddings allow it - never blended
-    // with the case count. Mixing the two would reintroduce exactly what this metric exists to
-    // prevent: six near-identical cases raise the count ratio while the max-similarity term is
-    // already satisfied, so any formula reading the count would report them as better coverage
-    // than one well-placed case. `targetCases` stays a guidance number (how many more to write,
-    // and the sizing shown in the panel), and becomes the measure only in the degraded path,
-    // where there is no geometry to measure depth with.
+    // Facility-location ALONE where geometry exists - never blended with the count, which would
+    // reintroduce the duplicate-inflation this metric exists to prevent. targetCases stays
+    // guidance, and becomes the measure only where there is no geometry.
+    // facilityLocation returns null for a topic whose traces carry no embeddings, even when the
+    // run as a whole is using them - so the basis is recorded per topic rather than inferred from
+    // the global flag, which would claim depth over a count.
     const depth = facilityLocation(assigned, group, sim);
     const coverage = depth === null ? Math.min(1, assigned.length / targetCases) : depth;
 
@@ -417,6 +414,7 @@ export async function getCoverage(
 
     return {
       topic: group.topic,
+      coverageBasis: depth === null ? "count" : "depth",
       aliases: group.aliases,
       state,
       trafficShare: Math.round(trafficShare * 1000) / 1000,
@@ -445,6 +443,9 @@ export async function getCoverage(
   };
 
   const trafficWeightedCoverage = weighted(t => t.trafficShare, t => t.coverage);
+  // A healthy install has zero risk everywhere, and `weighted` returns 0 for a zero denominator -
+  // which would render as 0% risk-weighted coverage, indistinguishable from testing nothing.
+  const totalRisk = topics.reduce((sum, t) => sum + t.risk, 0);
   // Presence: does the topic have any case at all. The crude number the honesty delta measures
   // the real one against.
   const presenceCoverage = weighted(t => t.trafficShare, t => (t.caseCount > 0 ? 1 : 0));
@@ -457,7 +458,7 @@ export async function getCoverage(
     insufficientData: false,
     trafficWeightedCoverage,
     topicBreadth: { covered: topics.filter(t => t.coverage >= COVERED_THRESHOLD).length, total: topics.length },
-    riskWeightedCoverage: weighted(t => t.risk, t => t.coverage),
+    riskWeightedCoverage: totalRisk === 0 ? null : weighted(t => t.risk, t => t.coverage),
     presenceCoverage,
     honestyDelta: Math.round((presenceCoverage - trafficWeightedCoverage) * 1000) / 1000,
     topics,

@@ -2,45 +2,50 @@ import { createHash } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { Db } from "../../storage/db.js";
-import { computeEmbedding } from "../evaluate/judge.js";
+import { computeEmbedding, embeddingsAvailable } from "../evaluate/judge.js";
 import { DEFAULT_EMBEDDING_MODEL } from "@agentx/judge-core";
 import { listDatasets } from "../evaluate/datasets.js";
 import { normalizeText } from "../shared/vector.js";
 import { logger } from "../../log.js";
 
-// The dataset half of Insights: pull every case's question text out of the datasets' `questions`
-// JSON and give each one a cached embedding, so coverage (coverage.ts) and the probe (probe.ts)
-// can compare cases against production traffic in one vector space.
+// The dataset half of Insights: each case's text, with cached embeddings.
 //
-// Only the MAIN question is embedded, not follow-ups. A follow-up only makes sense as the second
-// turn of its own case - on its own it is usually a fragment ("and if it's expired?") that would
-// land nowhere near any topic and drag the case's assignment with it. The case is represented by
-// the thing a user would actually walk in and ask.
+// TWO embeddings per case, because there are two comparisons and they live in different spaces:
+//   embedding     - the query alone. Compared against a user's typed query by the probe.
+//   embeddingFull - query + expected result. Compared against TRACE embeddings by coverage, which
+//                   monitor/topics.ts builds from input + output.
+// Scoring a query-only vector against a query+answer vector is a cross-space comparison: it reads
+// systematically low, so cases fall off the map and topics report "missing" that are covered fine.
+//
+// Only the main question is embedded, never follow-ups - a follow-up is a fragment ("and if it's
+// expired?") that would drag its case's assignment somewhere meaningless.
 
 export type DatasetCase = {
   datasetId: string;
   datasetName: string;
-  // Index into the dataset's `questions` array - the address the dashboard needs to link to it.
   index: number;
   query: string;
   expectedResults: string | null;
-  // sha256 of the normalized query: stable across reordering, changes when the text is edited.
   caseKey: string;
+  /** Query only - the probe's space. Null when not yet computed. */
   embedding: number[] | null;
+  /** Query + expected result - the traces' space. Null when not yet computed. */
+  embeddingFull: number[] | null;
 };
 
-type QuestionShape = {
-  main_question?: { query?: unknown; expectedResults?: unknown };
-};
+type QuestionShape = { main_question?: { query?: unknown; expectedResults?: unknown } };
 
-export function caseKeyFor(query: string): string {
-  return createHash("sha256").update(normalizeText(query)).digest("hex").slice(0, 32);
+// Hash of the text that was embedded, so editing a case re-embeds it while reordering costs
+// nothing - a positional key would get that exactly backwards.
+export function caseKeyFor(query: string, expectedResults?: string | null): string {
+  return createHash("sha256")
+    .update(`${normalizeText(query)} ${normalizeText(expectedResults ?? "")}`)
+    .digest("hex")
+    .slice(0, 32);
 }
 
-// New embeddings computed in a single request. A first call on a large dataset warms part of the
-// cache and reports `degraded` for the rest; the next call picks up where this one stopped. That
-// is deliberately preferable to either blocking a dashboard load on 400 sequential embedding
-// calls or silently reporting a coverage number computed from a third of the dataset.
+// Cases embedded per request. A first call on a large dataset warms part of the cache and reports
+// the rest as pending; the next call continues from there.
 const MAX_NEW_EMBEDDINGS_PER_REQUEST = 60;
 
 export async function listDatasetCases(db: Db, datasetId?: string): Promise<DatasetCase[]> {
@@ -54,25 +59,27 @@ export async function listDatasetCases(db: Db, datasetId?: string): Promise<Data
       if (!query) {
         return;
       }
-      const expected = question.main_question?.expectedResults;
+      const raw = question.main_question?.expectedResults;
+      const expectedResults = typeof raw === "string" && raw.trim() ? raw.trim() : null;
       cases.push({
         datasetId: dataset._id,
         datasetName: dataset.name,
         index,
         query,
-        expectedResults: typeof expected === "string" && expected.trim() ? expected.trim() : null,
-        caseKey: caseKeyFor(query),
+        expectedResults,
+        caseKey: caseKeyFor(query, expectedResults),
         embedding: null,
+        embeddingFull: null,
       });
     });
   }
   return cases;
 }
 
-type CacheRow = { datasetId: string; caseKey: string; embedding: unknown };
+type CacheRow = { datasetId: string; caseKey: string; embedding: unknown; embeddingFull: unknown };
 
-async function readCache(db: Db, datasetIds: string[]): Promise<Map<string, number[] | null>> {
-  const byKey = new Map<string, number[] | null>();
+async function readCache(db: Db, datasetIds: string[]): Promise<Map<string, CacheRow>> {
+  const byKey = new Map<string, CacheRow>();
   if (datasetIds.length === 0) {
     return byKey;
   }
@@ -86,72 +93,80 @@ async function readCache(db: Db, datasetIds: string[]): Promise<Map<string, numb
       : await db.db.select().from(db.schema.insightCaseEmbeddings).where(cond)
   ) as CacheRow[];
   for (const row of rows) {
-    // A cached NULL is a remembered failure, and must stay distinct from "not cached yet" - it is
-    // the whole reason a missing OPENAI_API_KEY doesn't re-attempt an embedding per case per
-    // request forever. Map.has() separates the two; a bare get() would not.
-    byKey.set(`${row.datasetId}:${row.caseKey}`, Array.isArray(row.embedding) ? (row.embedding as number[]) : null);
+    byKey.set(`${row.datasetId}:${row.caseKey}`, row);
   }
   return byKey;
 }
 
 async function writeCache(
   db: Db,
-  entry: { datasetId: string; caseKey: string; query: string; embedding: number[] | null }
+  entry: { datasetId: string; caseKey: string; query: string; embedding: number[]; embeddingFull: number[] }
 ): Promise<void> {
-  const row = {
-    id: nanoid(),
-    projectId: db.projectId,
-    datasetId: entry.datasetId,
-    caseKey: entry.caseKey,
-    query: entry.query,
-    embedding: entry.embedding,
-    model: entry.embedding ? DEFAULT_EMBEDDING_MODEL : null,
-    createdAt: new Date(),
-  };
   try {
+    const row = {
+      id: nanoid(),
+      projectId: db.projectId,
+      datasetId: entry.datasetId,
+      caseKey: entry.caseKey,
+      query: entry.query,
+      embedding: entry.embedding,
+      embeddingFull: entry.embeddingFull,
+      model: DEFAULT_EMBEDDING_MODEL,
+      createdAt: new Date(),
+    };
     if (db.kind === "sqlite") {
       db.db.insert(db.schema.insightCaseEmbeddings).values(row).run();
     } else {
       await db.db.insert(db.schema.insightCaseEmbeddings).values(row);
     }
   } catch (err) {
-    // The unique index on (project_id, dataset_id, case_key) is doing its job: two concurrent
-    // dashboard polls raced to embed the same case. The other one won and the value is identical,
-    // so there is nothing to repair.
+    // The unique index did its job: a concurrent poll embedded the same case, to the same value.
     logger.debug({ err: err instanceof Error ? err.message : err }, "Insight case embedding already cached");
   }
 }
 
 export type CaseEmbeddingResult = {
   cases: DatasetCase[];
-  /** True when at least one case has a usable embedding - i.e. cosine coverage is meaningful. */
+  /** At least one case carries usable vectors, so cosine scoring is meaningful. */
   embedded: boolean;
-  /** Cases still without an embedding when this call returned (cap hit, or no LLM key). */
+  /** Cases still unembedded when this returned - cap hit, no key, or a failed call. */
   pending: number;
 };
 
-// Fills in `embedding` on the given cases, reading the cache first and computing at most
-// MAX_NEW_EMBEDDINGS_PER_REQUEST new ones. Never throws: an embedding failure is recorded as a
-// cached null and the caller degrades to the lexical fallback, exactly as every other embedding
-// path in this repo does.
+// Never caches a null. A failed call and a missing key are indistinguishable at computeEmbedding's
+// boundary, and caching that as permanent would exclude those cases forever - adding a key later
+// would not recover them. Instead the no-key case short-circuits before any call, so nothing
+// retries in a doomed loop, and a real failure just stays pending until next time.
 export async function attachCaseEmbeddings(db: Db, cases: DatasetCase[]): Promise<CaseEmbeddingResult> {
   const datasetIds = Array.from(new Set(cases.map(c => c.datasetId)));
   const cache = await readCache(db, datasetIds);
+  const canEmbed = cases.length > 0 && (await embeddingsAvailable());
   let budget = MAX_NEW_EMBEDDINGS_PER_REQUEST;
   let embedded = false;
   let pending = 0;
 
   for (const item of cases) {
-    const key = `${item.datasetId}:${item.caseKey}`;
-    if (cache.has(key)) {
-      item.embedding = cache.get(key) ?? null;
-    } else if (budget > 0) {
+    const cached = cache.get(`${item.datasetId}:${item.caseKey}`);
+    if (cached) {
+      item.embedding = Array.isArray(cached.embedding) ? (cached.embedding as number[]) : null;
+      item.embeddingFull = Array.isArray(cached.embeddingFull) ? (cached.embeddingFull as number[]) : null;
+    } else if (canEmbed && budget > 0) {
       budget--;
-      item.embedding = await computeEmbedding(item.query);
-      await writeCache(db, { datasetId: item.datasetId, caseKey: item.caseKey, query: item.query, embedding: item.embedding });
-      cache.set(key, item.embedding);
+      const fullText = item.expectedResults ? `${item.query}\n\n${item.expectedResults}` : item.query;
+      const [query, full] = await Promise.all([computeEmbedding(item.query), computeEmbedding(fullText)]);
+      if (query && full) {
+        item.embedding = query;
+        item.embeddingFull = full;
+        await writeCache(db, {
+          datasetId: item.datasetId,
+          caseKey: item.caseKey,
+          query: item.query,
+          embedding: query,
+          embeddingFull: full,
+        });
+      }
     }
-    if (item.embedding) {
+    if (item.embedding && item.embeddingFull) {
       embedded = true;
     } else {
       pending++;

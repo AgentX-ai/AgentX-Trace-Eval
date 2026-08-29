@@ -1,8 +1,6 @@
-// Cosine similarity over two embedding vectors, plus the small text helpers that go with it.
-// Extracted from core/evaluate/curation.ts (which still owns the *calibration* - see its
-// SIMILARITY_BANDS comment) once core/insights/ needed the same math: dedupe asks "is this case
-// already here?" and coverage asks "is this topic already tested?", which are the same question
-// pointed in different directions, and they must never answer it with two different formulas.
+// Cosine plus the text helpers that go with it. Extracted from curation.ts (which still owns the
+// calibration) once insights/ needed the same math: dedupe and coverage ask the same question in
+// different directions and must not answer it with two different formulas.
 
 export function cosine(a: number[], b: number[]): number {
   let dot = 0;
@@ -19,9 +17,8 @@ export function cosine(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
-// Element-wise mean, then unit-normalized: a topic's centroid. Vectors of differing length would
-// mean two embedding models got mixed in one table, so the shortest wins rather than padding
-// zeros (which would silently drag every centroid toward the origin).
+// Element-wise mean, unit-normalized. Differing lengths mean two embedding models got mixed, so
+// the shortest wins - padding zeros would drag every centroid toward the origin.
 export function centroid(vectors: number[][]): number[] | null {
   if (vectors.length === 0) {
     return null;
@@ -49,9 +46,8 @@ export function normalizeText(s: string): string {
   return s.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
-// Content-word set for the lexical fallback (see core/insights/similarity.ts): stopwords and
-// 1-2 character tokens removed, so "how do I reset my password" and "password reset" overlap on
-// the words that carry the topic rather than on "how"/"my"/"do".
+// Content words for the lexical fallback: stopwords and short tokens dropped, so "how do I reset
+// my password" and "password reset" overlap on what carries the topic.
 const STOPWORDS = new Set([
   "the", "a", "an", "and", "or", "but", "if", "then", "than", "of", "to", "in", "on", "at", "for",
   "with", "by", "from", "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",

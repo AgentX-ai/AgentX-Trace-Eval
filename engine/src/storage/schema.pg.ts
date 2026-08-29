@@ -331,6 +331,7 @@ export const insightCaseEmbeddings = pgTable("insight_case_embeddings", {
   caseKey: text("case_key").notNull(),
   query: text("query").notNull(),
   embedding: jsonb("embedding"),
+  embeddingFull: jsonb("embedding_full"),
   model: text("model"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
 });

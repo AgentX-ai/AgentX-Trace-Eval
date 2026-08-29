@@ -313,6 +313,7 @@ export const judgeScorersResponseSchema = z.object({ judgeScorers: z.array(judge
 export const insightTopicSchema = z
   .object({
     topic: z.string(),
+    coverageBasis: z.enum(["depth", "count"]),
     aliases: z.array(z.string()),
     state: z.enum(["covered", "underrepresented", "missing"]),
     trafficShare: z.number(),
@@ -336,7 +337,7 @@ export const insightsCoverageResponseSchema = z
     insufficientData: z.boolean(),
     trafficWeightedCoverage: z.number(),
     topicBreadth: z.object({ covered: z.number(), total: z.number() }).strict(),
-    riskWeightedCoverage: z.number(),
+    riskWeightedCoverage: z.number().nullable(),
     presenceCoverage: z.number(),
     honestyDelta: z.number(),
     topics: z.array(insightTopicSchema),

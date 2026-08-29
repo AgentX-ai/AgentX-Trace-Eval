@@ -5,17 +5,15 @@ import { SIMILARITY_BANDS } from "../evaluate/curation.js";
 import { computeEmbedding } from "../evaluate/judge.js";
 import { contentWords, cosine, jaccard } from "../shared/vector.js";
 import { listDatasetCases, attachCaseEmbeddings, type DatasetCase } from "./cases.js";
-import { groupByIntent } from "./coverage.js";
+import { groupByIntent, MIN_TRACES_PER_TOPIC } from "./coverage.js";
 
-// The probe: "does my dataset cover THIS?", asked in the words someone actually has the question
-// in. Coverage (coverage.ts) is a sweep over topics production already produced; this is the
-// inverse lookup, and it is the cheap half - one embedding for the query, cosine against the
-// cached case embeddings, no LLM in the verdict path.
+// "Does my dataset cover THIS?" - the inverse of coverage.ts's sweep, and the cheap half: one
+// embedding for the query, cosine against the cached case embeddings, no LLM in the verdict path.
 //
-// It deliberately answers TWO questions, not one, because the answer to "is it tested?" is
-// useless without "does anyone ask it?". A query with no coverage AND no traffic is not a hole in
-// the suite - reporting it as one would send a team writing tests for things nobody asks. That
-// case gets its own verdict, and it is the reason this file exists rather than a single cosine.
+// Answers TWO questions, not one. "Is it tested?" is useless without "does anyone ask it?": a
+// query with no coverage AND no traffic is not a hole in the suite, and reporting it as one would
+// send a team writing tests for things nobody asks. That case gets its own verdict, which is why
+// this is a file rather than a single cosine.
 
 export type ProbeVerdict = "covered" | "adjacent" | "gap" | "untested-and-unasked";
 
@@ -24,9 +22,8 @@ export type ProbeNearestCase = {
   datasetName: string;
   index: number;
   query: string;
-  // Always returned alongside the score: query-to-query similarity measures topical resemblance,
-  // NOT that the case asserts the same behavior. The human makes the final call, and cannot make
-  // it without seeing what the nearest case actually expects.
+  // Always returned with the score: similarity says the questions look alike, not that the case
+  // asserts the same behaviour. Nobody can judge that without seeing what it expects.
   expectedResults: string | null;
   similarity: number;
 };
@@ -47,8 +44,8 @@ export type ProbeResult = {
 
 const NEAREST_CASES = 3;
 const LEXICAL_BANDS = { covered: 0.5, related: 0.25 } as const;
-// Batch mode is a paste target (a PRD's user stories, a support macro export, a compliance
-// checklist), so the cap is generous but finite - one probe per line, each needing an embedding.
+// A paste target (PRD stories, a macro export, a compliance checklist) - generous but finite,
+// since each line costs an embedding.
 const MAX_BATCH = 50;
 
 type Scorer = {
@@ -96,8 +93,14 @@ async function loadContext(db: Db, window: MonitoringWindow, datasetId?: string)
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const [rows, cases] = await Promise.all([listClassificationsSince(db, since), listDatasetCases(db, datasetId)]);
   const { embedded } = await attachCaseEmbeddings(db, cases);
-  const groups = groupByIntent(rows);
-  return { cases, groups, totalTraces: rows.length, embeddedCases: embedded };
+  // Same floor the coverage sweep applies. Without it a single stray classification is enough to
+  // turn "nobody asks this" into a fabricated real gap - the one verdict the probe exists to avoid
+  // handing out.
+  const groups = groupByIntent(rows).filter(g => g.rows.length >= MIN_TRACES_PER_TOPIC);
+  // Denominator over the SAME filtered groups the sweep uses, not every classified row - otherwise
+  // one topic reports two different traffic shares depending on which screen you read it from.
+  const totalTraces = groups.reduce((sum, g) => sum + g.rows.length, 0);
+  return { cases, groups, totalTraces, embeddedCases: embedded };
 }
 
 async function scorerFor(query: string, ctx: ProbeContext): Promise<Scorer> {
@@ -106,6 +109,8 @@ async function scorerFor(query: string, ctx: ProbeContext): Promise<Scorer> {
     return {
       degraded: false,
       bands: SIMILARITY_BANDS,
+      // embedding (query only), not embeddingFull: this compares a typed query against a case's
+      // question, which is the pairing SIMILARITY_BANDS was calibrated on.
       score: item => (item.embedding ? cosine(queryEmbedding, item.embedding) : -1),
       topicScore: (_words, centroidVec) => (centroidVec ? cosine(queryEmbedding, centroidVec) : -1),
     };
@@ -192,11 +197,9 @@ export type ProbeBatchResult = {
   degraded: boolean;
 };
 
-// Batch mode is the pre-launch gate: paste what users will ask about a surface that hasn't
-// shipped, and get coverage against traffic that doesn't exist yet. It is the only answer here to
-// the cold-start problem - the topic map only knows the past, so a brand-new surface is invisible
-// to the sweep until it has already shipped and started failing. Context is loaded ONCE for the
-// whole batch; only the per-query embedding is per-query.
+// The pre-launch gate: coverage against traffic that does not exist yet, which is the only answer
+// here to the cold start - the sweep cannot see a surface that has not shipped. Context loads once
+// for the whole batch; only the embedding is per-query.
 export async function probeBatch(
   db: Db,
   input: { queries: string[]; window: MonitoringWindow; datasetId?: string }

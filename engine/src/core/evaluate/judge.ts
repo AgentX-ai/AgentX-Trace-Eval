@@ -335,6 +335,13 @@ export async function computeVectorSimilarity(
 // computeVectorSimilarityShared, but it's unexported and embeddings are self-host-only here
 // anyway (matching computeVectorSimilarity's own reasoning for staying out of the shared
 // package), so this calls the OpenAI client directly rather than adding a new export there.
+// Whether embeddings can be attempted at all. Lets callers distinguish "no key configured"
+// (permanent, don't retry) from "the call failed" (transient, do retry) - computeEmbedding
+// returns null for both.
+export async function embeddingsAvailable(): Promise<boolean> {
+  return (await getOpenAI()) !== null;
+}
+
 export async function computeEmbedding(text: string, model: string = DEFAULT_EMBEDDING_MODEL): Promise<number[] | null> {
   const trimmed = text.trim();
   if (!trimmed) {

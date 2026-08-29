@@ -495,8 +495,8 @@ export const monitorClassifications = sqliteTable("monitor_classifications", {
 // a case re-embeds it because its hash changes, while reordering or inserting cases costs nothing,
 // which a positional key would get exactly backwards. Rows are never invalidated, only orphaned:
 // an edited case leaves its old row behind, harmless and reused if the text ever comes back.
-// Null `embedding` is a REMEMBERED FAILURE (no OPENAI_API_KEY, or the embeddings call failed), so
-// coverage degrades to the lexical fallback without re-attempting a doomed call on every request.
+// A row is only written once BOTH vectors are computed - a failed call is never cached, since it
+// cannot be told apart from a missing key and would exclude the case forever.
 export const insightCaseEmbeddings = sqliteTable("insight_case_embeddings", {
   id: text("id").primaryKey(),
   projectId: text("project_id"),
@@ -506,8 +506,12 @@ export const insightCaseEmbeddings = sqliteTable("insight_case_embeddings", {
   // The query text itself, denormalized so a probe result can name the nearest case without
   // re-reading and re-walking every dataset's questions JSON.
   query: text("query").notNull(),
-  // JSON-encoded number[] (text-embedding-3-small), or null - see the note above.
+  // JSON-encoded number[] (text-embedding-3-small). Two of them, in two different spaces:
+  // `embedding` is the query alone (compared against a probe's typed query), `embedding_full` is
+  // query + expected result (compared against trace embeddings, which are input + output). See
+  // core/insights/cases.ts.
   embedding: text("embedding", { mode: "json" }),
+  embeddingFull: text("embedding_full", { mode: "json" }),
   model: text("model"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
