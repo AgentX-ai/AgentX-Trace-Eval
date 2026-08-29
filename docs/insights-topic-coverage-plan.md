@@ -1,17 +1,42 @@
 # Insights: production topic coverage of evaluation datasets
 
-**Status:** Phase 0 is implemented and shipped (`engine/src/core/insights/`,
-`engine/src/routes/insights.ts`). Phases 1-3 below are still design.
+**Status:** Phase 0 is implemented and shipped, plus one piece of Phase 1 pulled forward.
+Phases 1-3 below are otherwise still design.
 
-Two things changed during implementation, and this document has been corrected rather than left
+| Shipped | Where |
+|---|---|
+| Coverage sweep, three headline numbers, topic states | `engine/src/core/insights/coverage.ts` |
+| Case extraction + embedding cache | `engine/src/core/insights/cases.ts` |
+| The probe (single + batch) | `engine/src/core/insights/probe.ts` |
+| Routes + wire contract | `engine/src/routes/insights.ts`, `engine/src/contract/wire.ts` |
+| Tests | `engine/src/test/insights.integration.test.ts`, `contract.integration.test.ts` |
+| **Insights tab** | `AgentX-eval-front`, branch `claude/insights-dataset-topic-coverage-mo44s9` |
+
+**Four things changed during implementation.** This document has been corrected rather than left
 describing something the code does not do:
 
-- Coverage is the facility-location value **alone**, never blended with the case count. The first
-  implementation took `min(countRatio, depth)`, which quietly reintroduced duplicate-inflation -
-  the anti-gaming test failed with `expected 0.857 to be less than or equal to 0.287`. See §4.2.
-- Phase 0 assigns cases to topics by **argmax**, not the softmax of §3.2. With intent-string
-  topics there are no real centroid boundaries yet for a soft assignment to smooth over; softmax
-  arrives with the clustering in Phase 1.
+1. **Coverage is the facility-location value alone**, never blended with the case count. The first
+   implementation took `min(countRatio, depth)`, which quietly reintroduced duplicate-inflation -
+   the anti-gaming test failed with `expected 0.857 to be less than or equal to 0.287`. See §4.2.
+2. **Cases assign to topics by argmax**, not the softmax of §3.2. With intent-string topics there
+   are no real centroid boundaries for a soft assignment to smooth over; softmax arrives with the
+   full clustering.
+3. **Topic merging was pulled forward from Phase 1** - see the calibration note in §3.1. Running
+   against a real install made it non-optional rather than a refinement.
+4. **The window defaults to 30d**, not the 7d every monitoring surface uses. On a real install
+   every classified trace was older than seven days, so the screen read "nothing classified yet"
+   while the 30d window was full. Those charts are recent health; this is accumulated test debt
+   measured against a *sampled* classifier.
+
+**Validated against a real install** (340 classified traces, 54 datasets), which found (3) and (4)
+- neither was reachable from the unit tests. It reports 43% traffic-weighted / 6 of 35 topics /
+8% risk-weighted on that data, and the probe returns a real gap for "I want to cancel my
+subscription today" (naming the `Cancel subscription` topic at 11% of traffic) while returning
+*not-covered-and-not-asked* for "can I pay my invoice in martian dollars".
+
+Still **unverified**: the Postgres DDL (mirrors the SQLite path, needs `AGENTX_TEST_DB_URL`), and
+the non-degraded similarity path end-to-end (no `OPENAI_API_KEY` was available, so the real-data
+run exercised the labelled lexical fallback).
 
 ## 1. The idea in one line
 
@@ -72,6 +97,30 @@ rows carrying:
 
 This is exactly the "true unsupervised clustering ... a materially bigger piece left for
 a future pass" that `topics.ts`'s header defers. Insights is the reason to do it.
+
+**Partly shipped, ahead of schedule.** Full centroid clustering is still Phase 1, but the
+*merging* half could not wait: on a real install the classifier had coined both "Refund request"
+(7 cases, covered) and "Request a refund" (0 cases, **missing**) - one topic reported twice, half
+of it inventing a gap that did not exist, its traffic share split between the two. Same for
+"Reset Password" / "Reset forgotten password". `mergeSynonymousTopics` merges intent labels whose
+trace centroids are close, using embeddings **already stored** on `monitor_classifications` - no
+new API calls, and it works with no LLM key at all.
+
+The threshold is **0.87**, and deliberately not curation.ts's 0.75: that constant compares two
+single query strings, this compares centroids of *averaged* input+output embeddings, which run
+much higher. Measured on that install:
+
+| pair | cosine | verdict |
+|---|---|---|
+| refund request / request a refund | 0.909 | must merge |
+| reset password / reset forgotten password | 0.902 | must merge |
+| order tracking / missing package | 0.822 | must **not** |
+| refund policy inquiry / request a refund | 0.813 | must **not** |
+
+0.87 splits those with ~0.05 of margin either side. Reusing 0.75 would have merged "where is my
+order" with "it never arrived" - different questions with different correct answers. Candidates
+are compared against the *seed's* centroid rather than the growing one, so a chain of
+pairwise-similar topics (a~b, b~c) cannot collect into one blob when a and c are unrelated.
 
 Topic assignment for a new trace becomes centroid proximity, which means the sweep is
 also a **novelty detector**: a trace whose best cosine to every centroid is below a floor
@@ -560,13 +609,14 @@ wire shape needs to be settled in this plan's review, before UI work starts.
 
 ## 10. Phasing
 
-**Phase 0 - the screen, and the probe.** *(shipped)* Case embedding cache, string-grouped topics from
+**Phase 0 - the screen, and the probe.** *(shipped, engine + dashboard)* Case embedding cache, string-grouped topics from
 existing `intent` values, count-based coverage, three headline tiles, topic map states,
 per-topic panel - plus the single-query and batch **probe** (§7), which needs none of the
 topic machinery and is the fastest way to make the idea tangible. Ships the mockup. No
 clustering, no sweep. Proves the concept and settles the wire contract.
 
-**Phase 1 - real topics.** Consolidation sweep, centroids, soft assignment,
+**Phase 1 - real topics.** *(synonym merging shipped early - see §3.1; the rest outstanding.)*
+Consolidation sweep, centroids, soft assignment,
 facility-location coverage, sub-mode analysis, and the full attribute row (§4.3) including
 unique-session weighting. The numbers become defensible.
 
@@ -586,7 +636,10 @@ Good-Turing unknown mass, CI coverage gate.
 Each phase is independently shippable and each one leaves the product better than it
 found it.
 
-## 11. Open questions - need a decision before Phase 0
+## 11. Open questions - still open
+
+Phase 0 shipped without settling these; each one is now a decision about what Phase 1 does,
+not a blocker. #1 and #5 are the two that would change the schema.
 
 1. **Scope of a coverage number.** Per project, per agent, or per (agent x dataset)? An
    agent may run dataset B while topic X is covered only by dataset A, which would report
