@@ -323,6 +323,7 @@ export const insightTopicSchema = z
     targetCases: z.number(),
     coverage: z.number(),
     risk: z.number(),
+    priority: z.number(),
     riskComponents: z.object({ issueRate: z.number(), negativeSentimentRate: z.number() }).strict(),
     suggestedAction: z.string(),
   })
@@ -340,6 +341,7 @@ export const insightsCoverageResponseSchema = z
     riskWeightedCoverage: z.number().nullable(),
     presenceCoverage: z.number(),
     honestyDelta: z.number(),
+    datasets: z.array(z.object({ id: z.string(), name: z.string(), caseCount: z.number() }).strict()),
     topics: z.array(insightTopicSchema),
     offMapCases: z.array(
       z.object({ datasetId: z.string(), index: z.number(), query: z.string(), bestSimilarity: z.number() }).strict()

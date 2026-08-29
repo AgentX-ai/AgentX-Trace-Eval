@@ -34,6 +34,13 @@ export type TopicCoverage = {
   coverage: number;
   /** 0-1, observed only - see riskComponents. Phase 1.5 adds declared business risk. */
   risk: number;
+  /**
+   * What closing this gap is worth. Sorting the map by traffic alone makes a reader do the
+   * traffic-vs-risk arithmetic themselves, which is the arithmetic the whole feature exists to
+   * do for them - so risk is weighted heavily enough here that a dangerous, rarely-asked topic
+   * can outrank a common, harmless one.
+   */
+  priority: number;
   riskComponents: { issueRate: number; negativeSentimentRate: number };
   suggestedAction: string;
 };
@@ -58,6 +65,12 @@ export type CoverageResult = {
    * you have" - two different afternoons of work that no single percentage distinguishes.
    */
   honestyDelta: number;
+  /**
+   * The datasets this number was computed over. Without it a project-wide figure silently mixes
+   * every dataset in the project - on a real install, 54 of them - and nobody can tell whether a
+   * gap belongs to the suite they care about. Also drives the dashboard's dataset filter.
+   */
+  datasets: { id: string; name: string; caseCount: number }[];
   topics: TopicCoverage[];
   /** Cases matching no topic: either dead test weight, or a topic the classifier hasn't seen. */
   offMapCases: { datasetId: string; index: number; query: string; bestSimilarity: number }[];
@@ -313,6 +326,14 @@ export async function getCoverage(
   const cases = await listDatasetCases(db, options.datasetId);
   const { embedded, pending } = await attachCaseEmbeddings(db, cases);
 
+  const datasetCounts = new Map<string, { id: string; name: string; caseCount: number }>();
+  for (const item of cases) {
+    const entry = datasetCounts.get(item.datasetId) ?? { id: item.datasetId, name: item.datasetName, caseCount: 0 };
+    entry.caseCount++;
+    datasetCounts.set(item.datasetId, entry);
+  }
+  const datasets = Array.from(datasetCounts.values()).sort((a, b) => b.caseCount - a.caseCount);
+
   const anyTraceEmbeddings = groups.some(g => g.embeddings.length > 0);
   const sim = embedded && anyTraceEmbeddings ? embeddingSimilarity() : lexicalSimilarity();
   const degradedReason =
@@ -334,6 +355,7 @@ export async function getCoverage(
       riskWeightedCoverage: null,
       presenceCoverage: 0,
       honestyDelta: 0,
+      datasets,
       topics: [],
       offMapCases: [],
       caseEmbeddingsPending: pending,
@@ -419,6 +441,14 @@ export async function getCoverage(
     const depth = facilityLocation(assigned, group, sim);
     const coverage = depth === null ? Math.min(1, assigned.length / targetCases) : depth;
 
+    // Risk AMPLIFIES exposure rather than substituting for it. Adding the two instead would give
+    // a 0.1%-of-traffic topic with high risk a bigger number than a 20%-of-traffic one, which is
+    // not a queue anybody should work: a topic nobody asks is worth nothing to test however
+    // dangerous it sounds. Multiplying keeps that at zero, while the 3x lets a failing topic
+    // outrank a healthy one carrying up to four times its traffic. (1 - coverage) so a covered
+    // topic is worth nothing to work on, however busy.
+    const priority = (1 - coverage) * trafficShare * (1 + 3 * risk);
+
     const state: CoverageState =
       assigned.length === 0 ? "missing" : coverage >= COVERED_THRESHOLD ? "covered" : "underrepresented";
 
@@ -440,6 +470,7 @@ export async function getCoverage(
       targetCases,
       coverage: Math.round(coverage * 1000) / 1000,
       risk: Math.round(risk * 1000) / 1000,
+      priority: Math.round(priority * 10000) / 10000,
       riskComponents: {
         issueRate: Math.round(issueRate * 1000) / 1000,
         negativeSentimentRate: Math.round(negativeSentimentRate * 1000) / 1000,
@@ -480,6 +511,7 @@ export async function getCoverage(
     riskWeightedCoverage: totalRisk === 0 ? null : weighted(t => t.risk, t => t.coverage),
     presenceCoverage,
     honestyDelta: Math.round((presenceCoverage - trafficWeightedCoverage) * 1000) / 1000,
+    datasets,
     topics,
     offMapCases,
     caseEmbeddingsPending: pending,

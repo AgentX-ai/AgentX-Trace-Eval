@@ -420,6 +420,72 @@ describe("provisional results do not read as verdicts", () => {
   });
 });
 
+describe("telling someone what to do first", () => {
+  it("ranks a dangerous rarely-asked gap above a harmless common one", async () => {
+    const scoped = test.scoped(await test.newProject("Priority"));
+    const saved = db;
+    db = scoped;
+    try {
+      // Proportions taken from a real install: the busiest topic runs ~21% of traffic and the
+      // dangerous one ~10%. Common and harmless, untested:
+      for (let i = 0; i < 21; i++) {
+        await classify({ intent: "general greeting", angle: SAME });
+      }
+      // Half its traffic, but failing. Sorting by traffic alone buries it - and it is exactly the
+      // case the headline traffic-vs-risk gap exists to surface.
+      for (let i = 0; i < 10; i++) {
+        await classify({ intent: "account closure", angle: UNRELATED, issueType: "refusal", sentiment: "negative" });
+      }
+      const result = await getCoverage(db, { window: "7d", datasetId: await newDataset("empty-ish", [{ query: "unrelated", angle: 2.6 }]) });
+
+      const greeting = result.topics.find(t => t.topic === "general greeting")!;
+      const closure = result.topics.find(t => t.topic === "account closure")!;
+      expect(greeting.trafficShare).toBeGreaterThan(closure.trafficShare);
+      expect(closure.priority).toBeGreaterThan(greeting.priority);
+    } finally {
+      db = saved;
+    }
+  });
+
+  it("gives a topic nobody asks about no priority, however dangerous it looks", async () => {
+    const scoped = test.scoped(await test.newProject("RareRisk"));
+    const saved = db;
+    db = scoped;
+    try {
+      for (let i = 0; i < 200; i++) {
+        await classify({ intent: "order tracking", angle: SAME });
+      }
+      // 2 traces in 202. Failing, untested - and still not where the next hour goes.
+      for (let i = 0; i < 2; i++) {
+        await classify({ intent: "exotic edge case", angle: UNRELATED, issueType: "refusal", sentiment: "negative" });
+      }
+      const result = await getCoverage(db, { window: "7d", datasetId: await newDataset("none", [{ query: "unrelated", angle: 2.6 }]) });
+      const tracking = result.topics.find(t => t.topic === "order tracking")!;
+      const exotic = result.topics.find(t => t.topic === "exotic edge case")!;
+      expect(tracking.priority).toBeGreaterThan(exotic.priority);
+    } finally {
+      db = saved;
+    }
+  });
+
+  it("gives a covered topic no priority, however busy it is", async () => {
+    const result = await getCoverage(db, { window: "7d", datasetId: await newDataset("covered", [{ query: "how do I reset my password", angle: SAME }]) });
+    for (const t of result.topics.filter(t => t.state === "covered")) {
+      expect(t.priority).toBeLessThan(0.05);
+    }
+  });
+
+  it("names the datasets the number was computed over", async () => {
+    const dsId = await newDataset("named-suite", [{ query: "how do I reset my password", angle: SAME }]);
+    const result = await getCoverage(db, { window: "7d", datasetId: dsId });
+    // A project-wide figure silently mixes every dataset in the project; without this nobody can
+    // tell whether a gap belongs to the suite they care about.
+    expect(result.datasets.map(d => d.id)).toEqual([dsId]);
+    expect(result.datasets[0]!.name).toBe("named-suite");
+    expect(result.datasets[0]!.caseCount).toBe(1);
+  });
+});
+
 describe("the probe", () => {
   let datasetId: string;
 

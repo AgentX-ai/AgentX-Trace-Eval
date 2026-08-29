@@ -1073,6 +1073,11 @@ function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean } {
     // Topics "Map" view (core/monitor/topics.ts's getTopicsMap) - a JSON-encoded embedding vector
     // per classification, used for UMAP projection. Null for rows classified before this existed.
     ["monitor_classifications", "ALTER TABLE monitor_classifications ADD COLUMN embedding TEXT"],
+    // insight_case_embeddings gained a second vector after the table itself shipped on this
+    // branch. CREATE TABLE IF NOT EXISTS no-ops on an install that already has the table, so
+    // without this the column only appears on a fresh database - and every existing one 500s on
+    // GET /insights/coverage. CI never catches it because CI always starts empty.
+    ["insight_case_embeddings", "ALTER TABLE insight_case_embeddings ADD COLUMN embedding_full TEXT"],
     ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN project_id TEXT"],
     ["prompts", "ALTER TABLE prompts ADD COLUMN project_id TEXT"],
     ["prompt_versions", "ALTER TABLE prompt_versions ADD COLUMN project_id TEXT"],
@@ -2246,6 +2251,7 @@ async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boolean }>
     ALTER TABLE monitor_events ADD COLUMN IF NOT EXISTS project_id TEXT;
     ALTER TABLE monitor_classifications ADD COLUMN IF NOT EXISTS project_id TEXT;
     ALTER TABLE monitor_classifications ADD COLUMN IF NOT EXISTS embedding JSONB;
+    ALTER TABLE insight_case_embeddings ADD COLUMN IF NOT EXISTS embedding_full JSONB;
     ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS project_id TEXT;
     ALTER TABLE prompts ADD COLUMN IF NOT EXISTS project_id TEXT;
     ALTER TABLE prompt_versions ADD COLUMN IF NOT EXISTS project_id TEXT;
