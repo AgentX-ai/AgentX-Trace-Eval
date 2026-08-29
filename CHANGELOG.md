@@ -927,3 +927,39 @@ fallback (exercised, not mocked away - the mocked embedder returns null for unre
 exactly as a missing key does). `contract.integration.test.ts` drives the three new endpoints live
 against the real engine, including the empty state, which is the common first view of this screen
 since Topics is opt-in and sampled.
+
+Verified against a real install's database (340 classified traces, 54 datasets), which immediately
+found two things unit tests could not.
+
+The first: the classifier coins near-duplicate labels, and Phase 0's group-by-intent-string made
+that actively misleading. That install carried both "Refund request" (7 cases, covered) and
+"Request a refund" (0 cases, MISSING) - one topic reported twice, one half of it inventing a gap
+that did not exist, and its traffic share split down the middle. Same for "Reset Password" and
+"Reset forgotten password". So `mergeSynonymousTopics` merges intent labels whose trace centroids
+are close, using embeddings already stored on `monitor_classifications` - no new API calls, and it
+works with no LLM key at all.
+
+Its threshold is 0.87, and deliberately NOT curation.ts's 0.75: that constant compares two single
+query strings, this compares centroids of averaged input+output embeddings, which run much higher.
+Measured on that install: "refund request" vs "request a refund" 0.909 and "reset password" vs
+"reset forgotten password" 0.902 (must merge), against "order tracking" vs "missing package" 0.822
+and "refund policy inquiry" vs "request a refund" 0.813 (must NOT - asking the rules and asking for
+money back have different correct answers). 0.87 splits those with ~0.05 either side. Reusing 0.75
+would have merged order tracking into missing package. Candidates are compared against the seed's
+centroid rather than the growing one, so a chain of pairwise-similar topics cannot collect into one
+blob.
+
+The second: the window default. Every monitoring surface defaults to 7d, and Insights inherited it
+- but that install's 318 classified traces were all older than seven days, so the screen read
+"nothing classified yet" while the 30d window was full. Those charts are about recent health, where
+a short window is the point; coverage is accumulated test debt against a sampled classifier, so it
+defaults to 30d now.
+
+Also verified through the real dashboard (AgentX-eval-front, `yarn dev:selfhost` against this
+engine): the tab renders 43% traffic-weighted / 6 of 35 topics / 8% risk-weighted on that data, and
+the probe distinguishes the two cases it exists to distinguish - "I want to cancel my subscription
+today" comes back a real gap naming the "Cancel subscription" topic at 11% of traffic, while "can I
+pay my invoice in martian dollars" comes back not-covered-and-not-asked rather than a fabricated
+gap. The nearest-case panel earned its place there: for the cancellation query the closest case is
+about being charged AFTER cancelling, a billing dispute rather than how to cancel, which the
+similarity score alone would never have revealed.

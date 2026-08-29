@@ -240,6 +240,42 @@ describe("coverage over production topics", () => {
   });
 });
 
+describe("synonymous intent labels", () => {
+  it("merges labels the classifier phrased differently, and keeps related-but-distinct ones apart", async () => {
+    const db2 = test.scoped(await test.newProject("Merge"));
+    const saved = db;
+    db = db2;
+    try {
+      // Same angle = same centroid: the classifier coined two labels for one topic. Measured on
+      // real traffic these land at ~0.90, well above the merge threshold.
+      for (let i = 0; i < 5; i++) {
+        await classify({ intent: "refund request", angle: SAME });
+        await classify({ intent: "request a refund", angle: SAME + 0.05 });
+      }
+      // Related but genuinely different - cos(0.55) ~= 0.85, just under the threshold, which is
+      // the case the calibration exists to protect ("order tracking" vs "missing package").
+      for (let i = 0; i < 5; i++) {
+        await classify({ intent: "dispute a charge", angle: 0.55 });
+      }
+      const dsId = await newDataset("merge-suite", [{ query: "I want a refund", angle: SAME }]);
+      const result = await getCoverage(db, { window: "7d", datasetId: dsId });
+
+      const labels = result.topics.map(t => t.topic);
+      expect(labels).toContain("refund request");
+      // Merged away, not reported as its own missing topic - the bug this exists to prevent.
+      expect(labels).not.toContain("request a refund");
+      const refunds = result.topics.find(t => t.topic === "refund request")!;
+      expect(refunds.aliases).toContain("request a refund");
+      expect(refunds.traceCount).toBe(10);
+
+      // Still its own topic: merging it would hide a genuinely different question.
+      expect(labels).toContain("dispute a charge");
+    } finally {
+      db = saved;
+    }
+  });
+});
+
 describe("the probe", () => {
   let datasetId: string;
 

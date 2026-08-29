@@ -16,9 +16,13 @@ export const insightsRouter = asyncRouter();
 
 const WINDOWS: MonitoringWindow[] = ["24h", "7d", "30d"];
 
+// 30d, where the monitoring surfaces default to 7d. Those charts are about recent health, so a
+// short window is the point; coverage is accumulated test debt, and classification is sampled, so
+// a 7d window is routinely empty on an install whose 30d window is full - which reads as "no data"
+// rather than "look further back". Callers can still ask for 24h/7d explicitly.
 function parseWindow(req: Request): MonitoringWindow {
-  const raw = String(req.query.window ?? "7d");
-  return (WINDOWS as string[]).includes(raw) ? (raw as MonitoringWindow) : "7d";
+  const raw = String(req.query.window ?? "30d");
+  return (WINDOWS as string[]).includes(raw) ? (raw as MonitoringWindow) : "30d";
 }
 
 function datasetIdOf(req: Request): string | undefined {
@@ -44,7 +48,7 @@ const probeSchema = z
 insightsRouter.post("/probe", validateBody(probeSchema), async (req: Request, res: Response) => {
   const body = req.body as z.infer<typeof probeSchema>;
   res.status(200).json(
-    await probe(scopedDb(req), { query: body.query, window: body.window ?? "7d", datasetId: body.datasetId })
+    await probe(scopedDb(req), { query: body.query, window: body.window ?? "30d", datasetId: body.datasetId })
   );
 });
 
@@ -59,6 +63,6 @@ const probeBatchSchema = z
 insightsRouter.post("/probe/batch", validateBody(probeBatchSchema), async (req: Request, res: Response) => {
   const body = req.body as z.infer<typeof probeBatchSchema>;
   res.status(200).json(
-    await probeBatch(scopedDb(req), { queries: body.queries, window: body.window ?? "7d", datasetId: body.datasetId })
+    await probeBatch(scopedDb(req), { queries: body.queries, window: body.window ?? "30d", datasetId: body.datasetId })
   );
 });

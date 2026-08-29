@@ -23,6 +23,8 @@ export type CoverageState = "covered" | "underrepresented" | "missing";
 
 export type TopicCoverage = {
   topic: string;
+  /** Other intent labels the classifier used for this same topic, merged in. */
+  aliases: string[];
   state: CoverageState;
   /** Share of classified traffic in the window, 0-1. */
   trafficShare: number;
@@ -116,11 +118,29 @@ async function sessionsByTraceId(db: Db, traceIds: string[]): Promise<Map<string
 
 export type TopicGroup = {
   topic: string;
+  /** Other intent labels merged into this topic - see mergeSynonymousTopics. */
+  aliases: string[];
   rows: ClassificationRow[];
   embeddings: number[][];
   centroid: number[] | null;
   words: Set<string>;
 };
+
+// Merge two intent labels into one topic when their trace centroids are this close.
+//
+// Calibrated against real classified traffic, and deliberately NOT curation.ts's 0.75: that one
+// compares two single query strings, this compares centroids of averaged input+output embeddings,
+// which run considerably higher. Measured on a real install:
+//
+//   0.909  "refund request"        vs "request a refund"          <- the same topic, must merge
+//   0.902  "reset password"        vs "reset forgotten password"  <- the same topic, must merge
+//   0.822  "order tracking"        vs "missing package"           <- DIFFERENT, must not merge
+//   0.813  "refund policy inquiry" vs "request a refund"          <- DIFFERENT (rules vs money back)
+//
+// 0.87 splits those populations with ~0.05 of margin on both sides. Reusing 0.75 here would have
+// merged order tracking with missing package, which are genuinely different questions with
+// genuinely different correct answers. Recalibrate if the embedding model changes.
+const TOPIC_MERGE_THRESHOLD = 0.87;
 
 // Group by normalized intent, keep the most common original casing as the display label. The
 // classifier is already steered toward reusing labels verbatim (see topics.ts's
@@ -139,19 +159,68 @@ export function groupByIntent(rows: ClassificationRow[]): TopicGroup[] {
     entry.rows.push(row);
     byKey.set(key, entry);
   }
-  return Array.from(byKey.values()).map(entry => {
+  const groups = Array.from(byKey.values()).map(entry => {
     const label = Array.from(entry.labels.entries()).sort((a, b) => b[1] - a[1])[0]![0];
     const embeddings = entry.rows
       .map(r => r.embedding)
       .filter((e): e is number[] => Array.isArray(e) && e.length > 0);
     return {
       topic: label,
+      aliases: [] as string[],
       rows: entry.rows,
       embeddings,
       centroid: centroid(embeddings),
       words: contentWords(label),
     };
   });
+  return mergeSynonymousTopics(groups);
+}
+
+// The classifier is steered toward reusing existing labels but still coins near-duplicates, and on
+// real traffic that is not cosmetic: an install carrying both "refund request" and "request a
+// refund" reported one as covered and the other as MISSING, inventing a gap that did not exist and
+// splitting one topic's traffic share in half. Merging by centroid proximity is what stops the
+// coverage number being an artifact of how the labeller happened to phrase itself that day.
+//
+// Seeded greedily from the largest group, and every candidate is compared against the SEED's
+// centroid rather than the growing one - otherwise a chain of pairwise-similar topics (a~b, b~c)
+// collects into one blob even when a and c have nothing to do with each other.
+export function mergeSynonymousTopics(groups: TopicGroup[]): TopicGroup[] {
+  const bySize = [...groups].sort((a, b) => b.rows.length - a.rows.length);
+  const consumed = new Set<TopicGroup>();
+  const merged: TopicGroup[] = [];
+
+  for (const seed of bySize) {
+    if (consumed.has(seed)) {
+      continue;
+    }
+    consumed.add(seed);
+    if (!seed.centroid) {
+      merged.push(seed);
+      continue;
+    }
+    for (const candidate of bySize) {
+      if (consumed.has(candidate) || !candidate.centroid) {
+        continue;
+      }
+      if (cosine(seed.centroid, candidate.centroid) >= TOPIC_MERGE_THRESHOLD) {
+        consumed.add(candidate);
+        seed.aliases.push(candidate.topic);
+        seed.rows.push(...candidate.rows);
+        seed.embeddings.push(...candidate.embeddings);
+        for (const word of candidate.words) {
+          seed.words.add(word);
+        }
+      }
+    }
+    // Recomputed only after absorbing everything, so the comparisons above all ran against the
+    // seed's original position. The label stays the seed's - it is the most common one.
+    if (seed.aliases.length > 0) {
+      seed.centroid = centroid(seed.embeddings) ?? seed.centroid;
+    }
+    merged.push(seed);
+  }
+  return merged;
 }
 
 type Similarity = {
@@ -348,6 +417,7 @@ export async function getCoverage(
 
     return {
       topic: group.topic,
+      aliases: group.aliases,
       state,
       trafficShare: Math.round(trafficShare * 1000) / 1000,
       traceCount: group.rows.length,

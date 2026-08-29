@@ -313,6 +313,7 @@ export const judgeScorersResponseSchema = z.object({ judgeScorers: z.array(judge
 export const insightTopicSchema = z
   .object({
     topic: z.string(),
+    aliases: z.array(z.string()),
     state: z.enum(["covered", "underrepresented", "missing"]),
     trafficShare: z.number(),
     traceCount: z.number(),
