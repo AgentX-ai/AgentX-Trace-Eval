@@ -170,7 +170,7 @@ describe("coverage over production topics", () => {
   });
 
   it("reports a covered topic and a missing one, and ranks by traffic", async () => {
-    const result = await getCoverage(db, { window: "7d", datasetId });
+    const result = await getCoverage(db, { window: "7d", datasetIds: [datasetId] });
     expect(result.insufficientData).toBe(false);
     expect(result.degraded).toBe(false);
 
@@ -188,7 +188,7 @@ describe("coverage over production topics", () => {
   });
 
   it("counts unique sessions, not raw request volume", async () => {
-    const result = await getCoverage(db, { window: "7d", datasetId });
+    const result = await getCoverage(db, { window: "7d", datasetIds: [datasetId] });
     const reset = result.topics.find(t => t.topic === "password reset")!;
     // 8 traces, 8 distinct session ids. The retry-loop case is the next test.
     expect(reset.traceCount).toBe(8);
@@ -196,7 +196,7 @@ describe("coverage over production topics", () => {
   });
 
   it("weights risk toward observed issues rather than sentiment alone", async () => {
-    const result = await getCoverage(db, { window: "7d", datasetId });
+    const result = await getCoverage(db, { window: "7d", datasetIds: [datasetId] });
     const closure = result.topics.find(t => t.topic === "account closure")!;
     expect(closure.riskComponents.issueRate).toBe(1);
     expect(closure.riskComponents.negativeSentimentRate).toBe(1);
@@ -207,7 +207,7 @@ describe("coverage over production topics", () => {
   });
 
   it("does not let duplicate cases inflate coverage", async () => {
-    const before = (await getCoverage(db, { window: "7d", datasetId })).topics.find(t => t.topic === "password reset")!;
+    const before = (await getCoverage(db, { window: "7d", datasetIds: [datasetId] })).topics.find(t => t.topic === "password reset")!;
     const padded = await newDataset(
       "padded",
       // Six near-identical cases, all sitting on the same point as the traffic. A count-based
@@ -215,7 +215,7 @@ describe("coverage over production topics", () => {
       // facility-location value is already satisfied, so it must not.
       Array.from({ length: 6 }, (_, i) => ({ query: `please reset my password variant ${i}`, angle: SAME }))
     );
-    const after = (await getCoverage(db, { window: "7d", datasetId: padded })).topics.find(t => t.topic === "password reset")!;
+    const after = (await getCoverage(db, { window: "7d", datasetIds: [padded] })).topics.find(t => t.topic === "password reset")!;
     expect(after.caseCount).toBe(6);
     // Three times the cases, not one point of extra coverage - the max-similarity term was
     // already satisfied by the first one.
@@ -223,7 +223,7 @@ describe("coverage over production topics", () => {
   });
 
   it("scales the target with traffic and risk instead of using a flat number", async () => {
-    const result = await getCoverage(db, { window: "7d", datasetId });
+    const result = await getCoverage(db, { window: "7d", datasetIds: [datasetId] });
     const reset = result.topics.find(t => t.topic === "password reset")!;
     const closure = result.topics.find(t => t.topic === "account closure")!;
     expect(reset.targetCases).toBeGreaterThan(2);
@@ -232,14 +232,14 @@ describe("coverage over production topics", () => {
   });
 
   it("reports an honesty delta between case presence and real depth", async () => {
-    const result = await getCoverage(db, { window: "7d", datasetId });
+    const result = await getCoverage(db, { window: "7d", datasetIds: [datasetId] });
     expect(result.presenceCoverage).toBeGreaterThanOrEqual(result.trafficWeightedCoverage);
     expect(result.honestyDelta).toBeCloseTo(result.presenceCoverage - result.trafficWeightedCoverage, 3);
   });
 
   it("flags cases that match no production topic as off-map", async () => {
     const orphan = await newDataset("orphan", [{ query: "can I pay in martian dollars", angle: 2.6 }]);
-    const result = await getCoverage(db, { window: "7d", datasetId: orphan });
+    const result = await getCoverage(db, { window: "7d", datasetIds: [orphan] });
     expect(result.offMapCases).toHaveLength(1);
     expect(result.offMapCases[0]!.query).toBe("can I pay in martian dollars");
   });
@@ -263,7 +263,7 @@ describe("synonymous intent labels", () => {
         await classify({ intent: "dispute a charge", angle: 0.55 });
       }
       const dsId = await newDataset("merge-suite", [{ query: "I want a refund", angle: SAME }]);
-      const result = await getCoverage(db, { window: "7d", datasetId: dsId });
+      const result = await getCoverage(db, { window: "7d", datasetIds: [dsId] });
 
       const labels = result.topics.map(t => t.topic);
       expect(labels).toContain("refund request");
@@ -302,7 +302,7 @@ describe("degradation and pending work are reported honestly", () => {
       })) as { _id: string };
       await cacheCaseEmbedding(created._id, "I want a refund", SAME);
 
-      const result = await getCoverage(db, { window: "7d", datasetId: created._id });
+      const result = await getCoverage(db, { window: "7d", datasetIds: [created._id] });
       expect(result.degraded).toBe(false);
       expect(result.caseEmbeddingsPending).toBe(1);
       expect(result.offMapCases.map(c => c.query)).not.toContain("not yet embedded");
@@ -312,7 +312,7 @@ describe("degradation and pending work are reported honestly", () => {
   });
 
   it("says per topic which measure produced the number", async () => {
-    const result = await getCoverage(db, { window: "7d", datasetId: await newDataset("basis", [{ query: "how do I reset my password", angle: SAME }]) });
+    const result = await getCoverage(db, { window: "7d", datasetIds: [await newDataset("basis", [{ query: "how do I reset my password", angle: SAME }])] });
     // The global degraded flag cannot answer this: facilityLocation returns null for a topic whose
     // own traces carry no embeddings even while the run is using them.
     for (const topic of result.topics) {
@@ -329,7 +329,7 @@ describe("degradation and pending work are reported honestly", () => {
       for (let i = 0; i < 4; i++) {
         await classify({ intent: "happy path", angle: SAME, issueType: "none", sentiment: "positive" });
       }
-      const result = await getCoverage(db, { window: "7d", datasetId: await newDataset("healthy", [{ query: "all good", angle: SAME }]) });
+      const result = await getCoverage(db, { window: "7d", datasetIds: [await newDataset("healthy", [{ query: "all good", angle: SAME }])] });
       expect(result.riskWeightedCoverage).toBeNull();
       expect(result.trafficWeightedCoverage).toBeGreaterThan(0);
     } finally {
@@ -361,7 +361,7 @@ describe("provisional results do not read as verdicts", () => {
       // its case exists and is in the queue, so "curate production traces" is wrong advice.
       await cacheCaseEmbedding(created._id, "I want a refund", SAME);
 
-      const result = await getCoverage(db, { window: "7d", datasetId: created._id });
+      const result = await getCoverage(db, { window: "7d", datasetIds: [created._id] });
       const tracking = result.topics.find(t => t.topic === "order tracking")!;
       expect(result.caseEmbeddingsPending).toBe(1);
       expect(tracking.suggestedAction).toContain("still being indexed");
@@ -412,7 +412,7 @@ describe("provisional results do not read as verdicts", () => {
         await classify({ intent: "vpn issue", angle: UNRELATED });
       }
       const dsId = await newDataset("tail", [{ query: "I want a refund", angle: SAME }]);
-      const result = await getCoverage(db, { window: "7d", datasetId: dsId });
+      const result = await getCoverage(db, { window: "7d", datasetIds: [dsId] });
       // The uncovered tail must hold the number below a clean 1.
       expect(result.trafficWeightedCoverage).toBeLessThan(1);
       expect(result.trafficWeightedCoverage).toBeGreaterThan(0.9);
@@ -438,7 +438,7 @@ describe("telling someone what to do first", () => {
       for (let i = 0; i < 10; i++) {
         await classify({ intent: "account closure", angle: UNRELATED, issueType: "refusal", sentiment: "negative" });
       }
-      const result = await getCoverage(db, { window: "7d", datasetId: await newDataset("empty-ish", [{ query: "unrelated", angle: 2.6 }]) });
+      const result = await getCoverage(db, { window: "7d", datasetIds: [await newDataset("empty-ish", [{ query: "unrelated", angle: 2.6 }])] });
 
       const greeting = result.topics.find(t => t.topic === "general greeting")!;
       const closure = result.topics.find(t => t.topic === "account closure")!;
@@ -461,7 +461,7 @@ describe("telling someone what to do first", () => {
       for (let i = 0; i < 2; i++) {
         await classify({ intent: "exotic edge case", angle: UNRELATED, issueType: "refusal", sentiment: "negative" });
       }
-      const result = await getCoverage(db, { window: "7d", datasetId: await newDataset("none", [{ query: "unrelated", angle: 2.6 }]) });
+      const result = await getCoverage(db, { window: "7d", datasetIds: [await newDataset("none", [{ query: "unrelated", angle: 2.6 }])] });
       const tracking = result.topics.find(t => t.topic === "order tracking")!;
       const exotic = result.topics.find(t => t.topic === "exotic edge case")!;
       expect(tracking.priority).toBeGreaterThan(exotic.priority);
@@ -471,20 +471,28 @@ describe("telling someone what to do first", () => {
   });
 
   it("gives a covered topic no priority, however busy it is", async () => {
-    const result = await getCoverage(db, { window: "7d", datasetId: await newDataset("covered", [{ query: "how do I reset my password", angle: SAME }]) });
+    const result = await getCoverage(db, { window: "7d", datasetIds: [await newDataset("covered", [{ query: "how do I reset my password", angle: SAME }])] });
     for (const t of result.topics.filter(t => t.state === "covered")) {
       expect(t.priority).toBeLessThan(0.05);
     }
   });
 
-  it("names the datasets the number was computed over", async () => {
+  it("lists every dataset even while filtered to one, and echoes the filter", async () => {
     const dsId = await newDataset("named-suite", [{ query: "how do I reset my password", angle: SAME }]);
-    const result = await getCoverage(db, { window: "7d", datasetId: dsId });
-    // A project-wide figure silently mixes every dataset in the project; without this nobody can
-    // tell whether a gap belongs to the suite they care about.
-    expect(result.datasets.map(d => d.id)).toEqual([dsId]);
-    expect(result.datasets[0]!.name).toBe("named-suite");
-    expect(result.datasets[0]!.caseCount).toBe(1);
+    const other = await newDataset("other-suite", [{ query: "close my account", angle: UNRELATED }]);
+    const result = await getCoverage(db, { window: "7d", datasetIds: [dsId] });
+
+    // A project-wide figure silently mixes every dataset, so the filter has to exist - but the
+    // list it is drawn from must NOT narrow with it. Returning only the selected dataset left the
+    // UI's picker with one option the moment it was used, which is a filter nobody can undo.
+    const ids = result.datasets.map(d => d.id);
+    expect(ids).toContain(dsId);
+    expect(ids).toContain(other);
+    const named = result.datasets.find(d => d.id === dsId)!;
+    expect(named.name).toBe("named-suite");
+    expect(named.caseCount).toBe(1);
+    // The scope itself comes back on the response, so a caller can tell what it was answered for.
+    expect(result.datasetIds).toEqual([dsId]);
   });
 });
 
@@ -547,7 +555,7 @@ describe("label matching does not punish long cases", () => {
       await cacheCaseEmbedding(created._id, "how do I reset my password", SAME);
       await cacheCaseEmbedding(created._id, "billing dispute over a duplicate charge", UNRELATED);
 
-      const result = await getCoverage(db, { window: "7d", datasetId: created._id });
+      const result = await getCoverage(db, { window: "7d", datasetIds: [created._id] });
       const billing = result.topics.find(t => t.topic === "billing dispute")!;
       expect(result.degraded).toBe(false);
       expect(billing.caseCount).toBe(1);
@@ -574,7 +582,7 @@ describe("label matching does not punish long cases", () => {
       })) as { _id: string };
       await cacheCaseEmbedding(created._id, "I want a refund", SAME);
 
-      const result = await getCoverage(db, { window: "7d", datasetId: created._id });
+      const result = await getCoverage(db, { window: "7d", datasetIds: [created._id] });
       // degraded is about WHICH measure ran; provisional is about how much of the dataset it saw.
       // A cold cache on a big dataset reports a near-zero number that is a floor, not a verdict.
       expect(result.degraded).toBe(false);
@@ -617,7 +625,7 @@ describe("the probe", () => {
   });
 
   it("calls a paraphrase covered, and names the case it matched", async () => {
-    const result = await probe(db, { query: "I need to reset my password", datasetId, window: "7d" });
+    const result = await probe(db, { query: "I need to reset my password", datasetIds: [datasetId], window: "7d" });
     expect(result.verdict).toBe("covered");
     expect(result.similarity).toBeGreaterThanOrEqual(SIMILARITY_BANDS.covered);
     expect(result.nearestCases[0]!.query).toBe("how do I reset my password");
@@ -629,19 +637,19 @@ describe("the probe", () => {
   it("distinguishes a real gap from a question nobody asks", async () => {
     // Both are uncovered. Only one is a gap - and conflating them is what would send a team
     // writing tests for traffic that does not exist.
-    const real = await probe(db, { query: "close my account", datasetId, window: "7d" });
+    const real = await probe(db, { query: "close my account", datasetIds: [datasetId], window: "7d" });
     expect(real.verdict).toBe("gap");
     expect(real.topic!.topic).toBe("account closure");
     expect(real.explanation).toContain("real gap");
 
-    const hypothetical = await probe(db, { query: "unrelated to anything on file", datasetId, window: "7d" });
+    const hypothetical = await probe(db, { query: "unrelated to anything on file", datasetIds: [datasetId], window: "7d" });
     expect(hypothetical.verdict).toBe("untested-and-unasked");
     expect(hypothetical.topic).toBeNull();
     expect(hypothetical.explanation).toContain("not a gap");
   });
 
   it("refuses to call a related-but-distinct question covered", async () => {
-    const result = await probe(db, { query: "my password reset link expired, what now", datasetId, window: "7d" });
+    const result = await probe(db, { query: "my password reset link expired, what now", datasetIds: [datasetId], window: "7d" });
     expect(result.verdict).toBe("adjacent");
     expect(result.similarity).toBeGreaterThanOrEqual(SIMILARITY_BANDS.related);
     expect(result.similarity).toBeLessThan(SIMILARITY_BANDS.covered);
@@ -653,7 +661,7 @@ describe("the probe", () => {
   it("degrades to lexical matching, and says so, when the query cannot be embedded", async () => {
     // Never registered, so the mocked embedder returns null exactly as a missing OPENAI_API_KEY
     // would. The verdict still comes back - on a different, clearly-labelled scale.
-    const result = await probe(db, { query: "reset password", datasetId, window: "7d" });
+    const result = await probe(db, { query: "reset password", datasetIds: [datasetId], window: "7d" });
     expect(result.degraded).toBe(true);
     expect(result.bands.covered).toBeLessThan(SIMILARITY_BANDS.covered);
     expect(result.nearestCases.length).toBeGreaterThan(0);
@@ -669,7 +677,7 @@ describe("the probe", () => {
       await classify({ intent: "one-off question", angle: UNRELATED });
       registerQuery("something nobody really asks", UNRELATED);
       const dsId = await newDataset("stray-suite", [{ query: "unrelated case", angle: SAME }]);
-      const result = await probe(db, { query: "something nobody really asks", datasetId: dsId, window: "7d" });
+      const result = await probe(db, { query: "something nobody really asks", datasetIds: [dsId], window: "7d" });
       expect(result.verdict).toBe("untested-and-unasked");
       expect(result.topic).toBeNull();
     } finally {
@@ -678,14 +686,14 @@ describe("the probe", () => {
   });
 
   it("returns the bands it judged with, so a raw score is never shown alone", async () => {
-    const result = await probe(db, { query: "how do I reset my password", datasetId, window: "7d" });
+    const result = await probe(db, { query: "how do I reset my password", datasetIds: [datasetId], window: "7d" });
     expect(result.bands).toEqual({ covered: SIMILARITY_BANDS.covered, related: SIMILARITY_BANDS.related });
   });
 
   it("rolls a batch up into a pre-launch verdict", async () => {
     const result = await probeBatch(db, {
       queries: ["how do I reset my password", "close my account", "  ", "something with no bearing on this suite"],
-      datasetId,
+      datasetIds: [datasetId],
       window: "7d",
     });
     // The blank line is dropped rather than probed.

@@ -326,13 +326,15 @@ export const insightTopicSchema = z
     priority: z.number(),
     riskComponents: z.object({ issueRate: z.number(), negativeSentimentRate: z.number() }).strict(),
     suggestedAction: z.string(),
+    caseDatasets: z.array(z.object({ id: z.string(), name: z.string(), count: z.number() }).strict()),
+    sampleCases: z.array(z.object({ datasetId: z.string(), query: z.string() }).strict()),
   })
   .strict();
 
 export const insightsCoverageResponseSchema = z
   .object({
     window: z.enum(["24h", "7d", "30d"]),
-    datasetId: z.string().nullable(),
+    datasetIds: z.array(z.string()),
     degraded: z.boolean(),
     provisional: z.boolean(),
     degradedReason: z.string().nullable(),
@@ -345,7 +347,16 @@ export const insightsCoverageResponseSchema = z
     datasets: z.array(z.object({ id: z.string(), name: z.string(), caseCount: z.number() }).strict()),
     topics: z.array(insightTopicSchema),
     offMapCases: z.array(
-      z.object({ datasetId: z.string(), index: z.number(), query: z.string(), bestSimilarity: z.number() }).strict()
+      z
+        .object({
+          datasetId: z.string(),
+          index: z.number(),
+          query: z.string(),
+          bestSimilarity: z.number(),
+          expectedResults: z.string().nullable(),
+          nearestTopic: z.string().nullable(),
+        })
+        .strict()
     ),
     caseEmbeddingsPending: z.number(),
   })

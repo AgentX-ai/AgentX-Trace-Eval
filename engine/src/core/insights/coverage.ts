@@ -4,7 +4,7 @@ import { listClassificationsSince, windowConfig, type ClassificationRow } from "
 import type { MonitoringWindow } from "../monitor/events.js";
 import { SIMILARITY_BANDS } from "../evaluate/curation.js";
 import { centroid, contentWords, cosine, normalizeText, overlap } from "../shared/vector.js";
-import { listDatasetCases, attachCaseEmbeddings, type DatasetCase } from "./cases.js";
+import { listDatasetCases, listDatasetSummaries, attachCaseEmbeddings, type DatasetCase } from "./cases.js";
 
 // The join between what production does (monitor_classifications) and what the datasets test.
 // Derived on read: there is no insight_topics table, and topics are the classifier's own `intent`
@@ -43,11 +43,19 @@ export type TopicCoverage = {
   priority: number;
   riskComponents: { issueRate: number; negativeSentimentRate: number };
   suggestedAction: string;
+  /**
+   * Which suites the assigned cases came from, complete. "6/5 cases" says a topic is covered; it
+   * does not say the cover is six near-identical cases in one smoke dataset, which is a different
+   * conclusion about whether to trust it.
+   */
+  caseDatasets: { id: string; name: string; count: number }[];
+  /** The closest assigned cases, best first - what this topic already tests, in its own words. */
+  sampleCases: { datasetId: string; query: string }[];
 };
 
 export type CoverageResult = {
   window: MonitoringWindow;
-  datasetId: string | null;
+  datasetIds: string[];
   /** True when the numbers came from the lexical fallback rather than embeddings. */
   degraded: boolean;
   /**
@@ -79,7 +87,16 @@ export type CoverageResult = {
   datasets: { id: string; name: string; caseCount: number }[];
   topics: TopicCoverage[];
   /** Cases matching no topic: either dead test weight, or a topic the classifier hasn't seen. */
-  offMapCases: { datasetId: string; index: number; query: string; bestSimilarity: number }[];
+  offMapCases: {
+    datasetId: string;
+    index: number;
+    query: string;
+    bestSimilarity: number;
+    /** What the case asserts. Deciding a case is dead weight without reading it is a guess. */
+    expectedResults: string | null;
+    /** Nearest topic even though it did not clear the bar - names what "0.45" is 0.45 against. */
+    nearestTopic: string | null;
+  }[];
   caseEmbeddingsPending: number;
 };
 
@@ -335,6 +352,19 @@ function facilityLocation(assigned: DatasetCase[], group: TopicGroup, sim: Simil
   return total / usable.length;
 }
 
+const SAMPLE_CASES = 6;
+
+// Grouped by dataset, biggest first, so "where does this coverage come from" is one glance.
+function caseDatasetsFor(assigned: DatasetCase[]): { id: string; name: string; count: number }[] {
+  const byId = new Map<string, { id: string; name: string; count: number }>();
+  for (const item of assigned) {
+    const entry = byId.get(item.datasetId) ?? { id: item.datasetId, name: item.datasetName, count: 0 };
+    entry.count++;
+    byId.set(item.datasetId, entry);
+  }
+  return Array.from(byId.values()).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+
 function suggestedActionFor(state: CoverageState, topic: string, gap: number, pending: number): string {
   if (state === "missing") {
     // Unembedded cases count toward no topic, so a topic can read "missing" while cases for it sit
@@ -352,25 +382,21 @@ function suggestedActionFor(state: CoverageState, topic: string, gap: number, pe
 
 export async function getCoverage(
   db: Db,
-  options: { window: MonitoringWindow; datasetId?: string }
+  options: { window: MonitoringWindow; datasetIds?: string[] }
 ): Promise<CoverageResult> {
   const { days } = windowConfig(options.window);
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const rows = await listClassificationsSince(db, since);
-  const datasetId = options.datasetId ?? null;
+  const datasetIds = options.datasetIds ?? [];
 
   const allGroups = groupByIntent(rows);
   const groups = allGroups.filter(g => g.rows.length >= MIN_TRACES_PER_TOPIC);
-  const cases = await listDatasetCases(db, options.datasetId);
+  const cases = await listDatasetCases(db, options.datasetIds);
   const { embedded, pending } = await attachCaseEmbeddings(db, cases);
 
-  const datasetCounts = new Map<string, { id: string; name: string; caseCount: number }>();
-  for (const item of cases) {
-    const entry = datasetCounts.get(item.datasetId) ?? { id: item.datasetId, name: item.datasetName, caseCount: 0 };
-    entry.caseCount++;
-    datasetCounts.set(item.datasetId, entry);
-  }
-  const datasets = Array.from(datasetCounts.values()).sort((a, b) => b.caseCount - a.caseCount);
+  // Always the complete list, never just what the filter selected - this is what the filter's own
+  // control is built from.
+  const datasets = await listDatasetSummaries(db);
 
   const anyTraceEmbeddings = groups.some(g => g.embeddings.length > 0);
   const sim = embedded && anyTraceEmbeddings ? embeddingSimilarity() : lexicalSimilarity();
@@ -390,7 +416,7 @@ export async function getCoverage(
   if (groups.length === 0) {
     return {
       window: options.window,
-      datasetId,
+      datasetIds,
       degraded: sim.kind !== "embedding",
       degradedReason,
       provisional: pending > 0,
@@ -447,6 +473,12 @@ export async function getCoverage(
         index: item.index,
         query: item.query,
         bestSimilarity: Math.round(Math.max(0, best?.score ?? 0) * 1000) / 1000,
+        // Both carried so the UI can show the case rather than just name it. "Delete this test" is
+        // a decision nobody should make from a query string and a score alone: the expected result
+        // is what the case actually asserts, and the nearest topic says what it was measured
+        // against - which is often the thing that makes an off-map case obviously fine.
+        expectedResults: item.expectedResults,
+        nearestTopic: bestGroup?.topic ?? null,
       });
       continue;
     }
@@ -522,6 +554,11 @@ export async function getCoverage(
         negativeSentimentRate: Math.round(negativeSentimentRate * 1000) / 1000,
       },
       suggestedAction: suggestedActionFor(state, group.topic, Math.max(1, targetCases - assigned.length), pending),
+      caseDatasets: caseDatasetsFor(assigned),
+      // Capped: a well-covered topic can carry twenty near-identical cases, and the reader needs
+      // to recognise what is already tested, not to page through it. caseDatasets keeps the full
+      // count honest above it.
+      sampleCases: assigned.slice(0, SAMPLE_CASES).map(item => ({ datasetId: item.datasetId, query: item.query })),
     };
   });
 
@@ -548,7 +585,7 @@ export async function getCoverage(
 
   return {
     window: options.window,
-    datasetId,
+    datasetIds,
     degraded: sim.kind !== "embedding",
     degradedReason,
     provisional: pending > 0,

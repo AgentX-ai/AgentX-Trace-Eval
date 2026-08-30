@@ -48,9 +48,25 @@ export function caseKeyFor(query: string, expectedResults?: string | null): stri
 // the rest as pending; the next call continues from there.
 const MAX_NEW_EMBEDDINGS_PER_REQUEST = 60;
 
-export async function listDatasetCases(db: Db, datasetId?: string): Promise<DatasetCase[]> {
+// Every dataset in the project with its case count, unaffected by whatever the caller is filtering
+// to. The filter's own control is drawn from this: a picker built from the filtered result has one
+// option left the moment you use it, which is a filter you cannot undo.
+export async function listDatasetSummaries(db: Db): Promise<{ id: string; name: string; caseCount: number }[]> {
   const datasets = (await listDatasets(db)) as { _id: string; name: string; questions?: unknown }[];
-  const wanted = datasetId ? datasets.filter(d => d._id === datasetId) : datasets;
+  return datasets
+    .map(dataset => ({
+      id: dataset._id,
+      name: dataset.name,
+      caseCount: (Array.isArray(dataset.questions) ? (dataset.questions as QuestionShape[]) : []).filter(
+        question => typeof question?.main_question?.query === "string" && question.main_question.query.trim()
+      ).length,
+    }))
+    .sort((a, b) => b.caseCount - a.caseCount || a.name.localeCompare(b.name));
+}
+
+export async function listDatasetCases(db: Db, datasetIds?: string[]): Promise<DatasetCase[]> {
+  const datasets = (await listDatasets(db)) as { _id: string; name: string; questions?: unknown }[];
+  const wanted = datasetIds?.length ? datasets.filter(d => datasetIds.includes(d._id)) : datasets;
   const cases: DatasetCase[] = [];
   for (const dataset of wanted) {
     const questions = Array.isArray(dataset.questions) ? (dataset.questions as QuestionShape[]) : [];

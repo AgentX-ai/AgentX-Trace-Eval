@@ -97,10 +97,10 @@ type ProbeContext = {
   embeddedCases: boolean;
 };
 
-async function loadContext(db: Db, window: MonitoringWindow, datasetId?: string): Promise<ProbeContext> {
+async function loadContext(db: Db, window: MonitoringWindow, datasetIds?: string[]): Promise<ProbeContext> {
   const { days } = windowConfig(window);
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const [rows, cases] = await Promise.all([listClassificationsSince(db, since), listDatasetCases(db, datasetId)]);
+  const [rows, cases] = await Promise.all([listClassificationsSince(db, since), listDatasetCases(db, datasetIds)]);
   const { embedded } = await attachCaseEmbeddings(db, cases);
   // Same floor the coverage sweep applies. Without it a single stray classification is enough to
   // turn "nobody asks this" into a fabricated real gap - the one verdict the probe exists to avoid
@@ -199,9 +199,9 @@ function probeWith(query: string, ctx: ProbeContext, scorer: Scorer): ProbeResul
 
 export async function probe(
   db: Db,
-  input: { query: string; window: MonitoringWindow; datasetId?: string }
+  input: { query: string; window: MonitoringWindow; datasetIds?: string[] }
 ): Promise<ProbeResult> {
-  const ctx = await loadContext(db, input.window, input.datasetId);
+  const ctx = await loadContext(db, input.window, input.datasetIds);
   const scorer = await scorerFor(input.query, ctx);
   return probeWith(input.query, ctx, scorer);
 }
@@ -217,10 +217,10 @@ export type ProbeBatchResult = {
 // for the whole batch; only the embedding is per-query.
 export async function probeBatch(
   db: Db,
-  input: { queries: string[]; window: MonitoringWindow; datasetId?: string }
+  input: { queries: string[]; window: MonitoringWindow; datasetIds?: string[] }
 ): Promise<ProbeBatchResult> {
   const queries = input.queries.map(q => q.trim()).filter(Boolean).slice(0, MAX_BATCH);
-  const ctx = await loadContext(db, input.window, input.datasetId);
+  const ctx = await loadContext(db, input.window, input.datasetIds);
 
   const results: ProbeResult[] = [];
   for (const query of queries) {

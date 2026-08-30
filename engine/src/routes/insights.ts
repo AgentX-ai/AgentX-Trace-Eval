@@ -25,21 +25,28 @@ function parseWindow(req: Request): MonitoringWindow {
   return (WINDOWS as string[]).includes(raw) ? (raw as MonitoringWindow) : "30d";
 }
 
-function datasetIdOf(req: Request): string | undefined {
+// Accepts a repeated or comma-separated `datasetId`, so the single-value form older callers send
+// keeps working and the UI's multi-select needs no second parameter.
+function datasetIdsOf(req: Request): string[] {
   const raw = req.query.datasetId;
-  return typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
+  const values = Array.isArray(raw) ? raw : [raw];
+  return values
+    .filter((value): value is string => typeof value === "string")
+    .flatMap(value => value.split(","))
+    .map(value => value.trim())
+    .filter(Boolean);
 }
 
 // The sweep: three headline numbers, the topic list with its state, and the off-map cases.
 insightsRouter.get("/coverage", async (req: Request, res: Response) => {
-  res.status(200).json(await getCoverage(scopedDb(req), { window: parseWindow(req), datasetId: datasetIdOf(req) }));
+  res.status(200).json(await getCoverage(scopedDb(req), { window: parseWindow(req), datasetIds: datasetIdsOf(req) }));
 });
 
 const probeSchema = z
   .object({
     query: z.string().trim().min(1, "query is required"),
     window: z.enum(["24h", "7d", "30d"]).optional(),
-    datasetId: z.string().trim().min(1).optional(),
+    datasetIds: z.array(z.string().trim().min(1)).optional(),
   })
   .strip();
 
@@ -48,7 +55,7 @@ const probeSchema = z
 insightsRouter.post("/probe", validateBody(probeSchema), async (req: Request, res: Response) => {
   const body = req.body as z.infer<typeof probeSchema>;
   res.status(200).json(
-    await probe(scopedDb(req), { query: body.query, window: body.window ?? "30d", datasetId: body.datasetId })
+    await probe(scopedDb(req), { query: body.query, window: body.window ?? "30d", datasetIds: body.datasetIds })
   );
 });
 
@@ -56,13 +63,13 @@ const probeBatchSchema = z
   .object({
     queries: z.array(z.string()).min(1, "queries must contain at least one entry").max(50),
     window: z.enum(["24h", "7d", "30d"]).optional(),
-    datasetId: z.string().trim().min(1).optional(),
+    datasetIds: z.array(z.string().trim().min(1)).optional(),
   })
   .strip();
 
 insightsRouter.post("/probe/batch", validateBody(probeBatchSchema), async (req: Request, res: Response) => {
   const body = req.body as z.infer<typeof probeBatchSchema>;
   res.status(200).json(
-    await probeBatch(scopedDb(req), { queries: body.queries, window: body.window ?? "30d", datasetId: body.datasetId })
+    await probeBatch(scopedDb(req), { queries: body.queries, window: body.window ?? "30d", datasetIds: body.datasetIds })
   );
 });
