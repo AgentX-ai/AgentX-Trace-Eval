@@ -342,6 +342,50 @@ export async function embeddingsAvailable(): Promise<boolean> {
   return (await getOpenAI()) !== null;
 }
 
+// Inputs per embeddings request. The endpoint takes an array, so a cold Insights cache asking for
+// ~120 vectors is one or two calls rather than ~120 serialized round trips (which measured ~40s).
+// 128 is well inside the API's per-request input limit and keeps any single failure cheap to retry.
+const MAX_EMBEDDING_BATCH = 128;
+
+// Batched sibling of computeEmbedding, for callers that already know every text they need. Returns
+// one slot per input, aligned by index, holding null wherever the text was blank, no key is set, or
+// the call failed - the same per-item graceful degradation computeEmbedding gives, so a partial
+// result is usable rather than fatal and the null slots simply retry on the next call.
+export async function computeEmbeddings(
+  texts: string[],
+  model: string = DEFAULT_EMBEDDING_MODEL
+): Promise<(number[] | null)[]> {
+  const out: (number[] | null)[] = new Array(texts.length).fill(null);
+  const client = await getOpenAI();
+  if (!client) {
+    return out;
+  }
+  // Blank text never reaches the API: it has no meaningful vector, and an empty string in the
+  // input array is a request-level error that would take the whole chunk down with it.
+  const wanted = texts.map((text, index) => ({ index, text: text.trim() })).filter(entry => entry.text.length > 0);
+
+  for (let start = 0; start < wanted.length; start += MAX_EMBEDDING_BATCH) {
+    const chunk = wanted.slice(start, start + MAX_EMBEDDING_BATCH);
+    try {
+      const response = await client.embeddings.create({ model, input: chunk.map(entry => entry.text) });
+      // Map each vector back through the response's own `index` rather than positionally: the API
+      // documents input order as preserved, but honoring the explicit index costs nothing and means
+      // a reordered response mislabels no vectors.
+      for (const item of response.data ?? []) {
+        const entry = chunk[item.index];
+        if (entry && Array.isArray(item.embedding)) {
+          out[entry.index] = item.embedding;
+        }
+      }
+    } catch (err) {
+      // Only this chunk's slots stay null. Nothing is cached from a failure, so the next call
+      // retries exactly the texts that did not come back.
+      logger.error({ err: err }, "Batch embedding computation failed:");
+    }
+  }
+  return out;
+}
+
 export async function computeEmbedding(text: string, model: string = DEFAULT_EMBEDDING_MODEL): Promise<number[] | null> {
   const trimmed = text.trim();
   if (!trimmed) {

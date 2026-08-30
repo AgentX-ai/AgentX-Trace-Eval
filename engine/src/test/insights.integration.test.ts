@@ -22,7 +22,8 @@ const { registered } = vi.hoisted(() => ({ registered: new Map<string, number[]>
 
 vi.mock("../core/evaluate/judge.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../core/evaluate/judge.js")>();
-  return { ...actual, computeEmbedding: async (text: string) => registered.get(text.trim()) ?? null };
+  const one = (text: string): number[] | null => registered.get(text.trim()) ?? null;
+  return { ...actual, computeEmbedding: async (text: string) => one(text), computeEmbeddings: async (texts: string[]) => texts.map(one) };
 });
 
 let test: TestDb;

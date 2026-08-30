@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { Db } from "../../storage/db.js";
-import { computeEmbedding, embeddingsAvailable } from "../evaluate/judge.js";
+import { computeEmbeddings, embeddingsAvailable } from "../evaluate/judge.js";
 import { DEFAULT_EMBEDDING_MODEL } from "@agentx/judge-core";
 import { listDatasets } from "../evaluate/datasets.js";
 import { normalizeText } from "../shared/vector.js";
@@ -133,7 +133,7 @@ export type CaseEmbeddingResult = {
   pending: number;
 };
 
-// Never caches a null. A failed call and a missing key are indistinguishable at computeEmbedding's
+// Never caches a null. A failed call and a missing key are indistinguishable at the embedder's
 // boundary, and caching that as permanent would exclude those cases forever - adding a key later
 // would not recover them. Instead the no-key case short-circuits before any call, so nothing
 // retries in a doomed loop, and a real failure just stays pending until next time.
@@ -141,31 +141,62 @@ export async function attachCaseEmbeddings(db: Db, cases: DatasetCase[]): Promis
   const datasetIds = Array.from(new Set(cases.map(c => c.datasetId)));
   const cache = await readCache(db, datasetIds);
   const canEmbed = cases.length > 0 && (await embeddingsAvailable());
-  let budget = MAX_NEW_EMBEDDINGS_PER_REQUEST;
-  let embedded = false;
-  let pending = 0;
 
+  const uncached: DatasetCase[] = [];
   for (const item of cases) {
     const cached = cache.get(`${item.datasetId}:${item.caseKey}`);
     if (cached) {
       item.embedding = Array.isArray(cached.embedding) ? (cached.embedding as number[]) : null;
       item.embeddingFull = Array.isArray(cached.embeddingFull) ? (cached.embeddingFull as number[]) : null;
-    } else if (canEmbed && budget > 0) {
-      budget--;
-      const fullText = item.expectedResults ? `${item.query}\n\n${item.expectedResults}` : item.query;
-      const [query, full] = await Promise.all([computeEmbedding(item.query), computeEmbedding(fullText)]);
+    } else if (canEmbed && uncached.length < MAX_NEW_EMBEDDINGS_PER_REQUEST) {
+      uncached.push(item);
+    }
+  }
+
+  if (uncached.length > 0) {
+    // Every text this request needs, gathered before anything is sent, so the whole cold batch is
+    // one or two API calls instead of two per case in sequence. Identical texts share a slot: a
+    // case with no expected result has query and full text the same, and that is the common shape.
+    const texts: string[] = [];
+    const slotOf = new Map<string, number>();
+    const slot = (text: string): number => {
+      const existing = slotOf.get(text);
+      if (existing !== undefined) {
+        return existing;
+      }
+      const next = texts.push(text) - 1;
+      slotOf.set(text, next);
+      return next;
+    };
+    const wanted = uncached.map(item => ({
+      item,
+      query: slot(item.query),
+      full: slot(item.expectedResults ? `${item.query}\n\n${item.expectedResults}` : item.query),
+    }));
+
+    const vectors = await computeEmbeddings(texts);
+    for (const entry of wanted) {
+      const query = vectors[entry.query];
+      const full = vectors[entry.full];
+      // Both or neither: a case with one usable vector is scoreable in one space and silently
+      // absent from the other, which reads as a coverage gap that isn't one.
       if (query && full) {
-        item.embedding = query;
-        item.embeddingFull = full;
+        entry.item.embedding = query;
+        entry.item.embeddingFull = full;
         await writeCache(db, {
-          datasetId: item.datasetId,
-          caseKey: item.caseKey,
-          query: item.query,
+          datasetId: entry.item.datasetId,
+          caseKey: entry.item.caseKey,
+          query: entry.item.query,
           embedding: query,
           embeddingFull: full,
         });
       }
     }
+  }
+
+  let embedded = false;
+  let pending = 0;
+  for (const item of cases) {
     if (item.embedding && item.embeddingFull) {
       embedded = true;
     } else {
