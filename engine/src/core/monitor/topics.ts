@@ -182,7 +182,7 @@ export async function runClassification(
 // Same window/bucket idiom as events.ts's getOnlineEvaluatorRatings (windowConfig/listEventsSince
 // there are module-private, shaped for a different accumulator - copied here rather than shared,
 // matching how getOnlineEvaluatorRatings itself doesn't reuse events.ts's own bucketize()).
-function windowConfig(window: MonitoringWindow): { days: number; bucketHours: number } {
+export function windowConfig(window: MonitoringWindow): { days: number; bucketHours: number } {
   switch (window) {
     case "24h":
       return { days: 1, bucketHours: 1 };
@@ -194,7 +194,11 @@ function windowConfig(window: MonitoringWindow): { days: number; bucketHours: nu
   }
 }
 
-async function listClassificationsSince(db: Db, since: Date): Promise<ClassificationRow[]> {
+// Exported for core/insights/coverage.ts, which groups these same rows by intent to build its
+// Phase 0 topic list - the aggregations below (trend/top-intents/issue-breakdown/map) each
+// re-read the window for their own accumulator, and coverage is a fifth one of those, not a new
+// way of reading the table.
+export async function listClassificationsSince(db: Db, since: Date): Promise<ClassificationRow[]> {
   const cond = and(gte(db.schema.monitorClassifications.createdAt, since), eq(db.schema.monitorClassifications.projectId, db.projectId));
   const rows =
     db.kind === "sqlite"

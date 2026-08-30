@@ -308,6 +308,100 @@ export const judgeScorerSchema = z
 
 export const judgeScorersResponseSchema = z.object({ judgeScorers: z.array(judgeScorerSchema) }).strict();
 
+// ---- Insights: dataset coverage of production topics -----------------------------------------
+
+export const insightTopicSchema = z
+  .object({
+    topic: z.string(),
+    coverageBasis: z.enum(["depth", "count"]),
+    aliases: z.array(z.string()),
+    state: z.enum(["covered", "underrepresented", "missing"]),
+    trafficShare: z.number(),
+    traceCount: z.number(),
+    uniqueSessions: z.number(),
+    caseCount: z.number(),
+    targetCases: z.number(),
+    coverage: z.number(),
+    risk: z.number(),
+    priority: z.number(),
+    riskComponents: z.object({ issueRate: z.number(), negativeSentimentRate: z.number() }).strict(),
+    suggestedAction: z.string(),
+    caseDatasets: z.array(z.object({ id: z.string(), name: z.string(), count: z.number() }).strict()),
+    sampleCases: z.array(z.object({ datasetId: z.string(), query: z.string(), count: z.number() }).strict()),
+  })
+  .strict();
+
+export const insightsCoverageResponseSchema = z
+  .object({
+    window: z.enum(["24h", "7d", "30d"]),
+    datasetIds: z.array(z.string()),
+    degraded: z.boolean(),
+    provisional: z.boolean(),
+    degradedReason: z.string().nullable(),
+    insufficientData: z.boolean(),
+    trafficWeightedCoverage: z.number(),
+    topicBreadth: z.object({ covered: z.number(), total: z.number() }).strict(),
+    riskWeightedCoverage: z.number().nullable(),
+    presenceCoverage: z.number(),
+    honestyDelta: z.number(),
+    datasets: z.array(z.object({ id: z.string(), name: z.string(), caseCount: z.number() }).strict()),
+    topics: z.array(insightTopicSchema),
+    offMapCases: z.array(
+      z
+        .object({
+          datasetId: z.string(),
+          index: z.number(),
+          query: z.string(),
+          bestSimilarity: z.number(),
+          expectedResults: z.string().nullable(),
+          nearestTopic: z.string().nullable(),
+        })
+        .strict()
+    ),
+    caseEmbeddingsPending: z.number(),
+  })
+  .strict();
+
+export const insightsProbeResponseSchema = z
+  .object({
+    query: z.string(),
+    verdict: z.enum(["covered", "adjacent", "gap", "untested-and-unasked"]),
+    similarity: z.number(),
+    bands: z.object({ covered: z.number(), related: z.number() }).strict(),
+    degraded: z.boolean(),
+    nearestCases: z.array(
+      z
+        .object({
+          datasetId: z.string(),
+          datasetName: z.string(),
+          index: z.number(),
+          query: z.string(),
+          expectedResults: z.string().nullable(),
+          similarity: z.number(),
+        })
+        .strict()
+    ),
+    topic: z.object({ topic: z.string(), trafficShare: z.number(), traceCount: z.number() }).strict().nullable(),
+    explanation: z.string(),
+  })
+  .strict();
+
+export const insightsProbeBatchResponseSchema = z
+  .object({
+    results: z.array(insightsProbeResponseSchema),
+    rollup: z
+      .object({
+        total: z.number(),
+        covered: z.number(),
+        adjacent: z.number(),
+        gap: z.number(),
+        untestedAndUnasked: z.number(),
+      })
+      .strict(),
+    degraded: z.boolean(),
+  })
+  .strict();
+
 // ---- registry --------------------------------------------------------------------------------
 
 // What /api/v1/openapi.json publishes and the contract test iterates. Grows a row per surface
@@ -375,5 +469,26 @@ export const WIRE_CONTRACT = [
     summary: "Judge scorer catalog",
     response: judgeScorersResponseSchema,
     name: "JudgeScorersResponse",
+  },
+  {
+    method: "get" as const,
+    path: "/insights/coverage",
+    summary: "Dataset coverage of the topics production actually produces",
+    response: insightsCoverageResponseSchema,
+    name: "InsightsCoverageResponse",
+  },
+  {
+    method: "post" as const,
+    path: "/insights/probe",
+    summary: "Ask whether the datasets cover one specific query",
+    response: insightsProbeResponseSchema,
+    name: "InsightsProbeResponse",
+  },
+  {
+    method: "post" as const,
+    path: "/insights/probe/batch",
+    summary: "The same verdict for a list of queries, plus a rollup",
+    response: insightsProbeBatchResponseSchema,
+    name: "InsightsProbeBatchResponse",
   },
 ];

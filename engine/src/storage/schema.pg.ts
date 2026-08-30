@@ -322,6 +322,20 @@ export const monitorClassifications = pgTable("monitor_classifications", {
   embedding: jsonb("embedding"),
 });
 
+
+// See schema.sqlite.ts's insightCaseEmbeddings for the full comment.
+export const insightCaseEmbeddings = pgTable("insight_case_embeddings", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  datasetId: text("dataset_id").notNull(),
+  caseKey: text("case_key").notNull(),
+  query: text("query").notNull(),
+  embedding: jsonb("embedding"),
+  embeddingFull: jsonb("embedding_full"),
+  model: text("model"),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+});
+
 // See schema.sqlite.ts's monitorOnlineEvaluators for the full comment.
 export const monitorOnlineEvaluators = pgTable("monitor_online_evaluators", {
   id: text("id").primaryKey(),
@@ -676,6 +690,7 @@ export type PgSchema = {
   monitorSignals: typeof monitorSignals;
   monitorEvents: typeof monitorEvents;
   monitorClassifications: typeof monitorClassifications;
+  insightCaseEmbeddings: typeof insightCaseEmbeddings;
   monitorOnlineEvaluators: typeof monitorOnlineEvaluators;
   customEvaluators: typeof customEvaluators;
   agentConnectors: typeof agentConnectors;

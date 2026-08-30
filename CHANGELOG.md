@@ -857,3 +857,110 @@ deleted project's API key stops authenticating, that the default project is refu
 that an unknown id 404s, and that an unauthenticated delete is rejected without removing anything.
 The cascade assertion was checked both ways: with the table loop disabled it fails with `traces
 kept rows for a deleted project: expected 1 to be +0`.
+
+---
+
+Topics knew what production was asked about and Evaluate knew what the datasets tested, and the
+two had never been introduced. Nobody could answer "does our suite look anything like our
+traffic?", so dataset quality was a feeling. **Insights** is the join: `GET
+/api/v1/insights/coverage` groups the window's `monitor_classifications` by intent, assigns every
+dataset case to the topic it belongs to, and reports traffic-weighted coverage, topic breadth, and
+risk-weighted coverage. The gap between the first and third is the finding worth having - it says
+you test what is common rather than what is dangerous.
+
+The measurement is the part that needed care. Counting cases per topic would have been the obvious
+implementation and it would have been worthless, because the whole point of knowing where the gaps
+are is to then generate cases, and any count-based number is inflated by generating near-copies of
+one you already have. Coverage is instead a facility-location value: the average, over the topic's
+real traces, of the best similarity any assigned case reaches to that trace. A duplicate adds
+nothing because the maximum is already satisfied, so the anti-gaming property falls out of the
+formula rather than needing a rule. `targetCases` (scaled by traffic and observed risk, `sqrt` on
+traffic so a topic carrying 40% of requests does not demand 40% of the test budget) survives as
+guidance for what to write next, and becomes the measure only in the degraded path, where there is
+no geometry to measure depth with.
+
+That distinction was not theoretical. The first implementation took `min(countRatio, depth)`,
+which reads plausibly and quietly reintroduces exactly the flaw the metric exists to prevent: the
+duplicate-inflation test - six near-identical cases against a two-case baseline - failed with
+`expected 0.857 to be less than or equal to 0.287`. The count term was doing the talking. Removing
+it is what makes the anti-gaming claim true rather than merely stated.
+
+The **probe** is the inverse lookup, and the cheap half: `POST /insights/probe` embeds one query
+and compares it against the cached case embeddings, with no LLM in the verdict path.
+`POST /insights/probe/batch` does the same for a pasted list - a launch spec, a support macro
+export - which is the only answer here to the cold-start problem, since the topic map only knows
+traffic that has already happened. Its bands are not new constants: `SIMILARITY_BANDS` is exported
+from `core/evaluate/curation.ts`, which already carries the measured calibration for
+`text-embedding-3-small`, so the probe's "covered" verdict is *defined* as "`addCaseToDataset`
+would reject this query as a duplicate" and the two features cannot drift apart.
+
+The probe answers two questions rather than one, deliberately. "Is it tested?" is useless without
+"does anyone ask it?", because a query with no coverage AND no traffic is not a hole in the suite,
+and reporting it as one would send a team writing tests for traffic that does not exist. That case
+gets its own verdict (`untested-and-unasked`) and its own wording. Similarly, the nearest case's
+`expectedResults` always comes back beside the score: query-to-query similarity measures topical
+resemblance, not that the case asserts the same behaviour, and claiming "covered" on phrasing
+alone is the one way this loses a user's trust in a single interaction.
+
+Everything degrades rather than failing. Without an embeddings key, coverage and the probe fall
+back to Jaccard over content words - a genuinely weaker signal on a different scale, so it carries
+its own thresholds and every response says `degraded: true` with a reason. `insight_case_embeddings`
+caches embeddings per distinct case, keyed by a content hash rather than the case's position, so
+editing a case re-embeds it while reordering costs nothing. A failure is never cached: it cannot be
+told apart from a missing key at the computeEmbedding boundary, and caching it as permanent would
+exclude those cases forever. The no-key case short-circuits before any call instead, so nothing
+retries in a doomed loop. The table carries `project_id`, so `deleteProject`'s schema-derived cascade picks it up
+without anyone touching that function.
+
+Nothing here writes a dataset. A gap is reported; cases still land through the existing
+preview → human review → append path, which is what keeps a coverage number from being inflated by
+rows nobody looked at.
+
+Verified in `insights.integration.test.ts` by driving the core directly against a real database
+with embeddings *injected* rather than computed - unit vectors at chosen angles, whose cosines are
+exactly `cos(Δangle)`, so every band-boundary assertion is arithmetic instead of a guess about
+what an embedding model will return today. It covers a covered topic and a missing one, unique
+sessions counted through the join to `traces` rather than raw request volume, risk weighted toward
+observed issues over sentiment, the risk-weighted number falling below the traffic-weighted one
+when a failing topic is untested, duplicate cases not moving coverage, the honesty delta between
+case presence and real depth, off-map cases, and all four probe verdicts including the lexical
+fallback (exercised, not mocked away - the mocked embedder returns null for unregistered text,
+exactly as a missing key does). `contract.integration.test.ts` drives the three new endpoints live
+against the real engine, including the empty state, which is the common first view of this screen
+since Topics is opt-in and sampled.
+
+Verified against a real install's database (340 classified traces, 54 datasets), which immediately
+found two things unit tests could not.
+
+The first: the classifier coins near-duplicate labels, and Phase 0's group-by-intent-string made
+that actively misleading. That install carried both "Refund request" (7 cases, covered) and
+"Request a refund" (0 cases, MISSING) - one topic reported twice, one half of it inventing a gap
+that did not exist, and its traffic share split down the middle. Same for "Reset Password" and
+"Reset forgotten password". So `mergeSynonymousTopics` merges intent labels whose trace centroids
+are close, using embeddings already stored on `monitor_classifications` - no new API calls, and it
+works with no LLM key at all.
+
+Its threshold is 0.87, and deliberately NOT curation.ts's 0.75: that constant compares two single
+query strings, this compares centroids of averaged input+output embeddings, which run much higher.
+Measured on that install: "refund request" vs "request a refund" 0.909 and "reset password" vs
+"reset forgotten password" 0.902 (must merge), against "order tracking" vs "missing package" 0.822
+and "refund policy inquiry" vs "request a refund" 0.813 (must NOT - asking the rules and asking for
+money back have different correct answers). 0.87 splits those with ~0.05 either side. Reusing 0.75
+would have merged order tracking into missing package. Candidates are compared against the seed's
+centroid rather than the growing one, so a chain of pairwise-similar topics cannot collect into one
+blob.
+
+The second: the window default. Every monitoring surface defaults to 7d, and Insights inherited it
+- but that install's 318 classified traces were all older than seven days, so the screen read
+"nothing classified yet" while the 30d window was full. Those charts are about recent health, where
+a short window is the point; coverage is accumulated test debt against a sampled classifier, so it
+defaults to 30d now.
+
+Also verified through the real dashboard (AgentX-eval-front, `yarn dev:selfhost` against this
+engine): the tab renders 43% traffic-weighted / 6 of 35 topics / 8% risk-weighted on that data, and
+the probe distinguishes the two cases it exists to distinguish - "I want to cancel my subscription
+today" comes back a real gap naming the "Cancel subscription" topic at 11% of traffic, while "can I
+pay my invoice in martian dollars" comes back not-covered-and-not-asked rather than a fabricated
+gap. The nearest-case panel earned its place there: for the cancellation query the closest case is
+about being charged AFTER cancelling, a billing dispute rather than how to cancel, which the
+similarity score alone would never have revealed.
