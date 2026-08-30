@@ -18,13 +18,26 @@ import { SIMILARITY_BANDS } from "../core/evaluate/curation.js";
 // be pre-seeded into the cache the way case embeddings can. Registered text returns its injected
 // vector; anything unregistered returns null, which is precisely what a missing OPENAI_API_KEY
 // does - so the degraded lexical path stays exercised rather than mocked away.
-const { registered } = vi.hoisted(() => ({ registered: new Map<string, number[]>() }));
+const { registered, canEmbed } = vi.hoisted(() => ({
+  registered: new Map<string, number[]>(),
+  // Whether an embeddings key is configured. It is the difference between "warming, come back" and
+  // "this will never change", which is the whole of what `provisional` now means.
+  canEmbed: { current: false },
+}));
 
 vi.mock("../core/evaluate/judge.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../core/evaluate/judge.js")>();
   const one = (text: string): number[] | null => registered.get(text.trim()) ?? null;
-  return { ...actual, computeEmbedding: async (text: string) => one(text), computeEmbeddings: async (texts: string[]) => texts.map(one) };
+  return {
+    ...actual,
+    embeddingsAvailable: async () => canEmbed.current,
+    computeEmbedding: async (text: string) => one(text),
+    computeEmbeddings: async (texts: string[]) => texts.map(one),
+  };
 });
+
+// The batching itself is unit-tested against a fake client below, where a request can be made to
+// fail the way the real API fails - the integration mock above cannot express that.
 
 let test: TestDb;
 let db: Db;
@@ -565,7 +578,7 @@ describe("label matching does not punish long cases", () => {
     }
   });
 
-  it("marks a run provisional while cases are still being embedded", async () => {
+  it("marks a run provisional only while the missing cases can still be embedded", async () => {
     const scoped = test.scoped(await test.newProject("Provisional"));
     const saved = db;
     db = scoped;
@@ -582,12 +595,23 @@ describe("label matching does not punish long cases", () => {
       })) as { _id: string };
       await cacheCaseEmbedding(created._id, "I want a refund", SAME);
 
-      const result = await getCoverage(db, { window: "7d", datasetIds: [created._id] });
+      canEmbed.current = true;
+      const warming = await getCoverage(db, { window: "7d", datasetIds: [created._id] });
       // degraded is about WHICH measure ran; provisional is about how much of the dataset it saw.
       // A cold cache on a big dataset reports a near-zero number that is a floor, not a verdict.
-      expect(result.degraded).toBe(false);
-      expect(result.provisional).toBe(true);
+      expect(warming.degraded).toBe(false);
+      expect(warming.provisional).toBe(true);
+      expect(warming.caseEmbeddingsPending).toBe(1);
+
+      // Same shortfall, no key to close it. "Still indexing" would be a promise the engine cannot
+      // keep, and a caller that polls on it would poll forever - so the shortfall is still reported
+      // through caseEmbeddingsPending, but the run is not called provisional.
+      canEmbed.current = false;
+      const stuck = await getCoverage(db, { window: "7d", datasetIds: [created._id] });
+      expect(stuck.provisional).toBe(false);
+      expect(stuck.caseEmbeddingsPending).toBe(1);
     } finally {
+      canEmbed.current = false;
       db = saved;
     }
   });

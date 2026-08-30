@@ -4,7 +4,13 @@ import { listClassificationsSince, windowConfig, type ClassificationRow } from "
 import type { MonitoringWindow } from "../monitor/events.js";
 import { SIMILARITY_BANDS } from "../evaluate/curation.js";
 import { centroid, contentWords, cosine, normalizeText, overlap } from "../shared/vector.js";
-import { listDatasetCases, listDatasetSummaries, attachCaseEmbeddings, type DatasetCase } from "./cases.js";
+import {
+  listDatasetCases,
+  listDatasetRows,
+  datasetSummaries,
+  attachCaseEmbeddings,
+  type DatasetCase,
+} from "./cases.js";
 
 // The join between what production does (monitor_classifications) and what the datasets test.
 // Derived on read: there is no insight_topics table, and topics are the classifier's own `intent`
@@ -49,8 +55,12 @@ export type TopicCoverage = {
    * conclusion about whether to trust it.
    */
   caseDatasets: { id: string; name: string; count: number }[];
-  /** The closest assigned cases, best first - what this topic already tests, in its own words. */
-  sampleCases: { datasetId: string; query: string }[];
+  /**
+   * The closest assigned cases, best first, deduplicated by query text with the number of copies -
+   * what this topic already tests, in its own words. `count` is over every assigned case, not just
+   * the ones listed here.
+   */
+  sampleCases: { datasetId: string; query: string; count: number }[];
 };
 
 export type CoverageResult = {
@@ -354,6 +364,29 @@ function facilityLocation(assigned: DatasetCase[], group: TopicGroup, sim: Simil
 
 const SAMPLE_CASES = 6;
 
+// Deduped across EVERY assigned case, then truncated - not the other way round. Counting duplicates
+// inside a 6-case window would cap the count at 6 and hide exactly what the depth measure exists to
+// expose: twenty copies of one question is not twenty cases of coverage.
+function sampleCasesFor(
+  assigned: DatasetCase[],
+  scoreOf: (item: DatasetCase) => number
+): { datasetId: string; query: string; count: number }[] {
+  const byQuery = new Map<string, { datasetId: string; query: string; count: number; score: number }>();
+  for (const item of assigned) {
+    const entry = byQuery.get(item.query);
+    if (entry) {
+      entry.count++;
+      entry.score = Math.max(entry.score, scoreOf(item));
+    } else {
+      byQuery.set(item.query, { datasetId: item.datasetId, query: item.query, count: 1, score: scoreOf(item) });
+    }
+  }
+  return Array.from(byQuery.values())
+    .sort((a, b) => b.score - a.score || b.count - a.count)
+    .slice(0, SAMPLE_CASES)
+    .map(({ datasetId, query, count }) => ({ datasetId, query, count }));
+}
+
 // Grouped by dataset, biggest first, so "where does this coverage come from" is one glance.
 function caseDatasetsFor(assigned: DatasetCase[]): { id: string; name: string; count: number }[] {
   const byId = new Map<string, { id: string; name: string; count: number }>();
@@ -391,12 +424,18 @@ export async function getCoverage(
 
   const allGroups = groupByIntent(rows);
   const groups = allGroups.filter(g => g.rows.length >= MIN_TRACES_PER_TOPIC);
-  const cases = await listDatasetCases(db, options.datasetIds);
-  const { embedded, pending } = await attachCaseEmbeddings(db, cases);
+  // One read of the dataset table, used for both the analysed subset and the complete picker list.
+  const datasetRows = await listDatasetRows(db);
+  const cases = await listDatasetCases(db, options.datasetIds, datasetRows);
+  const { embedded, pending, canEmbed } = await attachCaseEmbeddings(db, cases);
+  // "Still warming" is only true when warming can actually happen. With no embeddings key nothing
+  // will ever be embedded, so reporting the cases as pending would tell every caller to come back
+  // for a number that is never going to change.
+  const provisional = pending > 0 && canEmbed;
 
   // Always the complete list, never just what the filter selected - this is what the filter's own
   // control is built from.
-  const datasets = await listDatasetSummaries(db);
+  const datasets = datasetSummaries(datasetRows);
 
   const anyTraceEmbeddings = groups.some(g => g.embeddings.length > 0);
   const sim = embedded && anyTraceEmbeddings ? embeddingSimilarity() : lexicalSimilarity();
@@ -419,7 +458,7 @@ export async function getCoverage(
       datasetIds,
       degraded: sim.kind !== "embedding",
       degradedReason,
-      provisional: pending > 0,
+      provisional,
       insufficientData: true,
       trafficWeightedCoverage: 0,
       topicBreadth: { covered: 0, total: 0 },
@@ -435,7 +474,10 @@ export async function getCoverage(
 
   // Argmax, not softmax: with intent-string topics there are no real centroid boundaries for a
   // soft assignment to smooth over yet.
+  // The score travels with the case: "which cases does this topic already have" is only useful if
+  // the closest ones are the ones shown, and the assignment loop is the only place the score exists.
   const assignments = new Map<string, DatasetCase[]>();
+  const assignedScore = new Map<DatasetCase, number>();
   const offMapCases: CoverageResult["offMapCases"] = [];
   for (const item of cases) {
     // An unembedded case (cap not yet reached, or a failed call) scores -1 against everything.
@@ -485,6 +527,7 @@ export async function getCoverage(
     const list = assignments.get(bestGroup.topic) ?? [];
     list.push(item);
     assignments.set(bestGroup.topic, list);
+    assignedScore.set(item, best.score);
   }
 
   const totalTraces = groups.reduce((sum, g) => sum + g.rows.length, 0);
@@ -558,7 +601,7 @@ export async function getCoverage(
       // Capped: a well-covered topic can carry twenty near-identical cases, and the reader needs
       // to recognise what is already tested, not to page through it. caseDatasets keeps the full
       // count honest above it.
-      sampleCases: assigned.slice(0, SAMPLE_CASES).map(item => ({ datasetId: item.datasetId, query: item.query })),
+      sampleCases: sampleCasesFor(assigned, item => assignedScore.get(item) ?? 0),
     };
   });
 
@@ -588,7 +631,7 @@ export async function getCoverage(
     datasetIds,
     degraded: sim.kind !== "embedding",
     degradedReason,
-    provisional: pending > 0,
+    provisional,
     insufficientData: false,
     trafficWeightedCoverage,
     topicBreadth: { covered: raw.filter(t => t.coverage >= COVERED_THRESHOLD).length, total: raw.length },

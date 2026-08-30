@@ -344,46 +344,111 @@ export async function embeddingsAvailable(): Promise<boolean> {
 
 // Inputs per embeddings request. The endpoint takes an array, so a cold Insights cache asking for
 // ~120 vectors is one or two calls rather than ~120 serialized round trips (which measured ~40s).
-// 128 is well inside the API's per-request input limit and keeps any single failure cheap to retry.
 const MAX_EMBEDDING_BATCH = 128;
+
+/**
+ * The slice of the OpenAI client the batching needs. Narrow on purpose: it lets the split-and-retry
+ * logic below be exercised against a client that fails the way the real API fails, which is the only
+ * behaviour here worth testing and the one a live key cannot demonstrate on demand.
+ */
+export type EmbeddingClient = {
+  embeddings: { create: (args: { model: string; input: string[] }) => Promise<unknown> };
+};
+
+// One request. Returns vectors aligned to `inputs`, or null for the whole call if it failed - the
+// caller decides whether to split and retry.
+async function embedOnce(
+  client: EmbeddingClient,
+  model: string,
+  inputs: string[]
+): Promise<(number[] | null)[] | null> {
+  try {
+    const response = (await client.embeddings.create({ model, input: inputs })) as {
+      data?: { index: number; embedding: unknown }[];
+    };
+    const out: (number[] | null)[] = new Array(inputs.length).fill(null);
+    // Mapped through the response's own `index` rather than positionally: the API documents input
+    // order as preserved, but honoring the explicit index costs nothing and means a reordered
+    // response mislabels no vectors.
+    for (const item of response.data ?? []) {
+      if (item.index >= 0 && item.index < out.length && Array.isArray(item.embedding)) {
+        out[item.index] = item.embedding as number[];
+      }
+    }
+    return out;
+  } catch (err) {
+    // Logged by the caller, which is the only place that knows whether this is a batch about to be
+    // split and retried or a single input that is genuinely unembeddable.
+    logger.debug({ err: err instanceof Error ? err.message : err, inputs: inputs.length }, "Embedding batch failed");
+    return null;
+  }
+}
+
+// Failure isolation is the whole point of splitting rather than giving up on the batch. The API
+// rejects an ENTIRE request when any single input is over the model's token limit, so without this
+// one oversized case would null every vector in its batch - and because the caller rebuilds the
+// same batch next time and caches nothing from a failure, that case would block every other case
+// behind it forever rather than costing only itself. Halving isolates the offender in log2(n)
+// requests; a failed single input is genuinely unembeddable and stays null.
+async function embedSplit(
+  client: EmbeddingClient,
+  model: string,
+  inputs: string[]
+): Promise<(number[] | null)[]> {
+  const direct = await embedOnce(client, model, inputs);
+  if (direct) {
+    return direct;
+  }
+  if (inputs.length === 1) {
+    // Nothing left to split. This one text cannot be embedded - almost always because it is over
+    // the model's input limit - so it stays null and every other case is unaffected.
+    logger.error({ chars: inputs[0]?.length ?? 0 }, "Embedding failed for a single input; skipping it");
+    return [null];
+  }
+  const mid = Math.ceil(inputs.length / 2);
+  const [left, right] = await Promise.all([
+    embedSplit(client, model, inputs.slice(0, mid)),
+    embedSplit(client, model, inputs.slice(mid)),
+  ]);
+  return [...left, ...right];
+}
 
 // Batched sibling of computeEmbedding, for callers that already know every text they need. Returns
 // one slot per input, aligned by index, holding null wherever the text was blank, no key is set, or
-// the call failed - the same per-item graceful degradation computeEmbedding gives, so a partial
-// result is usable rather than fatal and the null slots simply retry on the next call.
-export async function computeEmbeddings(
+// that individual text could not be embedded - the same per-item graceful degradation
+// computeEmbedding gives, so a partial result is usable rather than fatal and the null slots simply
+// retry on the next call.
+export async function embedBatched(
+  client: EmbeddingClient,
   texts: string[],
   model: string = DEFAULT_EMBEDDING_MODEL
 ): Promise<(number[] | null)[]> {
   const out: (number[] | null)[] = new Array(texts.length).fill(null);
-  const client = await getOpenAI();
-  if (!client) {
-    return out;
-  }
   // Blank text never reaches the API: it has no meaningful vector, and an empty string in the
-  // input array is a request-level error that would take the whole chunk down with it.
+  // input array is a request-level error that would take the whole chunk down with it. It keeps its
+  // slot so the caller's indexing holds.
   const wanted = texts.map((text, index) => ({ index, text: text.trim() })).filter(entry => entry.text.length > 0);
 
   for (let start = 0; start < wanted.length; start += MAX_EMBEDDING_BATCH) {
     const chunk = wanted.slice(start, start + MAX_EMBEDDING_BATCH);
-    try {
-      const response = await client.embeddings.create({ model, input: chunk.map(entry => entry.text) });
-      // Map each vector back through the response's own `index` rather than positionally: the API
-      // documents input order as preserved, but honoring the explicit index costs nothing and means
-      // a reordered response mislabels no vectors.
-      for (const item of response.data ?? []) {
-        const entry = chunk[item.index];
-        if (entry && Array.isArray(item.embedding)) {
-          out[entry.index] = item.embedding;
-        }
-      }
-    } catch (err) {
-      // Only this chunk's slots stay null. Nothing is cached from a failure, so the next call
-      // retries exactly the texts that did not come back.
-      logger.error({ err: err }, "Batch embedding computation failed:");
-    }
+    const vectors = await embedSplit(
+      client,
+      model,
+      chunk.map(entry => entry.text)
+    );
+    chunk.forEach((entry, position) => {
+      out[entry.index] = vectors[position] ?? null;
+    });
   }
   return out;
+}
+
+export async function computeEmbeddings(
+  texts: string[],
+  model: string = DEFAULT_EMBEDDING_MODEL
+): Promise<(number[] | null)[]> {
+  const client = (await getOpenAI()) as EmbeddingClient | null;
+  return client ? embedBatched(client, texts, model) : new Array(texts.length).fill(null);
 }
 
 export async function computeEmbedding(text: string, model: string = DEFAULT_EMBEDDING_MODEL): Promise<number[] | null> {

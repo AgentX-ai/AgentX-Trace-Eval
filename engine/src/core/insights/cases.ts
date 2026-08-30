@@ -51,25 +51,34 @@ const MAX_NEW_EMBEDDINGS_PER_REQUEST = 60;
 // Every dataset in the project with its case count, unaffected by whatever the caller is filtering
 // to. The filter's own control is drawn from this: a picker built from the filtered result has one
 // option left the moment you use it, which is a filter you cannot undo.
-export async function listDatasetSummaries(db: Db): Promise<{ id: string; name: string; caseCount: number }[]> {
-  const datasets = (await listDatasets(db)) as { _id: string; name: string; questions?: unknown }[];
+type DatasetRow = { _id: string; name: string; questions?: unknown };
+
+const questionsOf = (dataset: DatasetRow): QuestionShape[] =>
+  Array.isArray(dataset.questions) ? (dataset.questions as QuestionShape[]) : [];
+
+/** One read of the dataset table, shared by the summaries and the case list below. */
+export async function listDatasetRows(db: Db): Promise<DatasetRow[]> {
+  return (await listDatasets(db)) as DatasetRow[];
+}
+
+export function datasetSummaries(datasets: DatasetRow[]): { id: string; name: string; caseCount: number }[] {
   return datasets
     .map(dataset => ({
       id: dataset._id,
       name: dataset.name,
-      caseCount: (Array.isArray(dataset.questions) ? (dataset.questions as QuestionShape[]) : []).filter(
+      caseCount: questionsOf(dataset).filter(
         question => typeof question?.main_question?.query === "string" && question.main_question.query.trim()
       ).length,
     }))
     .sort((a, b) => b.caseCount - a.caseCount || a.name.localeCompare(b.name));
 }
 
-export async function listDatasetCases(db: Db, datasetIds?: string[]): Promise<DatasetCase[]> {
-  const datasets = (await listDatasets(db)) as { _id: string; name: string; questions?: unknown }[];
+export async function listDatasetCases(db: Db, datasetIds?: string[], preloaded?: DatasetRow[]): Promise<DatasetCase[]> {
+  const datasets = preloaded ?? (await listDatasetRows(db));
   const wanted = datasetIds?.length ? datasets.filter(d => datasetIds.includes(d._id)) : datasets;
   const cases: DatasetCase[] = [];
   for (const dataset of wanted) {
-    const questions = Array.isArray(dataset.questions) ? (dataset.questions as QuestionShape[]) : [];
+    const questions = questionsOf(dataset);
     questions.forEach((question, index) => {
       const query = typeof question?.main_question?.query === "string" ? question.main_question.query.trim() : "";
       if (!query) {
@@ -114,30 +123,47 @@ async function readCache(db: Db, datasetIds: string[]): Promise<Map<string, Cach
   return byKey;
 }
 
-async function writeCache(
-  db: Db,
-  entry: { datasetId: string; caseKey: string; query: string; embedding: number[]; embeddingFull: number[] }
-): Promise<void> {
+type CacheEntry = { datasetId: string; caseKey: string; query: string; embedding: number[]; embeddingFull: number[] };
+
+// One insert for the whole warming pass rather than one per case. This runs on a path the UI polls
+// while the cache warms, so 60 sequential round trips per pass is 60 too many.
+async function writeCache(db: Db, entries: CacheEntry[]): Promise<void> {
+  if (entries.length === 0) {
+    return;
+  }
+  const rows = entries.map(entry => ({
+    id: nanoid(),
+    projectId: db.projectId,
+    datasetId: entry.datasetId,
+    caseKey: entry.caseKey,
+    query: entry.query,
+    embedding: entry.embedding,
+    embeddingFull: entry.embeddingFull,
+    model: DEFAULT_EMBEDDING_MODEL,
+    createdAt: new Date(),
+  }));
   try {
-    const row = {
-      id: nanoid(),
-      projectId: db.projectId,
-      datasetId: entry.datasetId,
-      caseKey: entry.caseKey,
-      query: entry.query,
-      embedding: entry.embedding,
-      embeddingFull: entry.embeddingFull,
-      model: DEFAULT_EMBEDDING_MODEL,
-      createdAt: new Date(),
-    };
     if (db.kind === "sqlite") {
-      db.db.insert(db.schema.insightCaseEmbeddings).values(row).run();
+      db.db.insert(db.schema.insightCaseEmbeddings).values(rows).run();
     } else {
-      await db.db.insert(db.schema.insightCaseEmbeddings).values(row);
+      await db.db.insert(db.schema.insightCaseEmbeddings).values(rows);
     }
   } catch (err) {
-    // The unique index did its job: a concurrent poll embedded the same case, to the same value.
-    logger.debug({ err: err instanceof Error ? err.message : err }, "Insight case embedding already cached");
+    // The unique index did its job: a concurrent poll embedded the same cases, to the same values.
+    // Retried one at a time so one collision does not discard the rest of the batch.
+    logger.debug({ err: err instanceof Error ? err.message : err }, "Insight case embeddings already cached");
+    for (const row of rows) {
+      try {
+        if (db.kind === "sqlite") {
+          db.db.insert(db.schema.insightCaseEmbeddings).values(row).run();
+        } else {
+          await db.db.insert(db.schema.insightCaseEmbeddings).values(row);
+        }
+      } catch {
+        // Already present - the cached value is identical by construction (caseKey is a hash of the
+        // embedded text), so there is nothing to reconcile.
+      }
+    }
   }
 }
 
@@ -147,6 +173,12 @@ export type CaseEmbeddingResult = {
   embedded: boolean;
   /** Cases still unembedded when this returned - cap hit, no key, or a failed call. */
   pending: number;
+  /**
+   * Whether embedding can make progress at all. Without this, "pending > 0" is indistinguishable
+   * between "warming, come back" and "no key, this will never change" - and a caller that polls on
+   * the first reading polls forever on the second.
+   */
+  canEmbed: boolean;
 };
 
 // Never caches a null. A failed call and a missing key are indistinguishable at the embedder's
@@ -191,6 +223,7 @@ export async function attachCaseEmbeddings(db: Db, cases: DatasetCase[]): Promis
     }));
 
     const vectors = await computeEmbeddings(texts);
+    const fresh: CacheEntry[] = [];
     for (const entry of wanted) {
       const query = vectors[entry.query];
       const full = vectors[entry.full];
@@ -199,7 +232,7 @@ export async function attachCaseEmbeddings(db: Db, cases: DatasetCase[]): Promis
       if (query && full) {
         entry.item.embedding = query;
         entry.item.embeddingFull = full;
-        await writeCache(db, {
+        fresh.push({
           datasetId: entry.item.datasetId,
           caseKey: entry.item.caseKey,
           query: entry.item.query,
@@ -208,6 +241,7 @@ export async function attachCaseEmbeddings(db: Db, cases: DatasetCase[]): Promis
         });
       }
     }
+    await writeCache(db, fresh);
   }
 
   let embedded = false;
@@ -219,5 +253,5 @@ export async function attachCaseEmbeddings(db: Db, cases: DatasetCase[]): Promis
       pending++;
     }
   }
-  return { cases, embedded, pending };
+  return { cases, embedded, pending, canEmbed };
 }

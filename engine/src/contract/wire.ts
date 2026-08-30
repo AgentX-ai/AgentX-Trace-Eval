@@ -327,7 +327,7 @@ export const insightTopicSchema = z
     riskComponents: z.object({ issueRate: z.number(), negativeSentimentRate: z.number() }).strict(),
     suggestedAction: z.string(),
     caseDatasets: z.array(z.object({ id: z.string(), name: z.string(), count: z.number() }).strict()),
-    sampleCases: z.array(z.object({ datasetId: z.string(), query: z.string() }).strict()),
+    sampleCases: z.array(z.object({ datasetId: z.string(), query: z.string(), count: z.number() }).strict()),
   })
   .strict();
 
