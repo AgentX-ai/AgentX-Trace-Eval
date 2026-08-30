@@ -334,6 +334,7 @@ export const insightsCoverageResponseSchema = z
     window: z.enum(["24h", "7d", "30d"]),
     datasetId: z.string().nullable(),
     degraded: z.boolean(),
+    provisional: z.boolean(),
     degradedReason: z.string().nullable(),
     insufficientData: z.boolean(),
     trafficWeightedCoverage: z.number(),

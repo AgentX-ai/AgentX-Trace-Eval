@@ -905,10 +905,11 @@ alone is the one way this loses a user's trust in a single interaction.
 Everything degrades rather than failing. Without an embeddings key, coverage and the probe fall
 back to Jaccard over content words - a genuinely weaker signal on a different scale, so it carries
 its own thresholds and every response says `degraded: true` with a reason. `insight_case_embeddings`
-caches one embedding per distinct case query, keyed by a content hash rather than the case's
-position, so editing a case re-embeds it while reordering costs nothing; a cached NULL is a
-remembered failure, which is what stops a missing key from re-attempting a doomed call on every
-request. The table carries `project_id`, so `deleteProject`'s schema-derived cascade picks it up
+caches embeddings per distinct case, keyed by a content hash rather than the case's position, so
+editing a case re-embeds it while reordering costs nothing. A failure is never cached: it cannot be
+told apart from a missing key at the computeEmbedding boundary, and caching it as permanent would
+exclude those cases forever. The no-key case short-circuits before any call instead, so nothing
+retries in a doomed loop. The table carries `project_id`, so `deleteProject`'s schema-derived cascade picks it up
 without anyone touching that function.
 
 Nothing here writes a dataset. A gap is reported; cases still land through the existing

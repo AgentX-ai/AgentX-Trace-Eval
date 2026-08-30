@@ -3,7 +3,7 @@ import type { Db } from "../../storage/db.js";
 import { listClassificationsSince, windowConfig, type ClassificationRow } from "../monitor/topics.js";
 import type { MonitoringWindow } from "../monitor/events.js";
 import { SIMILARITY_BANDS } from "../evaluate/curation.js";
-import { centroid, contentWords, cosine, jaccard, normalizeText } from "../shared/vector.js";
+import { centroid, contentWords, cosine, normalizeText, overlap } from "../shared/vector.js";
 import { listDatasetCases, attachCaseEmbeddings, type DatasetCase } from "./cases.js";
 
 // The join between what production does (monitor_classifications) and what the datasets test.
@@ -50,6 +50,12 @@ export type CoverageResult = {
   datasetId: string | null;
   /** True when the numbers came from the lexical fallback rather than embeddings. */
   degraded: boolean;
+  /**
+   * Cases are still being embedded, so these numbers are a floor and will rise. Distinct from
+   * `degraded`, which is about which measure was used: a run can be perfectly non-degraded and
+   * still be reporting on a third of the dataset because the cache is 60 cases per request.
+   */
+  provisional: boolean;
   degradedReason: string | null;
   /** No classified traffic in the window - Topics is opt-in and sampled, so this is common. */
   insufficientData: boolean;
@@ -81,9 +87,10 @@ export type CoverageResult = {
 // noise dressed as a work item. Same guard as getTopicsMap's MIN_POINTS_FOR_MAP.
 export const MIN_TRACES_PER_TOPIC = 2;
 
-// Lexical fallback bands. Deliberately NOT the cosine ones: Jaccard over content words runs on a
-// different scale, and reusing 0.75 there would report almost everything as uncovered.
-const LEXICAL_BANDS = { covered: 0.5, related: 0.25 } as const;
+// Lexical bands, on the OVERLAP scale (see shared/vector.ts) - a case matches a topic when it
+// carries most of the label's words, regardless of how much else it says. Not the cosine bands:
+// a different measure needs its own calibration.
+const LEXICAL_BANDS = { covered: 1, related: 0.5 } as const;
 
 // Coverage target: a floor everything gets, plus traffic and risk. sqrt on traffic so a topic
 // carrying 40% of requests doesn't demand 40% of the test budget. Phase 1 adds the spread term
@@ -224,14 +231,33 @@ export function mergeSynonymousTopics(groups: TopicGroup[]): TopicGroup[] {
   return merged;
 }
 
+type Match = { score: number; matched: boolean; margin: number };
+
 type Similarity = {
   kind: "embedding" | "lexical";
   bands: { covered: number; related: number };
-  /** Case-to-topic score, used for assignment. */
-  toTopic(item: DatasetCase, group: TopicGroup): number;
+  /**
+   * Case-to-topic. Returns `margin` - how far above the related floor, on a 0-1 scale - so a topic
+   * matched by cosine and one matched lexically can still be ranked against each other. Needed
+   * because a topic whose own traces carry no embedding (the column is never backfilled) has no
+   * centroid, and scoring it -1 made it report "missing" on a run that measured everything else.
+   */
+  toTopic(item: DatasetCase, group: TopicGroup): Match;
   /** Case-to-single-trace score, used for the facility-location value. */
   toTrace(item: DatasetCase, row: ClassificationRow): number;
 };
+
+function matchOn(score: number, bands: { covered: number; related: number }): Match {
+  const span = bands.covered - bands.related;
+  return {
+    score,
+    matched: score >= bands.related,
+    margin: span <= 0 ? (score >= bands.related ? 1 : 0) : Math.max(0, Math.min(1, (score - bands.related) / span)),
+  };
+}
+
+const lexicalTopicMatch = (item: DatasetCase, group: TopicGroup): Match =>
+  matchOn(overlap(contentWords(item.query), group.words), LEXICAL_BANDS);
 
 function embeddingSimilarity(): Similarity {
   return {
@@ -239,7 +265,11 @@ function embeddingSimilarity(): Similarity {
     bands: SIMILARITY_BANDS,
     // embeddingFull, not embedding: topic centroids and trace vectors are built from input+output,
     // so the query-only vector would be a cross-space comparison and score systematically low.
-    toTopic: (item, group) => (item.embeddingFull && group.centroid ? cosine(item.embeddingFull, group.centroid) : -1),
+    // A topic with no centroid falls back to the label test rather than matching nothing.
+    toTopic: (item, group) =>
+      item.embeddingFull && group.centroid
+        ? matchOn(cosine(item.embeddingFull, group.centroid), SIMILARITY_BANDS)
+        : lexicalTopicMatch(item, group),
     toTrace: (item, row) =>
       item.embeddingFull && Array.isArray(row.embedding) && row.embedding.length > 0
         ? cosine(item.embeddingFull, row.embedding)
@@ -260,7 +290,7 @@ function lexicalSimilarity(): Similarity {
   return {
     kind: "lexical",
     bands: LEXICAL_BANDS,
-    toTopic: (item, group) => jaccard(words(item), group.words),
+    toTopic: (item, group) => matchOn(overlap(words(item), group.words), LEXICAL_BANDS),
     // No per-trace text is stored on a classification row, so the lexical regime has nothing
     // finer than the topic label to compare against. Coverage therefore degrades to the topic
     // score itself - which is exactly why this path is reported as degraded.
@@ -272,8 +302,16 @@ function lexicalSimilarity(): Similarity {
 // reaches. A duplicate adds nothing because the max is already satisfied, so the metric cannot be
 // inflated by generating near-copies - which matters, since generating cases is the point.
 // Rescaled across the related..covered band so a case on top of a trace reads 1, an unrelated 0.
+// traces x cases x dims, run synchronously per topic. Uncapped that is billions of operations on a
+// busy install, blocking the event loop for the whole engine - so the topic's traces are sampled,
+// the same guard getTopicsMap applies for the same reason. A mean over a sample of this size is
+// well within the rounding already applied to the result.
+const MAX_TRACES_PER_FACILITY_LOCATION = 300;
+
 function facilityLocation(assigned: DatasetCase[], group: TopicGroup, sim: Similarity): number | null {
-  const usable = group.rows.filter(row => Array.isArray(row.embedding) && row.embedding.length > 0);
+  const embedded = group.rows.filter(row => Array.isArray(row.embedding) && row.embedding.length > 0);
+  const step = Math.ceil(embedded.length / MAX_TRACES_PER_FACILITY_LOCATION);
+  const usable = step > 1 ? embedded.filter((_, i) => i % step === 0) : embedded;
   // Regime checked BEFORE the empty-case shortcut: an uncovered topic scores 0 either way, but
   // returning a number here would label it "depth" on a run that measured no depth at all.
   if (sim.kind !== "embedding" || usable.length === 0) {
@@ -336,12 +374,18 @@ export async function getCoverage(
 
   const anyTraceEmbeddings = groups.some(g => g.embeddings.length > 0);
   const sim = embedded && anyTraceEmbeddings ? embeddingSimilarity() : lexicalSimilarity();
+  // Ordered so the reason names the thing that is actually missing. With no cases at all there is
+  // nothing to embed, and blaming OPENAI_API_KEY on an install that has one is the kind of wrong
+  // explanation that sends someone hunting a configuration problem they do not have. This is the
+  // screen's common first view, since Topics is opt-in and sampled.
   const degradedReason =
     sim.kind === "embedding"
       ? null
-      : !embedded
-        ? "No dataset case embeddings are available yet - set OPENAI_API_KEY, or wait for the cache to warm."
-        : "No classified trace carries an embedding, so coverage falls back to label matching.";
+      : cases.length === 0
+        ? "No dataset cases to measure against yet."
+        : embedded
+          ? "No classified trace carries an embedding, so coverage falls back to label matching."
+          : "No dataset case embeddings are available yet - set OPENAI_API_KEY, or wait for the cache to warm.";
 
   if (groups.length === 0) {
     return {
@@ -349,6 +393,7 @@ export async function getCoverage(
       datasetId,
       degraded: sim.kind !== "embedding",
       degradedReason,
+      provisional: pending > 0,
       insufficientData: true,
       trafficWeightedCoverage: 0,
       topicBreadth: { covered: 0, total: 0 },
@@ -374,15 +419,16 @@ export async function getCoverage(
       continue;
     }
     let bestGroup: TopicGroup | null = null;
-    let bestScore = -1;
+    let best: Match | null = null;
     for (const group of groups) {
-      const score = sim.toTopic(item, group);
-      if (score > bestScore) {
-        bestScore = score;
+      const match = sim.toTopic(item, group);
+      // Ranked on margin, which is comparable across regimes; raw scores are not.
+      if (!best || match.margin > best.margin || (match.margin === best.margin && match.score > best.score)) {
+        best = match;
         bestGroup = group;
       }
     }
-    if (!bestGroup || bestScore < sim.bands.related) {
+    if (!bestGroup || !best?.matched) {
       // Off-map is only a real finding under embeddings. Lexical matching compares a case's words
       // against a topic LABEL, which most legitimate cases do not overlap - on real data that
       // produced 84 "dead test weight" entries that were nothing of the sort.
@@ -392,7 +438,7 @@ export async function getCoverage(
       // "Off map" has to mean no topic at all, not "no topic big enough to report". A case whose
       // topic exists but sits under MIN_TRACES_PER_TOPIC is covering real (if rare) traffic, and
       // listing it as dead test weight would be telling the user to delete a good test.
-      const matchesRareTopic = allGroups.some(group => sim.toTopic(item, group) >= sim.bands.related);
+      const matchesRareTopic = allGroups.some(group => sim.toTopic(item, group).matched);
       if (matchesRareTopic) {
         continue;
       }
@@ -400,7 +446,7 @@ export async function getCoverage(
         datasetId: item.datasetId,
         index: item.index,
         query: item.query,
-        bestSimilarity: Math.round(Math.max(0, bestScore) * 1000) / 1000,
+        bestSimilarity: Math.round(Math.max(0, best?.score ?? 0) * 1000) / 1000,
       });
       continue;
     }
@@ -505,6 +551,7 @@ export async function getCoverage(
     datasetId,
     degraded: sim.kind !== "embedding",
     degradedReason,
+    provisional: pending > 0,
     insufficientData: false,
     trafficWeightedCoverage,
     topicBreadth: { covered: raw.filter(t => t.coverage >= COVERED_THRESHOLD).length, total: raw.length },

@@ -54,7 +54,8 @@ async function insertRow(handle: Db, table: unknown, values: Record<string, unkn
 
 async function classify(opts: {
   intent: string;
-  angle: number;
+  /** null writes a row with no embedding - the un-backfilled case. */
+  angle: number | null;
   sessionId?: string | null;
   issueType?: string;
   sentiment?: string;
@@ -95,7 +96,7 @@ async function classify(opts: {
     issueType: opts.issueType ?? "none",
     createdAt: new Date(),
     projectId: db.projectId,
-    embedding: unit(opts.angle),
+    embedding: opts.angle === null ? null : unit(opts.angle),
   });
 }
 
@@ -483,6 +484,119 @@ describe("telling someone what to do first", () => {
     expect(result.datasets.map(d => d.id)).toEqual([dsId]);
     expect(result.datasets[0]!.name).toBe("named-suite");
     expect(result.datasets[0]!.caseCount).toBe(1);
+  });
+});
+
+describe("label matching does not punish long cases", () => {
+  it("assigns a wordy case to a topic whose every label word it contains", async () => {
+    const scoped = test.scoped(await test.newProject("Wordy"));
+    const saved = db;
+    db = scoped;
+    try {
+      for (let i = 0; i < 4; i++) {
+        await classify({ intent: "Order tracking", angle: SAME });
+      }
+      // No cached vectors, so this runs on the label test. The case carries BOTH label words and
+      // a lot else; under Jaccard the union denominator scored that 0.154 - below the floor - so
+      // it was dropped as off-map and the topic reported "missing" with cases sitting right there.
+      await createDataset(db, {
+        name: "wordy",
+        questions: [
+          {
+            main_question: {
+              query:
+                "Where is my order? It has been five days since the shipping confirmation and tracking has not updated at all.",
+              expectedResults: "Looks up the order and explains the tracking status.",
+            },
+            follow_up_questions: [],
+          },
+        ],
+      });
+      const result = await getCoverage(db, { window: "7d" });
+      const tracking = result.topics.find(t => t.topic === "Order tracking")!;
+      expect(result.degraded).toBe(true);
+      expect(tracking.caseCount).toBe(1);
+      expect(tracking.state).not.toBe("missing");
+    } finally {
+      db = saved;
+    }
+  });
+
+  it("still assigns cases to a topic whose traces predate the embedding column", async () => {
+    const scoped = test.scoped(await test.newProject("NoCentroid"));
+    const saved = db;
+    db = scoped;
+    try {
+      // One topic embedded, one not. monitor_classifications.embedding is never backfilled, so a
+      // mixed install is the normal case after an upgrade - and a topic with no centroid used to
+      // match nothing at all, reporting "missing" with its cases sitting right there.
+      for (let i = 0; i < 4; i++) {
+        await classify({ intent: "password reset", angle: SAME });
+        await classify({ intent: "billing dispute", angle: null });
+      }
+      const created = (await createDataset(db, {
+        name: "mixed",
+        questions: [
+          // expectedResults must match what cacheCaseEmbedding hashes - the cache key covers both
+          // the query and the expected text, so an edit to either re-embeds the case.
+          { main_question: { query: "how do I reset my password", expectedResults: "expected for how do I reset my password" }, follow_up_questions: [] },
+          { main_question: { query: "billing dispute over a duplicate charge", expectedResults: "expected for billing dispute over a duplicate charge" }, follow_up_questions: [] },
+        ],
+      })) as { _id: string };
+      await cacheCaseEmbedding(created._id, "how do I reset my password", SAME);
+      await cacheCaseEmbedding(created._id, "billing dispute over a duplicate charge", UNRELATED);
+
+      const result = await getCoverage(db, { window: "7d", datasetId: created._id });
+      const billing = result.topics.find(t => t.topic === "billing dispute")!;
+      expect(result.degraded).toBe(false);
+      expect(billing.caseCount).toBe(1);
+      expect(billing.state).not.toBe("missing");
+    } finally {
+      db = saved;
+    }
+  });
+
+  it("marks a run provisional while cases are still being embedded", async () => {
+    const scoped = test.scoped(await test.newProject("Provisional"));
+    const saved = db;
+    db = scoped;
+    try {
+      for (let i = 0; i < 4; i++) {
+        await classify({ intent: "refund request", angle: SAME });
+      }
+      const created = (await createDataset(db, {
+        name: "half",
+        questions: [
+          { main_question: { query: "I want a refund", expectedResults: "expected for I want a refund" }, follow_up_questions: [] },
+          { main_question: { query: "not yet embedded", expectedResults: "expected for not yet embedded" }, follow_up_questions: [] },
+        ],
+      })) as { _id: string };
+      await cacheCaseEmbedding(created._id, "I want a refund", SAME);
+
+      const result = await getCoverage(db, { window: "7d", datasetId: created._id });
+      // degraded is about WHICH measure ran; provisional is about how much of the dataset it saw.
+      // A cold cache on a big dataset reports a near-zero number that is a floor, not a verdict.
+      expect(result.degraded).toBe(false);
+      expect(result.provisional).toBe(true);
+    } finally {
+      db = saved;
+    }
+  });
+
+  it("does not blame a missing key when there are simply no cases", async () => {
+    const scoped = test.scoped(await test.newProject("NoCases"));
+    const saved = db;
+    db = scoped;
+    try {
+      for (let i = 0; i < 4; i++) {
+        await classify({ intent: "refund request", angle: SAME });
+      }
+      const result = await getCoverage(db, { window: "7d" });
+      expect(result.degradedReason).toBe("No dataset cases to measure against yet.");
+      expect(result.degradedReason).not.toContain("OPENAI_API_KEY");
+    } finally {
+      db = saved;
+    }
   });
 });
 

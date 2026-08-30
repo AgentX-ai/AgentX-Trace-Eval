@@ -23,7 +23,9 @@ export function centroid(vectors: number[][]): number[] | null {
   if (vectors.length === 0) {
     return null;
   }
-  const dims = Math.min(...vectors.map(v => v.length));
+  // reduce, not Math.min(...spread): one argument per vector overflows the call stack somewhere
+  // around 10^5 traces in a topic, which 500s the endpoint on exactly the installs it is for.
+  const dims = vectors.reduce((min, v) => (v.length < min ? v.length : min), Infinity);
   if (dims === 0) {
     return null;
   }
@@ -63,6 +65,23 @@ export function contentWords(s: string): Set<string> {
       .split(/\s+/)
       .filter(w => w.length > 2 && !STOPWORDS.has(w))
   );
+}
+
+// Overlap (Szymkiewicz-Simpson) rather than Jaccard wherever the two sides differ in length -
+// notably a full case query against a 1-3 word topic label. Jaccard's union denominator grows with
+// the query, so a case containing EVERY word of the label scores 0.154 against it and gets dropped
+// as off-map. Measured, on "Order tracking" vs a real support question. Overlap scores that 1.0.
+export function overlap(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) {
+    return 0;
+  }
+  let shared = 0;
+  for (const token of a) {
+    if (b.has(token)) {
+      shared++;
+    }
+  }
+  return shared / Math.min(a.size, b.size);
 }
 
 export function jaccard(a: Set<string>, b: Set<string>): number {

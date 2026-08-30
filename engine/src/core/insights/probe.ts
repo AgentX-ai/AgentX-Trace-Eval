@@ -3,7 +3,7 @@ import { listClassificationsSince, windowConfig } from "../monitor/topics.js";
 import type { MonitoringWindow } from "../monitor/events.js";
 import { SIMILARITY_BANDS } from "../evaluate/curation.js";
 import { computeEmbedding } from "../evaluate/judge.js";
-import { contentWords, cosine, jaccard } from "../shared/vector.js";
+import { contentWords, cosine, jaccard, overlap } from "../shared/vector.js";
 import { listDatasetCases, attachCaseEmbeddings, type DatasetCase } from "./cases.js";
 import { groupByIntent, MIN_TRACES_PER_TOPIC } from "./coverage.js";
 
@@ -55,13 +55,22 @@ type Scorer = {
   topicScore(words: Set<string>, centroidVec: number[] | null): number;
 };
 
-function explain(verdict: ProbeVerdict, nearest: ProbeNearestCase | null, topic: ProbeResult["topic"]): string {
+function explain(
+  verdict: ProbeVerdict,
+  nearest: ProbeNearestCase | null,
+  topic: ProbeResult["topic"],
+  degraded: boolean
+): string {
   switch (verdict) {
     case "covered":
-      return (
-        `Effectively the same question as an existing case${nearest ? ` ("${nearest.query}")` : ""} - close enough that ` +
-        `adding it would be rejected as a duplicate. Check its expected result asserts what you meant.`
-      );
+      // The duplicate claim is only true under embeddings: it IS addCaseToDataset's threshold.
+      // The lexical fallback is a different measure that the dedupe path does not implement, so
+      // saying it there would assert something the rest of the system would not honour.
+      return degraded
+        ? `Wording closely matches an existing case${nearest ? ` ("${nearest.query}")` : ""}, judged by shared words ` +
+          `rather than meaning. Check its expected result asserts what you meant.`
+        : `Effectively the same question as an existing case${nearest ? ` ("${nearest.query}")` : ""} - close enough ` +
+          `that adding it would be rejected as a duplicate. Check its expected result asserts what you meant.`;
     case "adjacent":
       return (
         `The nearest case asks something related but not this${nearest ? ` ("${nearest.query}")` : ""}. It sits in the ` +
@@ -105,6 +114,7 @@ async function loadContext(db: Db, window: MonitoringWindow, datasetId?: string)
 
 async function scorerFor(query: string, ctx: ProbeContext): Promise<Scorer> {
   const queryEmbedding = ctx.embeddedCases ? await computeEmbedding(query) : null;
+  const queryWords = contentWords(query);
   if (queryEmbedding) {
     return {
       degraded: false,
@@ -112,15 +122,20 @@ async function scorerFor(query: string, ctx: ProbeContext): Promise<Scorer> {
       // embedding (query only), not embeddingFull: this compares a typed query against a case's
       // question, which is the pairing SIMILARITY_BANDS was calibrated on.
       score: item => (item.embedding ? cosine(queryEmbedding, item.embedding) : -1),
-      topicScore: (_words, centroidVec) => (centroidVec ? cosine(queryEmbedding, centroidVec) : -1),
+      // A topic whose traces predate the embedding column has no centroid; scoring it -1 turned a
+      // real gap into "nobody asks this", which is the one verdict the probe must not hand out by
+      // accident. Falls back to the label test, normalized onto the same 0-1 decision.
+      topicScore: (words, centroidVec) =>
+        centroidVec ? cosine(queryEmbedding, centroidVec) : overlap(queryWords, words) >= 0.5 ? SIMILARITY_BANDS.related : 0,
     };
   }
-  const words = contentWords(query);
   return {
     degraded: true,
     bands: LEXICAL_BANDS,
-    score: item => jaccard(words, contentWords(item.query)),
-    topicScore: topicWords => jaccard(words, topicWords),
+    // Query against a case query: both are full sentences, so Jaccard is symmetric and fine here.
+    score: item => jaccard(queryWords, contentWords(item.query)),
+    // Query against a short topic LABEL: length-biased under Jaccard, so overlap instead.
+    topicScore: topicWords => overlap(queryWords, topicWords),
   };
 }
 
@@ -178,7 +193,7 @@ function probeWith(query: string, ctx: ProbeContext, scorer: Scorer): ProbeResul
     degraded: scorer.degraded,
     nearestCases,
     topic,
-    explanation: explain(verdict, nearestCases[0] ?? null, topic),
+    explanation: explain(verdict, nearestCases[0] ?? null, topic, scorer.degraded),
   };
 }
 
