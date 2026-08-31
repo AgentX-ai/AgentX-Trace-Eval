@@ -77,5 +77,5 @@ Please do not open a public issue for a vulnerability. See [SECURITY.md](SECURIT
 
 ## License
 
-By contributing you agree that your contributions are licensed under Apache-2.0, matching
+By contributing you agree that your contributions are licensed under the Elastic License 2.0, matching
 [LICENSE](LICENSE).
