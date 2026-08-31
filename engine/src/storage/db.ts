@@ -680,6 +680,21 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
 
     CREATE INDEX IF NOT EXISTS monitor_classifications_created_at ON monitor_classifications (created_at);
 
+    CREATE TABLE IF NOT EXISTS insight_case_embeddings (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      dataset_id TEXT NOT NULL,
+      case_key TEXT NOT NULL,
+      query TEXT NOT NULL,
+      embedding TEXT,
+      embedding_full TEXT,
+      model TEXT,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS insight_case_embeddings_key ON insight_case_embeddings (project_id, dataset_id, case_key);
+
+
     CREATE TABLE IF NOT EXISTS monitor_online_evaluators (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -1071,6 +1086,11 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
     // Topics "Map" view (core/monitor/topics.ts's getTopicsMap) - a JSON-encoded embedding vector
     // per classification, used for UMAP projection. Null for rows classified before this existed.
     ["monitor_classifications", "ALTER TABLE monitor_classifications ADD COLUMN embedding TEXT"],
+    // insight_case_embeddings gained a second vector after the table itself shipped on this
+    // branch. CREATE TABLE IF NOT EXISTS no-ops on an install that already has the table, so
+    // without this the column only appears on a fresh database - and every existing one 500s on
+    // GET /insights/coverage. CI never catches it because CI always starts empty.
+    ["insight_case_embeddings", "ALTER TABLE insight_case_embeddings ADD COLUMN embedding_full TEXT"],
     ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN project_id TEXT"],
     ["prompts", "ALTER TABLE prompts ADD COLUMN project_id TEXT"],
     ["prompt_versions", "ALTER TABLE prompt_versions ADD COLUMN project_id TEXT"],
@@ -1967,6 +1987,21 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
 
     CREATE INDEX IF NOT EXISTS monitor_classifications_created_at ON monitor_classifications (created_at);
 
+    CREATE TABLE IF NOT EXISTS insight_case_embeddings (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      dataset_id TEXT NOT NULL,
+      case_key TEXT NOT NULL,
+      query TEXT NOT NULL,
+      embedding JSONB,
+      embedding_full JSONB,
+      model TEXT,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS insight_case_embeddings_key ON insight_case_embeddings (project_id, dataset_id, case_key);
+
+
     CREATE TABLE IF NOT EXISTS monitor_online_evaluators (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -2332,6 +2367,7 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
     ALTER TABLE monitor_events ADD COLUMN IF NOT EXISTS project_id TEXT;
     ALTER TABLE monitor_classifications ADD COLUMN IF NOT EXISTS project_id TEXT;
     ALTER TABLE monitor_classifications ADD COLUMN IF NOT EXISTS embedding JSONB;
+    ALTER TABLE insight_case_embeddings ADD COLUMN IF NOT EXISTS embedding_full JSONB;
     ALTER TABLE monitor_online_evaluators ADD COLUMN IF NOT EXISTS project_id TEXT;
     ALTER TABLE prompts ADD COLUMN IF NOT EXISTS project_id TEXT;
     ALTER TABLE prompt_versions ADD COLUMN IF NOT EXISTS project_id TEXT;
@@ -2594,6 +2630,7 @@ const PROJECT_SCOPED_TABLES = [
   "monitor_signal_feedback",
   "monitor_events",
   "monitor_classifications",
+  "insight_case_embeddings",
   "monitor_online_evaluators",
   "prompts",
   "prompt_versions",

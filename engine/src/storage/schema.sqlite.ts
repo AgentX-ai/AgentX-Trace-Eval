@@ -490,6 +490,32 @@ export const monitorClassifications = sqliteTable("monitor_classifications", {
   embedding: text("embedding", { mode: "json" }),
 });
 
+// core/insights/: one cached embedding per distinct dataset case query. Keyed by a content hash
+// of the query text, not by the case's position in the dataset's `questions` JSON array - editing
+// a case re-embeds it because its hash changes, while reordering or inserting cases costs nothing,
+// which a positional key would get exactly backwards. Rows are never invalidated, only orphaned:
+// an edited case leaves its old row behind, harmless and reused if the text ever comes back.
+// A row is only written once BOTH vectors are computed - a failed call is never cached, since it
+// cannot be told apart from a missing key and would exclude the case forever.
+export const insightCaseEmbeddings = sqliteTable("insight_case_embeddings", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  datasetId: text("dataset_id").notNull(),
+  // sha256 of the normalized query text - see core/insights/coverage.ts's caseKey().
+  caseKey: text("case_key").notNull(),
+  // The query text itself, denormalized so a probe result can name the nearest case without
+  // re-reading and re-walking every dataset's questions JSON.
+  query: text("query").notNull(),
+  // JSON-encoded number[] (text-embedding-3-small). Two of them, in two different spaces:
+  // `embedding` is the query alone (compared against a probe's typed query), `embedding_full` is
+  // query + expected result (compared against trace embeddings, which are input + output). See
+  // core/insights/cases.ts.
+  embedding: text("embedding", { mode: "json" }),
+  embeddingFull: text("embedding_full", { mode: "json" }),
+  model: text("model"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
 // The ONLINE PROFILE of an LLM Judge Scorer (core/monitor/judgeScorers.ts): routing/threshold
 // state only - sampleRate/scopeMode/agentIds mirror monitor_patterns' routing fields (see
 // core/monitor/routing.ts). The rubric (criteria/judge prompt/judge model) and the scorer's
@@ -1020,6 +1046,7 @@ export type SqliteSchema = {
   monitorSignals: typeof monitorSignals;
   monitorEvents: typeof monitorEvents;
   monitorClassifications: typeof monitorClassifications;
+  insightCaseEmbeddings: typeof insightCaseEmbeddings;
   monitorOnlineEvaluators: typeof monitorOnlineEvaluators;
   customEvaluators: typeof customEvaluators;
   agentConnectors: typeof agentConnectors;

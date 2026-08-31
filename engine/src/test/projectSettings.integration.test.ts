@@ -104,11 +104,18 @@ describe("project monitoring settings", () => {
     });
     expect(updated.status, JSON.stringify(updated.body)).toBeLessThan(300);
 
+    // Asserted on the FIELD, not a substring of the serialized body: the response carries the
+    // project's randomly generated apiKey, and a key containing "1234" anywhere in its hex failed
+    // this as a settings leak. Seen in CI - agtx_local_...a8ec1234e5a5... - roughly 1 run in 1600.
+    type SettingsBody = { monitoringDefaults: { latencyThresholdMs: number } };
     const afterA = await engine.json("/api/v1/agent-monitoring/settings", { apiKey: a.apiKey });
-    expect(JSON.stringify(afterA.body)).toContain("1234");
+    expect((afterA.body as SettingsBody).monitoringDefaults.latencyThresholdMs).toBe(1234);
 
     const afterB = await engine.json("/api/v1/agent-monitoring/settings", { apiKey: b.apiKey });
-    expect(JSON.stringify(afterB.body), "one project's settings leaked into another").not.toContain("1234");
+    expect(
+      (afterB.body as SettingsBody).monitoringDefaults.latencyThresholdMs,
+      "one project's settings leaked into another"
+    ).not.toBe(1234);
   });
 
   it("reports latency as a KPI metric from the traces themselves - no scorer involved", async () => {

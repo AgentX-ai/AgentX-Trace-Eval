@@ -5,6 +5,7 @@ import { reconstructMessages } from "./portability.js";
 import { getDataset, updateDataset, extractSimilarityConfig, extractCodeScorers } from "./datasets.js";
 import { callJudgeJson, computeEmbedding, DEFAULT_JUDGE_MODEL } from "./judge.js";
 import { extractText } from "../monitor/events.js";
+import { cosine, normalizeText } from "../shared/vector.js";
 
 // The Curate step: turn what production actually did (a trace, or a whole session) into a golden
 // dataset case - the flywheel that grows regression tests out of real failures instead of
@@ -134,30 +135,20 @@ type ExistingQuestion = {
   source?: { traceId?: unknown; sessionId?: unknown };
 };
 
-function normalize(s: string): string {
-  return s.toLowerCase().replace(/\s+/g, " ").trim();
-}
-
-function cosine(a: number[], b: number[]): number {
-  let dot = 0;
-  let na = 0;
-  let nb = 0;
-  for (let i = 0; i < Math.min(a.length, b.length); i++) {
-    const x = a[i] ?? 0;
-    const y = b[i] ?? 0;
-    dot += x * y;
-    na += x * x;
-    nb += y * y;
-  }
-  const denom = Math.sqrt(na) * Math.sqrt(nb);
-  return denom === 0 ? 0 : dot / denom;
-}
+const normalize = normalizeText;
 
 // Calibrated for text-embedding-3-small (DEFAULT_EMBEDDING_MODEL), whose cosines run well below
 // older models': measured paraphrase pairs score 0.82-0.88 while related-but-distinct questions
 // ("what's your refund policy" vs "how long does a refund take") score 0.48-0.56, so 0.75 splits
 // the two populations with real margin on both sides. Recalibrate if the embedding model changes.
-const DEDUPE_SIMILARITY_THRESHOLD = 0.75;
+//
+// Exported so core/insights/ scores against the same two populations: its "covered" verdict means
+// "addCaseToDataset would reject this as a duplicate". `related` is the FLOOR of the measured
+// related band (0.48), not its ceiling - a pair at 0.50 is genuinely related and must not be
+// reported as having nothing in common.
+export const SIMILARITY_BANDS = { covered: 0.75, related: 0.48 } as const;
+
+const DEDUPE_SIMILARITY_THRESHOLD = SIMILARITY_BANDS.covered;
 const DEDUPE_EMBEDDING_CAP = 100;
 
 export type DuplicateInfo = { reason: "same-source" | "same-query" | "similar-query"; existingQuery: string; similarity?: number };

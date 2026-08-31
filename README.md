@@ -59,6 +59,18 @@ browser, and prints a local API key for the SDK. Prefer a container? See [Docker
   downvote raises a signal directly) feed Overview's **Judge Calibration** card, which measures
   how often the automated verdicts agreed with reality; and a **Model Comparison** card
   aggregates quality/cost/latency per model from real traffic.
+- **Insights** - does your dataset look anything like your traffic? Joins the topics production
+  actually produces (from Monitor's classified traces) to the cases in your datasets, and reports
+  three numbers: traffic-weighted coverage, topic breadth, and risk-weighted coverage - the gap
+  between the first and third being the useful one ("you test what is common, not what is
+  dangerous"). Coverage is a *facility-location* value over the topic's real traces rather than a
+  case count, so near-duplicate cases add nothing and the number cannot be inflated by generating
+  copies. Includes a **probe**: ask whether the datasets cover one specific query (or paste a
+  whole list - a launch spec, a support macro export - as a pre-launch gate). The probe's
+  "covered" verdict reuses the exact similarity threshold `addCaseToDataset` dedupes on, so
+  covered means *the dataset would reject this query as a duplicate*, and it distinguishes a real
+  gap from a question nobody asks rather than inventing work. Degrades to labelled lexical
+  matching without an embeddings key; never writes a dataset.
 - **Judge tuning** - the judges get judged: each online evaluator's verdicts are measured
   against recorded reality (human re-scores, outcomes, user votes), and its own grading criteria
   can be rewritten from the disagreements - validated by exact re-judging (fixes the cases it got
