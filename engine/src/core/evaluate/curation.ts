@@ -1,5 +1,5 @@
-import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { traceStoreFor } from "../trace/store/index.js";
 import { getTraceRow, type TraceRow } from "../trace/ingest.js";
 import { reconstructMessages } from "./portability.js";
 import { getDataset, updateDataset, extractSimilarityConfig, extractCodeScorers } from "./datasets.js";
@@ -76,12 +76,7 @@ export async function previewCaseFromTrace(db: Db, traceId: string): Promise<Cas
 export async function previewCaseFromSession(db: Db, sessionId: string): Promise<CasePreview | null> {
   // Full-row select + JS filter/sort (the cross-dialect idiom used everywhere else): a turn is a
   // root span; child spans are steps inside a turn and never become dataset turns themselves.
-  const cond = and(eq(db.schema.traces.sessionId, sessionId), eq(db.schema.traces.projectId, db.projectId));
-  const rows = (
-    db.kind === "sqlite"
-      ? db.db.select().from(db.schema.traces).where(cond).all()
-      : await db.db.select().from(db.schema.traces).where(cond)
-  ) as TraceRow[];
+  const rows = (await traceStoreFor(db).listBySession(sessionId)) as TraceRow[];
   const roots = rows.filter(r => !r.parentSpanId);
   roots.sort((a, b) => (a.startedAt ?? a.createdAt).getTime() - (b.startedAt ?? b.createdAt).getTime());
   const turns = roots.map(toPreviewTurn).filter(t => t.query);

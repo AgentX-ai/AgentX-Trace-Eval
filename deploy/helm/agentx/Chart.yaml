@@ -1,0 +1,8 @@
+apiVersion: v2
+name: agentx
+description: >-
+  AgentX self-host governance engine (Trace, Evaluate, Monitor) - the enterprise tier:
+  Postgres control plane + ClickHouse telemetry (engine/docs/deployment-tiers.md, ADR-0001/0003).
+type: application
+version: 0.1.0
+appVersion: "0.3"

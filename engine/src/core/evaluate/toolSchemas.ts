@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 import { and, eq, gte, lt, max } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { traceStoreFor } from "../trace/store/index.js";
 import { getTraceRow } from "../trace/ingest.js";
 import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
 import { extractText } from "../monitor/events.js";
@@ -479,12 +480,11 @@ export async function listUnregisteredTools(db: Db, windowDays = 7): Promise<Unr
   const registered = new Set((await listToolSchemasWire(db)).map(s => s.name));
 
   const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
-  const cond = and(gte(db.schema.traces.createdAt, since), eq(db.schema.traces.projectId, db.projectId));
-  const rows = (
-    db.kind === "sqlite"
-      ? db.db.select().from(db.schema.traces).where(cond).all()
-      : await db.db.select().from(db.schema.traces).where(cond)
-  ) as { toolCalls: unknown; metadata: unknown; createdAt: Date }[];
+  const rows = (await traceStoreFor(db).queryWindow({ since })) as unknown as {
+    toolCalls: unknown;
+    metadata: unknown;
+    createdAt: Date;
+  }[];
 
   type Acc = { callCount: number; failureCount: number; lastSeenAt: Date; calls: ObservedCall[]; metadataDraft: string | null };
   const byName = new Map<string, Acc>();

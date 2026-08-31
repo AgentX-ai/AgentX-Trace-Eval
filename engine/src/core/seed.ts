@@ -13,6 +13,7 @@ import { ensureSessionBaselineJudge } from "./monitor/builtinEvaluators.js";
 import { ensureMetricPackConfigs } from "./evaluate/metricPack.js";
 import { withProjectId, type Db as DbType } from "../storage/db.js";
 import { logger } from "../log.js";
+import { traceStoreFor } from "./trace/store/index.js";
 
 // The example content lives in its own project, not in Default.
 //
@@ -456,12 +457,7 @@ async function seedExampleTopicsIfEmpty(db: Db): Promise<void> {
 // Observe, not to the child spans underneath them.
 async function listRecentTraceRows(db: Db, limit: number) {
   type Row = { id: string; input: unknown; createdAt: Date | null; parentSpanId: string | null };
-  const rows = (
-    db.kind === "sqlite"
-      ? db.db.select().from(db.schema.traces).where(eq(db.schema.traces.projectId, db.projectId)).all()
-      : await db.db.select().from(db.schema.traces).where(eq(db.schema.traces.projectId, db.projectId))
-  ) as Row[];
-  return rows.filter(r => !r.parentSpanId).slice(0, limit);
+  return (await traceStoreFor(db).queryWindow({ rootsOnly: true, orderDesc: true, limit })) as unknown as Row[];
 }
 
 // One finished evaluation run, so Evaluate opens on a result instead of an empty list and the

@@ -1,5 +1,5 @@
-import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { traceStoreFor } from "./store/index.js";
 import { listSessionSpans } from "./ingest.js";
 
 // Render a trace's execution trajectory as judge-readable text - the span subtree (graph nodes,
@@ -59,12 +59,7 @@ function renderFlatToolCalls(toolCalls: unknown): string | null {
 }
 
 export async function renderTraceTrajectory(db: Db, traceId: string): Promise<string | null> {
-  const cond = and(eq(db.schema.traces.id, traceId), eq(db.schema.traces.projectId, db.projectId));
-  const rows =
-    db.kind === "sqlite"
-      ? db.db.select().from(db.schema.traces).where(cond).all()
-      : await db.db.select().from(db.schema.traces).where(cond);
-  const root = rows[0] as
+  const root = (await traceStoreFor(db).getById(traceId)) as
     | { spanId: string | null; sessionId: string | null; toolCalls: unknown }
     | undefined;
   if (!root) return null;
@@ -140,12 +135,7 @@ export async function renderTraceTrajectory(db: Db, traceId: string): Promise<st
 export type TrajectoryMatchMode = "strict" | "unordered" | "subset" | "superset";
 
 export async function extractTraceToolSequence(db: Db, traceId: string): Promise<string[] | null> {
-  const cond = and(eq(db.schema.traces.id, traceId), eq(db.schema.traces.projectId, db.projectId));
-  const rows =
-    db.kind === "sqlite"
-      ? db.db.select().from(db.schema.traces).where(cond).all()
-      : await db.db.select().from(db.schema.traces).where(cond);
-  const root = rows[0] as { toolCalls: unknown } | undefined;
+  const root = (await traceStoreFor(db).getById(traceId)) as { toolCalls: unknown } | undefined;
   if (!root) return null;
   if (!Array.isArray(root.toolCalls)) return [];
   return (root.toolCalls as { name?: unknown }[]).map(tc => String(tc.name ?? "unknown"));
@@ -217,12 +207,7 @@ function chunkText(value: unknown): string | null {
 }
 
 export async function getTraceRetrievalContext(db: Db, traceId: string): Promise<string | null> {
-  const cond = and(eq(db.schema.traces.id, traceId), eq(db.schema.traces.projectId, db.projectId));
-  const rows =
-    db.kind === "sqlite"
-      ? db.db.select().from(db.schema.traces).where(cond).all()
-      : await db.db.select().from(db.schema.traces).where(cond);
-  const root = rows[0] as
+  const root = (await traceStoreFor(db).getById(traceId)) as
     | { spanId: string | null; sessionId: string | null; performanceSummary: unknown }
     | undefined;
   if (!root) return null;
@@ -390,12 +375,7 @@ async function renderDefsFromSpans(
 }
 
 export async function renderUsedToolDefinitions(db: Db, traceId: string): Promise<string | null> {
-  const cond = and(eq(db.schema.traces.id, traceId), eq(db.schema.traces.projectId, db.projectId));
-  const rows =
-    db.kind === "sqlite"
-      ? db.db.select().from(db.schema.traces).where(cond).all()
-      : await db.db.select().from(db.schema.traces).where(cond);
-  const root = rows[0] as
+  const root = (await traceStoreFor(db).getById(traceId)) as
     | { name: string; spanId: string | null; sessionId: string | null; metadata: unknown; toolCalls: unknown }
     | undefined;
   if (!root) return null;

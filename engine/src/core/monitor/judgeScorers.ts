@@ -1,5 +1,6 @@
 import { and, count, desc, eq, gt, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { traceStoreFor } from "../trace/store/index.js";
 import type { SimilarityConfig } from "../evaluate/datasets.js";
 import type { CodeScorerConfig } from "../evaluate/codeScorer.js";
 import {
@@ -349,18 +350,11 @@ export type JudgePreviewDraft = {
 };
 
 async function latestScorableTrace(db: Db, traceId?: string) {
-  if (db.kind === "sqlite") {
-    const t = db.schema.traces;
-    const cond = traceId
-      ? and(eq(t.id, traceId), eq(t.projectId, db.projectId))
-      : and(eq(t.projectId, db.projectId), isNull(t.parentSpanId), isNotNull(t.output), ne(t.output, ""));
-    return db.db.select().from(t).where(cond).orderBy(desc(t.createdAt)).limit(1).all()[0] ?? null;
+  const store = traceStoreFor(db);
+  if (traceId) {
+    return (await store.getById(traceId)) ?? null;
   }
-  const t = db.schema.traces;
-  const cond = traceId
-    ? and(eq(t.id, traceId), eq(t.projectId, db.projectId))
-    : and(eq(t.projectId, db.projectId), isNull(t.parentSpanId), isNotNull(t.output), ne(t.output, ""));
-  const rows = await db.db.select().from(t).where(cond).orderBy(desc(t.createdAt)).limit(1);
+  const rows = await store.queryWindow({ scorableOnly: true, orderDesc: true, limit: 1 });
   return rows[0] ?? null;
 }
 
@@ -373,31 +367,15 @@ export async function getJudgePreviewContext(db: Db): Promise<{
 }> {
   const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000);
   const asText = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v ?? ""));
-  let rows: Array<{ id: string; input: unknown; output: unknown; sessionId: string | null; createdAt: Date }>;
-  let weekly: number;
-  if (db.kind === "sqlite") {
-    const t = db.schema.traces;
-    rows = db.db
-      .select({ id: t.id, input: t.input, output: t.output, sessionId: t.sessionId, createdAt: t.createdAt })
-      .from(t)
-      .where(and(eq(t.projectId, db.projectId), isNull(t.parentSpanId), isNotNull(t.output), ne(t.output, "")))
-      .orderBy(desc(t.createdAt))
-      .limit(200)
-      .all();
-    const countCond = and(eq(t.projectId, db.projectId), isNull(t.parentSpanId), gt(t.createdAt, weekAgo));
-    weekly = Number(db.db.select({ n: count() }).from(t).where(countCond).all()[0]?.n ?? 0);
-  } else {
-    const t = db.schema.traces;
-    rows = await db.db
-      .select({ id: t.id, input: t.input, output: t.output, sessionId: t.sessionId, createdAt: t.createdAt })
-      .from(t)
-      .where(and(eq(t.projectId, db.projectId), isNull(t.parentSpanId), isNotNull(t.output), ne(t.output, "")))
-      .orderBy(desc(t.createdAt))
-      .limit(200);
-    const countCond = and(eq(t.projectId, db.projectId), isNull(t.parentSpanId), gt(t.createdAt, weekAgo));
-    const countRows = await db.db.select({ n: count() }).from(t).where(countCond);
-    weekly = Number(countRows[0]?.n ?? 0);
-  }
+  const store = traceStoreFor(db);
+  const rows = (await store.queryWindow({ scorableOnly: true, orderDesc: true, limit: 200 })) as Array<{
+    id: string;
+    input: unknown;
+    output: unknown;
+    sessionId: string | null;
+    createdAt: Date;
+  }>;
+  const weekly = await store.countRoots(weekAgo);
   const traces = rows.slice(0, 12).map(r => ({
     traceId: r.id,
     input: asText(r.input),

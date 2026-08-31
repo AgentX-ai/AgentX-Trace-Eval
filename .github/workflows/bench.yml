@@ -1,0 +1,76 @@
+name: Nightly capacity benchmark
+# Phase 5 of the trace-store plan (engine/docs/capacity-slos.md): the benchmark is a GATE. Floors are
+# deliberately conservative for shared CI runners; the measured numbers publish as artifacts and
+# feed the deployment guide. A regression beyond a floor fails the night.
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: bench (${{ matrix.tier.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tier:
+          - name: sqlite
+            env: ""
+          - name: postgres
+            env: "AGENTX_DB_URL=postgres://postgres:agentx@localhost:5432/agentx"
+          - name: clickhouse
+            env: "AGENTX_TELEMETRY_URL=http://default:agentx@localhost:8123/default"
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: agentx
+          POSTGRES_DB: agentx
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      # No --health-cmd: GitHub's service `options` parser mishandles quoted commands (see
+      # test.yml); readiness is the explicit curl wait in the boot step instead.
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8-alpine
+        env:
+          CLICKHOUSE_PASSWORD: agentx
+        ports:
+          - 8123:8123
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.x
+          cache: yarn
+          cache-dependency-path: yarn.lock
+      - run: yarn install --frozen-lockfile
+      - run: yarn workspace @agentx/judge-core build
+      - name: Boot engine and run the benchmark
+        run: |
+          set -euo pipefail
+          export AGENTX_RATE_LIMIT=off AGENTX_HOME="$RUNNER_TEMP/agentx-bench" PORT=4700
+          for kv in ${{ matrix.tier.env }}; do export "$kv"; done
+          # The engine fails boot loudly on an unreachable backend - wait for the services first.
+          for i in $(seq 1 60); do curl -sf http://localhost:8123/ping > /dev/null && break; sleep 2; done
+          node_modules/.bin/tsx engine/src/index.ts > engine.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://localhost:4700/api/v1/auth/config > /dev/null && break; sleep 1; done
+          node engine/scripts/bench.mjs --base http://localhost:4700 --seconds 60 --concurrency 32 \
+            --floor-ingest-rps 300 --floor-ack-p95-ms 250 --floor-dash-p95-ms 1500 | tee "bench-${{ matrix.tier.name }}.json"
+      - name: Engine log on failure
+        if: failure()
+        run: tail -50 engine.log
+      - uses: actions/upload-artifact@v4
+        # always(): the JSON is MOST valuable on the night a floor fails - tee already wrote it.
+        if: always()
+        with:
+          name: bench-${{ matrix.tier.name }}
+          path: bench-${{ matrix.tier.name }}.json

@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentx.fullname" . }}-engine
+spec:
+  # One replica by design: the engine is the single telemetry writer (ADR-0003/0005); the
+  # Recreate strategy prevents two writers coexisting during a rollout.
+  replicas: {{ .Values.engine.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: {{ include "agentx.fullname" . }}-engine }
+  template:
+    metadata:
+      labels: { app: {{ include "agentx.fullname" . }}-engine }
+    spec:
+      containers:
+        - name: engine
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.engine.port }}
+          envFrom:
+            - secretRef:
+                name: {{ include "agentx.fullname" . }}
+          env:
+            - name: PORT
+              value: {{ .Values.engine.port | quote }}
+            {{- range $k, $v := .Values.engine.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: /api/v1/auth/config, port: {{ .Values.engine.port }} }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /metrics, port: {{ .Values.engine.port }} }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources: {{- toYaml .Values.engine.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentx.fullname" . }}
+spec:
+  type: {{ .Values.service.type }}
+  selector: { app: {{ include "agentx.fullname" . }}-engine }
+  ports:
+    - port: {{ .Values.engine.port }}
+      targetPort: {{ .Values.engine.port }}

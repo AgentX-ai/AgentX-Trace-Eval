@@ -20,6 +20,7 @@ browser, and prints a local API key for the SDK. Prefer a container? See [Docker
 - [Features](#features)
 - [Docker](#docker)
 - [Configuration](#configuration)
+- [Scaling tiers](#scaling-tiers)
 - [SDK & OpenTelemetry](#sdk--opentelemetry)
 - [What's in this repo](#whats-in-this-repo)
 - [Building from source](#building-from-source)
@@ -155,6 +156,28 @@ hosting the dashboard on the internet):
   Enabling or disabling auth never breaks a deployed integration.
 - Identity is standard [better-auth](https://better-auth.com) (email/password out of the box),
   stored in the same database as everything else - works on both SQLite and Postgres.
+
+## Scaling tiers
+
+Same binary, same API, three storage tiers - pick one:
+
+```bash
+# Self-host (SQLite) - the default, nothing to configure
+agentx-trace-eval --dev
+
+# Team (Postgres) - one env var; fresh installs get a natively partitioned traces table
+AGENTX_DB_URL=postgres://user:pass@host:5432/agentx agentx-server
+
+# Enterprise (Postgres control plane + ClickHouse telemetry)
+docker compose -f docker-compose.enterprise.yml up -d       # or the Helm chart:
+helm install agentx deploy/helm/agentx --set image.repository=<your-registry>/agentx-server
+```
+
+Step-by-step setup, verification, retention, backup/restore, and tuning:
+[deployment tiers](engine/docs/deployment-tiers.md). Design rationale:
+[ADRs](engine/docs/adr/). Incidents: [runbook](engine/docs/runbook.md). Self-metrics at
+`GET /metrics`; measure your own hardware with `engine/scripts/bench.mjs` and rehearse
+failure modes with `engine/scripts/chaos.mjs`.
 
 ## SDK & OpenTelemetry
 

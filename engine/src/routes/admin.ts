@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { and, eq, gte, isNull, sql } from "drizzle-orm";
 import { asyncRouter } from "./asyncRouter.js";
+import { traceStoreFor } from "../core/trace/store/index.js";
 import { getDb } from "../storage/db.js";
 import { judgeCallsSince } from "../core/shared/usage.js";
 import { listAuditEvents } from "../core/audit/auditLog.js";
@@ -33,7 +34,6 @@ adminRouter.get("/overview", async (req: Request, res: Response) => {
 
   type OrgRow = { id: string; name: string; createdAt: Date };
   type TraceCount = { projectId: string | null; n: number };
-  const traceCond = and(gte(db.schema.traces.createdAt, since), isNull(db.schema.traces.parentSpanId));
   let orgs: OrgRow[];
   let members: { organizationId: string }[];
   let projects: { id: string; organizationId: string | null }[];
@@ -42,21 +42,12 @@ adminRouter.get("/overview", async (req: Request, res: Response) => {
     orgs = db.db.select().from(db.schema.authOrganizations).all() as OrgRow[];
     members = db.db.select().from(db.schema.authMembers).all() as { organizationId: string }[];
     projects = db.db.select().from(db.schema.projects).all() as { id: string; organizationId: string | null }[];
-    traceRows = db.db
-      .select({ projectId: db.schema.traces.projectId, n: sql<number>`count(*)` })
-      .from(db.schema.traces)
-      .where(traceCond)
-      .groupBy(db.schema.traces.projectId)
-      .all() as TraceCount[];
+    traceRows = (await traceStoreFor(db).countRootsByProjectUnscoped(since)) as TraceCount[];
   } else {
     orgs = (await db.db.select().from(db.schema.authOrganizations)) as OrgRow[];
     members = (await db.db.select().from(db.schema.authMembers)) as { organizationId: string }[];
     projects = (await db.db.select().from(db.schema.projects)) as { id: string; organizationId: string | null }[];
-    traceRows = (await db.db
-      .select({ projectId: db.schema.traces.projectId, n: sql<number>`count(*)` })
-      .from(db.schema.traces)
-      .where(traceCond)
-      .groupBy(db.schema.traces.projectId)) as TraceCount[];
+    traceRows = (await traceStoreFor(db).countRootsByProjectUnscoped(since)) as TraceCount[];
   }
   const judgeCalls = await judgeCallsSince(db, since);
   const tracesByProject = new Map(traceRows.map(row => [row.projectId, Number(row.n)]));

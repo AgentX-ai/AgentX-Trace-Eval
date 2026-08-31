@@ -88,7 +88,9 @@ describe("notifyWebhooks", () => {
   it("returns immediately rather than waiting on delivery", () => {
     const started = Date.now();
     notifyWebhooks([`${base}/hang`], signal);
-    expect(Date.now() - started).toBeLessThan(50);
+    // Generous bound: /hang blocks for seconds, so anything short proves fire-and-forget.
+    // 50ms flaked under a CPU-starved full-suite run.
+    expect(Date.now() - started).toBeLessThan(250);
   });
 
   it("delivers a Slack-compatible body to every target", async () => {

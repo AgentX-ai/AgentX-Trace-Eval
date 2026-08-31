@@ -41,7 +41,8 @@ export const EXPORT_ENTITIES = {
   // backup" that dropped them lost every historical rubric and every report.
   "dataset-versions": { table: "datasetVersions", sinceColumn: "createdAt" },
   "evaluation-settings-versions": { table: "evaluationSettingsVersions", sinceColumn: "createdAt" },
-  "evaluation-analyses": { table: "evaluationAnalyses", sinceColumn: "createdAt" },
+  // The one table without an `id` column: its primary key is the run it analyzed.
+  "evaluation-analyses": { table: "evaluationAnalyses", sinceColumn: "createdAt", keyColumn: "evaluationId" },
   "custom-evaluators": { table: "customEvaluators", sinceColumn: "createdAt" },
 } as const;
 
@@ -60,6 +61,22 @@ function entityTable(db: Db, entity: ExportEntity): any {
   return (db.schema as Record<string, any>)[EXPORT_ENTITIES[entity].table];
 }
 
+// Keyset column: `id` for every table except the ones that key differently (registry
+// `keyColumn`). Resolved here so a registry typo fails loudly instead of drizzle rendering a
+// bare `asc` identifier into the SQL (the exact 500 UC8 caught on evaluation-analyses).
+function entityKeyColumn(db: Db, entity: ExportEntity): any {
+  const t = entityTable(db, entity);
+  const name = (EXPORT_ENTITIES[entity] as { keyColumn?: string }).keyColumn ?? "id";
+  const col = t[name];
+  if (!col) throw new Error(`Export entity "${entity}": key column "${name}" missing on table`);
+  return col;
+}
+
+/** Wire-object property carrying the keyset cursor value ("id" for all but keyed exceptions). */
+export function exportKeyName(entity: ExportEntity): string {
+  return (EXPORT_ENTITIES[entity] as { keyColumn?: string }).keyColumn ?? "id";
+}
+
 function buildWhere(db: Db, entity: ExportEntity, since: Date | null, cursor: string | null): SQL | undefined {
   const t = entityTable(db, entity);
   const conds: SQL[] = [eq(t.projectId, db.projectId)];
@@ -67,7 +84,7 @@ function buildWhere(db: Db, entity: ExportEntity, since: Date | null, cursor: st
     conds.push(gte(t[EXPORT_ENTITIES[entity].sinceColumn], since));
   }
   if (cursor) {
-    conds.push(gt(t.id, cursor));
+    conds.push(gt(entityKeyColumn(db, entity), cursor));
   }
   return and(...conds);
 }
@@ -90,7 +107,7 @@ export async function fetchExportBatch(
     .select()
     .from(t)
     .where(buildWhere(db, entity, since, cursor))
-    .orderBy(asc(t.id))
+    .orderBy(asc(entityKeyColumn(db, entity)))
     .limit(EXPORT_BATCH);
   return db.kind === "sqlite" ? q.all() : await q;
 }

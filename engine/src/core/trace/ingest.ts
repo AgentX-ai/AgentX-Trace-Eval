@@ -1,14 +1,15 @@
 import { nanoid } from "nanoid";
 import { z } from "zod";
-import { desc, lt, and, eq, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { traceStoreFor } from "./store/index.js";
+import { enqueueSpan } from "./ingestQueue.js";
 import { resolveAgentId } from "../monitor/agents.js";
 import { listPortabilityModels, estimateCostUSD } from "../evaluate/models.js";
 import { getClassificationForTrace } from "../monitor/topics.js";
 import { unixNanosToDate } from "../shared/unixNano.js";
 import { logger } from "../../log.js";
 import { normalizeSpanKind, resolveSpanKind } from "./spanKind.js";
-import { EVAL_RUN_SOURCE, normalizeTraceSource, productionTracesOnly } from "./evalTraffic.js";
+import { normalizeTraceSource } from "./evalTraffic.js";
 
 // Mirrors the wire payload agentx.tracing.tracer.Tracer._send builds in the Python SDK
 // (agentx/tracing/tracer.py); see AgentX-Python for the exact field list this was checked
@@ -108,6 +109,136 @@ export const ingestTraceSchema = z.preprocess(foldCamelAliases, z.object({
 
 export type IngestTraceInput = z.infer<typeof ingestTraceSchema>;
 
+// Payload cap (ADR-0005): unbounded inputs/outputs are what actually make the span table
+// huge. Oversized fields are truncated with an explicit marker - the cap is configuration,
+// the marker is not. Applied to the serialized form so nested objects count fully.
+// NaN-safe: a typo'd value ("100k") must fall back to the default - Math.max(1000, NaN) is NaN,
+// and slice(0, NaN) would silently replace EVERY capped field with just the truncation marker.
+const fieldCharsRaw = Number(process.env.AGENTX_INGEST_MAX_FIELD_CHARS ?? 100_000);
+const MAX_FIELD_CHARS = Number.isFinite(fieldCharsRaw) ? Math.max(1_000, Math.floor(fieldCharsRaw)) : 100_000;
+
+export function capPayloadField(value: unknown): unknown {
+  if (value == null) return value;
+  if (typeof value === "string") {
+    if (value.length <= MAX_FIELD_CHARS) return value;
+    return `${value.slice(0, MAX_FIELD_CHARS)}\n[agentx.truncated: field exceeded ${MAX_FIELD_CHARS} chars]`;
+  }
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value) ?? "";
+  } catch {
+    return value;
+  }
+  if (serialized.length <= MAX_FIELD_CHARS) return value;
+  return { "agentx.truncated": true, preview: serialized.slice(0, MAX_FIELD_CHARS) };
+}
+
+// Builds the storable row (agent resolution, timestamps, caps) without touching storage - the
+// shared half of the synchronous path below and the queued path (ingestTraceQueued).
+async function prepareSpanRow(
+  db: Db,
+  payload: IngestTraceInput
+): Promise<{ row: TraceRow; agentId: string | null }> {
+  const id = nanoid();
+  // Root spans only - see the agent-resolution comment in ingestTrace's original body: a child
+  // span's own name must not register as its own fake agent.
+  const agentId = payload.parent_span_id ? null : await resolveAgentId(db, payload.agent_id || payload.name);
+  const startedAt = unixNanosToDate(payload.started_at_unix_nano);
+  if (payload.started_at_unix_nano && !startedAt) {
+    logger.warn(`Ignoring unparseable started_at_unix_nano "${payload.started_at_unix_nano}" on trace "${payload.name}"`);
+  }
+  const row: TraceRow = {
+    id,
+    name: payload.name,
+    input: capPayloadField(payload.input ?? null),
+    output: capPayloadField(payload.output ?? null),
+    error: payload.error ?? null,
+    latencyMs: payload.latency_ms ?? null,
+    framework: payload.framework ?? null,
+    model: payload.model ?? null,
+    toolCalls: capPayloadField(payload.tool_calls ?? null),
+    spanKind: normalizeSpanKind(payload.span_kind),
+    source: normalizeTraceSource(payload.source),
+    metadata: capPayloadField(payload.metadata ?? null),
+    sessionId: payload.session_id ?? null,
+    performanceSummary: payload.performance_summary ?? null,
+    inputTokens: payload.input_tokens ?? null,
+    outputTokens: payload.output_tokens ?? null,
+    cacheReadTokens: payload.cache_read_tokens ?? null,
+    cacheWriteTokens: payload.cache_write_tokens ?? null,
+    spanId: payload.span_id ?? null,
+    parentSpanId: payload.parent_span_id ?? null,
+    startedAt,
+    // Historical imports send real past start times; createdAt drives every window-based view,
+    // so it reflects when the traffic HAPPENED, not when it was imported.
+    createdAt: startedAt ?? new Date(),
+    agentId,
+    projectId: db.projectId,
+  };
+  return { row, agentId };
+}
+
+// The queued ingest path (ADR-0005): fast-path dedupe, then enqueue. `deduped: true` means the
+// span was already stored (replay); `accepted: false` means the queue is full and the caller
+// must answer 429. The post-ingest pipeline is the ROUTE's job, gated on the settled outcome:
+// it runs only for "stored" - never for a replay, so judges cannot double-run on a replay race.
+export type QueuedIngestResult = {
+  traceId: string;
+  agentId: string | null;
+  deduped: boolean;
+  accepted: boolean;
+  dropped: boolean;
+};
+
+/**
+ * Two-phase variant for bulk callers (OTLP): enqueue now, settle later. Awaiting `settle`
+ * between enqueues would serialize one flush per span - a whole OTLP export must be IN the
+ * queue before anyone waits, so its spans coalesce into shared micro-batches (ADR-0005).
+ */
+export async function beginIngestTraceQueued(
+  db: Db,
+  payload: IngestTraceInput
+): Promise<{ accepted: boolean; settle: Promise<QueuedIngestResult> }> {
+  if (payload.span_id) {
+    // Fast-path dedupe is an optimization, not a gate: if the telemetry store is unreachable
+    // the lookup fails, and the span proceeds into the queue whose flush failure is the one
+    // honest, counted, 503-answered path (ADR-0005). Dedupe is still enforced at insert.
+    const existing = await findTraceBySpanId(db, payload.span_id).catch(() => null);
+    if (existing) {
+      const result = { traceId: existing.id, agentId: existing.agentId, deduped: true, accepted: true, dropped: false };
+      return { accepted: true, settle: Promise.resolve(result) };
+    }
+  }
+  const { row, agentId } = await prepareSpanRow(db, payload);
+  const { accepted, done } = enqueueSpan({ db, row });
+  if (!accepted) {
+    const result = { traceId: row.id, agentId, deduped: false, accepted: false, dropped: false };
+    return { accepted: false, settle: Promise.resolve(result) };
+  }
+  const settle = done.then(async (outcome): Promise<QueuedIngestResult> => {
+    if (outcome === "dropped") {
+      // The batch failed its retry (telemetry store down, disk full): the span was NOT stored.
+      // Reported as such so the route answers 503 and the client redelivers - never "deduped".
+      return { traceId: row.id, agentId, deduped: false, accepted: true, dropped: true };
+    }
+    if (outcome === "deduped" && payload.span_id) {
+      // Lost the idempotency conflict to a concurrent replay - report the winner, exactly as the
+      // synchronous path always has.
+      const winner = await findTraceBySpanId(db, payload.span_id);
+      if (winner) {
+        return { traceId: winner.id, agentId: winner.agentId, deduped: true, accepted: true, dropped: false };
+      }
+    }
+    return { traceId: row.id, agentId, deduped: outcome === "deduped", accepted: true, dropped: false };
+  });
+  return { accepted: true, settle };
+}
+
+export async function ingestTraceQueued(db: Db, payload: IngestTraceInput): Promise<QueuedIngestResult> {
+  const { settle } = await beginIngestTraceQueued(db, payload);
+  return settle;
+}
+
 export async function ingestTrace(
   db: Db,
   payload: IngestTraceInput
@@ -124,109 +255,25 @@ export async function ingestTrace(
       return { traceId: existing.id, agentId: existing.agentId, deduped: true };
     }
   }
-  const id = nanoid();
-  // Root spans only: a span_tree=True SDK trace or a multi-span OTel session sends one row per
-  // LLM call/tool call too (e.g. "LLM Call 1", "policy_lookup", each its own parentSpanId-linked
-  // trace) - resolving/creating a real agent from a *child* span's own name would register each
-  // of those as its own fake agent, flooding the Agents tab with tool/LLM-call names instead of
-  // real agents. Same "child spans are sub-detail, not top-level entities" rule
-  // listTracesPaginated already applies to the Observe tab's trace list (isNull(parentSpanId)) -
-  // applied here too. Root traces are unaffected; the vast majority of ingested traces (anything
-  // not using span_tree=True/OTel multi-span) have no parent_span_id at all.
-  const agentId = payload.parent_span_id ? null : await resolveAgentId(db, payload.agent_id || payload.name);
-  // Dropped, not fatal: losing a whole span over one bad field hides exactly the traffic an
-  // operator is trying to debug. The warning is what surfaces the client-side bug.
-  const startedAt = unixNanosToDate(payload.started_at_unix_nano);
-  if (payload.started_at_unix_nano && !startedAt) {
-    logger.warn(`Ignoring unparseable started_at_unix_nano "${payload.started_at_unix_nano}" on trace "${payload.name}"`);
-  }
-  const row = {
-    id,
-    name: payload.name,
-    input: payload.input ?? null,
-    output: payload.output ?? null,
-    error: payload.error ?? null,
-    latencyMs: payload.latency_ms ?? null,
-    framework: payload.framework ?? null,
-    model: payload.model ?? null,
-    toolCalls: payload.tool_calls ?? null,
-    spanKind: normalizeSpanKind(payload.span_kind),
-    source: normalizeTraceSource(payload.source),
-    metadata: payload.metadata ?? null,
-    sessionId: payload.session_id ?? null,
-    performanceSummary: payload.performance_summary ?? null,
-    inputTokens: payload.input_tokens ?? null,
-    outputTokens: payload.output_tokens ?? null,
-    cacheReadTokens: payload.cache_read_tokens ?? null,
-    cacheWriteTokens: payload.cache_write_tokens ?? null,
-    spanId: payload.span_id ?? null,
-    parentSpanId: payload.parent_span_id ?? null,
-    startedAt,
-    // Historical imports (Moveworks Data API sync and any future backfill) send real past
-    // start times; createdAt drives every window-based view (cost chart, sessions, top failing),
-    // so it must reflect when the traffic HAPPENED, not when it was imported. Live traffic's
-    // startedAt is "now" anyway, so this is byte-identical for the normal path.
-    createdAt: startedAt ?? new Date(),
-    agentId,
-    projectId: db.projectId,
-  };
+  const { row, agentId } = await prepareSpanRow(db, payload);
+  const won = await traceStoreFor(db).insertSpan(row);
 
-  // The check above is a fast path, not a guarantee: on Postgres concurrent replays of one span -
-  // the exact traffic it exists for - all get past it. ON CONFLICT against the
-  // traces(project_id, span_id) index decides the winner; an empty RETURNING means this call lost,
-  // so report the row the winner wrote. Traces with no span_id never conflict.
-  const inserted = (
-    db.kind === "sqlite"
-      ? db.db.insert(db.schema.traces).values(row).onConflictDoNothing().returning({ id: db.schema.traces.id }).all()
-      : await db.db.insert(db.schema.traces).values(row).onConflictDoNothing().returning({ id: db.schema.traces.id })
-  ) as { id: string }[];
-
-  if (!inserted[0] && payload.span_id) {
+  if (!won && payload.span_id) {
     const winner = await findTraceBySpanId(db, payload.span_id);
     if (winner) {
       return { traceId: winner.id, agentId: winner.agentId, deduped: true };
     }
   }
 
-  return { traceId: id, agentId, deduped: false };
+  return { traceId: row.id, agentId, deduped: false };
 }
 
 async function findTraceBySpanId(db: Db, spanId: string): Promise<{ id: string; agentId: string | null } | null> {
-  const cond = and(eq(db.schema.traces.spanId, spanId), eq(db.schema.traces.projectId, db.projectId));
-  const rows = (
-    db.kind === "sqlite"
-      ? db.db.select({ id: db.schema.traces.id, agentId: db.schema.traces.agentId }).from(db.schema.traces).where(cond).limit(1).all()
-      : await db.db.select({ id: db.schema.traces.id, agentId: db.schema.traces.agentId }).from(db.schema.traces).where(cond).limit(1)
-  ) as { id: string; agentId: string | null }[];
-  return rows[0] ?? null;
+  return (await traceStoreFor(db).findBySpanId(spanId)) ?? null;
 }
 
-export type TraceRow = {
-  id: string;
-  name: string;
-  input: unknown;
-  output: unknown;
-  error: string | null;
-  latencyMs: number | null;
-  framework: string | null;
-  model: string | null;
-  toolCalls: unknown;
-  metadata: unknown;
-  sessionId: string | null;
-  performanceSummary: unknown;
-  inputTokens: number | null;
-  outputTokens: number | null;
-  cacheReadTokens: number | null;
-  cacheWriteTokens: number | null;
-  spanId: string | null;
-  spanKind: string | null;
-  source: string | null;
-  parentSpanId: string | null;
-  startedAt: Date | null;
-  createdAt: Date;
-  agentId: string | null;
-  projectId: string | null;
-};
+export type { TraceRow } from "./store/traceStore.js";
+import type { TraceRow } from "./store/traceStore.js";
 
 // Matches AgentX-web-front's ProductionTrace type (src/types/evaluate.ts): _id not id, no
 // workspaceId/performanceSummary/metadata on the wire (the dashboard's trace list doesn't need
@@ -333,80 +380,16 @@ export async function listTracesPaginated(
     source,
   }: { limit?: number; cursor?: string; framework?: string; search?: string; source?: "production" | "eval" | "all" }
 ) {
-  const pageSize = Math.min(Math.max(limit, 1), 100);
-
-  let cursorCreatedAt: Date | null = null;
-  let cursorId: string | null = null;
-  if (cursor) {
-    const cursorRow = await getTraceRow(db, cursor);
-    cursorCreatedAt = cursorRow?.createdAt ?? null;
-    cursorId = cursorRow?.id ?? null;
-  }
-
-  // Root spans only: a span_tree=True SDK trace or a multi-span OTel session otherwise floods
-  // this list with one row per LLM call/tool call (e.g. "LLM Call 1", "policy_lookup") instead of
-  // one row per actual interaction, which reads as noise, not a trace list. A row with siblings
-  // (parentSpanId set) is still fully reachable - opening the root's trace dialog fetches every
-  // spanId/parentSpanId-linked row via GET /sessions/:sessionId/spans (TraceSpanTreePanel), this
-  // only changes what the top-level list itself enumerates.
-  const conditions: SQL[] = [isNull(db.schema.traces.parentSpanId), eq(db.schema.traces.projectId, db.projectId)];
-  if (framework) conditions.push(eq(db.schema.traces.framework, framework));
-  // "production" (the Live Traces default) hides eval-run traffic; "eval" shows only it; "all"
-  // (and absent, for SDK/API compatibility) filters nothing.
-  if (source === "production") conditions.push(productionTracesOnly(db));
-  if (source === "eval") conditions.push(eq(db.schema.traces.source, EVAL_RUN_SOURCE));
-  // Database-side search (the dashboard's Live Traces box) - a LIKE across the columns a person
-  // actually greps traffic by: agent name, input/output text, model, error, and the trace/session
-  // ids (so a pasted id resolves). SQLite LIKE is already case-insensitive for ASCII; Postgres
-  // needs ILIKE. Wildcards in the term are escaped, so searching "100%" matches literally.
-  // The keyset cursor below composes with this - the frontend keys its infinite query on the
-  // term, so a changed term restarts pagination from the top.
-  const term = search?.trim();
-  if (term) {
-    const pattern = `%${term.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
-    const t = db.schema.traces;
-    const columns = [t.name, t.input, t.output, t.model, t.error, t.id, t.sessionId];
-    // Explicit ESCAPE: SQLite's LIKE has no default escape character, so the backslash escaping
-    // above would otherwise be matched literally there.
-    const searchCond = or(
-      ...columns.map(column =>
-        db.kind === "sqlite"
-          ? sql`${column} LIKE ${pattern} ESCAPE '\\'`
-          : sql`${column} ILIKE ${pattern} ESCAPE '\\'`
-      )
-    );
-    if (searchCond) conditions.push(searchCond);
-  }
-  // Keyset with an id tiebreak, matching the (createdAt DESC, id DESC) sort below. The old
-  // createdAt-only predicate silently skipped every row that shared the page-boundary row's
-  // millisecond (3 of 2000 lost in a realistic burst - deep-dive round 3, bug #6), because
-  // "strictly older than the boundary" excludes its same-timestamp siblings.
-  if (cursorCreatedAt && cursorId) {
-    const next = or(
-      lt(db.schema.traces.createdAt, cursorCreatedAt),
-      and(eq(db.schema.traces.createdAt, cursorCreatedAt), lt(db.schema.traces.id, cursorId))
-    );
-    if (next) conditions.push(next);
-  }
-  const where = and(...conditions);
-
-  const rows = (
-    db.kind === "sqlite"
-      ? db.db
-          .select()
-          .from(db.schema.traces)
-          .where(where)
-          .orderBy(desc(db.schema.traces.createdAt), desc(db.schema.traces.id))
-          .limit(pageSize + 1)
-          .all()
-      : await db.db
-          .select()
-          .from(db.schema.traces)
-          .where(where)
-          .orderBy(desc(db.schema.traces.createdAt), desc(db.schema.traces.id))
-          .limit(pageSize + 1)
-  ) as TraceRow[];
-
+  // NaN-safe: ?limit=abc reaches here as NaN via Number(); fall back to the default page size.
+  const pageSize = Number.isFinite(limit) ? Math.min(Math.max(Math.floor(limit), 1), 100) : 50;
+  const cursorRow = cursor ? await getTraceRow(db, cursor) : undefined;
+  const rows = await traceStoreFor(db).listRootsPage({
+    pageSize,
+    cursor: cursorRow ? { createdAt: cursorRow.createdAt, id: cursorRow.id } : null,
+    framework,
+    source,
+    searchTerm: search,
+  });
   const hasNextPage = rows.length > pageSize;
   const page = rows.slice(0, pageSize);
   return {
@@ -420,11 +403,7 @@ export async function listTracesPaginated(
 // input/metadata/model/tokens a single trace actually captured - everything listTracesPaginated's
 // own use of this (cursor resolution) doesn't need.
 export async function getTraceRow(db: Db, id: string): Promise<TraceRow | undefined> {
-  const cond = and(eq(db.schema.traces.id, id), eq(db.schema.traces.projectId, db.projectId));
-  if (db.kind === "sqlite") {
-    return db.db.select().from(db.schema.traces).where(cond).all()[0] as TraceRow | undefined;
-  }
-  return (await db.db.select().from(db.schema.traces).where(cond))[0] as TraceRow | undefined;
+  return traceStoreFor(db).getById(id);
 }
 
 // Every span belonging to one OTel trace (sessionId = the OTel traceId, see otel/mapping.ts's
@@ -435,21 +414,12 @@ export async function getTraceRow(db: Db, id: string): Promise<TraceRow | undefi
 // practice since a session only ever contains OTel-ingested rows, but keeps the ordering total
 // rather than undefined for a row with a null startedAt.
 export async function listSessionSpans(db: Db, sessionId: string) {
-  const cond = and(eq(db.schema.traces.sessionId, sessionId), eq(db.schema.traces.projectId, db.projectId));
-  const rows = (
-    db.kind === "sqlite"
-      ? db.db.select().from(db.schema.traces).where(cond).all()
-      : await db.db.select().from(db.schema.traces).where(cond)
-  ) as TraceRow[];
+  const rows = await traceStoreFor(db).listBySession(sessionId);
   rows.sort((a, b) => (a.startedAt ?? a.createdAt).getTime() - (b.startedAt ?? b.createdAt).getTime());
   return rows.map(toTraceDetailWire);
 }
 
 // Kept for the debug listing used before pagination existed; still handy for quick local checks.
 export async function listTraces(db: Db, limit = 50) {
-  const cond = eq(db.schema.traces.projectId, db.projectId);
-  if (db.kind === "sqlite") {
-    return db.db.select().from(db.schema.traces).where(cond).limit(limit).all();
-  }
-  return db.db.select().from(db.schema.traces).where(cond).limit(limit);
+  return traceStoreFor(db).listRecent(limit);
 }

@@ -1,0 +1,44 @@
+{{- if not .Values.clickhouse.externalUrl }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "agentx.fullname" . }}-clickhouse
+spec:
+  serviceName: {{ include "agentx.fullname" . }}-clickhouse
+  replicas: 1
+  selector:
+    matchLabels: { app: {{ include "agentx.fullname" . }}-clickhouse }
+  template:
+    metadata:
+      labels: { app: {{ include "agentx.fullname" . }}-clickhouse }
+    spec:
+      containers:
+        - name: clickhouse
+          image: {{ .Values.clickhouse.image }}
+          env:
+            - name: CLICKHOUSE_PASSWORD
+              value: {{ .Values.clickhouse.password | quote }}
+          ports:
+            - containerPort: 8123
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.clickhouse.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentx.fullname" . }}-clickhouse
+spec:
+  clusterIP: None
+  selector: { app: {{ include "agentx.fullname" . }}-clickhouse }
+  ports:
+    - port: 8123
+{{- end }}

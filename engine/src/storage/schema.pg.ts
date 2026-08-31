@@ -1,4 +1,4 @@
-import { pgTable, text, integer, jsonb, timestamp, doublePrecision, boolean, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, bigint, jsonb, timestamp, doublePrecision, boolean, uniqueIndex } from "drizzle-orm/pg-core";
 
 // See schema.sqlite.ts's projects table for the full comment.
 export const projects = pgTable("projects", {
@@ -766,3 +766,17 @@ export const playgroundProfiles = pgTable("playground_profiles", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
 });
+
+// Per-minute metric rollups - see schema.sqlite.ts's monitorRollups for the full comment.
+export const monitorRollups = pgTable(
+  "monitor_rollups",
+  {
+    projectId: text("project_id").notNull(),
+    minuteTs: bigint("minute_ts", { mode: "number" }).notNull(),
+    production: boolean("production").notNull(),
+    data: jsonb("data").notNull(),
+  },
+  table => ({
+    rollupKeyUnique: uniqueIndex("monitor_rollups_key").on(table.projectId, table.minuteTs, table.production),
+  })
+);

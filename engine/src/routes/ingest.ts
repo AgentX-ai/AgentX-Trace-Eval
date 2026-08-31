@@ -3,7 +3,7 @@ import { asyncRouter } from "./asyncRouter.js";
 import { scopedDb } from "../auth/apiKey.js";
 import {
   ingestTraceSchema,
-  ingestTrace,
+  ingestTraceQueued,
   listTracesPaginated,
   getTraceRow,
   toTraceDetailWireWithCost,
@@ -12,24 +12,15 @@ import {
 import { runMonitorCheck } from "../core/monitor/detect.js";
 import { evaluateTraceAgainst } from "../core/evaluate/runs.js";
 import { traceQuota } from "../core/shared/usage.js";
-import { and, eq, gte, isNull, sql } from "drizzle-orm";
 import type { Db } from "../storage/db.js";
 
 async function countTracesToday(db: Db): Promise<number> {
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
-  const cond = and(
-    eq(db.schema.traces.projectId, db.projectId),
-    gte(db.schema.traces.createdAt, dayStart),
-    isNull(db.schema.traces.parentSpanId)
-  );
-  const rows =
-    db.kind === "sqlite"
-      ? db.db.select({ n: sql<number>`count(*)` }).from(db.schema.traces).where(cond).all()
-      : await db.db.select({ n: sql<number>`count(*)` }).from(db.schema.traces).where(cond);
-  return Number(rows[0]?.n ?? 0);
+  return traceStoreFor(db).countRoots(dayStart);
 }
 import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
+import { traceStoreFor } from "../core/trace/store/index.js";
 import { runCustomEvaluators } from "../core/monitor/customEvaluators.js";
 import { runClassification } from "../core/monitor/topics.js";
 import { logger } from "../log.js";
@@ -65,120 +56,154 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
     }
   }
 
-  const { traceId, agentId, deduped } = await ingestTrace(scopedDb(req), parsed.data);
+  const db = scopedDb(req);
+  // The post-ingest pipeline (detection, online/custom evaluators, topics) runs only after the
+  // span durably lands AND only if it won the idempotency conflict (ADR-0005) - a replay racing
+  // in concurrently must not double-bill judges or double-count events. The guard structure
+  // mirrors the pre-queue behavior exactly.
+  const runPipeline = (traceId: string, agentId: string | null) => {
 
-  // trace_id is the one field send_trace_sync() reads; `deduped` lets a re-sync importer
-  // (agentx-moveworks) skip re-evaluating spans the engine already had. The fire-and-forget
-  // enqueue() path used by default doesn't inspect the body at all, so this shape covers both.
-  // Sent as soon as the trace itself is durably stored, not after the checks below finish: those
-  // used to be awaited here too, so a workspace with several online evaluators (each check is a
-  // real judge call) routinely pushed this response past the SDK's sync=True 10-second timeout,
-  // the client gave up and returned trace_id=None even though ingestion itself had already
-  // succeeded and the real id was about to be sent.
-  // traceId is the canonical (camelCase) key; trace_id stays as the legacy alias every
-  // existing SDK reads. Same one-wire-two-spellings posture as the ingest schema's aliases.
+    // trace_id is the one field send_trace_sync() reads; `deduped` lets a re-sync importer
+    // (agentx-moveworks) skip re-evaluating spans the engine already had. The fire-and-forget
+    // enqueue() path used by default doesn't inspect the body at all, so this shape covers both.
+    // Sent as soon as the trace itself is durably stored, not after the checks below finish: those
+    // used to be awaited here too, so a workspace with several online evaluators (each check is a
+    // real judge call) routinely pushed this response past the SDK's sync=True 10-second timeout,
+    // the client gave up and returned trace_id=None even though ingestion itself had already
+    // succeeded and the real id was about to be sent.
+    // traceId is the canonical (camelCase) key; trace_id stays as the legacy alias every
+    // existing SDK reads. Same one-wire-two-spellings posture as the ingest schema's aliases.
+    // Root spans only by default (see the MONITOR_CHILD_SPANS constant above) - a child span from a
+    // span_tree-enabled trace skips Monitor/online-evaluator/classification entirely rather than
+    // being scored as if it were the whole interaction.
+    if (parsed.data.parent_span_id && !MONITOR_CHILD_SPANS) {
+      return;
+    }
+
+    // A replayed span (same span_id, already stored - e.g. a Moveworks re-sync or an OTel retry)
+    // was already checked and judged the first time: re-running the passes below would double-bill
+    // every judge call and double-count every recorded event.
+    if (deduped) {
+      return;
+    }
+
+    // Explicit opt-out (tracer.trace(..., monitor=False)): skip every ingest-time check - pattern/
+    // built-in detection, online + custom evaluators, topics. Eval-run traces send this: the run's
+    // own evaluator already judges each case, so re-judging the trace would double every judge
+    // bill for zero information.
+    if (parsed.data.monitor === false) {
+      return;
+    }
+
+    // Eval-run traffic never triggers monitoring on its own: the run's evaluator already judges
+    // every case, so detection would double-count, online judges would double-bill, and topics
+    // would classify synthetic questions. This is server-side belt to the SDK's monitor=False
+    // suspenders - a caller that stamps source but forgets the flag is still safe. An EXPLICIT
+    // monitor=true wins: that is someone deliberately pointing checks at eval traffic.
+    if (parsed.data.source === "eval-run" && parsed.data.monitor !== true) {
+      return;
+    }
+
+    // Checked in the background, after responding: no background job queue in self-host (see plan
+    // task #110), this is the same in-process fire-and-forget shape, just no longer blocking the
+    // response the caller is actually waiting on. A caller polling client.monitor.signals or
+    // .online_evaluators.ratings/events right after this call (as the sample scripts do) already
+    // has to poll/retry regardless, detection was never guaranteed to finish inside the old
+    // synchronous window either, just usually did.
+    //
+    // Both calls are wrapped in .catch(): callJudgeJson throws a clear error on a missing judge API
+    // key (core/evaluate/judge.ts, deliberate UX for the direct-call case), and an unhandled
+    // rejection here (now fully detached from the request/response cycle) would otherwise be a
+    // silent, uncaught background rejection instead of a logged one.
+    //
+    // Same opt-in-by-existing posture as online evaluators below: active patterns and built-in
+    // checks run on every root trace, no per-agent dashboard toggle required (the per-agent
+    // monitoring profile concept is no longer a UI-level gate; an agent with a profile row that
+    // was explicitly disabled still opts out inside runMonitorCheck). monitor=true with explicit
+    // pattern_ids still restricts detection to exactly those patterns.
+    const traceForMonitor = {
+      input: parsed.data.input,
+      output: parsed.data.output,
+      error: parsed.data.error ?? null,
+      toolCalls: (parsed.data.tool_calls as Array<{ name?: string; output?: unknown; input?: unknown; success?: boolean }>) ?? null,
+      latencyMs: parsed.data.latency_ms ?? null,
+    };
+    runMonitorCheck(
+      db,
+      traceForMonitor,
+      parsed.data.monitor ? { agentId, traceId, patternIds: parsed.data.pattern_ids } : { agentId, traceId }
+    ).catch(err => {
+      logger.error({ err: err instanceof Error ? err.message : err }, "Monitor check failed:");
+    });
+
+    // Independent of the `monitor` flag above: online evaluators are a server-side-configured
+    // feature (opt in by creating one, not by a per-call flag), see core/monitor/onlineEvaluators.ts.
+    runOnlineEvaluators(
+      db,
+      { input: parsed.data.input, output: parsed.data.output, metadata: parsed.data.metadata },
+      { agentId, traceId }
+    ).catch(err => {
+      logger.error({ err: err instanceof Error ? err.message : err }, "Online evaluator scoring failed:");
+    });
+
+    // Same independent, opt-in-by-creating-one posture as online evaluators above - see
+    // core/monitor/customEvaluators.ts.
+    runCustomEvaluators(db, traceForMonitor, { agentId, traceId }).catch(err => {
+      logger.error({ err: err instanceof Error ? err.message : err }, "Custom evaluator scoring failed:");
+    });
+
+    // Automation rules (core/monitor/rules.ts): filter + sample + route. Same detached posture
+    // as the scorers above, but rules never score - they move a trace somewhere (review queue,
+    // dataset, webhook), so a broken rule can cost a routing action, never a judge verdict.
+    runRules(
+      db,
+      { ...traceForMonitor, model: parsed.data.model ?? null, name: parsed.data.name ?? null },
+      { agentId, traceId }
+    ).catch(err => {
+      logger.error({ err: err instanceof Error ? err.message : err }, "Automation rules failed:");
+    });
+
+    // Third independent pass, same fire-and-forget shape - see core/monitor/topics.ts. Opt-in
+    // via topicsEnabled (checked inside runClassification itself).
+    runClassification(
+      db,
+      { input: parsed.data.input, output: parsed.data.output },
+      { agentId, traceId }
+    ).catch(err => {
+      logger.error({ err: err instanceof Error ? err.message : err }, "Trace classification failed:");
+    });
+  };
+
+  const { traceId, agentId, deduped, accepted, dropped } = await ingestTraceQueued(db, parsed.data);
+
+  if (dropped) {
+    // The storage flush failed after its retry - honesty over optimism (ADR-0005): a 503 makes
+    // the SDK redeliver; span ids keep the redelivery idempotent.
+    res.setHeader("Retry-After", "2");
+    res.status(503).json({ error: "Trace storage is unavailable - the span was not stored; retry." });
+    return;
+  }
+
+  if (!accepted) {
+    // Explicit backpressure (ADR-0005): the queue is full, shed load visibly. The SDK backs
+    // off and retries; nothing was stored, nothing is silently dropped.
+    res.setHeader("Retry-After", "1");
+    res.status(429).json({ error: "Ingest queue is full - retry with backoff (Retry-After: 1s)." });
+    return;
+  }
+
+  // trace_id is the one field send_trace_sync() reads; `deduped` lets a re-sync importer skip
+  // re-evaluating spans the engine already had. Acked once the span is accepted into the
+  // bounded queue (ADR-0005: at-least-once, drained on shutdown) - the flush interval is
+  // bounded, so the row is durable within AGENTX_INGEST_FLUSH_MS under normal operation.
   res.status(200).json({ trace_id: traceId, traceId, deduped });
 
-  // Root spans only by default (see the MONITOR_CHILD_SPANS constant above) - a child span from a
-  // span_tree-enabled trace skips Monitor/online-evaluator/classification entirely rather than
-  // being scored as if it were the whole interaction.
-  if (parsed.data.parent_span_id && !MONITOR_CHILD_SPANS) {
-    return;
+  // The ack above already means "durably stored" (the queued path resolves on batch commit), so
+  // the pipeline runs detached after responding, exactly as before the queue existed. A deduped
+  // replay was already checked and judged on first arrival.
+  if (!deduped) {
+    runPipeline(traceId, agentId);
   }
-
-  // A replayed span (same span_id, already stored - e.g. a Moveworks re-sync or an OTel retry)
-  // was already checked and judged the first time: re-running the passes below would double-bill
-  // every judge call and double-count every recorded event.
-  if (deduped) {
-    return;
-  }
-
-  // Explicit opt-out (tracer.trace(..., monitor=False)): skip every ingest-time check - pattern/
-  // built-in detection, online + custom evaluators, topics. Eval-run traces send this: the run's
-  // own evaluator already judges each case, so re-judging the trace would double every judge
-  // bill for zero information.
-  if (parsed.data.monitor === false) {
-    return;
-  }
-
-  // Eval-run traffic never triggers monitoring on its own: the run's evaluator already judges
-  // every case, so detection would double-count, online judges would double-bill, and topics
-  // would classify synthetic questions. This is server-side belt to the SDK's monitor=False
-  // suspenders - a caller that stamps source but forgets the flag is still safe. An EXPLICIT
-  // monitor=true wins: that is someone deliberately pointing checks at eval traffic.
-  if (parsed.data.source === "eval-run" && parsed.data.monitor !== true) {
-    return;
-  }
-
-  // Checked in the background, after responding: no background job queue in self-host (see plan
-  // task #110), this is the same in-process fire-and-forget shape, just no longer blocking the
-  // response the caller is actually waiting on. A caller polling client.monitor.signals or
-  // .online_evaluators.ratings/events right after this call (as the sample scripts do) already
-  // has to poll/retry regardless, detection was never guaranteed to finish inside the old
-  // synchronous window either, just usually did.
-  //
-  // Both calls are wrapped in .catch(): callJudgeJson throws a clear error on a missing judge API
-  // key (core/evaluate/judge.ts, deliberate UX for the direct-call case), and an unhandled
-  // rejection here (now fully detached from the request/response cycle) would otherwise be a
-  // silent, uncaught background rejection instead of a logged one.
-  //
-  // Same opt-in-by-existing posture as online evaluators below: active patterns and built-in
-  // checks run on every root trace, no per-agent dashboard toggle required (the per-agent
-  // monitoring profile concept is no longer a UI-level gate; an agent with a profile row that
-  // was explicitly disabled still opts out inside runMonitorCheck). monitor=true with explicit
-  // pattern_ids still restricts detection to exactly those patterns.
-  const traceForMonitor = {
-    input: parsed.data.input,
-    output: parsed.data.output,
-    error: parsed.data.error ?? null,
-    toolCalls: (parsed.data.tool_calls as Array<{ name?: string; output?: unknown; input?: unknown; success?: boolean }>) ?? null,
-    latencyMs: parsed.data.latency_ms ?? null,
-  };
-  runMonitorCheck(
-    scopedDb(req),
-    traceForMonitor,
-    parsed.data.monitor ? { agentId, traceId, patternIds: parsed.data.pattern_ids } : { agentId, traceId }
-  ).catch(err => {
-    logger.error({ err: err instanceof Error ? err.message : err }, "Monitor check failed:");
-  });
-
-  // Independent of the `monitor` flag above: online evaluators are a server-side-configured
-  // feature (opt in by creating one, not by a per-call flag), see core/monitor/onlineEvaluators.ts.
-  runOnlineEvaluators(
-    scopedDb(req),
-    { input: parsed.data.input, output: parsed.data.output, metadata: parsed.data.metadata },
-    { agentId, traceId }
-  ).catch(err => {
-    logger.error({ err: err instanceof Error ? err.message : err }, "Online evaluator scoring failed:");
-  });
-
-  // Same independent, opt-in-by-creating-one posture as online evaluators above - see
-  // core/monitor/customEvaluators.ts.
-  runCustomEvaluators(scopedDb(req), traceForMonitor, { agentId, traceId }).catch(err => {
-    logger.error({ err: err instanceof Error ? err.message : err }, "Custom evaluator scoring failed:");
-  });
-
-  // Automation rules (core/monitor/rules.ts): filter + sample + route. Same detached posture as
-  // the scorers above, but rules never score - they move a trace somewhere (review queue,
-  // dataset, webhook), so a broken rule can cost a routing action, never a judge verdict.
-  runRules(
-    scopedDb(req),
-    { ...traceForMonitor, model: parsed.data.model ?? null, name: parsed.data.name ?? null },
-    { agentId, traceId }
-  ).catch(err => {
-    logger.error({ err: err instanceof Error ? err.message : err }, "Automation rules failed:");
-  });
-
-  // Third independent pass, same fire-and-forget shape - see core/monitor/topics.ts. Opt-in via
-  // AgentMonitoringProfile.topicsEnabled (checked inside runClassification itself), so this is a
-  // no-op unless the dashboard's per-agent "Topics" toggle was actually turned on.
-  runClassification(
-    scopedDb(req),
-    { input: parsed.data.input, output: parsed.data.output },
-    { agentId, traceId }
-  ).catch(err => {
-    logger.error({ err: err instanceof Error ? err.message : err }, "Trace classification failed:");
-  });
 });
 
 // Not part of the SDK-compatible surface (the SDK only ever POSTs here, see the comment above),

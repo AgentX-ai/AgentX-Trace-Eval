@@ -45,6 +45,8 @@ export const monitorMetricsResponseSchema = z
     bucketMs: z.number(),
     start: z.number(),
     end: z.number(),
+    // Which path answered: the ADR-0006 rollup fast path or the raw window scan.
+    source: z.enum(["rollups", "raw"]),
     buckets: z.array(monitorMetricsBucketSchema),
     totals: monitorMetricsBucketSchema.omit({ ts: true, byTool: true, byModelCost: true }).strict(),
     tools: z.array(z.object({ name: z.string(), count: z.number(), failed: z.number() }).strict()),
