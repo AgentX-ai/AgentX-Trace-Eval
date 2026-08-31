@@ -1,5 +1,5 @@
-import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { traceStoreFor } from "../trace/store/index.js";
 import { listClassificationsSince, windowConfig, type ClassificationRow } from "../monitor/topics.js";
 import type { MonitoringWindow } from "../monitor/events.js";
 import { SIMILARITY_BANDS } from "../evaluate/curation.js";
@@ -137,21 +137,17 @@ async function sessionsByTraceId(db: Db, traceIds: string[]): Promise<Map<string
   if (traceIds.length === 0) {
     return map;
   }
-  // Chunked: a 30-day window can hold far more classified traces than SQLite's bound-parameter
-  // limit (999 on the builds this ships against), and a single inArray of every id would throw
-  // rather than degrade - on the busiest installs, which are exactly the ones this feature is for.
+  // Through the TraceStore port (ADR-0002) - the enterprise tier has no relational traces table
+  // to query. Chunked: a 30-day window can hold far more classified traces than SQLite's
+  // bound-parameter limit (999 on the builds this ships against), and one giant id set would
+  // throw rather than degrade - on the busiest installs, exactly the ones this feature is for.
   const CHUNK = 400;
+  const store = traceStoreFor(db);
   for (let start = 0; start < traceIds.length; start += CHUNK) {
-    const chunk = traceIds.slice(start, start + CHUNK);
-    const cond = and(eq(db.schema.traces.projectId, db.projectId), inArray(db.schema.traces.id, chunk));
-    const rows = (
-      db.kind === "sqlite"
-        ? db.db.select({ id: db.schema.traces.id, sessionId: db.schema.traces.sessionId }).from(db.schema.traces).where(cond).all()
-        : await db.db.select({ id: db.schema.traces.id, sessionId: db.schema.traces.sessionId }).from(db.schema.traces).where(cond)
-    ) as { id: string; sessionId: string | null }[];
-    for (const row of rows) {
+    const rows = await store.getByIds(traceIds.slice(start, start + CHUNK));
+    for (const [id, row] of rows) {
       if (row.sessionId) {
-        map.set(row.id, row.sessionId);
+        map.set(id, row.sessionId);
       }
     }
   }

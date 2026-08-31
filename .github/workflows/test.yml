@@ -65,17 +65,16 @@ jobs:
     name: engine on Postgres
     runs-on: ubuntu-latest
     services:
+      # No --health-cmd: GitHub's service `options` parser mishandles quoted commands and the
+      # image ships no HEALTHCHECK, so a quoted health-cmd condemns the container as unhealthy
+      # and fails the job at init ("Failed to initialize container"). Readiness is an explicit
+      # wait step below instead.
       clickhouse:
         image: clickhouse/clickhouse-server:24.8-alpine
         env:
           CLICKHOUSE_PASSWORD: agentx
         ports:
           - 8123:8123
-        options: >-
-          --health-cmd "wget -qO- http://localhost:8123/ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
       postgres:
         image: postgres:16-alpine
         env:
@@ -103,6 +102,15 @@ jobs:
 
       - name: Build judge-core
         run: yarn workspace @agentx/judge-core build
+
+      - name: Wait for ClickHouse
+        run: |
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8123/ping > /dev/null && exit 0
+            sleep 2
+          done
+          echo "ClickHouse never answered /ping" >&2
+          exit 1
 
       # AGENTX_TEST_DB_URL un-skips the Postgres suites; they create and drop their own databases.
       - name: Test engine against Postgres

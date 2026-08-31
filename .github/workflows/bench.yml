@@ -37,17 +37,14 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
+      # No --health-cmd: GitHub's service `options` parser mishandles quoted commands (see
+      # test.yml); readiness is the explicit curl wait in the boot step instead.
       clickhouse:
         image: clickhouse/clickhouse-server:24.8-alpine
         env:
           CLICKHOUSE_PASSWORD: agentx
         ports:
           - 8123:8123
-        options: >-
-          --health-cmd "wget -qO- http://localhost:8123/ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -62,6 +59,8 @@ jobs:
           set -euo pipefail
           export AGENTX_RATE_LIMIT=off AGENTX_HOME="$RUNNER_TEMP/agentx-bench" PORT=4700
           for kv in ${{ matrix.tier.env }}; do export "$kv"; done
+          # The engine fails boot loudly on an unreachable backend - wait for the services first.
+          for i in $(seq 1 60); do curl -sf http://localhost:8123/ping > /dev/null && break; sleep 2; done
           node_modules/.bin/tsx engine/src/index.ts > engine.log 2>&1 &
           for i in $(seq 1 30); do curl -sf http://localhost:4700/api/v1/auth/config > /dev/null && break; sleep 1; done
           node engine/scripts/bench.mjs --base http://localhost:4700 --seconds 60 --concurrency 32 \
