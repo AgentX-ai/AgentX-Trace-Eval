@@ -1,10 +1,11 @@
 import { and, eq, gte, isNotNull, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { traceStoreFor } from "../trace/store/index.js";
 import type { MonitoringWindow } from "./events.js";
 import { getAgentNamesById } from "./agents.js";
 import { listOnlineEvaluatorRows } from "./onlineEvaluators.js";
 import { SESSION_BASELINE_KEY } from "./builtinEvaluators.js";
-import { productionTracesOnly } from "../trace/evalTraffic.js";
+
 
 // The Sessions surface under Observe: one row per conversation (traces sharing a session_id),
 // the level Live Traces deliberately doesn't show (one row = one interaction there). Turn count
@@ -75,18 +76,12 @@ export type SessionsResponse = {
 
 export async function listSessions(db: Db, window: MonitoringWindow): Promise<SessionsResponse> {
   const since = new Date(Date.now() - windowDays(window) * 24 * 60 * 60 * 1000);
-  const cond = and(
-    gte(db.schema.traces.createdAt, since),
-    isNotNull(db.schema.traces.sessionId),
-    // Production only: an eval run's per-case sessions are not conversations anyone held.
-    productionTracesOnly(db),
-    eq(db.schema.traces.projectId, db.projectId)
-  );
-  const rows = (
-    db.kind === "sqlite"
-      ? db.db.select().from(db.schema.traces).where(cond).all()
-      : await db.db.select().from(db.schema.traces).where(cond)
-  ) as SessionTraceRow[];
+  // Production only: an eval run's per-case sessions are not conversations anyone held.
+  const rows = (await traceStoreFor(db).queryWindow({
+    since,
+    withSessionOnly: true,
+    productionOnly: true,
+  })) as unknown as SessionTraceRow[];
 
   type Bucket = {
     agentId: string | null;

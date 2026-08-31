@@ -36,7 +36,15 @@ export const AGENTX_HOME = process.env.AGENTX_HOME || path.join(os.homedir(), ".
 // before calling into anything project-scoped.
 export type Db =
   | { kind: "sqlite"; db: BetterSQLite3Database<typeof sqliteSchema>; schema: typeof sqliteSchema; projectId: string }
-  | { kind: "postgres"; db: NodePgDatabase<typeof pgSchema>; schema: typeof pgSchema; projectId: string };
+  | {
+      kind: "postgres";
+      db: NodePgDatabase<typeof pgSchema>;
+      schema: typeof pgSchema;
+      projectId: string;
+      /** True when the traces table is natively partitioned (fresh installs, ADR-0007):
+       *  idempotency then lives in the adapter, not a unique index. */
+      tracesPartitioned?: boolean;
+    };
 
 export function withProjectId(db: Db, projectId: string): Db {
   return { ...db, projectId } as Db;
@@ -48,6 +56,8 @@ let cached: Db | null = null;
 // connection cleanly instead of leaving the process to SIGKILL it. Kept module-private, closed via
 // closeDb() below.
 let closeHandle: (() => void | Promise<void>) | null = null;
+// The raw pg pool, kept for partition maintenance (ADR-0007) - null on SQLite.
+let pgPoolHandle: Pool | null = null;
 
 // Node's `better-sqlite3` is a native addon whose module-root lookup breaks inside Bun's
 // `--compile`d virtual filesystem (`/$bunfs/root/...` has no real package.json to find), so the
@@ -68,9 +78,10 @@ export async function initDb(): Promise<Db> {
   const url = process.env.AGENTX_DB_URL;
   if (url && url.startsWith("postgres")) {
     const pool = new Pool({ connectionString: url });
-    const { freshInstall } = await bootstrapPostgres(pool);
+    pgPoolHandle = pool;
+    const { freshInstall, tracesPartitioned } = await bootstrapPostgres(pool);
     // "" is a deliberate never-matches-a-real-project sentinel - see the Db type's own comment.
-    cached = { kind: "postgres", db: drizzlePg(pool, { schema: pgSchema }), schema: pgSchema, projectId: "" };
+    cached = { kind: "postgres", db: drizzlePg(pool, { schema: pgSchema }), schema: pgSchema, projectId: "", tracesPartitioned };
     closeHandle = () => pool.end();
     await seedPortabilityModelsIfEmpty(cached);
     await ensureRealWorldPortabilityModels(cached);
@@ -321,7 +332,9 @@ const SEEDED_SETTINGS_BACKFILL_NAMES = [
   .map(name => `'${name}'`)
   .join(", ");
 
-function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean } {
+// Exported for the TraceStore contract suite (ADR-0002), which bootstraps throwaway raw
+// handles per backend instead of going through the process-wide initDb() singleton.
+export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean } {
   // Checked BEFORE any DDL runs: `seeded` is backfilled by name exactly once, at the upgrade
   // that introduces the column (see the UPDATE after columnMigrations). Running it on every
   // boot could misclassify a user's scorer that happens to share a seed name.
@@ -1215,6 +1228,24 @@ const BACKFILL_AUTH_ACCOUNT_ISSUER = `UPDATE auth_account SET issuer = 'local:' 
 // the check and all inserted, billing ten sets of monitor and judge calls for one interaction.
 // NULL span_ids - most traces - are exempt for free: NULL never equals NULL in a unique index.
 const TRACE_SPAN_ID_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS traces_project_id_span_id ON traces (project_id, span_id)`;
+// Time index for window scans and retention pruning (ADR-0005): every dashboard aggregation and
+// every prune filters on created_at; without this both are full scans. BRIN on Postgres - for an
+// append-mostly table it costs kilobytes and stays effective; SQLite gets a plain b-tree.
+const ROLLUPS_TABLE_SQLITE = `CREATE TABLE IF NOT EXISTS monitor_rollups (
+  project_id TEXT NOT NULL,
+  minute_ts INTEGER NOT NULL,
+  production INTEGER NOT NULL,
+  data TEXT NOT NULL
+)`;
+const ROLLUPS_TABLE_PG = `CREATE TABLE IF NOT EXISTS monitor_rollups (
+  project_id TEXT NOT NULL,
+  minute_ts BIGINT NOT NULL,
+  production BOOLEAN NOT NULL,
+  data JSONB NOT NULL
+)`;
+const ROLLUPS_KEY_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS monitor_rollups_key ON monitor_rollups (project_id, minute_ts, production)`;
+const TRACE_CREATED_AT_INDEX_SQLITE = `CREATE INDEX IF NOT EXISTS traces_project_created_at ON traces (project_id, created_at)`;
+const TRACE_CREATED_AT_INDEX_PG = `CREATE INDEX IF NOT EXISTS traces_created_at_brin ON traces USING BRIN (created_at)`;
 
 // An install that already accumulated duplicates cannot create the index until they are cleaned
 // up. That is the operator's data, so warn with the query rather than deleting rows for them.
@@ -1235,6 +1266,9 @@ function ensureTraceSpanIdUnique(exec: (statement: string) => void): void {
   } catch (err) {
     warnTraceSpanIdIndexFailed(err);
   }
+  exec(TRACE_CREATED_AT_INDEX_SQLITE);
+  exec(ROLLUPS_TABLE_SQLITE);
+  exec(ROLLUPS_KEY_INDEX);
 }
 
 async function ensureTraceSpanIdUniqueAsync(exec: (statement: string) => Promise<void>): Promise<void> {
@@ -1243,6 +1277,9 @@ async function ensureTraceSpanIdUniqueAsync(exec: (statement: string) => Promise
   } catch (err) {
     warnTraceSpanIdIndexFailed(err);
   }
+  await exec(TRACE_CREATED_AT_INDEX_PG);
+  await exec(ROLLUPS_TABLE_PG);
+  await exec(ROLLUPS_KEY_INDEX);
 }
 
 // One-time backfill: online evaluators used to store their own acceptance_criteria/
@@ -1339,7 +1376,7 @@ function judgeScorerCloneTargets(evaluators: JudgeScorerBindingRow[], datasetIds
       targets.push(row.id);
       continue;
     }
-    const key = `${row.project_id ?? ""} ${row.evaluation_settings_id}`;
+    const key = `${row.project_id ?? ""}\0${row.evaluation_settings_id}`;
     const group = grouped.get(key) ?? [];
     group.push(row);
     grouped.set(key, group);
@@ -1510,7 +1547,60 @@ function backfillAgentsSqlite(sqlite: SqliteHandle): void {
 // INTEGER epoch, BOOLEAN instead of INTEGER 0/1, DOUBLE PRECISION instead of REAL) matching
 // schema.pg.ts. Replace with real drizzle-kit migrations once the schema stabilizes, see plan
 // task #107 (same note as bootstrapSqlite).
-async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boolean }> {
+// Exported for the TraceStore contract suite - see bootstrapSqlite above.
+// Daily partition helpers for the partitioned traces table (ADR-0007). Partition names are
+// traces_pYYYYMMDD; the DEFAULT partition (traces_pdefault) catches historical imports and any
+// day whose partition was not pre-created - correctness never depends on the maintenance loop.
+function pgPartitionName(day: Date): string {
+  return `traces_p${day.toISOString().slice(0, 10).replaceAll("-", "")}`;
+}
+
+export async function ensurePgTracePartitions(pool: Pool, daysAhead = 2): Promise<void> {
+  for (let i = -1; i <= daysAhead; i++) {
+    const day = new Date(Date.now() + i * 24 * 60 * 60 * 1000);
+    const from = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate()));
+    const to = new Date(from.getTime() + 24 * 60 * 60 * 1000);
+    try {
+      await pool.query(
+        `CREATE TABLE IF NOT EXISTS ${pgPartitionName(from)} PARTITION OF traces
+           FOR VALUES FROM ('${from.toISOString()}') TO ('${to.toISOString()}')`
+      );
+    } catch (err) {
+      // Never fatal - and never allowed to brick boot (this also runs inside bootstrapPostgres).
+      // The classic trigger: a client with a skewed clock stamped a span days into the future,
+      // it landed in traces_pdefault, and Postgres now refuses to create that day's partition
+      // ("would be violated by some row"). Rows in DEFAULT stay fully queryable; the day just
+      // keeps routing there. Log and move on to the next day.
+      logger.warn(
+        { err: err instanceof Error ? err.message : err },
+        `Could not create partition ${pgPartitionName(from)} (rows for that day stay in traces_pdefault):`
+      );
+    }
+  }
+}
+
+/** Instance-level retention (ADR-0007): drops whole daily partitions older than the cutoff. */
+export async function dropExpiredPgTracePartitions(pool: Pool, retentionDays: number): Promise<string[]> {
+  if (retentionDays <= 0) return [];
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+  const cutoffName = pgPartitionName(cutoff);
+  const parts = await pool.query(
+    `SELECT c.relname FROM pg_inherits i
+       JOIN pg_class c ON c.oid = i.inhrelid
+       JOIN pg_class p ON p.oid = i.inhparent
+      WHERE p.relname = 'traces' AND c.relname ~ '^traces_p[0-9]{8}$'`
+  );
+  const dropped: string[] = [];
+  for (const row of parts.rows as { relname: string }[]) {
+    if (row.relname < cutoffName) {
+      await pool.query(`DROP TABLE IF EXISTS ${row.relname}`);
+      dropped.push(row.relname);
+    }
+  }
+  return dropped;
+}
+
+export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boolean; tracesPartitioned: boolean }> {
   // See bootstrapSqlite: checked BEFORE any DDL so the one-shot `seeded` backfill below runs
   // only at the upgrade that introduces the column.
   const settingsSeededColumnPreexists =
@@ -1534,6 +1624,58 @@ async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boolean }>
     DROP INDEX IF EXISTS monitor_signals_pattern_key_agent_id;
     DROP INDEX IF EXISTS prompt_versions_prompt_id_version;
   `);
+  // Traces table (ADR-0007): fresh installs get native daily RANGE partitioning - retention
+  // becomes a partition drop, idempotency moves adapter-side (a partitioned table cannot carry
+  // the global (project_id, span_id) unique index, so SqlTraceStore pre-checks span ids there,
+  // same single-writer stance as the ClickHouse adapter). An install whose traces table
+  // predates partitioning keeps it unchanged - detected here, never converted in place.
+  const tracesExists =
+    (await pool.query("SELECT COUNT(*)::int AS n FROM information_schema.tables WHERE table_name = 'traces'")).rows[0]
+      .n > 0;
+  let tracesPartitioned = false;
+  if (tracesExists) {
+    tracesPartitioned =
+      (
+        await pool.query(
+          "SELECT COUNT(*)::int AS n FROM pg_partitioned_table pt JOIN pg_class c ON c.oid = pt.partrelid WHERE c.relname = 'traces'"
+        )
+      ).rows[0].n > 0;
+  } else {
+    await pool.query(`
+      CREATE TABLE traces (
+        id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        input JSONB,
+        output JSONB,
+        error TEXT,
+        latency_ms INTEGER,
+        framework TEXT,
+        model TEXT,
+        tool_calls JSONB,
+        metadata JSONB,
+        session_id TEXT,
+        performance_summary JSONB,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        cache_read_tokens INTEGER,
+        cache_write_tokens INTEGER,
+        span_kind TEXT,
+        source TEXT,
+        span_id TEXT,
+        parent_span_id TEXT,
+        started_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL,
+        agent_id TEXT,
+        project_id TEXT
+      ) PARTITION BY RANGE (created_at)
+    `);
+    await pool.query("CREATE TABLE IF NOT EXISTS traces_pdefault PARTITION OF traces DEFAULT");
+    tracesPartitioned = true;
+  }
+  if (tracesPartitioned) {
+    await ensurePgTracePartitions(pool);
+  }
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
@@ -1548,32 +1690,6 @@ async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boolean }>
     );
     CREATE UNIQUE INDEX IF NOT EXISTS projects_api_key ON projects (api_key);
 
-    CREATE TABLE IF NOT EXISTS traces (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      input JSONB,
-      output JSONB,
-      error TEXT,
-      latency_ms INTEGER,
-      framework TEXT,
-      model TEXT,
-      tool_calls JSONB,
-      metadata JSONB,
-      session_id TEXT,
-      performance_summary JSONB,
-      input_tokens INTEGER,
-      output_tokens INTEGER,
-      cache_read_tokens INTEGER,
-      cache_write_tokens INTEGER,
-      span_kind TEXT,
-      source TEXT,
-      span_id TEXT,
-      parent_span_id TEXT,
-      started_at TIMESTAMP,
-      created_at TIMESTAMP NOT NULL,
-      agent_id TEXT,
-      project_id TEXT
-    );
 
     CREATE TABLE IF NOT EXISTS agents (
       id TEXT PRIMARY KEY,
@@ -2265,7 +2381,17 @@ async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boolean }>
     UPDATE monitor_profiles SET topics_enabled = false WHERE topics_enabled = true;
   `);
 
-  await ensureTraceSpanIdUniqueAsync(statement => pool.query(statement).then(() => undefined));
+  if (tracesPartitioned) {
+    // A partitioned table cannot hold the global (project_id, span_id) unique index; dedupe is
+    // adapter-side (SqlTraceStore) in this mode. Plain indexes serve the same lookups.
+    await pool.query("CREATE INDEX IF NOT EXISTS traces_project_id_span_id_part ON traces (project_id, span_id)");
+    await pool.query("CREATE INDEX IF NOT EXISTS traces_project_id_id_part ON traces (project_id, id)");
+    await pool.query(TRACE_CREATED_AT_INDEX_PG);
+    await pool.query(ROLLUPS_TABLE_PG);
+    await pool.query(ROLLUPS_KEY_INDEX);
+  } else {
+    await ensureTraceSpanIdUniqueAsync(statement => pool.query(statement).then(() => undefined));
+  }
   await ensureVersionUniqueAsync(statement => pool.query(statement).then(() => undefined));
   await pool.query(BACKFILL_AUTH_ACCOUNT_ISSUER);
 
@@ -2297,7 +2423,7 @@ async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boolean }>
       );
     }
   }
-  return { freshInstall };
+  return { freshInstall, tracesPartitioned };
 }
 
 // Postgres mirror of migrateOnlineEvaluatorsToConfigsSqlite above - see that function's comment
@@ -2551,4 +2677,20 @@ async function backfillDefaultProjectPostgres(pool: Pool): Promise<{ freshInstal
     await pool.query(`UPDATE ${table} SET project_id = $1 WHERE project_id IS NULL`, [defaultProjectId]);
   }
   return { freshInstall: existing.length === 0 };
+}
+
+// Daily partition maintenance for the partitioned-Postgres tier (ADR-0007): pre-creates the
+// next days' partitions and drops whole partitions past AGENTX_PG_PARTITION_RETENTION_DAYS
+// (0/unset = keep everything; per-project retention still row-prunes inside live partitions).
+// Called at boot and on a daily timer from index.ts; a no-op on SQLite or a legacy
+// non-partitioned traces table.
+export async function runPgPartitionMaintenance(): Promise<void> {
+  const db = cached;
+  if (!pgPoolHandle || !db || db.kind !== "postgres" || !db.tracesPartitioned) return;
+  await ensurePgTracePartitions(pgPoolHandle);
+  const retentionDays = Number(process.env.AGENTX_PG_PARTITION_RETENTION_DAYS ?? 0);
+  const dropped = await dropExpiredPgTracePartitions(pgPoolHandle, retentionDays);
+  if (dropped.length > 0) {
+    logger.info(`Partition retention: dropped ${dropped.join(", ")}`);
+  }
 }

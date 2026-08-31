@@ -1,5 +1,5 @@
-import { and, eq, gte } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { traceStoreFor } from "../trace/store/index.js";
 import { listPortabilityModels, estimateCostUSD, normalizeModelId } from "../evaluate/models.js";
 import type { MonitoringWindow } from "./events.js";
 import { EVAL_RUN_SOURCE } from "../trace/evalTraffic.js";
@@ -28,34 +28,9 @@ function windowConfig(window: MonitoringWindow): { days: number; bucketHours: nu
 type CostTraceRow = { model: string | null; inputTokens: number | null; outputTokens: number | null; createdAt: Date; source: string | null };
 
 async function listCostTracesSince(db: Db, since: Date): Promise<CostTraceRow[]> {
-  const cond = and(gte(db.schema.traces.createdAt, since), eq(db.schema.traces.projectId, db.projectId));
-  // Every row in the window, not just root spans (unlike listTracesPaginated's trace-list view):
-  // an OTel multi-span session's individual LLM-call spans each carry their own tokens, and its
-  // root/session span typically carries none - filtering to roots would undercount real spend.
-  const rows =
-    db.kind === "sqlite"
-      ? db.db
-          .select({
-            model: db.schema.traces.model,
-            inputTokens: db.schema.traces.inputTokens,
-            outputTokens: db.schema.traces.outputTokens,
-            createdAt: db.schema.traces.createdAt,
-            source: db.schema.traces.source,
-          })
-          .from(db.schema.traces)
-          .where(cond)
-          .all()
-      : await db.db
-          .select({
-            model: db.schema.traces.model,
-            inputTokens: db.schema.traces.inputTokens,
-            outputTokens: db.schema.traces.outputTokens,
-            createdAt: db.schema.traces.createdAt,
-            source: db.schema.traces.source,
-          })
-          .from(db.schema.traces)
-          .where(cond);
-  return rows as CostTraceRow[];
+  // Every row in the window, not just root spans: an OTel multi-span session's individual
+  // LLM-call spans each carry their own tokens; filtering to roots would undercount real spend.
+  return (await traceStoreFor(db).queryWindow({ since })) as CostTraceRow[];
 }
 
 // The reserved stack key for spend from eval-run traffic. Eval spend is real money, so the

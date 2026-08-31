@@ -1,0 +1,46 @@
+{{- if not .Values.postgres.externalUrl }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "agentx.fullname" . }}-postgres
+spec:
+  serviceName: {{ include "agentx.fullname" . }}-postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: {{ include "agentx.fullname" . }}-postgres }
+  template:
+    metadata:
+      labels: { app: {{ include "agentx.fullname" . }}-postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          env:
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.postgres.password | quote }}
+            - name: POSTGRES_DB
+              value: agentx
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentx.fullname" . }}-postgres
+spec:
+  clusterIP: None
+  selector: { app: {{ include "agentx.fullname" . }}-postgres }
+  ports:
+    - port: 5432
+{{- end }}

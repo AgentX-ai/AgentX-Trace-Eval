@@ -1,0 +1,54 @@
+# The enterprise reference deployment (ADR-0001/0003, engine/docs/deployment-tiers.md):
+#   Postgres  = control plane (projects, datasets, scorers, signals, runs, auth)
+#   ClickHouse = telemetry (spans; rollups stay relational, see core/monitor/rollups.ts)
+#   engine    = one instance, the single telemetry writer by deployment model
+#
+#   docker compose -f docker-compose.enterprise.yml up
+#
+# Change the passwords before exposing anything beyond localhost, and put the dashboard behind
+# AGENTX_AUTH=enabled (see README's "Dashboard authentication") for shared deployments.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: agentx
+      POSTGRES_DB: agentx
+    volumes:
+      - agentx-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    environment:
+      CLICKHOUSE_PASSWORD: agentx
+    ulimits:
+      nofile: 262144
+    volumes:
+      - agentx-ch:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  engine:
+    build: .
+    ports:
+      - "4700:4700"
+    environment:
+      AGENTX_DB_URL: postgres://postgres:agentx@postgres:5432/agentx
+      AGENTX_TELEMETRY_URL: http://default:agentx@clickhouse:8123/default
+      AGENTX_TELEMETRY_TTL_DAYS: "90"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+volumes:
+  agentx-pg:
+  agentx-ch:

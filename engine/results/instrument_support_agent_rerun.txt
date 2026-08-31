@@ -1,0 +1,1 @@
+/opt/homebrew/Cellar/python@3.12/3.12.9/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python: can't open file '/Users/robin/AgentX/AgentX-trace-eval/engine/uc1_instrument_support_agent.py': [Errno 2] No such file or directory

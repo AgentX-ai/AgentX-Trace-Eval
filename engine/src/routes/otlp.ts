@@ -2,7 +2,7 @@ import type { Request, Response } from "express";
 import express from "express";
 import { asyncRouter } from "./asyncRouter.js";
 import { scopedDb } from "../auth/apiKey.js";
-import { ingestTraceSchema, ingestTrace, type IngestTraceInput } from "../core/trace/ingest.js";
+import { ingestTraceSchema, beginIngestTraceQueued, type IngestTraceInput, type QueuedIngestResult } from "../core/trace/ingest.js";
 import { runMonitorCheck } from "../core/monitor/detect.js";
 import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
 import { runCustomEvaluators } from "../core/monitor/customEvaluators.js";
@@ -96,7 +96,6 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   // an exporter that gives up mid-batch doesn't know the spans it already sent were, in fact,
   // ingested successfully. Collected here so the checks can run in the background after
   // responding, same fix as routes/ingest.ts's POST /traces.
-  const checkTargets: { traceId: string; agentId: string | null; input: IngestTraceInput }[] = [];
 
   // Whole batch mapped first, then the tool-call reconstruction pass (child gen_ai.tool.name
   // spans folded into their parent interaction's tool_calls - see mapping.ts), THEN per-span
@@ -105,36 +104,12 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   const candidates = spans.map(otelSpanToIngestInput);
   reconstructParentToolCalls(candidates);
 
-  for (const candidate of candidates) {
-    const validation = ingestTraceSchema.safeParse(candidate);
-    if (!validation.success) {
-      rejected++;
-      lastError = validation.error.message;
-      continue;
-    }
-    const input = validation.data;
-    const { traceId, agentId, deduped } = await ingestTrace(db, input);
-    // A replayed span (OTel exporter retry) was already checked/judged on first arrival -
-    // skipping it here mirrors routes/ingest.ts's own deduped guard.
-    if (!deduped) {
-      checkTargets.push({ traceId, agentId, input });
-    }
-  }
-
-  const partialSuccess = rejected > 0 ? { rejectedSpans: rejected, errorMessage: lastError } : undefined;
-  if (isProtobuf) {
-    res.status(200).type("application/x-protobuf").send(Buffer.from(encodeProtobufResponse(partialSuccess)));
-  } else {
-    res.status(200).json(partialSuccess ? { partialSuccess } : {});
-  }
-
-  // Checked in the background, after responding: a judge failure (missing API key, provider
-  // outage) must never break OTLP ingestion, and now that these run detached from the request
-  // they're wrapped in .catch() rather than try/catch so a rejection is logged instead of
-  // becoming a silent unhandled one.
-  for (const { traceId, agentId, input } of checkTargets) {
+  // Checked after the span durably lands (queued ingest, ADR-0005): a judge failure must
+  // never break OTLP ingestion, and only conflict WINNERS run - an exporter retry that raced
+  // in concurrently cannot double-bill judges.
+  const runChecksFor = ({ traceId, agentId, input }: { traceId: string; agentId: string | null; input: IngestTraceInput }) => {
     if (input.parent_span_id && !MONITOR_CHILD_SPANS) {
-      continue;
+      return;
     }
 
     if (MONITOR_OTEL_TRACES) {
@@ -190,5 +165,62 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
     runClassification(db, { input: input.input, output: input.output }, { agentId, traceId }).catch(err => {
       logger.error({ err: err instanceof Error ? err.message : err }, "Trace classification failed:");
     });
+    };
+
+  // Two phases (ADR-0005): every span is ENQUEUED before any span is awaited, so the whole
+  // OTLP export coalesces into shared micro-batches. Awaiting each span's commit inside the
+  // enqueue loop would serialize one flush (and one full flush-timer wait) per span - a
+  // 1,000-span export would take longer than the exporter's own export timeout.
+  const settling: Array<{ settle: Promise<QueuedIngestResult>; input: IngestTraceInput }> = [];
+  let queueFull = 0;
+  for (const candidate of candidates) {
+    const validation = ingestTraceSchema.safeParse(candidate);
+    if (!validation.success) {
+      rejected++;
+      lastError = validation.error.message;
+      continue;
+    }
+    const input = validation.data;
+    const { accepted, settle } = await beginIngestTraceQueued(db, input);
+    if (!accepted) {
+      queueFull++;
+      continue;
+    }
+    settling.push({ settle, input });
   }
+
+  let droppedCount = 0;
+  for (const { settle, input } of settling) {
+    const { traceId, agentId, deduped, dropped } = await settle;
+    if (dropped) {
+      droppedCount++;
+      continue;
+    }
+    // A replayed span (OTel exporter retry) was already checked/judged on first arrival -
+    // the deduped guard mirrors routes/ingest.ts.
+    if (!deduped) {
+      runChecksFor({ traceId, agentId, input });
+    }
+  }
+
+  // Backpressure and storage failure answer with RETRYABLE codes (429/503), never
+  // partialSuccess: per OTLP/HTTP, partial-success spans "will not be retried" by conforming
+  // exporters, which would turn load shedding into permanent data loss. Redelivering the whole
+  // export is safe - span ids make the already-stored part idempotent. partialSuccess is
+  // reserved for schema-invalid spans, which genuinely must not be retried.
+  if (queueFull > 0) {
+    res.status(429).set("Retry-After", "1").json({ message: `ingest queue full - ${queueFull} spans shed, retry with backoff` });
+    return;
+  }
+  if (droppedCount > 0) {
+    res.status(503).set("Retry-After", "2").json({ message: `trace storage unavailable - ${droppedCount} spans not stored, retry` });
+    return;
+  }
+  const partialSuccess = rejected > 0 ? { rejectedSpans: rejected, errorMessage: lastError } : undefined;
+  if (isProtobuf) {
+    res.status(200).type("application/x-protobuf").send(Buffer.from(encodeProtobufResponse(partialSuccess)));
+  } else {
+    res.status(200).json(partialSuccess ? { partialSuccess } : {});
+  }
+
 });

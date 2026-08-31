@@ -2,6 +2,7 @@ import { nanoid } from "nanoid";
 import { renderUsedToolDefinitions } from "../trace/trajectory.js";
 import { eq, and, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { traceStoreFor } from "../trace/store/index.js";
 import {
   renderTraceTrajectory,
   getTraceRetrievalContext,
@@ -279,11 +280,7 @@ type SimilarityScores = {
 // core/trace/ingest.ts's getTraceRow - keeps core/evaluate free of an import into core/trace,
 // which pulls in the classification/pricing graph this module doesn't need.
 async function getTraceRowForScoring(db: Db, traceId: string): Promise<{ toolCalls: unknown } | null> {
-  const cond = and(eq(db.schema.traces.id, traceId), eq(db.schema.traces.projectId, db.projectId));
-  const row =
-    db.kind === "sqlite"
-      ? (db.db.select().from(db.schema.traces).where(cond).all()[0] as { toolCalls: unknown } | undefined)
-      : ((await db.db.select().from(db.schema.traces).where(cond))[0] as { toolCalls: unknown } | undefined);
+  const row = (await traceStoreFor(db).getById(traceId)) as { toolCalls: unknown } | undefined;
   return row ?? null;
 }
 
@@ -760,12 +757,7 @@ export async function evaluateTraceAgainst(
   | { error: string; status: number }
   | { run_id: string; trace_id: string; rating: number | null; justification: string | null; status: string }
 > {
-  const traceCond = and(eq(db.schema.traces.id, traceId), eq(db.schema.traces.projectId, db.projectId));
-  const trace = (
-    db.kind === "sqlite"
-      ? (db.db.select().from(db.schema.traces).where(traceCond).all()[0] as Record<string, unknown> | undefined)
-      : ((await db.db.select().from(db.schema.traces).where(traceCond))[0] as Record<string, unknown> | undefined)
-  );
+  const trace = (await traceStoreFor(db).getById(traceId)) as unknown as Record<string, unknown> | undefined;
   if (!trace) {
     return { error: "Trace not found", status: 404 };
   }

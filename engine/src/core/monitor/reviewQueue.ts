@@ -1,6 +1,7 @@
 import { and, desc, eq, isNull, or } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { Db } from "../../storage/db.js";
+import { traceStoreFor } from "../trace/store/index.js";
 import { logger } from "../../log.js";
 
 // The human-review queue for traces that raised NO signal - the annotation-queue half of Review.
@@ -111,19 +112,10 @@ async function getRow(db: Db, id: string): Promise<ReviewRow | undefined> {
 async function traceSummaries(db: Db, traceIds: string[]): Promise<Map<string, TraceSummary>> {
   const out = new Map<string, TraceSummary>();
   if (traceIds.length === 0) return out;
-  const wanted = new Set(traceIds);
-  // One scan, filtered in memory: the queue is capped at a couple hundred rows, so this stays
-  // cheaper than an IN-list built per dialect.
-  const cond = eq(db.schema.traces.projectId, db.projectId);
-  const rows = (
-    db.kind === "sqlite"
-      ? db.db.select().from(db.schema.traces).where(cond).all()
-      : await db.db.select().from(db.schema.traces).where(cond)
-  ) as (TraceSummary & { id: string })[];
-  for (const row of rows) {
-    if (wanted.has(row.id)) {
-      out.set(row.id, row);
-    }
+  // Point lookups through the port (was a full-table scan filtered in memory).
+  const rows = await traceStoreFor(db).getByIds(traceIds);
+  for (const [id, row] of rows) {
+    out.set(id, row as unknown as TraceSummary & { id: string });
   }
   return out;
 }
@@ -149,12 +141,9 @@ export type QueueForReviewResult =
   | { ok: false; reason: "trace_not_found" | "already_queued" | "queue_full"; pending?: number };
 
 export async function queueTraceForReview(db: Db, input: QueueForReviewInput): Promise<QueueForReviewResult> {
-  const traceCond = and(eq(db.schema.traces.id, input.traceId), eq(db.schema.traces.projectId, db.projectId));
-  const trace = (
-    db.kind === "sqlite"
-      ? db.db.select().from(db.schema.traces).where(traceCond).all()[0]
-      : (await db.db.select().from(db.schema.traces).where(traceCond))[0]
-  ) as (TraceSummary & { id: string; sessionId: string | null }) | undefined;
+  const trace = (await traceStoreFor(db).getById(input.traceId)) as unknown as
+    | (TraceSummary & { id: string; sessionId: string | null })
+    | undefined;
   if (!trace) return { ok: false, reason: "trace_not_found" };
 
   const existing = await listRows(db);

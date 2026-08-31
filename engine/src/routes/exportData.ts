@@ -5,6 +5,7 @@ import {
   EXPORT_BATCH,
   EXPORT_ENTITIES,
   countExportRows,
+  exportKeyName,
   fetchExportBatch,
   isExportEntity,
   type ExportEntity,
@@ -60,7 +61,9 @@ exportRouter.get("/:entity", async (req: Request, res: Response) => {
     if (batch.length < EXPORT_BATCH) {
       break;
     }
-    cursor = String(batch[batch.length - 1]!.id);
+    // Keyed on the entity's cursor column - evaluation-analyses has no `id`, and a cursor of
+    // String(undefined) would page forever.
+    cursor = String(batch[batch.length - 1]![exportKeyName(entity)]);
   }
   res.end();
 });

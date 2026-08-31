@@ -1,8 +1,9 @@
-import { resolveSpanKind } from "../trace/spanKind.js";
-import { and, eq, gte } from "drizzle-orm";
+import { resolveSpanKind, toolCallList } from "../trace/spanKind.js";
+import { traceStoreFor } from "../trace/store/index.js";
+import { percentileFromHistogram, readRollups, LATENCY_BUCKET_COUNT, type ModelTokens, type RollupRow } from "./rollups.js";
 import type { Db } from "../../storage/db.js";
 import { listPortabilityModels, normalizeModelId, type PortabilityModel } from "../evaluate/models.js";
-import { productionTracesOnly } from "../trace/evalTraffic.js";
+
 
 // The Monitor metrics grid (claude.design Monitor.dc.html): one bucketed pass over the window's
 // trace rows powering every card - spans by kind, latency percentiles, tokens, priced cost,
@@ -89,6 +90,9 @@ export type MonitorMetricsResponse = {
   bucketMs: number;
   start: number;
   end: number;
+  /** Which path answered: "rollups" (ADR-0006 fast path) or "raw" (window scan). Diagnostic -
+   *  and load-bearing in tests, which assert the fast path was actually taken. */
+  source: "rollups" | "raw";
   buckets: MonitorMetricsBucket[];
   totals: {
     spansLlm: number;
@@ -138,15 +142,6 @@ const percentile = (sorted: number[], p: number): number | null => {
   return sorted[Math.max(0, idx)]!;
 };
 
-const toolCallList = (raw: unknown): { name: string; failed: boolean }[] => {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((tc): tc is Record<string, unknown> => !!tc && typeof tc === "object")
-    .map(tc => ({
-      name: typeof tc.name === "string" ? tc.name : "tool",
-      failed: tc.success === false,
-    }));
-};
 
 const TOP_TOOLS = 4;
 const TOP_MODELS = 3;
@@ -160,52 +155,19 @@ export async function getMonitorMetrics(
   const bucketMs = bucketSizeFor(ms);
   const start = range.from;
   const since = new Date(start);
-  let rows: Row[];
-  if (db.kind === "sqlite") {
-    const t = db.schema.traces;
-    // Production only: the span/latency/token buckets describe live traffic, not eval harnesses.
-    const cond = and(gte(t.createdAt, since), eq(t.projectId, db.projectId), productionTracesOnly(db));
-    rows = db.db
-      .select({
-        id: t.id,
-        name: t.name,
-        model: t.model,
-        latencyMs: t.latencyMs,
-        parentSpanId: t.parentSpanId,
-        sessionId: t.sessionId,
-        toolCalls: t.toolCalls,
-        inputTokens: t.inputTokens,
-        outputTokens: t.outputTokens,
-        cacheReadTokens: t.cacheReadTokens,
-        cacheWriteTokens: t.cacheWriteTokens,
-        error: t.error,
-        createdAt: t.createdAt,
-      })
-      .from(t)
-      .where(cond)
-      .all() as Row[];
-  } else {
-    const t = db.schema.traces;
-    const cond = and(gte(t.createdAt, since), eq(t.projectId, db.projectId), productionTracesOnly(db));
-    rows = (await db.db
-      .select({
-        id: t.id,
-        name: t.name,
-        model: t.model,
-        latencyMs: t.latencyMs,
-        parentSpanId: t.parentSpanId,
-        sessionId: t.sessionId,
-        toolCalls: t.toolCalls,
-        inputTokens: t.inputTokens,
-        outputTokens: t.outputTokens,
-        cacheReadTokens: t.cacheReadTokens,
-        cacheWriteTokens: t.cacheWriteTokens,
-        error: t.error,
-        createdAt: t.createdAt,
-      })
-      .from(t)
-      .where(cond)) as Row[];
+  // Rollup fast path (ADR-0006): the unfiltered default dashboard reads per-minute rollups -
+  // O(minutes in window), independent of traffic. Filtered views (agent/model/tool/error) need
+  // per-session composition only raw rows can answer and stay on the scan below. Coverage is
+  // verified against an indexed root count: windows predating the rollup feature (or a rollup
+  // write failure) fall back to the raw scan rather than under-reporting.
+  const wantsFilter = !!(filters.agent || filters.model || filters.tool || filters.status === "error");
+  if (!wantsFilter) {
+    const fast = await metricsFromRollups(db, range, bucketMs);
+    if (fast) return fast;
   }
+  // One window scan through the TraceStore port (ADR-0002); production only - the buckets
+  // describe live traffic, not eval harnesses.
+  let rows = (await traceStoreFor(db).queryWindow({ since, productionOnly: true })) as unknown as Row[];
 
   // ---- filters, resolved per SESSION so a matching root brings its child spans along ---------
   // (a root and its children share sessionId - every SDK trace auto-creates one; rows without a
@@ -213,7 +175,6 @@ export async function getMonitorMetrics(
   const keyOf = (row: Row) => row.sessionId ?? row.id;
   // Custom ranges can end in the past - drop rows past the upper bound before anything counts them.
   rows = rows.filter(row => row.createdAt.getTime() <= range.to);
-  const wantsFilter = !!(filters.agent || filters.model || filters.tool || filters.status === "error");
   let filtered = rows;
   if (wantsFilter) {
     const agents = new Map<string, Set<string>>();
@@ -417,6 +378,206 @@ export async function getMonitorMetrics(
     bucketMs,
     start,
     end: range.to,
+    source: "raw",
+    buckets,
+    totals,
+    tools,
+    models,
+    facets: {
+      agents: [...facetAgents].sort(),
+      models: [...facetModels].sort(),
+      tools: tools.map(tool => tool.name),
+    },
+  };
+}
+
+
+// ---- rollup read path (ADR-0006) -------------------------------------------------------------
+
+async function metricsFromRollups(
+  db: Db,
+  range: { from: number; to: number; window: string },
+  bucketMs: number
+): Promise<MonitorMetricsResponse | null> {
+  const since = new Date(range.from);
+  const all = (await readRollups(db, since, { includeEval: true })).filter(r => r.minuteTs <= range.to);
+  if (all.length === 0) return null;
+  // Coverage check: rollups must account for every root the raw table has in the window.
+  // Both sides are counted from the same minute-floored boundary readRollups uses - counting
+  // raw from the un-floored range.from would let the first rollup row's extra sub-minute roots
+  // mask an equal-sized rollup shortfall (the exact failure this guard exists to catch).
+  // Custom ranges ending in the past always fail this (countRoots has no upper bound) and
+  // correctly stay on the raw path.
+  const rollupRoots = all.reduce((n, r) => n + r.roots, 0);
+  const rawRoots = await traceStoreFor(db).countRoots(new Date(Math.floor(range.from / 60_000) * 60_000));
+  if (rollupRoots < rawRoots) return null;
+
+  // The dashboard's KPIs describe production traffic only, mirroring the raw path's
+  // productionOnly window scan.
+  const rollups = all.filter(r => r.production);
+
+  const start = range.from;
+  const bucketCount = Math.max(1, Math.ceil((range.to - range.from) / bucketMs));
+  const buckets: MonitorMetricsBucket[] = Array.from({ length: bucketCount }, (_, i) => ({
+    ts: start + i * bucketMs,
+    spansLlm: 0,
+    spansTool: 0,
+    spansRetrieval: 0,
+    spansOther: 0,
+    traces: 0,
+    errors: 0,
+    latencyP50: null,
+    latencyP95: null,
+    tokensPrompt: 0,
+    tokensCompletion: 0,
+    costPrompt: 0,
+    costCached: 0,
+    costCompletion: 0,
+    toolCalls: 0,
+    toolFailures: 0,
+    byTool: {},
+    byModelCost: {},
+  }));
+
+  const pricingModels = await listPortabilityModels(db);
+  const pricingById = new Map<string, PortabilityModel>();
+  for (const model of pricingModels) pricingById.set(model.id, model);
+  const priceOf = (model: string): PortabilityModel | null =>
+    pricingById.get(model) ?? pricingById.get(normalizeModelId(model)) ?? null;
+
+  const bucketHists: number[][] = Array.from({ length: bucketCount }, () =>
+    Array.from({ length: LATENCY_BUCKET_COUNT }, () => 0)
+  );
+  const windowHist = Array.from({ length: LATENCY_BUCKET_COUNT }, () => 0);
+  const bucketModels: Map<string, ModelTokens>[] = Array.from({ length: bucketCount }, () => new Map());
+  const toolTotals = new Map<string, { count: number; failed: number }>();
+  const byToolPerBucket = new Map<string, number[]>();
+  const facetAgents = new Set<string>();
+  const facetModels = new Set<string>();
+
+  const costOf = (model: string, tokens: ModelTokens): { prompt: number; cached: number; completion: number } => {
+    const pricing = priceOf(model);
+    if (!pricing) return { prompt: 0, cached: 0, completion: 0 };
+    const regularInput = Math.max(0, tokens.inTok - tokens.cacheRead - tokens.cacheWrite);
+    const cacheReadRate = pricing.pricePerMCacheReadTokens ?? pricing.pricePerMInputTokens;
+    const cacheWriteRate = pricing.pricePerMCacheWriteTokens ?? pricing.pricePerMInputTokens;
+    return {
+      cached: (tokens.cacheRead / 1e6) * cacheReadRate,
+      prompt: (regularInput / 1e6) * pricing.pricePerMInputTokens + (tokens.cacheWrite / 1e6) * cacheWriteRate,
+      completion: (tokens.outTok / 1e6) * pricing.pricePerMOutputTokens,
+    };
+  };
+
+  for (const roll of rollups) {
+    const idx = Math.min(bucketCount - 1, Math.max(0, Math.floor((roll.minuteTs - start) / bucketMs)));
+    const bucket = buckets[idx]!;
+    bucket.spansLlm += roll.spansLlm;
+    bucket.spansTool += roll.spansTool;
+    bucket.spansRetrieval += roll.spansRetrieval;
+    bucket.spansOther += roll.spansOther;
+    bucket.traces += roll.roots;
+    bucket.errors += roll.errors;
+    bucket.tokensPrompt += roll.tokensPrompt;
+    bucket.tokensCompletion += roll.tokensCompletion;
+    bucket.toolCalls += roll.toolCalls;
+    bucket.toolFailures += roll.toolFailures;
+    for (let i = 0; i < LATENCY_BUCKET_COUNT; i++) {
+      bucketHists[idx]![i]! += roll.latencyHist[i] ?? 0;
+      windowHist[i]! += roll.latencyHist[i] ?? 0;
+    }
+    for (const [model, tokens] of Object.entries(roll.byModel)) {
+      facetModels.add(model);
+      const m = bucketModels[idx]!.get(model) ?? { inTok: 0, outTok: 0, cacheRead: 0, cacheWrite: 0 };
+      m.inTok += tokens.inTok;
+      m.outTok += tokens.outTok;
+      m.cacheRead += tokens.cacheRead;
+      m.cacheWrite += tokens.cacheWrite;
+      bucketModels[idx]!.set(model, m);
+    }
+    for (const [tool, stats] of Object.entries(roll.byTool)) {
+      const totals = toolTotals.get(tool) ?? { count: 0, failed: 0 };
+      totals.count += stats.count;
+      totals.failed += stats.failed;
+      toolTotals.set(tool, totals);
+      const series = byToolPerBucket.get(tool) ?? Array.from({ length: bucketCount }, () => 0);
+      series[idx]! += stats.count;
+      byToolPerBucket.set(tool, series);
+    }
+    for (const agent of Object.keys(roll.byAgent)) facetAgents.add(agent);
+  }
+
+  const modelTotals = new Map<string, { cost: number; tokens: number }>();
+  for (let i = 0; i < bucketCount; i++) {
+    buckets[i]!.latencyP50 = percentileFromHistogram(bucketHists[i]!, 50);
+    buckets[i]!.latencyP95 = percentileFromHistogram(bucketHists[i]!, 95);
+    for (const [model, tokens] of bucketModels[i]!) {
+      const c = costOf(model, tokens);
+      buckets[i]!.costPrompt += c.prompt;
+      buckets[i]!.costCached += c.cached;
+      buckets[i]!.costCompletion += c.completion;
+      const totals = modelTotals.get(model) ?? { cost: 0, tokens: 0 };
+      totals.cost += c.prompt + c.cached + c.completion;
+      totals.tokens += tokens.inTok + tokens.outTok;
+      modelTotals.set(model, totals);
+    }
+  }
+
+  const tools = [...toolTotals.entries()]
+    .map(([name, totals]) => ({ name, ...totals }))
+    .sort((a, b) => b.count - a.count);
+  const topTools = tools.slice(0, TOP_TOOLS).map(tool => tool.name);
+  for (let i = 0; i < bucketCount; i++) {
+    const byTool: Record<string, number> = {};
+    let other = 0;
+    for (const [name, series] of byToolPerBucket) {
+      if (topTools.includes(name)) byTool[name] = series[i]!;
+      else other += series[i]!;
+    }
+    if (other > 0) byTool.other = other;
+    buckets[i]!.byTool = byTool;
+  }
+
+  const models = [...modelTotals.entries()]
+    .map(([name, totals]) => ({ name, ...totals }))
+    .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
+  const topModels = models.slice(0, TOP_MODELS).map(model => model.name);
+  for (let i = 0; i < bucketCount; i++) {
+    const byModelCost: Record<string, number> = {};
+    let otherCost = 0;
+    for (const [model, tokens] of bucketModels[i]!) {
+      const c = costOf(model, tokens);
+      const total = c.prompt + c.cached + c.completion;
+      if (topModels.includes(model)) byModelCost[model] = total;
+      else otherCost += total;
+    }
+    if (otherCost > 0) byModelCost.other = otherCost;
+    buckets[i]!.byModelCost = byModelCost;
+  }
+
+  const totals = {
+    spansLlm: buckets.reduce((n, b) => n + b.spansLlm, 0),
+    spansRetrieval: buckets.reduce((n, b) => n + b.spansRetrieval, 0),
+    spansTool: buckets.reduce((n, b) => n + b.spansTool, 0),
+    spansOther: buckets.reduce((n, b) => n + b.spansOther, 0),
+    traces: buckets.reduce((n, b) => n + b.traces, 0),
+    errors: buckets.reduce((n, b) => n + b.errors, 0),
+    latencyP50: percentileFromHistogram(windowHist, 50),
+    latencyP95: percentileFromHistogram(windowHist, 95),
+    tokensPrompt: buckets.reduce((n, b) => n + b.tokensPrompt, 0),
+    tokensCompletion: buckets.reduce((n, b) => n + b.tokensCompletion, 0),
+    costPrompt: buckets.reduce((n, b) => n + b.costPrompt, 0),
+    costCached: buckets.reduce((n, b) => n + b.costCached, 0),
+    costCompletion: buckets.reduce((n, b) => n + b.costCompletion, 0),
+    toolCalls: buckets.reduce((n, b) => n + b.toolCalls, 0),
+    toolFailures: buckets.reduce((n, b) => n + b.toolFailures, 0),
+  };
+
+  return {
+    window: range.window,
+    bucketMs,
+    start,
+    end: range.to,
+    source: "rollups",
     buckets,
     totals,
     tools,

@@ -76,6 +76,17 @@ describe("export manifest", () => {
     expect(Object.keys(byName)).toContain("custom-evaluators");
   });
 
+  it("every registered entity answers 200 (a schema drift 500s, not skips)", async () => {
+    // Regression: evaluation-analyses keys on evaluationId, not id - the generic `asc(t.id)`
+    // rendered a bare `asc` identifier into the SQL and 500'd (caught live by the UC8 drill).
+    const manifest = await engine.json("/api/v1/export", { apiKey: keyA });
+    const entities = (manifest.body as { entities: { entity: string }[] }).entities.map(e => e.entity);
+    for (const entity of entities) {
+      const res = await engine.request(`/api/v1/export/${entity}`, { apiKey: keyA });
+      expect(res.status, entity).toBe(200);
+    }
+  });
+
   it("401s without a key and 404s an unknown entity", async () => {
     expect((await engine.json("/api/v1/export", { apiKey: null })).status).toBe(401);
     const bad = await engine.json("/api/v1/export/nonsense", { apiKey: keyA });

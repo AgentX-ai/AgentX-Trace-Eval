@@ -1,4 +1,6 @@
 import { eq, inArray } from "drizzle-orm";
+import { traceStoreFor } from "../trace/store/index.js";
+import { withProjectId } from "../../storage/db.js";
 import { getTableColumns } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 
@@ -19,6 +21,12 @@ export async function deleteOrganization(db: Db, organizationId: string): Promis
   ) as { id: string }[];
   const projectIds = projectRows.map(row => row.id);
 
+  // Spans first, through the port (ADR-0002): in the enterprise tier they live in ClickHouse,
+  // which the generic relational sweep below cannot reach. On the SQL tiers this is the same
+  // delete the sweep would also perform - idempotent either way.
+  for (const projectId of projectIds) {
+    await traceStoreFor(withProjectId(db, projectId)).deleteAllForProject();
+  }
   if (projectIds.length > 0) {
     // Branch once on dialect so each loop stays fully typed against its own schema flavor.
     if (db.kind === "sqlite") {

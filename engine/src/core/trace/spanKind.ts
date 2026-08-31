@@ -120,3 +120,14 @@ export function resolveSpanKind(span: SpanKindInput): SpanKind {
 export function isRetrievalSpan(span: SpanKindInput): boolean {
   return resolveSpanKind(span) === "retrieval";
 }
+
+// Normalizes a row's toolCalls JSON into the (name, failed) list every aggregation shares.
+export const toolCallList = (raw: unknown): { name: string; failed: boolean }[] => {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((tc): tc is Record<string, unknown> => !!tc && typeof tc === "object")
+    .map(tc => ({
+      name: typeof tc.name === "string" ? tc.name : "tool",
+      failed: tc.success === false,
+    }));
+};

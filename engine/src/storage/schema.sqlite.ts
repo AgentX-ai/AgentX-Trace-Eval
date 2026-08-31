@@ -1142,3 +1142,19 @@ export const playgroundProfiles = sqliteTable("playground_profiles", {
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
+
+// Per-minute metric rollups (ADR-0006, core/monitor/rollups.ts): the Monitor dashboard's
+// unfiltered read path. `data` is the JSON-encoded counters/histograms blob - the row key
+// carries everything queries filter on, the blob everything they sum.
+export const monitorRollups = sqliteTable(
+  "monitor_rollups",
+  {
+    projectId: text("project_id").notNull(),
+    minuteTs: integer("minute_ts").notNull(),
+    production: integer("production", { mode: "boolean" }).notNull(),
+    data: text("data", { mode: "json" }).notNull(),
+  },
+  table => ({
+    rollupKeyUnique: uniqueIndex("monitor_rollups_key").on(table.projectId, table.minuteTs, table.production),
+  })
+);

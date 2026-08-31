@@ -5,7 +5,10 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import { requireApiKey } from "./auth/apiKey.js";
 import { asyncHandler } from "./routes/asyncRouter.js";
 import { rateLimit, CREDENTIAL_LIMIT, DATA_PLANE_LIMIT } from "./auth/rateLimit.js";
-import { initDb, closeDb, getDb, withProjectId } from "./storage/db.js";
+import { initDb, closeDb, getDb, withProjectId, runPgPartitionMaintenance } from "./storage/db.js";
+import { drainIngestQueue } from "./core/trace/ingestQueue.js";
+import { initTelemetryStore, closeTelemetryStore } from "./core/trace/store/index.js";
+import { selfMetricsRouter } from "./routes/selfMetrics.js";
 import { getDefaultProject, listProjectRows } from "./core/project/projects.js";
 import { ensureSessionBaselineJudge } from "./core/monitor/builtinEvaluators.js";
 import { ensureMetricPackConfigs, metricPackBackfillDone, markMetricPackBackfillDone } from "./core/evaluate/metricPack.js";
@@ -59,7 +62,7 @@ async function main() {
   const earlyShutdown = (signal: NodeJS.Signals) => {
     logger.info(`${signal} received during boot, closing the database and exiting.`);
     void Promise.resolve()
-      .then(() => closeDb())
+      .then(() => drainIngestQueue()).then(() => closeDb())
       .catch((err: unknown) => logger.error({ err }, "Error closing database during boot shutdown"))
       .finally(() => process.exit(0));
   };
@@ -72,7 +75,18 @@ async function main() {
   // key if this is an upgrade, see db.ts's backfillDefaultProjectSqlite) - no separate
   // ensureLocalApiKey() step needed anymore, that migration is now self-sufficient for both a
   // fresh install and an upgrade.
+  // Enterprise tier (ADR-0003): the ClickHouse span schema boots BEFORE the relational
+  // bootstrap - initDb() seeds example traces through the TraceStore port, and those must land
+  // in the live telemetry store, not silently in the control plane. No-op without
+  // AGENTX_TELEMETRY_URL; fails startup loudly if the telemetry store is unreachable.
+  await initTelemetryStore();
   await initDb();
+  // Partitioned-Postgres maintenance (ADR-0007): pre-create upcoming partitions, drop expired
+  // ones. Daily cadence; the DEFAULT partition keeps correctness independent of this timer.
+  await runPgPartitionMaintenance().catch(err => logger.error({ err }, "Partition maintenance failed:"));
+  setInterval(() => {
+    void runPgPartitionMaintenance().catch(err => logger.error({ err }, "Partition maintenance failed:"));
+  }, 24 * 60 * 60 * 1000).unref();
 
   const app = express();
 
@@ -99,6 +113,8 @@ async function main() {
   registerAuthRoutes(app, credentialLimit);
 
   app.use(express.json({ limit: "10mb" }));
+  // Engine self-metrics (Prometheus): before auth - operators scrape the private port directly.
+  app.use(selfMetricsRouter);
 
   const ACCESS_LOG_IGNORE = ["/health"];
   app.use((req, res, next) => {
@@ -256,6 +272,8 @@ async function main() {
         logger.error({ err: err }, "Error while closing HTTP server:");
       }
       try {
+        await drainIngestQueue();
+        await closeTelemetryStore();
         await closeDb();
       } catch (dbErr) {
         logger.error({ err: dbErr }, "Error while closing database:");

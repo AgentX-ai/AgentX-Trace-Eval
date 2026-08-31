@@ -65,6 +65,17 @@ jobs:
     name: engine on Postgres
     runs-on: ubuntu-latest
     services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8-alpine
+        env:
+          CLICKHOUSE_PASSWORD: agentx
+        ports:
+          - 8123:8123
+        options: >-
+          --health-cmd "wget -qO- http://localhost:8123/ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
       postgres:
         image: postgres:16-alpine
         env:
@@ -99,6 +110,8 @@ jobs:
         timeout-minutes: 20
         env:
           AGENTX_TEST_DB_URL: postgres://postgres:agentx@localhost:5432/agentx
+          # Un-skips the ClickHouse contract + enterprise-tier suites (ADR-0002/0003).
+          AGENTX_TEST_CLICKHOUSE_URL: http://default:agentx@localhost:8123/default
 
   cli:
     name: cli

@@ -1,0 +1,36 @@
+# The enterprise reference deployment (engine/docs/deployment-tiers.md). Defaults boot a complete,
+# self-contained stack; production hardening notes inline. Change every password before
+# exposing anything, and front the dashboard with AGENTX_AUTH=enabled for shared use.
+
+image:
+  # No public image is published yet: build from the repo Dockerfile and push to your registry.
+  repository: your-registry/agentx-server
+  tag: latest
+  pullPolicy: IfNotPresent
+
+engine:
+  replicas: 1 # DO NOT scale up: one engine is the single telemetry writer (ADR-0003/0005).
+  port: 4700
+  env:
+    AGENTX_AUTH: "enabled"
+    AGENTX_TELEMETRY_TTL_DAYS: "90"
+  resources:
+    requests: { cpu: 500m, memory: 512Mi }
+    limits: { cpu: "2", memory: 2Gi }
+
+postgres:
+  # In-chart Postgres for a self-contained install; point `externalUrl` at a managed instance
+  # instead for production (then the StatefulSet is not rendered).
+  externalUrl: ""
+  password: agentx-change-me
+  storage: 20Gi
+  image: postgres:16-alpine
+
+clickhouse:
+  externalUrl: ""
+  password: agentx-change-me
+  storage: 100Gi
+  image: clickhouse/clickhouse-server:24.8-alpine
+
+service:
+  type: ClusterIP

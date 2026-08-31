@@ -1,5 +1,3 @@
-import { isNull, ne, or, type SQL } from "drizzle-orm";
-import type { Db } from "../../storage/db.js";
 
 // Offline evaluation runs produce real traces - that is what makes trajectory matching and
 // retrieval-context extraction work - but they are not production traffic, and a nightly
@@ -24,8 +22,3 @@ export function normalizeTraceSource(raw: unknown): string | null {
   return raw.trim().toLowerCase() === EVAL_RUN_SOURCE ? EVAL_RUN_SOURCE : null;
 }
 
-// The WHERE fragment every production-only aggregation shares. Null (everything before this
-// column existed, and all normal traffic) is production.
-export function productionTracesOnly(db: Db): SQL {
-  return or(isNull(db.schema.traces.source), ne(db.schema.traces.source, EVAL_RUN_SOURCE)) as SQL;
-}

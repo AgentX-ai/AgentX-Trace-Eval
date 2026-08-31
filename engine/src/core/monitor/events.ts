@@ -1,9 +1,10 @@
 import { nanoid } from "nanoid";
 import { and, eq, gte, isNull, lt } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { traceStoreFor } from "../trace/store/index.js";
 import { getTraceRow } from "../trace/ingest.js";
 import { getAgentNamesById } from "./agents.js";
-import { productionTracesOnly } from "../trace/evalTraffic.js";
+
 
 // Matches AgentX-web-front's MonitoringWindow (src/types/agentMonitoring.ts).
 export type MonitoringWindow = "24h" | "7d" | "30d";
@@ -104,10 +105,22 @@ export async function recordEvent(
 // lifecycle, not raw traffic, the same distinction real observability tools draw between trace
 // retention and incident retention. `retentionDays <= 0` means "Forever" (MonitoringUnitSettingsFields.tsx's
 // new option) - skip pruning entirely rather than treating 0 as "a cutoff of right now."
+// ADR-0007: retention must not ride the request path. Detection still asks after every trace
+// (cheap call sites, no scheduler to add), but the actual delete runs at most once an hour per
+// (project, scope) - everything else returns immediately.
+const lastPruneAt = new Map<string, number>();
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+
 export async function pruneRetentionData(db: Db, agentId: string | null, retentionDays: number): Promise<void> {
   if (retentionDays <= 0) {
     return;
   }
+  const key = `${db.projectId}|${agentId ?? ""}`;
+  const last = lastPruneAt.get(key) ?? 0;
+  if (Date.now() - last < PRUNE_INTERVAL_MS) {
+    return;
+  }
+  lastPruneAt.set(key, Date.now());
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
 
   const eventsCond =
@@ -122,18 +135,6 @@ export async function pruneRetentionData(db: Db, agentId: string | null, retenti
           eq(db.schema.monitorEvents.agentId, agentId),
           eq(db.schema.monitorEvents.projectId, db.projectId)
         );
-  const tracesCond =
-    agentId === null
-      ? and(
-          lt(db.schema.traces.createdAt, cutoff),
-          isNull(db.schema.traces.agentId),
-          eq(db.schema.traces.projectId, db.projectId)
-        )
-      : and(
-          lt(db.schema.traces.createdAt, cutoff),
-          eq(db.schema.traces.agentId, agentId),
-          eq(db.schema.traces.projectId, db.projectId)
-        );
   const classificationsCond =
     agentId === null
       ? and(
@@ -147,13 +148,31 @@ export async function pruneRetentionData(db: Db, agentId: string | null, retenti
           eq(db.schema.monitorClassifications.projectId, db.projectId)
         );
 
+  // Spans age out through the port (ADR-0007): the store picks its engine-native mechanism.
+  await traceStoreFor(db).prune(cutoff, agentId);
+  // Rollups ride the same clock (ADR-0006). They are project-minute keyed (not agent-scoped),
+  // so they are pruned past EVERY scope's cutoff, agent passes included: an agent-scoped prune
+  // just removed raw spans whose counts still live inside this project's rollup minutes, and a
+  // rollup that outlives its raw spans would let the dashboard's fast path report pruned
+  // traffic the raw fallback can no longer see. Deleting rollups is always safe - they are
+  // derived data, and an under-covered window falls back to the raw scan (slower, never wrong).
+  const cutoffMinute = Math.floor(cutoff.getTime() / 60_000) * 60_000;
+  const rollupCond = and(
+    eq(db.schema.monitorRollups.projectId, db.projectId),
+    lt(db.schema.monitorRollups.minuteTs, cutoffMinute)
+  );
+  // The branches read identically but narrow drizzle's dialect union - .delete() is not
+  // callable on the un-narrowed Db.
+  if (db.kind === "sqlite") {
+    await db.db.delete(db.schema.monitorRollups).where(rollupCond);
+  } else {
+    await db.db.delete(db.schema.monitorRollups).where(rollupCond);
+  }
   if (db.kind === "sqlite") {
     await db.db.delete(db.schema.monitorEvents).where(eventsCond);
-    await db.db.delete(db.schema.traces).where(tracesCond);
     await db.db.delete(db.schema.monitorClassifications).where(classificationsCond);
   } else {
     await db.db.delete(db.schema.monitorEvents).where(eventsCond);
-    await db.db.delete(db.schema.traces).where(tracesCond);
     await db.db.delete(db.schema.monitorClassifications).where(classificationsCond);
   }
 }
@@ -198,12 +217,9 @@ export async function listEventsSince(db: Db, since: Date): Promise<EventRow[]> 
 
 async function listTraceLatenciesSince(db: Db, since: Date): Promise<number[]> {
   // Production only: a nightly eval's latencies are not the fleet's P95.
-  const cond = and(gte(db.schema.traces.createdAt, since), eq(db.schema.traces.projectId, db.projectId), productionTracesOnly(db));
-  const rows = (
-    db.kind === "sqlite"
-      ? db.db.select({ latencyMs: db.schema.traces.latencyMs }).from(db.schema.traces).where(cond).all()
-      : await db.db.select({ latencyMs: db.schema.traces.latencyMs }).from(db.schema.traces).where(cond)
-  ) as { latencyMs: number | null }[];
+  const rows = (await traceStoreFor(db).queryWindow({ since, productionOnly: true })) as unknown as {
+    latencyMs: number | null;
+  }[];
   return rows.map(r => r.latencyMs).filter((v): v is number => typeof v === "number").sort((a, b) => a - b);
 }
 
@@ -471,12 +487,9 @@ export type MonitoringTopFailingResponse = {
 // failed call of a trace and knows no denominator for a rate.
 async function listToolCallStatsSince(db: Db, since: Date): Promise<Map<string, { total: number; failures: number }>> {
   // Production only - eval datasets deliberately include failing tool calls.
-  const cond = and(gte(db.schema.traces.createdAt, since), eq(db.schema.traces.projectId, db.projectId), productionTracesOnly(db));
-  const rows = (
-    db.kind === "sqlite"
-      ? db.db.select({ toolCalls: db.schema.traces.toolCalls }).from(db.schema.traces).where(cond).all()
-      : await db.db.select({ toolCalls: db.schema.traces.toolCalls }).from(db.schema.traces).where(cond)
-  ) as { toolCalls: unknown }[];
+  const rows = (await traceStoreFor(db).queryWindow({ since, productionOnly: true })) as unknown as {
+    toolCalls: unknown;
+  }[];
   const byTool = new Map<string, { total: number; failures: number }>();
   for (const row of rows) {
     if (!Array.isArray(row.toolCalls)) {
