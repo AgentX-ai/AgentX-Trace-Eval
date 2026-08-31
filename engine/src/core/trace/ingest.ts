@@ -133,6 +133,17 @@ export function capPayloadField(value: unknown): unknown {
   return { "agentx.truncated": true, preview: serialized.slice(0, MAX_FIELD_CHARS) };
 }
 
+// Platform label (the platform-agnostic tracing story): producers send any string - an SDK
+// integration literal ("langchain", "openai-agents"), an OTel scope name, or a user-invented
+// platform name - folded here to a stable bucket key (trimmed, lowercased, capped) so
+// "LangChain" and "langchain" chart and filter as one platform. Null stays null; readers
+// bucket it as "other".
+function normalizeFramework(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const folded = value.trim().toLowerCase().slice(0, 64);
+  return folded || null;
+}
+
 // Builds the storable row (agent resolution, timestamps, caps) without touching storage - the
 // shared half of the synchronous path below and the queued path (ingestTraceQueued).
 async function prepareSpanRow(
@@ -154,7 +165,7 @@ async function prepareSpanRow(
     output: capPayloadField(payload.output ?? null),
     error: payload.error ?? null,
     latencyMs: payload.latency_ms ?? null,
-    framework: payload.framework ?? null,
+    framework: normalizeFramework(payload.framework),
     model: payload.model ?? null,
     toolCalls: capPayloadField(payload.tool_calls ?? null),
     spanKind: normalizeSpanKind(payload.span_kind),
@@ -386,7 +397,8 @@ export async function listTracesPaginated(
   const rows = await traceStoreFor(db).listRootsPage({
     pageSize,
     cursor: cursorRow ? { createdAt: cursorRow.createdAt, id: cursorRow.id } : null,
-    framework,
+    // Folded like the stored value, so ?framework=LangChain matches rows stored as "langchain".
+    framework: normalizeFramework(framework) ?? undefined,
     source,
     searchTerm: search,
   });

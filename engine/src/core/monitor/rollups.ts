@@ -64,6 +64,11 @@ export type RollupRow = {
   byModel: Record<string, ModelTokens>;
   byTool: Record<string, { count: number; failed: number }>;
   byAgent: Record<string, number>;
+  /** Root counts per platform/framework key ("other" = unlabeled). Added after byAgent shipped:
+   *  rollup rows written before this key exists read back with it undefined, so every reader
+   *  and mergeInto guard with `?? {}` - the Platforms chart under-reports pre-deploy minutes
+   *  (accepted, same class as ADR-0006's histogram error) while every other number stays exact. */
+  byFramework: Record<string, number>;
   latencyHist: number[];
   latencyCount: number;
   latencySum: number;
@@ -88,6 +93,7 @@ function emptyRollup(projectId: string | null, minuteTs: number, production: boo
     byModel: {},
     byTool: {},
     byAgent: {},
+    byFramework: {},
     latencyHist: Array.from({ length: LATENCY_BUCKET_COUNT }, () => 0),
     latencyCount: 0,
     latencySum: 0,
@@ -122,6 +128,8 @@ export function accumulateRollups(rows: TraceRow[]): RollupRow[] {
     if (!row.parentSpanId) {
       acc.roots++;
       acc.byAgent[row.name] = (acc.byAgent[row.name] ?? 0) + 1;
+      const fw = row.framework ?? "other";
+      acc.byFramework[fw] = (acc.byFramework[fw] ?? 0) + 1;
       if (row.error) acc.errors++;
       if (row.latencyMs != null && row.latencyMs > 0) {
         acc.latencyHist[latencyBucketIndex(row.latencyMs)]!++;
@@ -180,6 +188,11 @@ function mergeInto(target: RollupRow, add: RollupRow): void {
   }
   for (const [agent, n] of Object.entries(add.byAgent)) {
     target.byAgent[agent] = (target.byAgent[agent] ?? 0) + n;
+  }
+  // `?? {}` on BOTH sides: `target` may be a legacy stored row from before byFramework existed.
+  const targetByFramework = (target.byFramework ??= {});
+  for (const [fw, n] of Object.entries(add.byFramework ?? {})) {
+    targetByFramework[fw] = (targetByFramework[fw] ?? 0) + n;
   }
   for (let i = 0; i < LATENCY_BUCKET_COUNT; i++) target.latencyHist[i]! += add.latencyHist[i]!;
   target.latencyCount += add.latencyCount;

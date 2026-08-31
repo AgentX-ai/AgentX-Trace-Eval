@@ -132,6 +132,7 @@ async function seedExampleMonitorDataIfEmpty(db: Db): Promise<void> {
     const { traceId } = await ingestTrace(db, {
       name: agent.name,
       agent_id: agent._id,
+      framework: "langchain",
       input: "Where is my order #4471? It's been a week.",
       output: "Order #4471 is in transit with UPS and should arrive within 2 days.",
       latency_ms: 1290,
@@ -192,6 +193,7 @@ async function seedExampleMonitorDataIfEmpty(db: Db): Promise<void> {
     const { traceId } = await ingestTrace(db, {
       name: agent.name,
       agent_id: agent._id,
+      framework: "langchain",
       input: "What's your return policy?",
       output: "You can return any item within 30 days of delivery for a full refund - unused and in original packaging. Refunds land in 5-7 business days.",
       latency_ms: 650,
@@ -253,6 +255,7 @@ async function seedExampleMonitorDataIfEmpty(db: Db): Promise<void> {
     const { traceId } = await ingestTrace(db, {
       name: agent.name,
       agent_id: agent._id,
+      framework: "langchain",
       input: "Can I speak to a human agent?",
       output: "",
       latency_ms: 2400,
@@ -372,6 +375,7 @@ async function seedExampleSessionIfEmpty(db: Db): Promise<void> {
     const { traceId } = await ingestTrace(db, {
       name: agent.name,
       agent_id: agent._id,
+      framework: "langchain",
       input: turn.input,
       output: turn.output,
       latency_ms: turn.latency,
