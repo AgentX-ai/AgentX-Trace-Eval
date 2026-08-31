@@ -964,3 +964,20 @@ pay my invoice in martian dollars" comes back not-covered-and-not-asked rather t
 gap. The nearest-case panel earned its place there: for the cancellation query the closest case is
 about being charged AFTER cancelling, a billing dispute rather than how to cancel, which the
 similarity score alone would never have revealed.
+
+## License change: Apache-2.0 -> Elastic License 2.0
+
+The engine repo moved from Apache-2.0 to the Elastic License 2.0 (ELv2). Rationale: the
+self-host tier exists to let companies adopt Governance commercially and grow into the hosted
+tiers, so blanket noncommercial terms were never on the table - but nothing in Apache-2.0
+prevented a third party from reselling the engine as their own managed service. ELv2 forbids
+exactly that (plus license-key tampering, which matters once enterprise features gate on keys)
+while keeping every internal commercial use free. ELv2 over BSL 1.1 because it is a fixed,
+widely-cleared text with no self-drafted "competitive use" clause to argue about and no
+per-release change-date bookkeeping.
+
+Scope: this repo's future releases only. Previously tagged versions remain Apache-2.0. The
+Python SDK stays permissively licensed (it ships inside customer applications). The vendored
+OpenTelemetry proto schema keeps its upstream Apache-2.0 notice. Applied to LICENSE, the README
+badge and License section, CONTRIBUTING's contribution terms, and the workspace package.json
+license fields (SPDX id `Elastic-2.0`).

@@ -1,7 +1,7 @@
 # AgentX Trace & Eval
 
 [![Release](https://img.shields.io/github/v/release/AgentX-ai/AgentX-trace-eval)](https://github.com/AgentX-ai/AgentX-trace-eval/releases/latest)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![License](https://img.shields.io/badge/license-Elastic--2.0-blue)](LICENSE)
 
 A portable, self-hostable build of AgentX's Governance layer - **Trace**, **Evaluate**, and
 **Monitor** for AI agents - as a single local install. No account, no multi-tenant billing, bring
@@ -404,4 +404,13 @@ Vulnerabilities go to [SECURITY.md](SECURITY.md), privately, rather than to a pu
 
 ## License
 
-Apache-2.0 (see [LICENSE](LICENSE)).
+[Elastic License 2.0](LICENSE) (ELv2). In practice: use it freely - self-host it at work,
+modify it, embed it in your stack, run it commercially. The only things you may not do are
+offer it to third parties as a hosted/managed service, or tamper with license-key-protected
+functionality. Versions released before this change remain Apache-2.0 under their original
+tags.
+
+The [AgentX Python SDK](https://github.com/AgentX-ai/AgentX-Python) stays permissively
+licensed - restrictions here apply to the engine, never to code embedded in your application.
+The vendored OpenTelemetry proto schema (`engine/src/otel/protoSchema.ts`) remains Apache-2.0
+per its upstream license.

@@ -2,7 +2,7 @@
   "name": "@agentx/eval",
   "version": "0.1.0",
   "description": "Minimal TypeScript client for the AgentX self-host engine's evaluation CI surface: datasets, runs, batched result submission, finalize, CI gate, and pairwise comparison. Zero runtime dependencies (Node 18+ global fetch).",
-  "license": "Apache-2.0",
+  "license": "Elastic-2.0",
   "private": false,
   "type": "module",
   "main": "./dist/index.cjs",
