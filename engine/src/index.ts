@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Server } from "node:http";
@@ -14,13 +15,17 @@ import { ensureSessionBaselineJudge } from "./core/monitor/builtinEvaluators.js"
 import { ensureMetricPackConfigs, metricPackBackfillDone, markMetricPackBackfillDone } from "./core/evaluate/metricPack.js";
 import { authMode, initAuth, resolveAuthSecret } from "./auth/betterAuth.js";
 import { registerAuthRoutes, registerApiV1 } from "./routes/apiV1.js";
-import { findWebIndexHtml, downloadWebBundle } from "./web.js";
+import { findWebIndexHtml, downloadWebBundle, webBundleCandidates, describeWebBundle } from "./web.js";
 import { startSessionSweep } from "./core/monitor/sessionSweep.js";
 import { startImprovementSweep } from "./core/evaluate/improvementSweep.js";
 import { logger } from "./log.js";
 
 const PORT = Number(process.env.PORT || 4700);
 const isDev = process.argv.includes("--dev");
+// `--upgrade`: replace the dashboard bundle with the latest release before serving, even when
+// one already exists (see the web bootstrap below). Works in every layout, dev or installed.
+// "upgrade" per the apt/brew convention: update = refresh what is available, upgrade = install it.
+const wantsWebUpgrade = process.argv.includes("--upgrade");
 
 // Plain app.listen(port) has no error handler, so a bind failure is an unhandled 'error' event -
 // Node throws and kills the whole process. That's the actual cause of a real bug hit repeatedly
@@ -161,8 +166,13 @@ async function main() {
 
   // Dev mode with no web/ (fresh source checkout): fetch the released dashboard bundle once so
   // `yarn dev --dev` boots with the full UI instead of API-only plus a manual curl|tar step.
+  // An EXISTING bundle is deliberately never touched on a normal boot - `--upgrade` is the
+  // explicit opt-in that re-downloads the latest release over it (source hosts otherwise keep
+  // serving whatever they downloaded first, forever). A failed upgrade keeps the old bundle.
   let webIndexHtml = findWebIndexHtml();
-  if (!webIndexHtml && isDev) {
+  if (wantsWebUpgrade) {
+    webIndexHtml = (await downloadWebBundle({ force: true })) ?? webIndexHtml;
+  } else if (!webIndexHtml && isDev) {
     webIndexHtml = await downloadWebBundle();
   }
   if (webIndexHtml) {
@@ -228,6 +238,17 @@ async function main() {
     logger.info(
       `  mkdir -p web && curl -fsSL https://github.com/AgentX-ai/AgentX-Trace-Eval/releases/latest/download/agentx-web.tar.gz | tar -xz -C web`
     );
+  } else {
+    // Always name the served bundle and its provenance - "which copy is this and how old is
+    // it?" must be answerable from the boot log, never by diffing directories.
+    logger.info(`Serving dashboard from ${path.dirname(webIndexHtml)} (${describeWebBundle(webIndexHtml)})`);
+    for (const candidate of webBundleCandidates()) {
+      if (candidate !== webIndexHtml && fs.existsSync(candidate) && path.dirname(candidate) !== path.dirname(webIndexHtml)) {
+        logger.warn(
+          `Ignoring shadowed dashboard copy at ${path.dirname(candidate)} (${describeWebBundle(candidate)}) - delete it; only the directory above is served.`
+        );
+      }
+    }
   }
 
   // Ctrl+C (SIGINT) / `kill` (SIGTERM, also what `tsx watch` sends the old process on every file

@@ -133,7 +133,11 @@ jobs:
               cp "$platform_dir/agentx" "$platform_dir/agentx-server"
               echo "::endgroup::"
 
-              tar -czf "dist/agentx_${os}_${arch}.tar.gz" -C "$platform_dir" agentx agentx-server agentx-engine
+              # Version stamp next to the binaries (engine/src/version.ts reads it; Settings'
+              # corner and the boot log display it).
+              printf '%s\n' "${{ steps.tag.outputs.tag }}" > "$platform_dir/RELEASE"
+
+              tar -czf "dist/agentx_${os}_${arch}.tar.gz" -C "$platform_dir" agentx agentx-server agentx-engine RELEASE
             done
           done
           ls -la dist/*.tar.gz

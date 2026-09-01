@@ -59,6 +59,11 @@ cp "$OUT/agentx-server" "$OUT/agentx" # agentx-server is agentx under a second n
 echo "Copying dashboard..."
 cp -r web "$OUT/web"
 
+# Version stamp next to the binaries (engine/src/version.ts reads it): the release workflow's
+# tag when set, a git describe for a local build, "dev" outside a git checkout.
+stamp="${AGENTX_RELEASE_TAG:-$(git describe --tags --always 2>/dev/null || echo dev)}"
+printf '%s\n' "$stamp" > "$OUT/RELEASE"
+
 echo ""
 echo "Built to $OUT/. Try it:"
 echo "  ./$OUT/agentx-server --dev"

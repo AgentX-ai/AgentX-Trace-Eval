@@ -3,6 +3,7 @@ import { Router } from "express";
 import { toNodeHandler } from "better-auth/node";
 import rateLimit from "express-rate-limit";
 import { asyncHandler } from "./asyncRouter.js";
+import { engineVersion } from "../version.js";
 import { ingestRouter } from "./ingest.js";
 import { evaluationsRouter } from "./evaluations.js";
 import { monitorRouter } from "./monitor.js";
@@ -64,6 +65,10 @@ export function registerAuthRoutes(app: Express, credentialLimit: RequestHandler
     const defaultProject = mode === "disabled" ? await getDefaultProject(getDb()) : null;
     res.status(200).json({
       mode,
+      // Release tag of this engine build ("dev" for a source checkout) - shown, with the
+      // dashboard's own build stamp, in Settings' corner so "which version am I on?" is
+      // answerable from the UI.
+      engineVersion: engineVersion(),
       needsSetup: mode === "enabled" ? await needsSetup(getDb()) : false,
       ...(defaultProject ? { apiKey: defaultProject.apiKey } : {}),
       // Enabled-mode capabilities the auth screens render from: which social buttons to show,

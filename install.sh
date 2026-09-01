@@ -54,6 +54,8 @@ main() {
   mv "$tmp_dir/agentx" "$INSTALL_DIR/agentx"
   mv "$tmp_dir/agentx-server" "$INSTALL_DIR/agentx-server"
   mv "$tmp_dir/agentx-engine" "$INSTALL_DIR/agentx-engine" 2>/dev/null || true
+  # Version stamp (engine/src/version.ts; Settings' corner) - absent from tarballs predating it.
+  mv "$tmp_dir/RELEASE" "$INSTALL_DIR/RELEASE" 2>/dev/null || true
   chmod +x "$INSTALL_DIR/agentx" "$INSTALL_DIR/agentx-server"
 
   # The dashboard is a separate, platform-independent release asset (built by AgentX-web-front's

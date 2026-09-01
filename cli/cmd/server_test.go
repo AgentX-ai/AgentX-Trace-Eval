@@ -188,12 +188,15 @@ func TestFindSourceEngineDirStopsAtTheRoot(t *testing.T) {
 	}
 }
 
-func TestDevFlag(t *testing.T) {
-	if got := devFlag(true); len(got) != 1 || got[0] != "--dev" {
-		t.Fatalf("devFlag(true) = %v", got)
+func TestEngineFlags(t *testing.T) {
+	if got := engineFlags(serverOptions{dev: true}); len(got) != 1 || got[0] != "--dev" {
+		t.Fatalf("engineFlags(dev) = %v", got)
 	}
-	if got := devFlag(false); len(got) != 0 {
-		t.Fatalf("devFlag(false) = %v, want empty", got)
+	if got := engineFlags(serverOptions{}); len(got) != 0 {
+		t.Fatalf("engineFlags(none) = %v, want empty", got)
+	}
+	if got := engineFlags(serverOptions{dev: true, upgrade: true}); len(got) != 2 || got[1] != "--upgrade" {
+		t.Fatalf("engineFlags(dev+upgrade) = %v", got)
 	}
 }
 

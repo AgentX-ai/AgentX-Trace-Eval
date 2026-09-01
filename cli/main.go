@@ -52,8 +52,9 @@ func printUsage() {
 	fmt.Println(`agentx: the AgentX self-host governance layer (Evaluate, Monitor, Trace)
 
 Usage:
-  agentx server [--dev] [--port 4700] [--db-url postgres://...]
-  agentx-server [--dev] [--port 4700] [--db-url postgres://...]
+  agentx server [--dev] [--upgrade] [--port 4700] [--db-url postgres://...]
+  agentx-server [--dev] [--upgrade] [--port 4700] [--db-url postgres://...]
 
-  --dev   run locally against SQLite and open the dashboard in your browser`)
+  --dev      run locally against SQLite and open the dashboard in your browser
+  --upgrade  re-download the latest dashboard bundle before serving, even if one exists`)
 }
