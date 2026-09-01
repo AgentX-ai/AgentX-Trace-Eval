@@ -36,6 +36,7 @@ export const monitorMetricsBucketSchema = z
     toolFailures: z.number(),
     byTool: z.record(z.number()),
     byModelCost: z.record(z.number()),
+    byFramework: z.record(z.number()),
   })
   .strict();
 
@@ -48,11 +49,18 @@ export const monitorMetricsResponseSchema = z
     // Which path answered: the ADR-0006 rollup fast path or the raw window scan.
     source: z.enum(["rollups", "raw"]),
     buckets: z.array(monitorMetricsBucketSchema),
-    totals: monitorMetricsBucketSchema.omit({ ts: true, byTool: true, byModelCost: true }).strict(),
+    totals: monitorMetricsBucketSchema.omit({ ts: true, byTool: true, byModelCost: true, byFramework: true }).strict(),
     tools: z.array(z.object({ name: z.string(), count: z.number(), failed: z.number() }).strict()),
     models: z.array(z.object({ name: z.string(), cost: z.number(), tokens: z.number() }).strict()),
+    // Platform-agnostic tracing: root traces per platform/framework, count descending.
+    frameworks: z.array(z.object({ name: z.string(), count: z.number() }).strict()),
     facets: z
-      .object({ agents: z.array(z.string()), models: z.array(z.string()), tools: z.array(z.string()) })
+      .object({
+        agents: z.array(z.string()),
+        models: z.array(z.string()),
+        tools: z.array(z.string()),
+        frameworks: z.array(z.string()),
+      })
       .strict(),
   })
   .strict();

@@ -510,8 +510,8 @@ function parseWindow(req: Request): MonitoringWindow {
   return raw === "24h" || raw === "30d" ? raw : "7d";
 }
 
-// The Monitor metrics grid (spans/latency/cost/tokens/tools per bucket, with
-// agent/model/tool/status filters) - see core/monitor/metrics.ts.
+// The Monitor metrics grid (spans/latency/cost/tokens/tools/platforms per bucket, with
+// agent/model/tool/framework/status filters) - see core/monitor/metrics.ts.
 agentMonitoringDashboardRouter.get("/metrics", async (req: Request, res: Response) => {
   res.status(200).json(
     await getMonitorMetrics(scopedDb(req), parseMetricsRange(req.query as Record<string, unknown>), {
@@ -519,6 +519,8 @@ agentMonitoringDashboardRouter.get("/metrics", async (req: Request, res: Respons
       model: typeof req.query.model === "string" ? req.query.model : undefined,
       tool: typeof req.query.tool === "string" ? req.query.tool : undefined,
       status: typeof req.query.status === "string" ? req.query.status : undefined,
+      // Folded like stored values (ingest normalizes to lowercase), so ?framework=LangChain matches.
+      framework: typeof req.query.framework === "string" ? req.query.framework.trim().toLowerCase() : undefined,
     })
   );
 });

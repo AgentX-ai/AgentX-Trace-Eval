@@ -58,6 +58,8 @@ export type MonitorMetricsFilters = {
   tool?: string;
   /** "error" = only traffic whose root trace errored. */
   status?: string;
+  /** Platform/framework key as stored on root spans ("langchain", "openai-agents", ...). */
+  framework?: string;
 };
 
 export type MonitorMetricsBucket = {
@@ -83,6 +85,9 @@ export type MonitorMetricsBucket = {
   byTool: Record<string, number>;
   /** Priced spend per model this bucket, limited to the window's top models (rest under "other"). */
   byModelCost: Record<string, number>;
+  /** Root traces per platform/framework this bucket, top platforms + "other" (which also holds
+   *  unlabeled traffic - the chart never hides traces just because the SDK sent no label). */
+  byFramework: Record<string, number>;
 };
 
 export type MonitorMetricsResponse = {
@@ -116,14 +121,18 @@ export type MonitorMetricsResponse = {
   /** Window spend per model, cost descending. cost 0 with tokens > 0 means the model has no
    *  Model Portability pricing - spend exists but is unknown, not free. */
   models: { name: string; cost: number; tokens: number }[];
+  /** Window root-trace totals per platform/framework, count descending ("other" = unlabeled +
+   *  beyond-top-N). The platform-agnostic story's chart datum. */
+  frameworks: { name: string; count: number }[];
   /** Filter suggestions: what actually appeared in the window. */
-  facets: { agents: string[]; models: string[]; tools: string[] };
+  facets: { agents: string[]; models: string[]; tools: string[]; frameworks: string[] };
 };
 
 type Row = {
   id: string;
   name: string;
   model: string | null;
+  framework: string | null;
   latencyMs: number | null;
   parentSpanId: string | null;
   sessionId: string | null;
@@ -145,6 +154,7 @@ const percentile = (sorted: number[], p: number): number | null => {
 
 const TOP_TOOLS = 4;
 const TOP_MODELS = 3;
+const TOP_FRAMEWORKS = 4;
 
 export async function getMonitorMetrics(
   db: Db,
@@ -160,7 +170,7 @@ export async function getMonitorMetrics(
   // per-session composition only raw rows can answer and stay on the scan below. Coverage is
   // verified against an indexed root count: windows predating the rollup feature (or a rollup
   // write failure) fall back to the raw scan rather than under-reporting.
-  const wantsFilter = !!(filters.agent || filters.model || filters.tool || filters.status === "error");
+  const wantsFilter = !!(filters.agent || filters.model || filters.tool || filters.framework || filters.status === "error");
   if (!wantsFilter) {
     const fast = await metricsFromRollups(db, range, bucketMs);
     if (fast) return fast;
@@ -180,11 +190,14 @@ export async function getMonitorMetrics(
     const agents = new Map<string, Set<string>>();
     const models = new Map<string, Set<string>>();
     const tools = new Map<string, Set<string>>();
+    const frameworks = new Map<string, Set<string>>();
     const errored = new Set<string>();
     for (const row of rows) {
       const key = keyOf(row);
       if (!row.parentSpanId) {
         (agents.get(key) ?? agents.set(key, new Set()).get(key)!).add(row.name);
+        // "other" matches unlabeled roots, mirroring the chart's bucketing.
+        (frameworks.get(key) ?? frameworks.set(key, new Set()).get(key)!).add(row.framework ?? "other");
         if (row.error) errored.add(key);
       }
       if (row.model) (models.get(key) ?? models.set(key, new Set()).get(key)!).add(row.model);
@@ -197,6 +210,7 @@ export async function getMonitorMetrics(
       if (filters.agent && !agents.get(key)?.has(filters.agent)) return false;
       if (filters.model && !models.get(key)?.has(filters.model)) return false;
       if (filters.tool && !tools.get(key)?.has(filters.tool)) return false;
+      if (filters.framework && !frameworks.get(key)?.has(filters.framework)) return false;
       if (filters.status === "error" && !errored.has(key)) return false;
       return true;
     });
@@ -235,6 +249,7 @@ export async function getMonitorMetrics(
     toolFailures: 0,
     byTool: {},
     byModelCost: {},
+    byFramework: {},
   }));
   const latencies: number[][] = Array.from({ length: bucketCount }, () => []);
   const allLatencies: number[] = [];
@@ -242,8 +257,11 @@ export async function getMonitorMetrics(
   const byToolPerBucket: Map<string, number[]> = new Map();
   const modelTotals = new Map<string, { cost: number; tokens: number }>();
   const byModelCostPerBucket: Map<string, number[]> = new Map();
+  const frameworkTotals = new Map<string, number>();
+  const byFrameworkPerBucket: Map<string, number[]> = new Map();
   const facetAgents = new Set<string>();
   const facetModels = new Set<string>();
+  const facetFrameworks = new Set<string>();
 
   for (const row of filtered) {
     const idx = Math.min(bucketCount - 1, Math.max(0, Math.floor((row.createdAt.getTime() - start) / bucketMs)));
@@ -269,6 +287,14 @@ export async function getMonitorMetrics(
     if (!row.parentSpanId) {
       bucket.traces++;
       facetAgents.add(row.name);
+      // Platform attribution is a root-trace property (one platform per run); "other" carries
+      // unlabeled traffic so the chart always accounts for every trace.
+      const fw = row.framework ?? "other";
+      if (row.framework) facetFrameworks.add(row.framework);
+      frameworkTotals.set(fw, (frameworkTotals.get(fw) ?? 0) + 1);
+      const fwSeries = byFrameworkPerBucket.get(fw) ?? Array.from({ length: bucketCount }, () => 0);
+      fwSeries[idx]!++;
+      byFrameworkPerBucket.set(fw, fwSeries);
       if (row.error) bucket.errors++;
       if (row.latencyMs != null && row.latencyMs > 0) {
         latencies[idx]!.push(row.latencyMs);
@@ -354,6 +380,22 @@ export async function getMonitorMetrics(
     buckets[i]!.byModelCost = byModelCost;
   }
 
+  const frameworks = [...frameworkTotals.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count);
+  const topFrameworks = frameworks.slice(0, TOP_FRAMEWORKS).map(fw => fw.name);
+  for (let i = 0; i < bucketCount; i++) {
+    const byFramework: Record<string, number> = {};
+    let otherCount = 0;
+    for (const [name, series] of byFrameworkPerBucket) {
+      if (topFrameworks.includes(name)) byFramework[name] = series[i]!;
+      else otherCount += series[i]!;
+    }
+    // "other" may already be a named series (unlabeled roots) - overflow folds into it.
+    if (otherCount > 0) byFramework.other = (byFramework.other ?? 0) + otherCount;
+    buckets[i]!.byFramework = byFramework;
+  }
+
   const sortedAll = allLatencies.sort((a, b) => a - b);
   const totals = {
     spansLlm: buckets.reduce((n, b) => n + b.spansLlm, 0),
@@ -383,10 +425,12 @@ export async function getMonitorMetrics(
     totals,
     tools,
     models,
+    frameworks,
     facets: {
       agents: [...facetAgents].sort(),
       models: [...facetModels].sort(),
       tools: tools.map(tool => tool.name),
+      frameworks: [...facetFrameworks].sort(),
     },
   };
 }
@@ -437,6 +481,7 @@ async function metricsFromRollups(
     toolFailures: 0,
     byTool: {},
     byModelCost: {},
+    byFramework: {},
   }));
 
   const pricingModels = await listPortabilityModels(db);
@@ -452,8 +497,11 @@ async function metricsFromRollups(
   const bucketModels: Map<string, ModelTokens>[] = Array.from({ length: bucketCount }, () => new Map());
   const toolTotals = new Map<string, { count: number; failed: number }>();
   const byToolPerBucket = new Map<string, number[]>();
+  const frameworkTotals = new Map<string, number>();
+  const byFrameworkPerBucket = new Map<string, number[]>();
   const facetAgents = new Set<string>();
   const facetModels = new Set<string>();
+  const facetFrameworks = new Set<string>();
 
   const costOf = (model: string, tokens: ModelTokens): { prompt: number; cached: number; completion: number } => {
     const pricing = priceOf(model);
@@ -504,6 +552,16 @@ async function metricsFromRollups(
       byToolPerBucket.set(tool, series);
     }
     for (const agent of Object.keys(roll.byAgent)) facetAgents.add(agent);
+    // `?? {}`: rollup rows written before byFramework existed read back without the key -
+    // pre-deploy minutes contribute zero platform attribution (documented in rollups.ts) while
+    // every other number stays exact.
+    for (const [fw, n] of Object.entries(roll.byFramework ?? {})) {
+      if (fw !== "other") facetFrameworks.add(fw);
+      frameworkTotals.set(fw, (frameworkTotals.get(fw) ?? 0) + n);
+      const series = byFrameworkPerBucket.get(fw) ?? Array.from({ length: bucketCount }, () => 0);
+      series[idx]! += n;
+      byFrameworkPerBucket.set(fw, series);
+    }
   }
 
   const modelTotals = new Map<string, { cost: number; tokens: number }>();
@@ -554,6 +612,21 @@ async function metricsFromRollups(
     buckets[i]!.byModelCost = byModelCost;
   }
 
+  const frameworks = [...frameworkTotals.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count);
+  const topFrameworks = frameworks.slice(0, TOP_FRAMEWORKS).map(fw => fw.name);
+  for (let i = 0; i < bucketCount; i++) {
+    const byFramework: Record<string, number> = {};
+    let otherCount = 0;
+    for (const [name, series] of byFrameworkPerBucket) {
+      if (topFrameworks.includes(name)) byFramework[name] = series[i]!;
+      else otherCount += series[i]!;
+    }
+    if (otherCount > 0) byFramework.other = (byFramework.other ?? 0) + otherCount;
+    buckets[i]!.byFramework = byFramework;
+  }
+
   const totals = {
     spansLlm: buckets.reduce((n, b) => n + b.spansLlm, 0),
     spansRetrieval: buckets.reduce((n, b) => n + b.spansRetrieval, 0),
@@ -582,10 +655,12 @@ async function metricsFromRollups(
     totals,
     tools,
     models,
+    frameworks,
     facets: {
       agents: [...facetAgents].sort(),
       models: [...facetModels].sort(),
       tools: tools.map(tool => tool.name),
+      frameworks: [...facetFrameworks].sort(),
     },
   };
 }

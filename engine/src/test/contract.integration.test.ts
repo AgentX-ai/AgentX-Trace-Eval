@@ -52,6 +52,9 @@ beforeAll(async () => {
     outputTokens: 80,
     cacheReadTokens: 100,
     toolCalls: [{ name: "lookup", success: true }],
+    // Mixed case on purpose: ingest folds it, and the metrics assertions below prove the
+    // populated byFramework branch (not just empty records) satisfies the contract.
+    framework: "LangChain",
     span_id: "ct-1",
   }));
   // Wait for the async detection to raise the signal so the signals schema sees a real row.
@@ -74,6 +77,9 @@ describe("wire contract", () => {
     const parsed = monitorMetricsResponseSchema.parse(res.body);
     expect(parsed.totals.traces).toBeGreaterThan(0);
     expect(parsed.totals.costCached).toBeGreaterThan(0);
+    // Platform attribution: normalized at ingest ("LangChain" -> "langchain"), ranked, faceted.
+    expect(parsed.frameworks.find(f => f.name === "langchain")?.count).toBeGreaterThan(0);
+    expect(parsed.facets.frameworks).toContain("langchain");
   });
 
   it("GET /agent-monitoring/settings and the defaults PUT match the contract", async () => {

@@ -81,9 +81,10 @@ describe("rollup parity with the raw scan", () => {
     // A controlled mix: sessions with children, tool calls (one failed), models with cache
     // tokens, an error, and an eval-run trace that must stay out of the KPIs.
     const spans = [
-      { name: "support-agent", input: "q1", output: "a1", latency_ms: 120, model: "gpt-test", input_tokens: 100, output_tokens: 40, session_id: "s1", span_id: "r1", tool_calls: [{ name: "lookup", success: true }] },
+      { name: "support-agent", input: "q1", output: "a1", latency_ms: 120, model: "gpt-test", input_tokens: 100, output_tokens: 40, session_id: "s1", span_id: "r1", framework: "langchain", tool_calls: [{ name: "lookup", success: true }] },
       { name: "LLM Call", input: "q1", output: "a1", latency_ms: 80, model: "gpt-test", input_tokens: 60, output_tokens: 20, cache_read_tokens: 20, session_id: "s1", span_id: "c1", parent_span_id: "r1", span_kind: "llm" },
-      { name: "support-agent", input: "q2", output: "a2", latency_ms: 480, session_id: "s2", span_id: "r2", error: "upstream timeout", tool_calls: [{ name: "lookup", success: false }, { name: "refund", success: true }] },
+      { name: "support-agent", input: "q2", output: "a2", latency_ms: 480, session_id: "s2", span_id: "r2", framework: "langchain", error: "upstream timeout", tool_calls: [{ name: "lookup", success: false }, { name: "refund", success: true }] },
+      // No framework on r3: proves unlabeled roots bucket under "other" on both paths.
       { name: "billing-agent", input: "q3", output: "a3", latency_ms: 40, model: "other-model", input_tokens: 10, output_tokens: 5, span_id: "r3" },
       { name: "eval-agent", input: "q4", output: "a4", latency_ms: 999, span_id: "r4", source: "eval-run", monitor: false },
     ];
@@ -103,7 +104,8 @@ describe("rollup parity with the raw scan", () => {
       totals: Record<string, number | null>;
       buckets: { traces: number; errors: number; spansLlm: number; toolCalls: number; tokensPrompt: number }[];
       tools: { name: string; count: number; failed: number }[];
-      facets: { agents: string[]; models: string[] };
+      frameworks: { name: string; count: number }[];
+      facets: { agents: string[]; models: string[]; frameworks: string[] };
     };
     const fast = (await api("/agent-monitoring/metrics?window=1h")).body as Metrics;
     // Load-bearing: without this, a dead applyRollups would silently fall back to the raw scan
@@ -143,5 +145,33 @@ describe("rollup parity with the raw scan", () => {
 
     expect(fast.facets.agents.sort()).toEqual(["billing-agent", "support-agent"]);
     expect(fast.tools.find(t => t.name === "lookup")).toEqual({ name: "lookup", count: 2, failed: 1 });
+
+    // Platform attribution parity (platform-agnostic story): labeled roots under their
+    // framework, unlabeled under "other", identical on both paths.
+    const fwCounts = (m: Metrics) => Object.fromEntries(m.frameworks.map(f => [f.name, f.count]));
+    expect(fwCounts(fast)).toEqual({ langchain: 2, other: 1 });
+    const rawMerged: Record<string, number> = {};
+    for (const m of [rawA, rawB]) for (const f of m.frameworks) rawMerged[f.name] = (rawMerged[f.name] ?? 0) + f.count;
+    expect(rawMerged).toEqual(fwCounts(fast));
+    // Facets suggest only real labels, never the "other" bucket.
+    expect(fast.facets.frameworks).toEqual(["langchain"]);
+  });
+
+  it("framework filter forces the raw path and scopes every counter", async () => {
+    type Metrics = {
+      source: string;
+      totals: Record<string, number | null>;
+      frameworks: { name: string; count: number }[];
+    };
+    const filtered = (await api("/agent-monitoring/metrics?window=1h&framework=langchain")).body as Metrics;
+    expect(filtered.source).toBe("raw");
+    expect(filtered.totals.traces).toBe(2);
+    expect(filtered.totals.errors).toBe(1);
+    expect(filtered.frameworks).toEqual([{ name: "langchain", count: 2 }]);
+    // The unlabeled bucket is filterable too, and mixed-case queries fold to the stored form.
+    const other = (await api("/agent-monitoring/metrics?window=1h&framework=other")).body as Metrics;
+    expect(other.totals.traces).toBe(1);
+    const cased = (await api("/agent-monitoring/metrics?window=1h&framework=LangChain")).body as Metrics;
+    expect(cased.totals.traces).toBe(2);
   });
 });

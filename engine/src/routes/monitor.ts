@@ -19,6 +19,7 @@ import {
   InvalidEvaluationSettingsIdError,
 } from "../core/monitor/onlineEvaluators.js";
 import { getKpis, getOnlineEvaluatorRatings, getOnlineEvaluatorEvents, type MonitoringWindow } from "../core/monitor/events.js";
+import { getMonitorMetrics, parseMetricsRange } from "../core/monitor/metrics.js";
 
 // Mounted at /api/v1/monitor, matching AgentX-Python's MonitorClient base URL
 // (agentx/monitor/client.py appends "/monitor" to AGENTX_API_BASE_URL if not already present).
@@ -248,6 +249,20 @@ monitorRouter.delete("/online-evaluators/:id", async (req: Request, res: Respons
 // shape) - lets scripts read health/failure/downvote/latency metrics without dashboard routes.
 monitorRouter.get("/kpis", async (req: Request, res: Response) => {
   res.status(200).json(await getKpis(scopedDb(req), parseWindow(req)));
+});
+
+// SDK-facing mirror of GET /agent-monitoring/metrics (client.monitor.metrics(...)): the full
+// Monitor grid data incl. platform attribution (frameworks/byFramework), same filters.
+monitorRouter.get("/metrics", async (req: Request, res: Response) => {
+  res.status(200).json(
+    await getMonitorMetrics(scopedDb(req), parseMetricsRange(req.query as Record<string, unknown>), {
+      agent: typeof req.query.agent === "string" ? req.query.agent : undefined,
+      model: typeof req.query.model === "string" ? req.query.model : undefined,
+      tool: typeof req.query.tool === "string" ? req.query.tool : undefined,
+      status: typeof req.query.status === "string" ? req.query.status : undefined,
+      framework: typeof req.query.framework === "string" ? req.query.framework.trim().toLowerCase() : undefined,
+    })
+  );
 });
 
 monitorRouter.get("/online-evaluators/:id/ratings", async (req: Request, res: Response) => {
