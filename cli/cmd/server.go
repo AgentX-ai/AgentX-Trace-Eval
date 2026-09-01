@@ -17,10 +17,11 @@ import (
 )
 
 type serverOptions struct {
-	dev    bool
-	port   string
-	dbURL  string
-	engine string
+	dev     bool
+	upgrade bool
+	port    string
+	dbURL   string
+	engine  string
 }
 
 // RunServer is agentx-server's entrypoint (also reachable as `agentx server`, see main.go's
@@ -32,11 +33,12 @@ func RunServer(args []string) int {
 	port := fs.String("port", "4700", "port for the governance engine's HTTP API")
 	dbURL := fs.String("db-url", "", "database URL (e.g. postgres://...); defaults to a local SQLite file under ~/.agentx")
 	engineOverride := fs.String("engine-bin", "", "path to the engine binary/entrypoint (overrides auto-detection)")
+	upgrade := fs.Bool("upgrade", false, "re-download the latest dashboard bundle before serving, even if one exists")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 
-	opts := serverOptions{dev: *dev, port: *port, dbURL: *dbURL, engine: *engineOverride}
+	opts := serverOptions{dev: *dev, upgrade: *upgrade, port: *port, dbURL: *dbURL, engine: *engineOverride}
 
 	cmd, err := buildEngineCommand(opts)
 	if err != nil {
@@ -92,18 +94,18 @@ func RunServer(args []string) int {
 // today, straight out of the repo, ahead of the compiled binary existing).
 func buildEngineCommand(opts serverOptions) (*exec.Cmd, error) {
 	if opts.engine != "" {
-		return exec.Command(opts.engine, devFlag(opts.dev)...), nil
+		return exec.Command(opts.engine, engineFlags(opts)...), nil
 	}
 
 	if exe, err := os.Executable(); err == nil {
 		bundled := filepath.Join(filepath.Dir(exe), "agentx-engine")
 		if info, statErr := os.Stat(bundled); statErr == nil && !info.IsDir() {
-			return exec.Command(bundled, devFlag(opts.dev)...), nil
+			return exec.Command(bundled, engineFlags(opts)...), nil
 		}
 	}
 
 	if engineDir, err := findSourceEngineDir(); err == nil {
-		args := append([]string{"dev", "--"}, devFlag(opts.dev)...)
+		args := append([]string{"dev", "--"}, engineFlags(opts)...)
 		cmd := exec.Command("yarn", args...)
 		cmd.Dir = engineDir
 		return cmd, nil
@@ -115,11 +117,15 @@ func buildEngineCommand(opts serverOptions) (*exec.Cmd, error) {
 	)
 }
 
-func devFlag(dev bool) []string {
-	if dev {
-		return []string{"--dev"}
+func engineFlags(opts serverOptions) []string {
+	var flags []string
+	if opts.dev {
+		flags = append(flags, "--dev")
 	}
-	return nil
+	if opts.upgrade {
+		flags = append(flags, "--upgrade")
+	}
+	return flags
 }
 
 // findSourceEngineDir walks up from the CLI binary's working directory looking for a sibling
