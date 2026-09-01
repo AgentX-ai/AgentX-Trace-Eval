@@ -17,11 +17,11 @@ import (
 )
 
 type serverOptions struct {
-	dev    bool
+	dev     bool
 	upgrade bool
-	port   string
-	dbURL  string
-	engine string
+	port    string
+	dbURL   string
+	engine  string
 }
 
 // RunServer is agentx-server's entrypoint (also reachable as `agentx server`, see main.go's
