@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { runGateResultSchema } from "../contract/wire.js";
 import { startEngine, type TestEngine } from "./server.js";
 
 // The SDK-facing eval loop: create a dataset, open a run, stream result batches in, finalize, then
@@ -202,6 +203,7 @@ describe("evaluation run loop", () => {
     expect((await engine.json(`/api/v1/custom-agent-evaluations/runs/${runId}/gate?failUnder=abc`)).status).toBe(400);
 
     const gate = await engine.json(`/api/v1/custom-agent-evaluations/runs/${runId}/gate?failUnder=5`);
+    runGateResultSchema.parse(gate.body); // strict wire contract - drift fails here, not in an audit
     expect(gate.status, JSON.stringify(gate.body)).toBe(200);
     expect(gate.body).toHaveProperty("passed");
 

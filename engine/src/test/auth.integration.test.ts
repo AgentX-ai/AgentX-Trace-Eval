@@ -125,7 +125,10 @@ describe("AGENTX_AUTH=enabled", () => {
     await res.text();
   });
 
-  it("joins a later signup to the same organization as a member", async () => {
+  it("grants a later signup NO membership - joining is by invitation, not by registering", async () => {
+    // Security posture: an exposed enabled-mode port must not hand org access (and with it
+    // every project's API key) to anyone who self-registers. The signup itself succeeds; the
+    // org stays closed. AGENTX_OPEN_SIGNUP=true restores auto-join for closed networks.
     const result = await signUp("member@example.com", "correct-horse-battery", "Member");
     expect(result.status, result.body).toBeLessThan(300);
     memberCookie = result.cookie;
@@ -134,7 +137,8 @@ describe("AGENTX_AUTH=enabled", () => {
     const memberProjects = await engine.json("/api/v1/projects", asUser(memberCookie));
     expect(memberProjects.status).toBe(200);
     const names = (body: unknown) => ((body as { projects: { name: string }[] }).projects ?? []).map(p => p.name).sort();
-    expect(names(memberProjects.body)).toEqual(names(ownerProjects.body));
+    expect(names(ownerProjects.body).length).toBeGreaterThan(0);
+    expect(names(memberProjects.body)).toEqual([]);
   });
 
   it("rejects a signed-out or forged cookie", async () => {

@@ -11,13 +11,17 @@ contract, body validation, per-dialect queries, migrations, sampling. Read that 
 ## Getting set up
 
 ```bash
-yarn install                              # one workspace install: engine/ + packages/judge-core/
+yarn install                              # one workspace install: engine/ + the packages/* workspaces
 yarn workspace @agentx/judge-core build   # engine imports it through its exports map, so build first
 yarn workspace @agentx/engine dev         # tsx watch loop on http://localhost:4700
 ```
 
 [README's "Building from source"](README.md#building-from-source) covers the dashboard bundle, the
 full distribution build, and the end-to-end smoke test.
+
+One note for existing checkouts: the dashboard bundle's one canonical location is the repo-root
+`web/` directory. Older checkouts may still carry an `engine/web/` copy - it is no longer served,
+and the boot log warns about the shadowed copy. Delete `engine/web/`.
 
 ## What CI will run against your PR
 
@@ -33,10 +37,13 @@ prediction rather than a hopeful one.
 | `cd cli && gofmt -l . && go vet ./... && go test -race ./...` | the Go CLI |
 | `shellcheck install.sh build.sh scripts/*.sh` | the scripts users pipe into bash |
 
-CI additionally runs the engine suite a second time against a real Postgres service, and smoke
-tests the `bun build --compile` binary that releases actually ship. To reproduce the Postgres run
-locally, point `AGENTX_TEST_DB_URL` at a superuser connection string; the suites create and drop
-their own throwaway databases, and skip entirely when the variable is unset.
+CI additionally runs the engine suite a second time against real Postgres and ClickHouse
+services, and smoke tests the `bun build --compile` binary that releases actually ship. To
+reproduce the Postgres run locally, point `AGENTX_TEST_DB_URL` at a superuser connection string
+(and `AGENTX_TEST_CLICKHOUSE_URL` at a ClickHouse server for the telemetry-store suites); the
+suites create and drop their own throwaway databases, and skip entirely when the variables are
+unset. CI's typecheck also covers the `@agentx/eval` workspace, which the root `yarn typecheck`
+does not.
 
 ## Tests
 

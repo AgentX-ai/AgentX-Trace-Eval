@@ -13,7 +13,8 @@ agentx-server --dev
 ```
 
 `--dev` starts the engine (API server) on a local SQLite database, opens the dashboard in your
-browser, and prints a local API key for the SDK. Prefer a container? See [Docker](#docker).
+browser, and prints the Default project API key for the SDK. Prefer a container? See
+[Docker](#docker).
 
 ## Contents
 
@@ -49,8 +50,10 @@ browser, and prints a local API key for the SDK. Prefer a container? See [Docker
   continuous **Online Evaluators** scoring live traffic against judge criteria (per trace, or per
   **session**: whole conversations judged automatically once they go idle), **Custom Evaluators**
   that delegate the verdict to a webhook you control, and **Topics** clustering of what your
-  agents are actually being asked. Signals triage, KPI/trend dashboards, and outbound webhook
-  notifications on failures.
+  agents are actually being asked. Signals triage, KPI/trend dashboards - including the platform
+  mix of frameworks reporting in, labeled by the SDK's `framework=` field or derived from OTel
+  metadata, with unlabeled traffic grouped as Other - and outbound webhook notifications on
+  failures.
 - **Close the loop** - turn production into tests and fixes into proofs. Any trace or session
   becomes a golden dataset case in two clicks (multi-turn conversations included, with
   deduplication and provenance); prompt/tool-schema proposals are **validated** against those
@@ -134,11 +137,13 @@ Set these in the environment before starting `agentx-server`:
 | `AGENTX_SESSION_SWEEP`       | `true`           | Set to `false` to disable the background sweep that judges idle multi-turn sessions (session-scoped Online Evaluators). `POST /agent-monitoring/session-sweep/run` still triggers one manually.                                                 |
 | `AGENTX_AUTH`                | `disabled`       | Set to `enabled` to require dashboard sign-in (see "Dashboard authentication" below). The default keeps the zero-setup local posture.                                                                                                           |
 | `AGENTX_AUTH_SECRET`         | (auto-generated) | Session-signing secret for `AGENTX_AUTH=enabled`. Generated and persisted on first enabled boot if unset; set explicitly when running multiple replicas.                                                                                        |
+| `AGENTX_METRICS_TOKEN`       | -                | When set, `GET /metrics` requires `Authorization: Bearer <token>`; unset leaves the endpoint open (fine for a local install, not for a network-exposed one).                                                                                    |
 | `AGENTX_PUBLIC_URL`          | -                | The externally reachable base URL when running behind a proxy/domain with auth enabled (used for auth callbacks/cookies).                                                                                                                       |
 | `AGENTX_TRUSTED_ORIGINS`     | -                | Comma-separated extra origins allowed to make authenticated browser requests (e.g. a dev dashboard on another port).                                                                                                                            |
 
 Trace ingest and pattern matching on phrase/regex both work with no keys configured at all - only
-judge scoring and semantic pattern detection need a provider key.
+judge scoring, semantic pattern detection, and the embeddings-backed features (topic clustering,
+Insights coverage, dataset dedupe) need a provider key.
 
 ### Dashboard authentication
 
@@ -163,7 +168,7 @@ Same binary, same API, three storage tiers - pick one:
 
 ```bash
 # Self-host (SQLite) - the default, nothing to configure
-agentx-trace-eval --dev
+agentx-server --dev
 
 # Team (Postgres) - one env var; fresh installs get a natively partitioned traces table
 AGENTX_DB_URL=postgres://user:pass@host:5432/agentx agentx-server
@@ -176,8 +181,10 @@ helm install agentx deploy/helm/agentx --set image.repository=<your-registry>/ag
 Step-by-step setup, verification, retention, backup/restore, and tuning:
 [deployment tiers](engine/docs/deployment-tiers.md). Design rationale:
 [ADRs](engine/docs/adr/). Incidents: [runbook](engine/docs/runbook.md). Self-metrics at
-`GET /metrics`; measure your own hardware with `engine/scripts/bench.mjs` and rehearse
-failure modes with `engine/scripts/chaos.mjs`.
+`GET /metrics` (Prometheus text format, served at the root, not under `/api/v1`; open by
+default, or set `AGENTX_METRICS_TOKEN` to require `Authorization: Bearer <token>`). Measure
+your own hardware with `engine/scripts/bench.mjs` and rehearse failure modes with
+`engine/scripts/chaos.mjs`.
 
 ## SDK & OpenTelemetry
 
@@ -186,21 +193,22 @@ a self-host instance:
 
 ```bash
 export AGENTX_API_BASE_URL=http://localhost:4700/api/v1
-export AGENTX_API_KEY=<printed by agentx-server on first run>
+export AGENTX_API_KEY=<printed by agentx-server at startup>
 ```
 
 **OpenTelemetry** - Trace also accepts real OTLP/HTTP traces directly, no AgentX SDK required:
 
 ```bash
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4700/api/v1/otel
-export OTEL_EXPORTER_OTLP_HEADERS="x-api-key=<printed by agentx-server on first run>"
+export OTEL_EXPORTER_OTLP_HEADERS="x-api-key=<printed by agentx-server at startup>"
 ```
 
 Both OTLP/HTTP wire formats are supported (protobuf and `application/json`, via
 `OTEL_EXPORTER_OTLP_PROTOCOL=http/json`). One incoming span becomes one AgentX trace row.
 Attributes are mapped using the GenAI semantic conventions (`gen_ai.*`, both the older and newer
 field names), OpenLLMetry's legacy indexed attributes, and OpenInference's `input.value`/
-`output.value`/`llm.model_name` - see `engine/src/otel/mapping.ts` for the exact priority order.
+`output.value`/`openinference.span.kind` - see `engine/src/otel/mapping.ts` for the exact
+priority order.
 Monitor and Online Evaluators run against every OTel-ingested span by default; set
 `AGENTX_OTEL_MONITOR=false` to disable that.
 
@@ -221,6 +229,7 @@ Known gap: gRPC transport isn't supported (HTTP only).
 | `cli/`                 | Go CLI (`agentx`/`agentx-server`) - installer glue and process supervisor. Launches the bundled engine binary, opens the browser, handles shutdown.                                                                                                                    |
 | `engine/`              | TypeScript governance engine + HTTP API (Trace, Evaluate, Monitor). Compiles to a single native executable via Bun (`bun build --compile`) so end users never need Node/Bun installed.                                                                                 |
 | `packages/judge-core/` | The LLM-as-judge prompt/scoring logic, published as `@agentx/judge-core` so `engine/` and AgentX's hosted SaaS backend share one implementation.                                                                                                                       |
+| `packages/agentx-eval/` | `@agentx/eval` - a minimal, zero-dependency TypeScript client for the engine's evaluation CI surface (datasets, runs, result submission, the CI gate, pairwise comparison).                                                                          |
 | `web/`                 | The dashboard - **not tracked in this repo**. Populated by building [AgentX-eval-front](https://github.com/AgentX-ai/AgentX-eval-front) in self-host mode, or by downloading its prebuilt release asset (see [Dashboard release process](#dashboard-release-process)). |
 | `skills/`              | Claude Code skills for self-host users to copy into their own `.claude/skills/` - e.g. `improve-prompt/`, which drives the Prompt Registry's propose loop using Claude's own reasoning instead of a server-side judge call.                                            |
 | `install.sh`           | The `curl \| bash` installer - downloads the platform binary from GitHub Releases.                                                                                                                                                                                     |
@@ -235,7 +244,7 @@ Prerequisites: [Go](https://go.dev/), Node.js + [Yarn](https://yarnpkg.com/), an
 
 ```bash
 git clone git@github.com:AgentX-ai/AgentX-trace-eval.git && cd AgentX-trace-eval
-yarn install   # workspace install: engine/ + packages/judge-core together
+yarn install   # workspace install: engine/ + the packages/* workspaces together
 ```
 
 ### Fastest dev loop
@@ -251,11 +260,17 @@ workspace package automatically (a ~1s `tsup` step - the engine imports its `dis
 fresh clone doesn't have yet), `.env` is optional (judge features need provider keys,
 tracing/ingest work without any), and if `web/` is missing (it isn't committed, see
 [What's in this repo](#whats-in-this-repo)) dev mode downloads the prebuilt dashboard bundle
-from this repo's releases on first boot. Offline, or to refresh it manually:
+from this repo's releases on first boot. Offline, or to refresh it manually (from the repo root,
+not from `engine/`):
 
 ```bash
-mkdir -p web && curl -fsSL https://github.com/AgentX-ai/AgentX-Trace-Eval/releases/latest/download/agentx-web.tar.gz | tar -xz -C web
+mkdir -p web && curl -fsSL https://github.com/AgentX-ai/AgentX-trace-eval/releases/latest/download/agentx-web.tar.gz | tar -xz -C web
 ```
+
+(An installed `agentx-server` does the same with `--upgrade`, which re-downloads the latest
+dashboard bundle even if one exists.) The repo-root `web/` directory is the one location the
+engine serves from a source checkout; an old `engine/web/` copy is deliberately ignored, and the
+boot log warns about the shadowed copy so it can be deleted.
 
 The dashboard's source (`AgentX-eval-front`) is a private repo; if you're on the AgentX team and
 have it checked out as a sibling directory, build it from source instead:
@@ -319,7 +334,7 @@ Once it's up:
 
 ```
 AgentX self-host engine listening on http://localhost:4700
-Local API key: agtx_local_...
+Default project API key: agtx_local_...
 ```
 
 `--dev` opens the dashboard in your browser automatically.
@@ -347,7 +362,8 @@ same way: every merge to main that passes the Tests workflow triggers `release.y
 versions itself as `v<series>.<n>` from this repo's `.github/release-series` file (series
 bumped manually, `<n>` auto-incremented), fetches the newest of those dashboard bundles, and
 publishes engine binaries + dashboard together - each release an immutable engine+dashboard
-pair, no hand-pushed tags. `install.sh`, `build.sh`, and the `Dockerfile` all
+pair, no hand-pushed tags. The running pair is visible in the dashboard: Settings shows
+`Engine vX · UI vY` in its corner. `install.sh`, `build.sh`, and the `Dockerfile` all
 fetch the bundle from this repo's releases - nobody installing or building this repo, including
 outside contributors, ever needs access to that private repo.
 
@@ -365,19 +381,19 @@ One-time setup, one secret per direction:
 Trace, Evaluate, and Monitor are wired end-to-end and verified against the real Python SDK, both
 SQLite and Postgres, and the compiled single-binary distribution - including a real OTLP/HTTP
 receiver verified against both protobuf and JSON payloads. The dashboard covers Governance's full
-self-host surface: Trace ingest (traces and sessions, with end-user feedback chips), Monitor
-(patterns, trace- and session-scoped online evaluators, custom evaluators, topics, signals
-triage, KPIs), Evaluate (runs, datasets curated straight from production traffic, standalone
-evaluator configs, version history, per-case run comparison, Model Portability, and Playground),
-Improve (the Prompt and Tool Schema registries with validated proposals and unregistered-tool
-surfacing), CI Gates (recorded gate history plus a latest-run preview), and Overview (KPIs,
-trends, topic map, Model Comparison, and Judge Calibration against reported outcomes and
-end-user feedback).
+self-host surface: Observe (live traces and sessions, with end-user feedback chips), Monitor
+(signals triage plus the KPI cards - scores, latency, spans, cost, tokens, the platform mix,
+and tool executions with the error rate overlaid), Review and Scorers (human labels; pattern,
+online, and custom evaluators, trace- and session-scoped), Topics, Evaluate (runs, datasets
+curated straight from production traffic, standalone evaluator configs, version history,
+per-case run comparison, Model Portability, and Playground), Insights (Suggestions and Dataset
+coverage, with the Prompts and Tools & MCPs registries - validated proposals and
+unregistered-tool surfacing - reached from the sidebar's Manage section), CI Gates (recorded
+gate history plus a latest-run preview, under Automations), and Overview (KPIs, trends, topic
+map, Model Comparison, and Judge Calibration against reported outcomes and end-user feedback).
 
 **Known gaps:**
 
-- The self-host build ships the full frontend bundle rather than one trimmed to just Governance -
-  tracked as a follow-up in `AgentX-eval-front`.
 - No hot-reload loop between an `AgentX-eval-front` dev server and this engine yet.
 - Autotune's candidate-branch creation/evaluation/merging is out of scope, not deferred: it's
   fundamentally tied to AgentX's native agent config-branching system, which self-host doesn't
@@ -391,9 +407,9 @@ every feature above.
 ## Contributing
 
 Issues and PRs are welcome. For anything beyond a small fix, please open an issue first to discuss
-the approach. Run `yarn install` at the repo root (a workspace install covering `engine/` and
-`packages/judge-core/` together), and see [Building from source](#building-from-source) for the dev
-loop and smoke test.
+the approach. Run `yarn install` at the repo root (a workspace install covering `engine/` and the
+`packages/*` workspaces together), and see [Building from source](#building-from-source) for the
+dev loop and smoke test.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) lists the checks CI runs and how to reproduce each one locally.
 [engine/CONTRIBUTING.md](engine/CONTRIBUTING.md) has the engine's own conventions, which are the

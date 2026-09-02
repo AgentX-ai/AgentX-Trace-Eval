@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEngine, postJson, type TestEngine } from "./server.js";
 import {
+  agentsListSchema,
+  exportManifestSchema,
   insightsCoverageResponseSchema,
   insightsProbeBatchResponseSchema,
   insightsProbeResponseSchema,
@@ -150,6 +152,25 @@ describe("wire contract", () => {
 
     const none = await api("/insights/probe/batch", postJson({ queries: [] }));
     expect(none.status).toBe(400);
+  });
+
+  it("GET /agents matches the contract after a registration", async () => {
+    const created = await api("/agents", postJson({ name: "contract-registered-agent" }));
+    expect(created.status).toBe(201);
+    const res = await api("/agents");
+    expect(res.status).toBe(200);
+    const parsed = agentsListSchema.parse(res.body);
+    expect(parsed.agents.some(agent => agent.name === "contract-registered-agent")).toBe(true);
+  });
+
+  it("GET /export matches the contract and lists every entity", async () => {
+    const res = await api("/export");
+    expect(res.status).toBe(200);
+    const parsed = exportManifestSchema.parse(res.body);
+    // The manifest is the export surface's own registry - a new entity missing here is exactly
+    // the docs-vs-engine drift this contract exists to catch.
+    expect(parsed.entities.map(e => e.entity)).toContain("evaluation-analyses");
+    expect(parsed.entities.map(e => e.entity)).toContain("traces");
   });
 
   it("GET /openapi.json publishes every contract entry", async () => {

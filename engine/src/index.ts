@@ -8,12 +8,13 @@ import { asyncHandler } from "./routes/asyncRouter.js";
 import { rateLimit, CREDENTIAL_LIMIT, DATA_PLANE_LIMIT } from "./auth/rateLimit.js";
 import { initDb, closeDb, getDb, withProjectId, runPgPartitionMaintenance } from "./storage/db.js";
 import { drainIngestQueue } from "./core/trace/ingestQueue.js";
-import { initTelemetryStore, closeTelemetryStore } from "./core/trace/store/index.js";
+import { initTelemetryStore, closeTelemetryStore, backfillFrameworkCasefold } from "./core/trace/store/index.js";
 import { selfMetricsRouter } from "./routes/selfMetrics.js";
 import { getDefaultProject, listProjectRows } from "./core/project/projects.js";
 import { ensureSessionBaselineJudge } from "./core/monitor/builtinEvaluators.js";
 import { ensureMetricPackConfigs, metricPackBackfillDone, markMetricPackBackfillDone } from "./core/evaluate/metricPack.js";
 import { authMode, initAuth, resolveAuthSecret } from "./auth/betterAuth.js";
+import { mailerConfigured } from "./auth/mailer.js";
 import { registerAuthRoutes, registerApiV1 } from "./routes/apiV1.js";
 import { findWebIndexHtml, downloadWebBundle, webBundleCandidates, describeWebBundle } from "./web.js";
 import { startSessionSweep } from "./core/monitor/sessionSweep.js";
@@ -86,6 +87,9 @@ async function main() {
   // AGENTX_TELEMETRY_URL; fails startup loudly if the telemetry store is unreachable.
   await initTelemetryStore();
   await initDb();
+  // One-time: fold pre-existing trace framework labels to lowercase so old traffic groups and
+  // filters with new traffic (ingest folds on write since the Platforms chart landed).
+  await backfillFrameworkCasefold(getDb());
   // Partitioned-Postgres maintenance (ADR-0007): pre-create upcoming partitions, drop expired
   // ones. Daily cadence; the DEFAULT partition keeps correctness independent of this timer.
   await runPgPartitionMaintenance().catch(err => logger.error({ err }, "Partition maintenance failed:"));
@@ -94,6 +98,14 @@ async function main() {
   }, 24 * 60 * 60 * 1000).unref();
 
   const app = express();
+  // Behind a reverse proxy, req.ip is otherwise the proxy's address: audit rows lose the real
+  // client and BOTH rate limiters collapse into one shared per-proxy bucket (one noisy client
+  // could exhaust the 120/min credential ceiling for everyone). Opt-in because trusting proxy
+  // headers on a directly-exposed port would let clients spoof their own IPs instead.
+  const trustProxy = process.env.AGENTX_TRUST_PROXY;
+  if (trustProxy) {
+    app.set("trust proxy", trustProxy === "true" ? true : Number.isFinite(Number(trustProxy)) ? Number(trustProxy) : trustProxy);
+  }
 
   // Two ceilings, see auth/rateLimit.ts. credentialLimit covers anything that hands out or is
   // guarded by a credential; dataPlaneLimit sits far above any real SDK burst, because throttling
@@ -108,6 +120,15 @@ async function main() {
   // /api/v1/auth/config stays OURS (registered first so the wildcard never swallows it) and
   // exists in both modes: it's how the SPA decides between login, owner setup, and no-auth.
   if (authMode() === "enabled") {
+    // Reset/verification links are built from the request's own Host header when no public URL
+    // is pinned - which lets an attacker who can reach the port trigger a PASSWORD RESET mail
+    // whose genuine-looking link points at their host, exfiltrating the token. Loud warning
+    // rather than refusing to boot; set AGENTX_PUBLIC_URL on any mail-sending deployment.
+    if (mailerConfigured() && !process.env.AGENTX_PUBLIC_URL?.trim()) {
+      logger.warn(
+        "AGENTX_AUTH=enabled with a mailer but no AGENTX_PUBLIC_URL: password-reset and verification links derive from the request Host header, which a client can forge. Set AGENTX_PUBLIC_URL."
+      );
+    }
     initAuth(getDb(), {
       secret: await resolveAuthSecret(getDb()),
       baseURL: process.env.AGENTX_PUBLIC_URL?.trim() || undefined,
@@ -118,10 +139,8 @@ async function main() {
   registerAuthRoutes(app, credentialLimit);
 
   app.use(express.json({ limit: "10mb" }));
-  // Engine self-metrics (Prometheus): before auth - operators scrape the private port directly.
-  app.use(selfMetricsRouter);
 
-  const ACCESS_LOG_IGNORE = ["/health"];
+  const ACCESS_LOG_IGNORE = ["/health", "/metrics"];
   app.use((req, res, next) => {
     const start = Date.now();
     // One structured line per request with a correlation id; the id is echoed in the
@@ -144,6 +163,15 @@ async function main() {
     });
     next();
   });
+
+  // Engine self-metrics (Prometheus): unauthenticated by default (auth comes before this in the
+  // middleware chain deliberately does NOT apply), but mounted after the access log and under
+  // the credential limiter so a configured AGENTX_METRICS_TOKEN is neither brute-forceable
+  // unthrottled nor probed invisibly.
+  // Path-scoped: a bare app.use(credentialLimit, router) would run the credential limiter on
+  // EVERY request (use() without a path matches all), throttling the data plane.
+  app.use("/metrics", credentialLimit);
+  app.use(selfMetricsRouter);
 
   app.get("/health", dataPlaneLimit, (_req, res) => res.status(200).json({ status: "ok" }));
 
@@ -198,6 +226,24 @@ async function main() {
     const status = (err as { status?: unknown; statusCode?: unknown } | null)?.status ?? (err as { statusCode?: unknown } | null)?.statusCode;
     if (typeof status === "number" && status >= 400 && status < 500) {
       res.status(status).json({ statusCode: status, message: err instanceof Error ? err.message : "Bad request" });
+      return;
+    }
+    // Telemetry-store outage (enterprise tier, ClickHouse down): a READ that needs spans fails
+    // with a connection error deep in the adapter. That is a 503 with a retry hint, not a 500 -
+    // the engine is healthy, the storage tier is temporarily not, and ingest already answers the
+    // same outage with 503 + Retry-After. @clickhouse/client surfaces it as a socket-level error.
+    const code = (err as { code?: unknown } | null)?.code;
+    const msg = err instanceof Error ? err.message : "";
+    const storageDown =
+      code === "ECONNREFUSED" ||
+      code === "ECONNRESET" ||
+      code === "UND_ERR_SOCKET" ||
+      /socket hang up|fetch failed|Connect(?:ion)? (?:refused|error)/i.test(msg);
+    if (storageDown) {
+      res
+        .status(503)
+        .set("Retry-After", "5")
+        .json({ statusCode: 503, message: "Telemetry store unreachable - retry shortly. See the runbook's ClickHouse-down section." });
       return;
     }
     res.status(500).json({ statusCode: 500, message: "Internal server error" });

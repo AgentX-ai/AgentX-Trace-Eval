@@ -705,8 +705,12 @@ export async function curateCasesFromTraces(
   let added = 0;
   let duplicates = 0;
   let considered = 0;
+  // Bounded work per request: a busy 30d topic can hold thousands of classification rows, and
+  // every candidate's dedupe check costs embedding calls - without this cap a topic whose
+  // traces all duplicate existing cases would walk the entire group on one HTTP request.
+  const maxConsidered = options.limit * 5;
   for (const row of [...group.rows].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())) {
-    if (added >= options.limit) break;
+    if (added >= options.limit || considered >= maxConsidered) break;
     if (!row.traceId || seen.has(row.traceId)) continue;
     seen.add(row.traceId);
     const preview = await previewCaseFromTrace(db, row.traceId);

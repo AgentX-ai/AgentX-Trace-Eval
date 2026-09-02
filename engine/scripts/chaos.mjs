@@ -120,6 +120,18 @@ async function main() {
   check("CH down: the drop is counted in /metrics", droppedTotal >= 1, `dropped=${droppedTotal}`);
   const cfg = await fetch(`${BASE}/api/v1/auth/config`);
   check("CH down: control plane stays up", cfg.ok);
+  // Failure-mode UX: the DASHBOARD's reads during the outage. A span-backed read answers an
+  // honest 503 + Retry-After (the storage tier is down, the engine is not) - never a bare 500
+  // that reads as an engine bug.
+  const tracesDown = await fetch(`${BASE}/api/v1/ingest/traces?limit=5`, { headers });
+  check("CH down: trace list reads answer 503, not 500", tracesDown.status === 503, `got ${tracesDown.status}`);
+  check("CH down: 503 carries Retry-After", !!tracesDown.headers.get("retry-after"));
+  const metricsDown = await fetch(`${BASE}/api/v1/agent-monitoring/metrics?window=1h`, { headers });
+  check(
+    "CH down: monitor metrics answer 503, not 500",
+    metricsDown.status === 503,
+    `got ${metricsDown.status}`
+  );
 
   // ---- drill 3: recovery needs no operator action ----
   sh(`docker start ${CH_NAME}`);

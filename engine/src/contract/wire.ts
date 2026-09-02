@@ -338,6 +338,9 @@ export const insightTopicSchema = z
     suggestedAction: z.string(),
     caseDatasets: z.array(z.object({ id: z.string(), name: z.string(), count: z.number() }).strict()),
     sampleCases: z.array(z.object({ datasetId: z.string(), query: z.string(), count: z.number() }).strict()),
+    sampleTraces: z.array(
+      z.object({ traceId: z.string(), query: z.string(), createdAt: isoDate, flagged: z.boolean() }).strict()
+    ),
   })
   .strict();
 
@@ -416,7 +419,96 @@ export const insightsProbeBatchResponseSchema = z
 
 // What /api/v1/openapi.json publishes and the contract test iterates. Grows a row per surface
 // as coverage expands; adding a row is all it takes to put an endpoint under contract.
+
+// ---- Curate from traces (POST /insights/topics/curate) ---------------------------------------
+
+export const insightsCurateResponseSchema = z
+  .object({ ok: z.literal(true), added: z.number(), duplicates: z.number(), considered: z.number() })
+  .strict();
+
+// ---- Agent registry (GET /agents) ------------------------------------------------------------
+
+export const agentListItemSchema = z
+  .object({
+    _id: z.string(),
+    name: z.string(),
+    kind: z.literal("agent"),
+    agentType: z.literal("external"),
+    monitoringAgentId: z.string(),
+    // The monitoring profile is its own surface (GET/PUT /monitor/profiles/:id) - carried here
+    // opaquely rather than double-pinned.
+    monitoringProfile: z.unknown(),
+    createdAt: isoDate,
+  })
+  .strict();
+
+export const agentsListSchema = z.object({ agents: z.array(agentListItemSchema) }).strict();
+
+// ---- Export manifest (GET /export) -----------------------------------------------------------
+
+export const exportManifestSchema = z
+  .object({
+    generatedAt: isoDate,
+    format: z.literal("ndjson"),
+    entities: z.array(z.object({ entity: z.string(), rows: z.number(), path: z.string() }).strict()),
+  })
+  .strict();
+
+// ---- Run gate (GET /custom-agent-evaluations/runs/:id/gate) ----------------------------------
+
+export const runGateResultSchema = z
+  .object({
+    runId: z.string(),
+    datasetId: z.string(),
+    averageRating: z.number().nullable(),
+    resultCount: z.number(),
+    baselineRunId: z.string().nullable(),
+    baselineAverage: z.number().nullable(),
+    checks: z.array(
+      z
+        .object({
+          check: z.enum(["fail-under", "no-regression"]),
+          passed: z.boolean(),
+          threshold: z.number().nullable(),
+          actual: z.number().nullable(),
+          detail: z.string(),
+        })
+        .strict()
+    ),
+    passed: z.boolean(),
+  })
+  .strict();
+
 export const WIRE_CONTRACT = [
+  {
+    method: "post" as const,
+    path: "/insights/topics/curate",
+    summary: "Generate dataset cases from a topic's production traces",
+    response: insightsCurateResponseSchema,
+    name: "InsightsCurateResponse",
+  },
+  {
+    method: "get" as const,
+    path: "/agents",
+    summary: "The project's registered agents",
+    response: agentsListSchema,
+    name: "AgentsList",
+  },
+  {
+    method: "get" as const,
+    path: "/export",
+    summary: "Export manifest: every NDJSON-exportable entity with live row counts",
+    response: exportManifestSchema,
+    name: "ExportManifest",
+  },
+  {
+    method: "get" as const,
+    path: "/custom-agent-evaluations/runs/:id/gate",
+    summary: "CI gate verdict for a finalized evaluation run",
+    response: runGateResultSchema,
+    name: "RunGateResult",
+  },
+
   {
     method: "get" as const,
     path: "/agent-monitoring/metrics",

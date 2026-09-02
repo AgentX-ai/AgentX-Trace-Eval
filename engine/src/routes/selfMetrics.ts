@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import express from "express";
+import { secretEquals } from "../auth/secretEquals.js";
 import { ingestQueueMetrics } from "../core/trace/ingestQueue.js";
 
 // Self-metrics (phase 6 of the trace-store plan): the engine observing itself. Prometheus text
@@ -13,7 +14,7 @@ export const selfMetricsRouter = express.Router();
 
 selfMetricsRouter.get("/metrics", (req: Request, res: Response) => {
   const token = process.env.AGENTX_METRICS_TOKEN;
-  if (token && req.headers.authorization !== `Bearer ${token}`) {
+  if (token && !secretEquals(req.headers.authorization, `Bearer ${token}`)) {
     res.status(401).type("text/plain").send("metrics require Authorization: Bearer <AGENTX_METRICS_TOKEN>\n");
     return;
   }

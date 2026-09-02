@@ -141,6 +141,9 @@ export function registerApiV1(app: Express, deps: ApiV1Deps): void {
       }
       organizationId = orgs[0] ?? null;
     }
+    // Disabled mode deliberately allows keyless creation: /auth/config hands the default key to
+    // anyone who asks, so requiring it here adds a step without adding protection - and every
+    // bootstrap flow (test harness, drills, first-run scripts) relies on this being open.
     const body = req.body ?? {};
     if (typeof body.name !== "string" || !body.name.trim()) {
       res.status(400).json({ error: "name is required" });

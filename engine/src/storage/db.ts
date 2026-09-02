@@ -1143,6 +1143,7 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
     ["app_settings", "ALTER TABLE app_settings ADD COLUMN auth_secret TEXT"],
     ["app_settings", "ALTER TABLE app_settings ADD COLUMN metric_pack_seeded_at INTEGER"],
     ["app_settings", "ALTER TABLE app_settings ADD COLUMN metric_pack_version INTEGER"],
+    ["app_settings", "ALTER TABLE app_settings ADD COLUMN framework_casefolded_at INTEGER"],
     ["tool_schemas", "ALTER TABLE tool_schemas ADD COLUMN test_endpoint_url TEXT"],
     ["tool_schemas", "ALTER TABLE tool_schemas ADD COLUMN resolved_evidence TEXT"],
     ["playground_runs", "ALTER TABLE playground_runs ADD COLUMN kind TEXT"],
@@ -2382,6 +2383,7 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
     ALTER TABLE portability_models ADD COLUMN IF NOT EXISTS price_per_m_cache_read_tokens DOUBLE PRECISION;
     ALTER TABLE portability_models ADD COLUMN IF NOT EXISTS price_per_m_cache_write_tokens DOUBLE PRECISION;
     ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS gemini_api_key TEXT;
+    ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS framework_casefolded_at TIMESTAMP;
     ALTER TABLE outcome_reports ADD COLUMN IF NOT EXISTS is_negative BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS topics_enabled BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS topics_sample_rate DOUBLE PRECISION NOT NULL DEFAULT 1;
