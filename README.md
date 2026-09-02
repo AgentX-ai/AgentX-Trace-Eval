@@ -77,7 +77,7 @@ browser, and prints a local API key for the SDK. Prefer a container? See [Docker
   wrong, preserves a control set it got right) before a human publishes.
 - **Improvement Inbox** - the loop runs itself: a background sweep notices when a prompt or
   tool schema accumulates fresh failure evidence, generates the improvement proposal AND runs its
-  baseline-vs-candidate validation automatically, then queues it under Improve -> Suggestions
+  baseline-vs-candidate validation automatically, then queues it under Insights -> Suggestions
   with the measured verdict attached. Humans keep the only pen: review, then publish or dismiss.
 - **CI gate** - fail a build on eval regression: `report.gate(fail_under=7, no_regression=True)`
   after any SDK eval run returns an exit code, and every recorded gate lands in the dashboard's

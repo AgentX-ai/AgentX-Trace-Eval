@@ -1,8 +1,8 @@
 import type { Db } from "../../storage/db.js";
 import { traceStoreFor } from "../trace/store/index.js";
 import { listClassificationsSince, windowConfig, type ClassificationRow } from "../monitor/topics.js";
-import type { MonitoringWindow } from "../monitor/events.js";
-import { SIMILARITY_BANDS } from "../evaluate/curation.js";
+import { extractText, type MonitoringWindow } from "../monitor/events.js";
+import { SIMILARITY_BANDS, addCaseToDataset, previewCaseFromTrace } from "../evaluate/curation.js";
 import { centroid, contentWords, cosine, normalizeText, overlap } from "../shared/vector.js";
 import {
   listDatasetCases,
@@ -61,6 +61,10 @@ export type TopicCoverage = {
    * the ones listed here.
    */
   sampleCases: { datasetId: string; query: string; count: number }[];
+  /** Up to 3 of the topic's newest production traces (distinct trace ids) - what production
+   *  actually asked, with the classifier's own verdict. The detail rail reads a gap through
+   *  these rather than through counts alone. */
+  sampleTraces: { traceId: string; query: string; createdAt: string; flagged: boolean }[];
 };
 
 export type CoverageResult = {
@@ -535,6 +539,28 @@ export async function getCoverage(
   type RawTopic = { trafficShare: number; coverage: number; risk: number; caseCount: number };
   const raw: RawTopic[] = [];
 
+  // Production-trace samples for the detail rail: newest 3 distinct traces per topic, fetched
+  // in ONE batched point-lookup through the TraceStore port (never per-topic queries).
+  const samplePicks = new Map<string, ClassificationRow[]>();
+  const sampleIds: string[] = [];
+  for (const group of groups) {
+    const seen = new Set<string>();
+    const picks: ClassificationRow[] = [];
+    for (const row of [...group.rows].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())) {
+      if (!row.traceId || seen.has(row.traceId)) continue;
+      seen.add(row.traceId);
+      picks.push(row);
+      if (picks.length === 3) break;
+    }
+    samplePicks.set(group.topic, picks);
+    for (const row of picks) sampleIds.push(row.traceId!);
+  }
+  const sampleTraceRows = await traceStoreFor(db).getByIds(sampleIds);
+  const samplePreview = (value: unknown): string => {
+    const text = extractText(value).trim();
+    return text.length > 180 ? `${text.slice(0, 180)}...` : text;
+  };
+
   const topics: TopicCoverage[] = groups.map(group => {
     const assigned = assignments.get(group.topic) ?? [];
     const trafficShare = group.rows.length / totalTraces;
@@ -598,6 +624,16 @@ export async function getCoverage(
       // to recognise what is already tested, not to page through it. caseDatasets keeps the full
       // count honest above it.
       sampleCases: sampleCasesFor(assigned, item => assignedScore.get(item) ?? 0),
+      // The classifier's own verdict, not a judge join: issueType/sentiment were decided when
+      // the trace was classified, which is exactly the signal the risk number is built from.
+      sampleTraces: (samplePicks.get(group.topic) ?? [])
+        .filter(row => sampleTraceRows.has(row.traceId!))
+        .map(row => ({
+          traceId: row.traceId!,
+          query: samplePreview(sampleTraceRows.get(row.traceId!)!.input),
+          createdAt: row.createdAt.toISOString(),
+          flagged: row.issueType !== "none" || row.sentiment === "negative",
+        })),
     };
   });
 
@@ -639,4 +675,47 @@ export async function getCoverage(
     offMapCases,
     caseEmbeddingsPending: pending,
   };
+}
+
+// ---- curation from traces (the detail rail's "Generate N cases from traces") -----------------
+
+export type CurateFromTracesResult =
+  | { ok: true; added: number; duplicates: number; considered: number }
+  | { ok: false; error: "topic-not-found" | "dataset-not-found" };
+
+// Fills a gap through the EXISTING curation path - previewCaseFromTrace (real query/output
+// reconstruction) into addCaseToDataset (dedupe + version history) - so a generated case is
+// exactly what the manual "add case from trace" flow would have produced: grounded in a real
+// trace, expectedResults deliberately left for a human to write, and never able to inflate
+// coverage with rows the dedupe would reject. Newest traces first, distinct trace ids.
+export async function curateCasesFromTraces(
+  db: Db,
+  options: { topic: string; datasetId: string; window: MonitoringWindow; limit: number }
+): Promise<CurateFromTracesResult> {
+  const { days } = windowConfig(options.window);
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const rows = await listClassificationsSince(db, since);
+  const groups = groupByIntent(rows);
+  const group = groups.find(g => g.topic === options.topic || g.aliases.includes(options.topic));
+  if (!group) {
+    return { ok: false, error: "topic-not-found" };
+  }
+
+  const seen = new Set<string>();
+  let added = 0;
+  let duplicates = 0;
+  let considered = 0;
+  for (const row of [...group.rows].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())) {
+    if (added >= options.limit) break;
+    if (!row.traceId || seen.has(row.traceId)) continue;
+    seen.add(row.traceId);
+    const preview = await previewCaseFromTrace(db, row.traceId);
+    if (!preview) continue;
+    considered++;
+    const result = await addCaseToDataset(db, options.datasetId, preview.case);
+    if (result.ok) added++;
+    else if ("duplicate" in result && result.duplicate) duplicates++;
+    else if ("error" in result && result.error === "not-found") return { ok: false, error: "dataset-not-found" };
+  }
+  return { ok: true, added, duplicates, considered };
 }

@@ -2,10 +2,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { nanoid } from "nanoid";
 import { openTestDb, type TestDb } from "./dbHarness.js";
 import type { Db } from "../storage/db.js";
-import { getCoverage } from "../core/insights/coverage.js";
+import { curateCasesFromTraces, getCoverage } from "../core/insights/coverage.js";
 import { probe, probeBatch } from "../core/insights/probe.js";
 import { caseKeyFor } from "../core/insights/cases.js";
-import { createDataset } from "../core/evaluate/datasets.js";
+import { createDataset, getDataset } from "../core/evaluate/datasets.js";
 import { SIMILARITY_BANDS } from "../core/evaluate/curation.js";
 
 // Coverage and the probe are pure functions of two tables nobody can populate through a route in
@@ -68,6 +68,8 @@ async function insertRow(handle: Db, table: unknown, values: Record<string, unkn
 
 async function classify(opts: {
   intent: string;
+  input?: string;
+  createdAt?: Date;
   /** null writes a row with no embedding - the un-backfilled case. */
   angle: number | null;
   sessionId?: string | null;
@@ -78,7 +80,7 @@ async function classify(opts: {
   await insertRow(db, db.schema.traces, {
     id: traceId,
     name: "insights-agent",
-    input: "q",
+    input: opts.input ?? "q",
     output: "a",
     error: null,
     latencyMs: 10,
@@ -97,7 +99,7 @@ async function classify(opts: {
     spanId: null,
     parentSpanId: null,
     startedAt: null,
-    createdAt: new Date(),
+    createdAt: opts.createdAt ?? new Date(),
     agentId: null,
     projectId: db.projectId,
   });
@@ -108,7 +110,7 @@ async function classify(opts: {
     intent: opts.intent,
     sentiment: opts.sentiment ?? "neutral",
     issueType: opts.issueType ?? "none",
-    createdAt: new Date(),
+    createdAt: opts.createdAt ?? new Date(),
     projectId: db.projectId,
     embedding: opts.angle === null ? null : unit(opts.angle),
   });
@@ -255,6 +257,72 @@ describe("coverage over production topics", () => {
     const result = await getCoverage(db, { window: "7d", datasetIds: [orphan] });
     expect(result.offMapCases).toHaveLength(1);
     expect(result.offMapCases[0]!.query).toBe("can I pay in martian dollars");
+  });
+});
+
+describe("production trace samples on a topic", () => {
+  it("carries the newest distinct traces with the classifier's own verdict", async () => {
+    const datasetId = await newDataset("samples-ds", []);
+    // angle null on purpose: these rows must not add a centroid the probe suites below could
+    // accidentally match - sample selection is independent of embeddings. Explicit timestamps:
+    // "newest 3" must be deterministic, and four inserts inside one millisecond are not.
+    const t = Date.now();
+    await classify({ intent: "billing dispute", angle: null, createdAt: new Date(t - 4000) });
+    await classify({ intent: "billing dispute", angle: null, issueType: "hallucination", createdAt: new Date(t - 3000) });
+    await classify({ intent: "billing dispute", angle: null, sentiment: "negative", createdAt: new Date(t - 2000) });
+    await classify({ intent: "billing dispute", angle: null, createdAt: new Date(t - 1000) });
+    const result = await getCoverage(db, { window: "7d", datasetIds: [datasetId] });
+    const topic = result.topics.find(t => t.topic === "billing dispute")!;
+    // Capped at 3 even though 4 traces classified; each carries the trace's real input text.
+    expect(topic.sampleTraces.length).toBe(3);
+    for (const sample of topic.sampleTraces) {
+      expect(sample.query).toBe("q");
+      expect(sample.traceId).toBeTruthy();
+      expect(Date.parse(sample.createdAt)).not.toBeNaN();
+    }
+    // Newest 3 of the four = the plain-neutral latecomer plus the hallucination and the
+    // negative-sentiment rows. Flagged mirrors the classifier verdict exactly: an issueType or
+    // negative sentiment flags, "none" plus neutral does not.
+    expect(topic.sampleTraces.filter(sample => sample.flagged).length).toBe(2);
+    expect(topic.sampleTraces.filter(sample => !sample.flagged).length).toBe(1);
+  });
+});
+
+describe("curating cases from a topic's traces", () => {
+  it("adds through the real curation path, dedupes on rerun, and 404s unknowns", async () => {
+    const datasetId = await newDataset("curate-ds", []);
+    await classify({ intent: "invoice question", angle: null, input: "where is invoice 991?" });
+    await classify({ intent: "invoice question", angle: null, input: "please resend my March invoice" });
+
+    const first = await curateCasesFromTraces(db, {
+      topic: "invoice question",
+      datasetId,
+      window: "7d",
+      limit: 6,
+    });
+    expect(first).toMatchObject({ ok: true, added: 2 });
+
+    // Same traces again: every candidate is now a duplicate of an existing case - coverage can
+    // never be inflated past the dedupe.
+    const again = await curateCasesFromTraces(db, {
+      topic: "invoice question",
+      datasetId,
+      window: "7d",
+      limit: 6,
+    });
+    expect(again).toMatchObject({ ok: true, added: 0 });
+    expect((again as { duplicates: number }).duplicates).toBeGreaterThan(0);
+
+    // The cases landed as real dataset rows with the source trace stamped and expectedResults
+    // left for a human - a generated case is a scaffold to review, not a fabricated assertion.
+    const dataset = (await getDataset(db, datasetId)) as { questions: { main_question: { query: string; expectedResults: string | null }; source?: { traceId?: string } }[] };
+    expect(dataset.questions.length).toBe(2);
+    expect(dataset.questions[0]!.main_question.expectedResults ?? null).toBeNull();
+
+    expect(await curateCasesFromTraces(db, { topic: "no such topic", datasetId, window: "7d", limit: 3 })).toEqual({
+      ok: false,
+      error: "topic-not-found",
+    });
   });
 });
 
