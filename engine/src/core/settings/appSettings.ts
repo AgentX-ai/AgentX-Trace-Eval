@@ -15,6 +15,11 @@ function settingsRowId(): string {
   if (isMultiTenant()) {
     const { organizationId } = currentTenancy();
     if (organizationId) return `org:${organizationId}`;
+    // Fail closed: a request with no tenancy (an orgless pre-claim project key) must not read
+    // or overwrite the INSTANCE-WIDE key row - that row belongs to the operator, and in the
+    // cloud posture no tenant request should ever resolve to it. A dedicated sentinel row id
+    // simply never matches or creates the "default" row.
+    return "org:none";
   }
   return SETTINGS_ROW_ID;
 }

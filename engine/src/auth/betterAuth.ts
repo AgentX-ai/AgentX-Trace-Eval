@@ -169,6 +169,15 @@ async function onUserCreated(db: Db, userId: string, userName?: string | null): 
     return;
   }
 
+  // Security: once the org has any member, signing up grants NO membership - anyone who can
+  // reach an exposed port can self-register, and auto-joining them would hand over every
+  // project (and each project's API key) to a stranger. Teammates get in by accepting an
+  // invitation (routes/authOrg.ts), exactly as this function's header always claimed.
+  // AGENTX_OPEN_SIGNUP=true restores the old auto-join for closed-network installs that want
+  // zero-friction team joining.
+  if (process.env.AGENTX_OPEN_SIGNUP !== "true") {
+    return;
+  }
   const memberRow = { id: nanoid(), organizationId: anyMember.organizationId as string, userId, role: "member", createdAt: now };
   if (db.kind === "sqlite") {
     await db.db.insert(db.schema.authMembers).values(memberRow);

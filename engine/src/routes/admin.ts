@@ -1,3 +1,4 @@
+import { secretEquals } from "../auth/secretEquals.js";
 import type { NextFunction, Request, Response } from "express";
 import { and, eq, gte, isNull, sql } from "drizzle-orm";
 import { asyncRouter } from "./asyncRouter.js";
@@ -19,7 +20,7 @@ function requireAdminToken(req: Request, res: Response, next: NextFunction) {
     res.status(404).json({ error: "Not found" });
     return;
   }
-  if (req.header("x-admin-token") !== expected) {
+  if (!secretEquals(req.header("x-admin-token"), expected)) {
     res.status(401).json({ error: "Invalid admin token" });
     return;
   }

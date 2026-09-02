@@ -1,3 +1,4 @@
+import { secretEquals } from "../auth/secretEquals.js";
 import type { NextFunction, Request, Response } from "express";
 import { getDb } from "../storage/db.js";
 import { recordAuditEvent, type AuditActorType } from "../core/audit/auditLog.js";
@@ -123,7 +124,7 @@ function safeSummary(body: unknown): Record<string, unknown> | null {
 
 async function resolveActor(req: Request): Promise<{ actor: string; actorType: AuditActorType }> {
   const adminToken = process.env.AGENTX_ADMIN_TOKEN;
-  if (adminToken && req.header("x-admin-token") === adminToken) {
+  if (adminToken && secretEquals(req.header("x-admin-token"), adminToken)) {
     return { actor: "admin", actorType: "admin" };
   }
   if (req.projectId) {
