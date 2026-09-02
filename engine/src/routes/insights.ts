@@ -3,14 +3,15 @@ import { z } from "zod";
 import { asyncRouter } from "./asyncRouter.js";
 import { validateBody } from "./validateBody.js";
 import { scopedDb } from "../auth/apiKey.js";
-import { getCoverage } from "../core/insights/coverage.js";
+import { curateCasesFromTraces, getCoverage } from "../core/insights/coverage.js";
 import { probe, probeBatch } from "../core/insights/probe.js";
 import type { MonitoringWindow } from "../core/monitor/events.js";
 
-// Insights: how well the evaluation datasets cover what production actually does. Read-only -
-// nothing here writes a dataset. A gap is reported, never filled: cases still land through the
-// existing preview -> human review -> append path in routes/evaluateDashboard.ts, which is what
-// keeps a coverage number from being inflated by rows nobody looked at.
+// Insights: how well the evaluation datasets cover what production actually does. Reads report
+// gaps; the ONE write (POST /topics/curate, the rail's "Generate N cases from traces") fills a
+// gap through the same preview -> append path routes/evaluateDashboard.ts uses - dedupe and
+// version history included, expectedResults left for a human - so a generated case is exactly
+// what the manual flow would have produced, and coverage cannot be inflated past the dedupe.
 
 export const insightsRouter = asyncRouter();
 
@@ -83,3 +84,28 @@ insightsRouter.post("/probe/batch", validateBody(probeBatchSchema), async (req: 
     await probeBatch(scopedDb(req), { queries: body.queries, window: body.window ?? "30d", datasetIds: scopeOf(body) })
   );
 });
+
+const curateSchema = z.object({
+  topic: z.string().min(1),
+  datasetId: z.string().min(1),
+  window: z.enum(["24h", "7d", "30d"]).optional(),
+  // Bounded: "fill the whole target" is at most a dozen cases; anything larger is a bulk import,
+  // which has its own surface.
+  limit: z.number().int().min(1).max(12).optional(),
+});
+
+insightsRouter.post("/topics/curate", validateBody(curateSchema), async (req: Request, res: Response) => {
+  const body = req.body as z.infer<typeof curateSchema>;
+  const result = await curateCasesFromTraces(scopedDb(req), {
+    topic: body.topic,
+    datasetId: body.datasetId,
+    window: body.window ?? "30d",
+    limit: body.limit ?? 6,
+  });
+  if (!result.ok) {
+    res.status(404).json({ error: result.error });
+    return;
+  }
+  res.status(200).json(result);
+});
+
