@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { enableBuiltinScorers, startEngine, type TestEngine } from "./server.js";
+import { projectCalibrationSchema } from "../contract/wire.js";
 
 // Judge Calibration compares each reported real-world outcome against the verdict AgentX had
 // already recorded. A confusion matrix computed the wrong way round outputs a confident percentage
@@ -200,6 +201,12 @@ describe("judge calibration", () => {
     expect(result.falsePositiveRate).toBeCloseTo(0.5, 10);
     // Of the two AgentX called healthy, one turned out bad.
     expect(result.falseNegativeRate).toBeCloseTo(0.5, 10);
+    // 4 compared items is far below the alpha sample floor - the chance-corrected number is
+    // withheld, not fabricated, and the floor itself ships so a UI can say why.
+    const withAlpha = projectCalibrationSchema.parse(res.body);
+    expect(withAlpha.alpha).toBeNull();
+    expect(withAlpha.alphaBand).toBeNull();
+    expect(withAlpha.alphaMinItems).toBeGreaterThan(4);
   }, 90_000);
 
   it("reports nulls rather than a fabricated score when nothing has been reported", async () => {
@@ -213,6 +220,8 @@ describe("judge calibration", () => {
       agreementRate: null,
       falsePositiveRate: null,
       falseNegativeRate: null,
+      alpha: null,
+      alphaBand: null,
     });
   });
 

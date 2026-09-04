@@ -152,7 +152,9 @@ export class SqlTraceStore implements TraceStore {
     return rows as TraceRow[];
   }
 
-  async listRootsPage(query: RootsPageQuery): Promise<TraceRow[]> {
+  // The list filters (roots-only, project, framework, source, search), shared by the page query
+  // and its pagination-total count so the two can never disagree about what "matching" means.
+  private rootsPageConditions(query: Omit<RootsPageQuery, "cursor" | "pageSize">): SQL[] {
     const db = this.db;
     const t = db.schema.traces;
     // Root spans only: a multi-span trace otherwise floods the list with one row per LLM/tool
@@ -180,6 +182,23 @@ export class SqlTraceStore implements TraceStore {
       );
       if (searchCond) conditions.push(searchCond);
     }
+    return conditions;
+  }
+
+  async countRootsPage(query: Omit<RootsPageQuery, "cursor" | "pageSize">): Promise<number> {
+    const db = this.db;
+    const where = and(...this.rootsPageConditions(query));
+    const rows =
+      db.kind === "sqlite"
+        ? db.db.select({ n: sql<number>`count(*)` }).from(db.schema.traces).where(where).all()
+        : await db.db.select({ n: sql<number>`count(*)` }).from(db.schema.traces).where(where);
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  async listRootsPage(query: RootsPageQuery): Promise<TraceRow[]> {
+    const db = this.db;
+    const t = db.schema.traces;
+    const conditions = this.rootsPageConditions(query);
     // Keyset with an id tiebreak matching the (createdAt DESC, id DESC) sort: "strictly older
     // than the boundary" alone silently skips the boundary row's same-millisecond siblings.
     if (query.cursor) {

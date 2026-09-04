@@ -608,6 +608,40 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
       created_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS improvement_groups (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'collecting',
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS improvement_group_members (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      group_id TEXT NOT NULL,
+      signal_id TEXT,
+      event_id TEXT,
+      trace_id TEXT,
+      source TEXT NOT NULL,
+      summary TEXT,
+      scorer_name TEXT,
+      rating REAL,
+      judge_rationale TEXT,
+      input_text TEXT,
+      output_text TEXT,
+      added_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS improvement_reports (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      group_id TEXT NOT NULL,
+      member_count INTEGER NOT NULL,
+      report TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS monitor_rules (
       id TEXT PRIMARY KEY,
       project_id TEXT,
@@ -1913,6 +1947,40 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
       note TEXT,
       reviewed_by TEXT,
       reviewed_at TIMESTAMP,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS improvement_groups (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'collecting',
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS improvement_group_members (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      group_id TEXT NOT NULL,
+      signal_id TEXT,
+      event_id TEXT,
+      trace_id TEXT,
+      source TEXT NOT NULL,
+      summary TEXT,
+      scorer_name TEXT,
+      rating DOUBLE PRECISION,
+      judge_rationale TEXT,
+      input_text TEXT,
+      output_text TEXT,
+      added_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS improvement_reports (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      group_id TEXT NOT NULL,
+      member_count INTEGER NOT NULL,
+      report JSONB NOT NULL,
       created_at TIMESTAMP NOT NULL
     );
 

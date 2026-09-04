@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { and, eq, gte, isNull, lt } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, isNull, lt } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { traceStoreFor } from "../trace/store/index.js";
 import { getTraceRow } from "../trace/ingest.js";
@@ -775,4 +775,94 @@ export async function getCustomEvaluatorEvents(
     })
   );
   return { events: resolved.filter((e): e is CustomEvaluatorEvent => e !== null), totalCount: rows.length };
+}
+
+// Judge-score summary per trace, for one page of the trace list (the Live Traces "Score"
+// column). One batched events query plus one scorer-catalog load per page, never per-trace.
+//
+// "Worst" is threshold-aware, not the raw minimum: each verdict is judged against ITS OWN
+// scorer's alert threshold, so a 4.0 from a judge whose bar is 3 (a pass) cannot outrank a 6.0
+// from a judge whose bar is 7 (a failure). If any judge failed the trace, the chip is the
+// failing verdict with the worst margin below its bar; if all passed, it is the lowest passing
+// score. Attribution (scorer name), coverage (judgeCount), and the full per-judge breakdown
+// ride along so "which judge, and what did the others say" is a tooltip, not a dialog.
+export type TraceJudgeVerdict = { scorerName: string; rating: number; threshold: number | null; failing: boolean };
+export type TraceJudgeScores = {
+  rating: number;
+  threshold: number | null;
+  scorerName: string;
+  judgeCount: number;
+  failingCount: number;
+  verdicts: TraceJudgeVerdict[];
+};
+
+const MAX_VERDICTS_PER_TRACE = 8;
+
+export async function judgeScoreSummaryByTrace(db: Db, traceIds: string[]): Promise<Map<string, TraceJudgeScores>> {
+  if (traceIds.length === 0) return new Map();
+  const cond = and(
+    eq(db.schema.monitorEvents.projectId, db.projectId),
+    eq(db.schema.monitorEvents.type, "online_eval_score"),
+    inArray(db.schema.monitorEvents.traceId, traceIds),
+    isNotNull(db.schema.monitorEvents.rating)
+  );
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.monitorEvents).where(cond).all()
+      : await db.db.select().from(db.schema.monitorEvents).where(cond)
+  ) as Array<{ traceId: string | null; rating: number | null; onlineEvaluatorId: string | null }>;
+  if (rows.length === 0) return new Map();
+
+  const { listOnlineEvaluatorRows } = await import("./onlineEvaluators.js");
+  const scorers = new Map((await listOnlineEvaluatorRows(db)).map(row => [row.id, row]));
+
+  // Worst rating per (trace, scorer) first - one scorer sampling a trace repeatedly is still
+  // one judge's opinion, not extra coverage.
+  const perTraceScorer = new Map<string, Map<string, number>>();
+  for (const row of rows) {
+    if (row.traceId === null || row.rating === null) continue;
+    const key = row.onlineEvaluatorId ?? "unknown";
+    const byScorer = perTraceScorer.get(row.traceId) ?? new Map<string, number>();
+    const current = byScorer.get(key);
+    if (current === undefined || row.rating < current) byScorer.set(key, row.rating);
+    perTraceScorer.set(row.traceId, byScorer);
+  }
+
+  const summaries = new Map<string, TraceJudgeScores>();
+  for (const [traceId, byScorer] of perTraceScorer) {
+    const verdicts: TraceJudgeVerdict[] = [...byScorer.entries()].map(([scorerId, rating]) => {
+      const scorer = scorers.get(scorerId);
+      const threshold = scorer?.alertThreshold ?? null;
+      return {
+        // A deleted scorer's verdicts remain honest history - named as such rather than dropped.
+        scorerName: scorer?.name ?? "(removed scorer)",
+        rating,
+        threshold,
+        failing: threshold !== null && rating < threshold,
+      };
+    });
+    summaries.set(traceId, summarizeJudgeVerdicts(verdicts));
+  }
+  return summaries;
+}
+
+// Pure selection core, exported for its own tests: failing verdicts always outrank passing ones
+// (a 4.0 pass under a lenient bar cannot paint the chip red past a 6.0 failure under a strict
+// one); among failures the worst margin below its OWN bar wins; among passes the lowest
+// absolute rating. Element 0 of the sorted breakdown is the chip.
+export function summarizeJudgeVerdicts(verdicts: TraceJudgeVerdict[]): TraceJudgeScores {
+  const sorted = [...verdicts].sort((a, b) => {
+    if (a.failing !== b.failing) return a.failing ? -1 : 1;
+    if (a.failing && b.failing) return a.rating - (a.threshold ?? 0) - (b.rating - (b.threshold ?? 0));
+    return a.rating - b.rating;
+  });
+  const worst = sorted[0]!;
+  return {
+    rating: worst.rating,
+    threshold: worst.threshold,
+    scorerName: worst.scorerName,
+    judgeCount: sorted.length,
+    failingCount: sorted.filter(v => v.failing).length,
+    verdicts: sorted.slice(0, MAX_VERDICTS_PER_TRACE),
+  };
 }

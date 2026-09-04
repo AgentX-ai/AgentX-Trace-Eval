@@ -3,6 +3,7 @@ import type { Db } from "../../storage/db.js";
 import type { MonitoringWindow } from "./events.js";
 import { listEventsForTrace } from "./events.js";
 import { listOutcomeReportRows, type OutcomeReportRow } from "../outcomes/outcomeReports.js";
+import { krippendorffAlpha, alphaBand, MIN_ALPHA_ITEMS } from "./agreement.js";
 
 // Turns "trust the LLM judge" into a measured, falsifiable number: for every reported real-world
 // outcome (core/outcomes/outcomeReports.ts), compare it against whatever verdict AgentX had
@@ -76,6 +77,11 @@ export type CalibrationResult = {
   // Of everything AgentX called healthy, the fraction later reported as actually bad - the
   // sharper number, since this is a real miss, not over-caution.
   falseNegativeRate: number | null;
+  // Chance-corrected agreement (Krippendorff's alpha, agreement.ts) - agreementRate corrected
+  // for what a weighted coin would score on this label mix. Null below the sample floor.
+  alpha: number | null;
+  alphaBand: string | null;
+  alphaMinItems: number;
 };
 
 function windowDays(window: MonitoringWindow): number {
@@ -151,6 +157,12 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
   }
 
   const comparedCount = truePositive + trueNegative + falsePositive + falseNegative;
+  const alpha = krippendorffAlpha({
+    bothBad: truePositive,
+    bothFine: trueNegative,
+    judgeOnlyBad: falsePositive,
+    humanOnlyBad: falseNegative,
+  });
   const flaggedCount = truePositive + falsePositive; // everything AgentX said was "bad"
   const healthyCount = trueNegative + falseNegative; // everything AgentX said was "healthy"
 
@@ -163,5 +175,8 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
     agreementRate: comparedCount > 0 ? (truePositive + trueNegative) / comparedCount : null,
     falsePositiveRate: flaggedCount > 0 ? falsePositive / flaggedCount : null,
     falseNegativeRate: healthyCount > 0 ? falseNegative / healthyCount : null,
+    alpha,
+    alphaBand: alpha === null ? null : alphaBand(alpha),
+    alphaMinItems: MIN_ALPHA_ITEMS,
   };
 }

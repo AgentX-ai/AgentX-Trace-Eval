@@ -248,7 +248,11 @@ export class ClickHouseTraceStore implements TraceStore {
     return rows.map(fromStored);
   }
 
-  async listRootsPage(query: RootsPageQuery): Promise<TraceRow[]> {
+  // Shared by listRootsPage and countRootsPage so the page and its total agree on "matching".
+  private rootsPageFilter(query: Omit<RootsPageQuery, "cursor" | "pageSize">): {
+    conds: string[];
+    params: Record<string, unknown>;
+  } {
     const conds = [this.scope(), "parent_span_id IS NULL"];
     const params: Record<string, unknown> = {};
     if (query.framework) {
@@ -263,6 +267,17 @@ export class ClickHouseTraceStore implements TraceStore {
       const cols = ["name", "gen_ai_input_messages", "gen_ai_output_messages", "gen_ai_request_model", "error", "id", "session_id"];
       conds.push(`(${cols.map(c => `${c} ILIKE {pattern:String}`).join(" OR ")})`);
     }
+    return { conds, params };
+  }
+
+  async countRootsPage(query: Omit<RootsPageQuery, "cursor" | "pageSize">): Promise<number> {
+    const { conds, params } = this.rootsPageFilter(query);
+    const rows = await this.rows(`SELECT count(*) AS id FROM ${TABLE} WHERE ${conds.join(" AND ")}`, params);
+    return Number((rows[0] as unknown as { id: string })?.id ?? 0);
+  }
+
+  async listRootsPage(query: RootsPageQuery): Promise<TraceRow[]> {
+    const { conds, params } = this.rootsPageFilter(query);
     if (query.cursor) {
       const at = query.cursor.createdAt.getTime();
       params.cursorId = query.cursor.id;
