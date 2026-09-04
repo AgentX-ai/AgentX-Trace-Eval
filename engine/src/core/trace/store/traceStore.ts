@@ -79,6 +79,9 @@ export interface TraceStore {
   listBySession(sessionId: string): Promise<TraceRow[]>;
   listRecent(limit: number): Promise<TraceRow[]>;
   listRootsPage(query: RootsPageQuery): Promise<TraceRow[]>;
+  /** Total roots matching the same filters as listRootsPage (cursor ignored) - the trace
+   *  list's "X of N" pagination total. */
+  countRootsPage(query: Omit<RootsPageQuery, "cursor" | "pageSize">): Promise<number>;
   queryWindow(filter: SpanWindowFilter): Promise<TraceRow[]>;
   /** Root-span count in the project, optionally windowed (rate limits, volume estimates). */
   countRoots(since?: Date): Promise<number>;

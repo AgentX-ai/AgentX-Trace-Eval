@@ -248,7 +248,11 @@ export class ClickHouseTraceStore implements TraceStore {
     return rows.map(fromStored);
   }
 
-  async listRootsPage(query: RootsPageQuery): Promise<TraceRow[]> {
+  // Shared by listRootsPage and countRootsPage so the page and its total agree on "matching".
+  private rootsPageFilter(query: Omit<RootsPageQuery, "cursor" | "pageSize">): {
+    conds: string[];
+    params: Record<string, unknown>;
+  } {
     const conds = [this.scope(), "parent_span_id IS NULL"];
     const params: Record<string, unknown> = {};
     if (query.framework) {
@@ -263,6 +267,21 @@ export class ClickHouseTraceStore implements TraceStore {
       const cols = ["name", "gen_ai_input_messages", "gen_ai_output_messages", "gen_ai_request_model", "error", "id", "session_id"];
       conds.push(`(${cols.map(c => `${c} ILIKE {pattern:String}`).join(" OR ")})`);
     }
+    return { conds, params };
+  }
+
+  async countRootsPage(query: Omit<RootsPageQuery, "cursor" | "pageSize">): Promise<number> {
+    const { conds, params } = this.rootsPageFilter(query);
+    // NOT `AS id`: ClickHouse resolves SELECT aliases inside WHERE, so aliasing the aggregate
+    // to a real column name turns the search condition's `id ILIKE ...` into ILIKE on a UInt64
+    // and the whole query throws (countRoots gets away with it only because its conditions
+    // never mention `id`).
+    const rows = await this.rows(`SELECT count(*) AS total FROM ${TABLE} WHERE ${conds.join(" AND ")}`, params);
+    return Number((rows[0] as unknown as { total: string })?.total ?? 0);
+  }
+
+  async listRootsPage(query: RootsPageQuery): Promise<TraceRow[]> {
+    const { conds, params } = this.rootsPageFilter(query);
     if (query.cursor) {
       const at = query.cursor.createdAt.getTime();
       params.cursorId = query.cursor.id;

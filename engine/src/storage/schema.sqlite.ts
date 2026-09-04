@@ -1189,3 +1189,50 @@ export const monitorRollups = sqliteTable(
     rollupKeyUnique: uniqueIndex("monitor_rollups_key").on(table.projectId, table.minuteTs, table.production),
   })
 );
+
+// Auto-improve (close the loop): human-CONFIRMED production failures accumulate into groups,
+// and a group is later spent on an improvement REPORT - an id-addressable analysis a coding
+// agent (the AgentX-Eval-Skill auto-improve skill) reads to fix the agent's source. Members are
+// occurrence-level evidence (trace + verdict + rationale), captured automatically when a
+// Confirm verdict lands (signals.ts) - Confirm IS the add; declining is choosing Ignore.
+export const improvementGroups = sqliteTable("improvement_groups", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  name: text("name").notNull(),
+  // "collecting" until a report is generated from it; generating never closes the group -
+  // it keeps accumulating and can be spent again.
+  status: text("status").notNull().default("collecting"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export const improvementGroupMembers = sqliteTable("improvement_group_members", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  groupId: text("group_id").notNull(),
+  signalId: text("signal_id"),
+  eventId: text("event_id"),
+  traceId: text("trace_id"),
+  // "confirm" = signal-review Confirm verdict; "low-score" = confirmed judge verdict; "manual"
+  // = added from the Confirmed tab by hand.
+  source: text("source").notNull(),
+  // Evidence snapshot at confirm time - the report generator reads these, not live joins, so a
+  // pruned trace cannot hollow out a report later.
+  summary: text("summary"),
+  scorerName: text("scorer_name"),
+  rating: real("rating"),
+  judgeRationale: text("judge_rationale"),
+  inputText: text("input_text"),
+  outputText: text("output_text"),
+  addedAt: integer("added_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export const improvementReports = sqliteTable("improvement_reports", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  groupId: text("group_id").notNull(),
+  memberCount: integer("member_count").notNull(),
+  // The synthesized report (themes, evidence, recommendations) as one JSON document - the unit
+  // the auto-improve skill fetches by id.
+  report: text("report", { mode: "json" }).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});

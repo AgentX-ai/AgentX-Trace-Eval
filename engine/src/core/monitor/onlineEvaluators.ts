@@ -12,6 +12,8 @@ import {
 } from "../evaluate/evaluationSettings.js";
 import { renderTraceTrajectory, renderUsedToolDefinitions, getTraceRetrievalContext } from "../trace/trajectory.js";
 import { logger } from "../../log.js";
+import { getProfileRow } from "./profiles.js";
+import { extractWebhookUrls, notifyWebhooks } from "./webhooks.js";
 
 // The ONLINE PROFILE of an LLM Judge Scorer (core/monitor/judgeScorers.ts is the unified
 // surface): a real judge scoring sampled live traffic continuously, producing a rating over
@@ -355,6 +357,11 @@ export async function runOnlineEvaluators(
   ctx: { agentId: string | null; traceId: string | null }
 ): Promise<void> {
   const evaluators = await listOnlineEvaluatorRows(db);
+  // The agent's alert channels, for webhook fan-out on low-score signals below - the same
+  // channels a matched Pattern pages through (detect.ts). Fetched once per trace, not per
+  // evaluator; a low judge score that raises a Signal but never notifies anyone is exactly the
+  // "quiet failure" customers configure a webhook to prevent.
+  const alertProfile = ctx.agentId ? await getProfileRow(db, ctx.agentId) : null;
   const inputText = typeof trace.input === "string" ? trace.input : JSON.stringify(trace.input ?? "");
   const outputText = typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output ?? "");
 
@@ -473,19 +480,29 @@ export async function runOnlineEvaluators(
     // populate the ratings chart, no triage intended).
     let signalId: string | null = null;
     if (evaluator.alertThreshold !== null && rating < evaluator.alertThreshold) {
+      const summary = `"${evaluator.name}" rated this response ${rating.toFixed(1)}/10 (below the ${evaluator.alertThreshold} threshold): ${justification}`;
       const signal = await upsertSignal(
         db,
         {
           type: "online_evaluator_low_score",
           severity: evaluator.severity,
           polarity: "failure",
-          summary: `"${evaluator.name}" rated this response ${rating.toFixed(1)}/10 (below the ${evaluator.alertThreshold} threshold): ${justification}`,
+          summary,
           patternKey: `online-eval:${evaluator.id}`,
           rootCause: evaluator.name,
         },
         { agentId: ctx.agentId, traceId: ctx.traceId, evidence: { input: trace.input, output: trace.output } }
       );
       signalId = signal._id;
+      // Webhook parity with Patterns: a below-threshold judge verdict is a failure detection
+      // like any matched pattern, so it pages the same channels (fire-and-forget, like detect.ts).
+      notifyWebhooks(extractWebhookUrls(alertProfile?.channels), {
+        summary,
+        severity: evaluator.severity,
+        patternKey: `online-eval:${evaluator.id}`,
+        agentId: ctx.agentId,
+        rootCause: evaluator.name,
+      });
     }
 
     await recordEvent(db, {

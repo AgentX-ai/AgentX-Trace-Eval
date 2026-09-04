@@ -2,7 +2,9 @@ import { and, eq, gte } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { listEventsSince, windowConfig, type MonitoringWindow, type EventRow } from "./events.js";
 import { getOnlineEvaluatorRow } from "./onlineEvaluators.js";
+import { krippendorffAlpha, alphaBand, MIN_ALPHA_ITEMS } from "./agreement.js";
 import { getEvaluationSettingsRow } from "../evaluate/evaluationSettings.js";
+import { listEvaluationSettingsVersions } from "../evaluate/versions.js";
 import { getTraceRow } from "../trace/ingest.js";
 import { extractText } from "./events.js";
 import {
@@ -59,16 +61,38 @@ export type CalibrationCase = {
   createdAt: string;
 };
 
+// The windows calibration/tuning accept: the shared Monitor windows, plus "rubric" - verdicts
+// produced by the CURRENT rubric, i.e. since this scorer's criteria were last edited/published
+// (its latest evaluation-settings version), clamped to 30 days. That is the semantically right
+// evidence set for tuning: older disagreements are complaints about criteria that no longer
+// exist, and tuning from them re-litigates already-fixed issues. A scorer whose rubric was
+// never edited has no version boundary and simply gets the full 30-day clamp.
+export type TuningWindow = MonitoringWindow | "rubric";
+
 export type EvaluatorCalibration = {
   evaluatorId: string;
   evaluatorName: string;
   threshold: number;
+  // The window actually applied and its resolved start - so a UI can say "since the rubric was
+  // published on <date>" instead of leaving the boundary invisible.
+  window: TuningWindow;
+  since: string;
   scoredEvents: number;
   withGroundTruth: number;
   agreements: number;
   overFlagged: number; // judge said bad, reality said fine - criteria too strict
   missed: number; // judge said fine, reality said bad - criteria too generous
   agreementRate: number | null;
+  // Chance-corrected agreement (Krippendorff's alpha over the binary verdict pair - see
+  // agreement.ts for the model and why it can be null). agreementRate alone is inflated by
+  // class imbalance; alpha is the "is this judge better than a weighted coin" number.
+  alpha: number | null;
+  alphaBand: string | null;
+  alphaMinItems: number; // the floor below which alpha is withheld, so UIs can explain a null
+  // Mean absolute error between the judge's 0-10 rating and the human's re-score, over the
+  // pairs where a correction actually carries a number - the magnitude story alpha can't tell.
+  ratingMae: number | null;
+  withCorrectedScore: number;
   disagreementCases: CalibrationCase[];
   agreementCases: CalibrationCase[];
 };
@@ -96,14 +120,24 @@ type OutcomeRow = { traceId: string | null; isNegative: boolean; reason: string 
 export async function getEvaluatorCalibration(
   db: Db,
   evaluatorId: string,
-  window: MonitoringWindow = "7d"
+  window: TuningWindow = "7d"
 ): Promise<EvaluatorCalibration | null> {
   const evaluator = await getOnlineEvaluatorRow(db, evaluatorId);
   if (!evaluator) return null;
   const threshold = evaluator.alertThreshold ?? DEFAULT_BAD_THRESHOLD;
 
-  const { days } = windowConfig(window);
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  let since: Date;
+  if (window === "rubric") {
+    const clamp = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const versions = evaluator.evaluationSettingsId
+      ? await listEvaluationSettingsVersions(db, evaluator.evaluationSettingsId)
+      : [];
+    const lastEdit = versions[0]?.createdAt ?? null; // newest first
+    since = lastEdit && lastEdit.getTime() > clamp.getTime() ? lastEdit : clamp;
+  } else {
+    const { days } = windowConfig(window);
+    since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  }
   const events = (await listEventsSince(db, since)).filter(
     (e): e is EventRow & { rating: number; traceId: string } =>
       e.onlineEvaluatorId === evaluatorId && e.rating !== null && e.traceId !== null
@@ -177,9 +211,12 @@ export async function getEvaluatorCalibration(
   const disagreementCases: CalibrationCase[] = [];
   const agreementCases: CalibrationCase[] = [];
   let agreements = 0;
+  let agreedBad = 0;
   let overFlagged = 0;
   let missed = 0;
   let withGroundTruth = 0;
+  let withCorrectedScore = 0;
+  let scoreErrorSum = 0;
 
   for (const event of events) {
     const correction = correctionByEvent.get(event.id);
@@ -247,9 +284,15 @@ export async function getEvaluatorCalibration(
     if (!groundTruth) continue;
     withGroundTruth++;
     const agree = judgedBad === groundTruth.isBad;
-    if (agree) agreements++;
-    else if (judgedBad) overFlagged++;
+    if (agree) {
+      agreements++;
+      if (judgedBad) agreedBad++;
+    } else if (judgedBad) overFlagged++;
     else missed++;
+    if (groundTruth.correctedScore !== null) {
+      withCorrectedScore++;
+      scoreErrorSum += Math.abs(event.rating - groundTruth.correctedScore);
+    }
 
     const bucket = agree ? agreementCases : disagreementCases;
     if (bucket.length < MAX_CASES_PER_BUCKET) {
@@ -268,16 +311,30 @@ export async function getEvaluatorCalibration(
     }
   }
 
+  const alpha = krippendorffAlpha({
+    bothBad: agreedBad,
+    bothFine: agreements - agreedBad,
+    judgeOnlyBad: overFlagged,
+    humanOnlyBad: missed,
+  });
+
   return {
     evaluatorId,
     evaluatorName: evaluator.name,
     threshold,
+    window,
+    since: since.toISOString(),
     scoredEvents: events.length,
     withGroundTruth,
     agreements,
     overFlagged,
     missed,
     agreementRate: withGroundTruth > 0 ? Math.round((agreements / withGroundTruth) * 1000) / 1000 : null,
+    alpha,
+    alphaBand: alpha === null ? null : alphaBand(alpha),
+    alphaMinItems: MIN_ALPHA_ITEMS,
+    ratingMae: withCorrectedScore > 0 ? Math.round((scoreErrorSum / withCorrectedScore) * 100) / 100 : null,
+    withCorrectedScore,
     disagreementCases,
     agreementCases,
   };
@@ -336,7 +393,7 @@ function describeCase(c: CalibrationCase, i: number): string {
 export async function proposeJudgeTuning(
   db: Db,
   evaluatorId: string,
-  opts: { window?: MonitoringWindow; caseEventIds?: string[]; judgeModel?: string } = {}
+  opts: { window?: TuningWindow; caseEventIds?: string[]; judgeModel?: string } = {}
 ): Promise<JudgeTuningProposal | { error: string } | null> {
   const evaluator = await getOnlineEvaluatorRow(db, evaluatorId);
   if (!evaluator?.evaluationSettingsId) return null;
@@ -462,7 +519,7 @@ export async function validateJudgeTuning(
   db: Db,
   evaluatorId: string,
   candidate: { acceptanceCriteria: string; rejectionCriteria: string; evaluationCriteria: string; judgePrompt?: string },
-  opts: { window?: MonitoringWindow } = {}
+  opts: { window?: TuningWindow } = {}
 ): Promise<JudgeTuningValidation | { error: string } | null> {
   const evaluator = await getOnlineEvaluatorRow(db, evaluatorId);
   if (!evaluator?.evaluationSettingsId) return null;

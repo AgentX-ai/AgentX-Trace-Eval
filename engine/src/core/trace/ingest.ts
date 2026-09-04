@@ -285,6 +285,7 @@ async function findTraceBySpanId(db: Db, spanId: string): Promise<{ id: string; 
 
 export type { TraceRow } from "./store/traceStore.js";
 import type { TraceRow } from "./store/traceStore.js";
+import { judgeScoreSummaryByTrace } from "../monitor/events.js";
 
 // Matches AgentX-web-front's ProductionTrace type (src/types/evaluate.ts): _id not id, no
 // workspaceId/performanceSummary/metadata on the wire (the dashboard's trace list doesn't need
@@ -394,20 +395,33 @@ export async function listTracesPaginated(
   // NaN-safe: ?limit=abc reaches here as NaN via Number(); fall back to the default page size.
   const pageSize = Number.isFinite(limit) ? Math.min(Math.max(Math.floor(limit), 1), 100) : 50;
   const cursorRow = cursor ? await getTraceRow(db, cursor) : undefined;
-  const rows = await traceStoreFor(db).listRootsPage({
-    pageSize,
-    cursor: cursorRow ? { createdAt: cursorRow.createdAt, id: cursorRow.id } : null,
+  const store = traceStoreFor(db);
+  const filters = {
     // Folded like the stored value, so ?framework=LangChain matches rows stored as "langchain".
     framework: normalizeFramework(framework) ?? undefined,
     source,
     searchTerm: search,
-  });
+  };
+  // Page and total in parallel - the total powers the dashboard's "X-Y of N" pagination and
+  // uses the exact same filters, so the two can never disagree.
+  const [rows, totalCount] = await Promise.all([
+    store.listRootsPage({
+      pageSize,
+      cursor: cursorRow ? { createdAt: cursorRow.createdAt, id: cursorRow.id } : null,
+      ...filters,
+    }),
+    store.countRootsPage(filters),
+  ]);
   const hasNextPage = rows.length > pageSize;
   const page = rows.slice(0, pageSize);
+  // The Live Traces "Score" column: threshold-aware judge summary per listed trace, one batched
+  // query (core/monitor/events.ts). Null = no judge sampled this trace, rendered as "-".
+  const judgeScores = await judgeScoreSummaryByTrace(db, page.map(row => row.id));
   return {
-    traces: page.map(toWire),
+    traces: page.map(row => ({ ...toWire(row), judgeScores: judgeScores.get(row.id) ?? null })),
     hasNextPage,
     nextCursor: hasNextPage ? (page[page.length - 1]?.id ?? null) : null,
+    totalCount,
   };
 }
 

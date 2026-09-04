@@ -33,7 +33,20 @@ import {
 } from "../core/monitor/events.js";
 import { getTopicsTrend, getTopIntents, getIssueBreakdown, getTopicsMap } from "../core/monitor/topics.js";
 import { getJudgeCalibration } from "../core/monitor/outcomeCalibration.js";
-import { getEvaluatorCalibration, proposeJudgeTuning, validateJudgeTuning } from "../core/monitor/judgeTuning.js";
+import {
+  listImprovementGroups,
+  getImprovementGroup,
+  removeGroupMember,
+  generateImprovementReport,
+  getImprovementReport,
+  listImprovementReports,
+} from "../core/monitor/improvementGroups.js";
+import {
+  getEvaluatorCalibration,
+  proposeJudgeTuning,
+  validateJudgeTuning,
+  type TuningWindow,
+} from "../core/monitor/judgeTuning.js";
 import { getModelComparison } from "../core/monitor/modelComparison.js";
 import { listSessionScores } from "../core/monitor/sessionScores.js";
 import { listSessions } from "../core/monitor/sessions.js";
@@ -889,14 +902,91 @@ agentMonitoringDashboardRouter.get("/online-evaluators/:evaluatorId/events", asy
   res.status(200).json(result);
 });
 
+// Auto-improve (core/monitor/improvementGroups.ts): human-confirmed production failures
+// accumulate into groups (Confirm verdicts land there automatically - signals.ts); a group is
+// spent on an id-addressable improvement report the AgentX-Eval-Skill auto-improve skill
+// fetches and triages against the agent's source. Online-evidence only, by construction.
+agentMonitoringDashboardRouter.get("/improvement-groups", async (req: Request, res: Response) => {
+  res.status(200).json({ improvementGroups: await listImprovementGroups(scopedDb(req)) });
+});
+
+agentMonitoringDashboardRouter.get("/improvement-groups/:id", async (req: Request, res: Response) => {
+  const group = await getImprovementGroup(scopedDb(req), req.params.id!);
+  if (!group) {
+    res.status(404).json({ error: "Improvement group not found" });
+    return;
+  }
+  res.status(200).json({ improvementGroup: group });
+});
+
+agentMonitoringDashboardRouter.delete(
+  "/improvement-groups/:groupId/members/:memberId",
+  async (req: Request, res: Response) => {
+    const removed = await removeGroupMember(scopedDb(req), req.params.groupId!, req.params.memberId!);
+    if (!removed) {
+      res.status(404).json({ error: "Group member not found" });
+      return;
+    }
+    res.status(200).json({ removed: true });
+  }
+);
+
+// Generates the report - one real LLM call over the group's evidence, so this is explicit and
+// billed, never implicit.
+const generateReportSchema = z.object({ model: z.string().min(1).optional() }).strict();
+
+agentMonitoringDashboardRouter.post(
+  "/improvement-groups/:id/report",
+  validateBody(generateReportSchema),
+  async (req: Request, res: Response) => {
+  try {
+    const body = req.body as { model?: string };
+    const result = await generateImprovementReport(scopedDb(req), req.params.id!, {
+      model: body.model,
+    });
+    if (!result) {
+      res.status(404).json({ error: "Improvement group not found" });
+      return;
+    }
+    if ("error" in result) {
+      res.status(422).json(result);
+      return;
+    }
+    res.status(200).json({ report: result });
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : "Report generation failed" });
+  }
+  }
+);
+
+agentMonitoringDashboardRouter.get("/improvement-reports", async (req: Request, res: Response) => {
+  res.status(200).json({ improvementReports: await listImprovementReports(scopedDb(req)) });
+});
+
+// The id-addressable unit the auto-improve skill consumes.
+agentMonitoringDashboardRouter.get("/improvement-reports/:id", async (req: Request, res: Response) => {
+  const report = await getImprovementReport(scopedDb(req), req.params.id!);
+  if (!report) {
+    res.status(404).json({ error: "Improvement report not found" });
+    return;
+  }
+  res.status(200).json({ report });
+});
+
 // Judge tuning (core/monitor/judgeTuning.ts): measure this evaluator against recorded reality
 // (triage corrections, outcomes, end-user votes), propose a rewrite of its criteria from the
 // disagreements, validate the candidate by exact re-judging, publish through the evaluator's
 // evaluation-settings config (version history included via patchEvaluationSettings).
+// Tuning surfaces additionally accept window=rubric - "verdicts produced by the current
+// rubric" (since the criteria's last edit, clamped to 30d; see TuningWindow in judgeTuning.ts).
+function parseTuningWindow(raw: unknown): TuningWindow {
+  return raw === "24h" || raw === "30d" || raw === "rubric" ? raw : "7d";
+}
+
 agentMonitoringDashboardRouter.get(
   "/online-evaluators/:evaluatorId/calibration",
   async (req: Request, res: Response) => {
-    const result = await getEvaluatorCalibration(scopedDb(req), req.params.evaluatorId!, parseWindow(req));
+    const result = await getEvaluatorCalibration(scopedDb(req), req.params.evaluatorId!, parseTuningWindow(req.query.window));
     if (!result) {
       res.status(404).json({ error: "Online evaluator not found" });
       return;
@@ -909,7 +999,7 @@ agentMonitoringDashboardRouter.post("/online-evaluators/:evaluatorId/tune", asyn
   const body = req.body ?? {};
   try {
     const result = await proposeJudgeTuning(scopedDb(req), req.params.evaluatorId!, {
-      window: body.window === "24h" || body.window === "30d" ? body.window : "7d",
+      window: parseTuningWindow(body.window),
       caseEventIds: Array.isArray(body.caseEventIds)
         ? body.caseEventIds.filter((id: unknown): id is string => typeof id === "string")
         : undefined,
@@ -948,7 +1038,7 @@ agentMonitoringDashboardRouter.post(
           evaluationCriteria: body.evaluationCriteria,
           judgePrompt: typeof body.judgePrompt === "string" ? body.judgePrompt : undefined,
         },
-        { window: body.window === "24h" || body.window === "30d" ? body.window : "7d" }
+        { window: parseTuningWindow(body.window) }
       );
       if (!result) {
         res.status(404).json({ error: "Online evaluator (or its evaluator config) not found" });

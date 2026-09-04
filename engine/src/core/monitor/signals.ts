@@ -2,6 +2,7 @@ import { nanoid } from "nanoid";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { listOccurrencesForSignal, extractText, type EventRow } from "./events.js";
+import { logger } from "../../log.js";
 import { getTraceRow } from "../trace/ingest.js";
 import { getAgentNamesById } from "./agents.js";
 
@@ -396,6 +397,34 @@ export async function updateSignal(db: Db, id: string, patch: UpdateSignalInput)
   // Written once per transition, pinned to the newest occurrence's event so the label pairs
   // with the exact verdict.
   const becameTriaged = nextStatus === "triaged" && existing.status !== "triaged";
+  // Auto-improve capture: a Confirm verdict IS the accumulation gesture - the confirmed
+  // occurrence lands in the project's "Confirmed failures" improvement group, later spent on an
+  // improvement report (core/monitor/improvementGroups.ts). Every failure kind counts (pattern
+  // hits and low judge scores alike); non-fatal, a capture hiccup must not fail the triage.
+  if (becameTriaged && (existing.polarity ?? "failure") === "failure") {
+    try {
+      const { captureConfirmedFailure } = await import("./improvementGroups.js");
+      const occurrences = await listOccurrencesForSignal(db, id);
+      const newest = occurrences[occurrences.length - 1];
+      const evidence = (existing.evidence ?? {}) as Record<string, unknown>;
+      const asText = (value: unknown): string | null =>
+        typeof value === "string" ? value : value == null ? null : JSON.stringify(value);
+      await captureConfirmedFailure(db, {
+        signalId: id,
+        patternKey: existing.patternKey,
+        summary: existing.summary,
+        scorerName: existing.rootCause ?? null,
+        eventId: newest?.id ?? null,
+        traceId: newest?.traceId ?? existing.traceId ?? null,
+        rating: newest?.rating ?? null,
+        judgeRationale: newest?.justification ?? null,
+        inputText: asText(evidence.query ?? evidence.input),
+        outputText: asText(evidence.responsePreview ?? evidence.output),
+      });
+    } catch (err) {
+      logger.error({ err }, "Failed to capture confirmed failure into the improvement group");
+    }
+  }
   const becameFalsePositive =
     nextStatus === "resolved" &&
     updated.resolutionReason === "false_positive" &&

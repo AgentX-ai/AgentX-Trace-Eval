@@ -781,3 +781,38 @@ export const monitorRollups = pgTable(
     rollupKeyUnique: uniqueIndex("monitor_rollups_key").on(table.projectId, table.minuteTs, table.production),
   })
 );
+
+// Auto-improve groups/members/reports - see schema.sqlite.ts for the model.
+export const improvementGroups = pgTable("improvement_groups", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  name: text("name").notNull(),
+  status: text("status").notNull().default("collecting"),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+});
+
+export const improvementGroupMembers = pgTable("improvement_group_members", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  groupId: text("group_id").notNull(),
+  signalId: text("signal_id"),
+  eventId: text("event_id"),
+  traceId: text("trace_id"),
+  source: text("source").notNull(),
+  summary: text("summary"),
+  scorerName: text("scorer_name"),
+  rating: doublePrecision("rating"),
+  judgeRationale: text("judge_rationale"),
+  inputText: text("input_text"),
+  outputText: text("output_text"),
+  addedAt: timestamp("added_at", { mode: "date" }).notNull(),
+});
+
+export const improvementReports = pgTable("improvement_reports", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  groupId: text("group_id").notNull(),
+  memberCount: integer("member_count").notNull(),
+  report: jsonb("report").notNull(),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+});

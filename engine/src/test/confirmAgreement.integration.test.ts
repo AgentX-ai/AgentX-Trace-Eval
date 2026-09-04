@@ -1,6 +1,7 @@
 import http from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEngine, postJson, type TestEngine } from "./server.js";
+import { evaluatorCalibrationSchema } from "../contract/wire.js";
 
 // Confirming a judge-raised signal is the AGREEMENT half of judge calibration: before this,
 // only disagreements (wrong-judgement corrections, outcomes, review labels) were recorded, so a
@@ -93,10 +94,14 @@ describe("Confirm records judge agreement", () => {
     });
     expect(confirm.status).toBe(200);
 
-    const after = (await api(`/agent-monitoring/online-evaluators/${evaluator._id}/calibration?window=24h`))
-      .body as { agreements: number; withGroundTruth: number };
+    const afterRes = await api(`/agent-monitoring/online-evaluators/${evaluator._id}/calibration?window=24h`);
+    const after = evaluatorCalibrationSchema.parse(afterRes.body);
     expect(after.withGroundTruth).toBe(before.withGroundTruth + 1);
     expect(after.agreements).toBe(before.agreements + 1);
+    // Chance-corrected agreement rides the same response; with one labeled pair it is below
+    // the sample floor and correctly withheld rather than fabricated.
+    expect(after.alpha).toBeNull();
+    expect(after.alphaMinItems).toBeGreaterThan(1);
 
     // Confirming again (e.g. re-triage from the table) must not double-count: the write only
     // happens on the transition INTO triaged.
@@ -123,5 +128,44 @@ describe("Confirm records judge agreement", () => {
     expect(flipped.withGroundTruth).toBe(after.withGroundTruth);
     expect(flipped.agreements).toBe(after.agreements - 1);
     expect(flipped.overFlagged).toBe(1);
+  });
+
+  it("window=rubric excludes verdicts that predate a rubric edit", async () => {
+    const evaluators = await api("/agent-monitoring/online-evaluators");
+    const evaluator = ((evaluators.body as { evaluators: Array<{ _id: string; name: string }> }).evaluators ?? []).find(
+      e => e.name === "confirm-judge"
+    )!;
+    const scorers = await api("/agent-monitoring/judge-scorers");
+    const scorer = ((scorers.body as { judgeScorers: Array<{ _id: string; name: string }> }).judgeScorers ?? []).find(
+      j => j.name === "confirm-judge"
+    )!;
+
+    // Under the current (untouched) rubric, the labeled pair from the previous test is inside
+    // the rubric window's 30-day clamp.
+    const before = evaluatorCalibrationSchema.parse(
+      (await api(`/agent-monitoring/online-evaluators/${evaluator._id}/calibration?window=rubric`)).body
+    );
+    expect(before.window).toBe("rubric");
+    expect(before.withGroundTruth).toBeGreaterThanOrEqual(1);
+
+    // Editing the criteria publishes a new rubric version - every existing verdict now belongs
+    // to a rubric that no longer exists, so the rubric window must exclude all of it...
+    const edit = await api(`/agent-monitoring/judge-scorers/${scorer._id}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ judge: { evaluationCriteria: "Tightened after tuning." } }),
+    });
+    expect(edit.status).toBe(200);
+    const afterEdit = evaluatorCalibrationSchema.parse(
+      (await api(`/agent-monitoring/online-evaluators/${evaluator._id}/calibration?window=rubric`)).body
+    );
+    expect(afterEdit.withGroundTruth).toBe(0);
+    expect(new Date(afterEdit.since).getTime()).toBeGreaterThan(new Date(before.since).getTime());
+
+    // ...while the plain time windows still see the old evidence.
+    const week = evaluatorCalibrationSchema.parse(
+      (await api(`/agent-monitoring/online-evaluators/${evaluator._id}/calibration?window=7d`)).body
+    );
+    expect(week.withGroundTruth).toBe(before.withGroundTruth);
   });
 });

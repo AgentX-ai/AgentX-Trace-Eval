@@ -118,6 +118,29 @@ export const traceListItemSchema = z
     createdAt: isoDate,
     inputTokens: z.number().nullable(),
     outputTokens: z.number().nullable(),
+    // Threshold-aware judge summary: the headline verdict is the one most below ITS OWN
+    // scorer's alert bar (failures always outrank passes), with attribution, coverage, and the
+    // per-judge breakdown. Null = never sampled by a judge, never fabricated.
+    judgeScores: z
+      .object({
+        rating: z.number(),
+        threshold: z.number().nullable(),
+        scorerName: z.string(),
+        judgeCount: z.number(),
+        failingCount: z.number(),
+        verdicts: z.array(
+          z
+            .object({
+              scorerName: z.string(),
+              rating: z.number(),
+              threshold: z.number().nullable(),
+              failing: z.boolean(),
+            })
+            .strict()
+        ),
+      })
+      .strict()
+      .nullable(),
   })
   .strict();
 
@@ -126,6 +149,8 @@ export const tracesPageSchema = z
     traces: z.array(traceListItemSchema),
     hasNextPage: z.boolean(),
     nextCursor: z.string().nullable(),
+    // Total roots matching the request's filters (cursor excluded) - the "X-Y of N" total.
+    totalCount: z.number(),
   })
   .strict();
 
@@ -479,7 +504,155 @@ export const runGateResultSchema = z
   })
   .strict();
 
+export const calibrationCaseSchema = z
+  .object({
+    eventId: z.string(),
+    traceId: z.string(),
+    input: z.string(),
+    output: z.string(),
+    rating: z.number(),
+    justification: z.string().nullable(),
+    judgedBad: z.boolean(),
+    groundTruth: z
+      .object({
+        source: z.enum(["correction", "confirmed", "review", "outcome", "feedback"]),
+        isBad: z.boolean(),
+        detail: z.string().nullable(),
+        correctedScore: z.number().nullable(),
+        reportedBy: z.string().nullable(),
+      })
+      .strict(),
+    createdAt: z.string(),
+  })
+  .strict();
+
+// Per-scorer judge<->human alignment. alpha is Krippendorff's alpha over the binary verdict
+// pair (chance-corrected agreement - see core/monitor/agreement.ts); null below alphaMinItems
+// labeled pairs or when every label is identical, never fabricated.
+export const evaluatorCalibrationSchema = z
+  .object({
+    evaluatorId: z.string(),
+    evaluatorName: z.string(),
+    threshold: z.number(),
+    // "rubric" = since the criteria's last edit (clamped to 30d); since is the resolved start.
+    window: z.enum(["24h", "7d", "30d", "rubric"]),
+    since: z.string(),
+    scoredEvents: z.number(),
+    withGroundTruth: z.number(),
+    agreements: z.number(),
+    overFlagged: z.number(),
+    missed: z.number(),
+    agreementRate: z.number().nullable(),
+    alpha: z.number().nullable(),
+    alphaBand: z.string().nullable(),
+    alphaMinItems: z.number(),
+    ratingMae: z.number().nullable(),
+    withCorrectedScore: z.number(),
+    disagreementCases: z.array(calibrationCaseSchema),
+    agreementCases: z.array(calibrationCaseSchema),
+  })
+  .strict();
+
+// Project-level verdict-vs-reality calibration (the Overview card).
+export const projectCalibrationSchema = z
+  .object({
+    window: z.string(),
+    reportedCount: z.number(),
+    reviewLabelCount: z.number(),
+    noVerdictCount: z.number(),
+    comparedCount: z.number(),
+    agreementRate: z.number().nullable(),
+    falsePositiveRate: z.number().nullable(),
+    falseNegativeRate: z.number().nullable(),
+    alpha: z.number().nullable(),
+    alphaBand: z.string().nullable(),
+    alphaMinItems: z.number(),
+  })
+  .strict();
+
+// ---- Auto-improve (improvement groups + reports) ---------------------------------------------
+
+export const improvementGroupSchema = z
+  .object({
+    _id: z.string(),
+    name: z.string(),
+    status: z.enum(["collecting", "proposed"]),
+    memberCount: z.number(),
+    createdAt: isoDate,
+  })
+  .strict();
+
+export const improvementGroupsResponseSchema = z
+  .object({ improvementGroups: z.array(improvementGroupSchema) })
+  .strict();
+
+// The id-addressable report the AgentX-Eval-Skill auto-improve skill fetches: clustered issues
+// with recommendations, each carrying its confirmed-failure evidence inline (snapshotted at
+// confirm time, so trace pruning cannot hollow the report out).
+export const improvementReportSchema = z
+  .object({
+    _id: z.string(),
+    groupId: z.string(),
+    groupName: z.string(),
+    memberCount: z.number(),
+    summary: z.string(),
+    issues: z.array(
+      z
+        .object({
+          title: z.string(),
+          description: z.string(),
+          recommendation: z.string(),
+          evidence: z.array(
+            z
+              .object({
+                traceId: z.string().nullable(),
+                scorerName: z.string().nullable(),
+                rating: z.number().nullable(),
+                judgeRationale: z.string().nullable(),
+                input: z.string().nullable(),
+                output: z.string().nullable(),
+                source: z.string(),
+              })
+              .strict()
+          ),
+        })
+        .strict()
+    ),
+    createdAt: isoDate,
+  })
+  .strict();
+
+export const improvementReportResponseSchema = z.object({ report: improvementReportSchema }).strict();
+
 export const WIRE_CONTRACT = [
+  {
+    method: "get" as const,
+    path: "/agent-monitoring/improvement-groups",
+    summary: "Confirmed-failure groups accumulating auto-improve evidence",
+    response: improvementGroupsResponseSchema,
+    name: "ImprovementGroupsList",
+  },
+  {
+    method: "get" as const,
+    path: "/agent-monitoring/improvement-reports/:id",
+    summary: "An improvement report - the unit the auto-improve skill consumes",
+    response: improvementReportResponseSchema,
+    name: "ImprovementReport",
+  },
+  {
+    method: "get" as const,
+    path: "/agent-monitoring/online-evaluators/:evaluatorId/calibration",
+    summary: "Per-scorer judge alignment with human ground truth",
+    response: evaluatorCalibrationSchema,
+    name: "EvaluatorCalibration",
+  },
+  {
+    method: "get" as const,
+    path: "/agent-monitoring/calibration",
+    summary: "Project-level judge calibration against reported reality",
+    response: projectCalibrationSchema,
+    name: "ProjectCalibration",
+  },
   {
     method: "post" as const,
     path: "/insights/topics/curate",
