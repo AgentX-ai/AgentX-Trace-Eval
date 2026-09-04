@@ -23,6 +23,7 @@ browser, and prints the Default project API key for the SDK. Prefer a container?
 - [Configuration](#configuration)
 - [Scaling tiers](#scaling-tiers)
 - [SDK & OpenTelemetry](#sdk--opentelemetry)
+- [Skills for coding agents](#skills-for-coding-agents)
 - [What's in this repo](#whats-in-this-repo)
 - [Building from source](#building-from-source)
 - [Dashboard release process](#dashboard-release-process)
@@ -82,6 +83,11 @@ browser, and prints the Default project API key for the SDK. Prefer a container?
   tool schema accumulates fresh failure evidence, generates the improvement proposal AND runs its
   baseline-vs-candidate validation automatically, then queues it under Insights -> Suggestions
   with the measured verdict attached. Humans keep the only pen: review, then publish or dismiss.
+- **Skills for coding agents** - the loop reaches the source: the separate open-source
+  [AgentX-Eval-Skill](https://github.com/AgentX-ai/AgentX-Eval-Skill) plugin points `/instrument`,
+  `/run-eval`, `/eval-fix` and `/auto-improve` at your own engine, so an agent gets traced,
+  scored, and then fixed *in its own codebase* - each recommendation triaged against the real
+  code the judge never saw. See [Skills for coding agents](#skills-for-coding-agents).
 - **CI gate** - fail a build on eval regression: `report.gate(fail_under=7, no_regression=True)`
   after any SDK eval run returns an exit code, and every recorded gate lands in the dashboard's
   **CI Gates** tab (history plus a "would the latest run pass?" preview). See the docs for the
@@ -222,6 +228,35 @@ OTel traffic is a first-class citizen of the full loop, via three attribute conv
 
 Known gap: gRPC transport isn't supported (HTTP only).
 
+## Skills for coding agents
+
+[**AgentX-Eval-Skill**](https://github.com/AgentX-ai/AgentX-Eval-Skill) is a separate open-source
+repo: one plugin whose slash commands drive this engine from inside your agent's own codebase, so
+the loop closes where the code actually is rather than in the dashboard.
+
+| Command              | What it does                                                                                                                                                      |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/instrument`        | Sets a Python agent up on AgentX - key, SDK, one span where the run begins - then sends traces and reads them back to prove it                                    |
+| `/run-eval`          | Evaluates the agent against a dataset it can also create (templates, a CSV/document, or cases curated from live traces), and commits the harness the re-run needs |
+| `/eval-fix <id>`     | Triages an evaluation's recommendations against the real source, applies what survives, and re-runs it on the same dataset                                        |
+| `/auto-improve <id>` | The online counterpart: applies an improvement report - production failures a human confirmed in signal review - as triaged fixes to the source                   |
+
+```bash
+claude plugin marketplace add AgentX-ai/AgentX-Eval-Skill
+claude plugin install agentx@agentx
+```
+
+The commands default to `http://localhost:4700`, so an engine started with `agentx-server --dev`
+needs nothing exported and nothing pasted - in the default auth mode they read the Default
+project's key off the engine themselves. They are plain `SKILL.md` folders, so they install into
+Cursor, Codex and anything else that reads the [Agent Skills standard](https://agentskills.io)
+too; that repo's README has those paths.
+
+Separately, `skills/` in *this* repo holds one standalone Claude Code skill to copy into your own
+`.claude/skills/`: [`improve-prompt/`](skills/improve-prompt/SKILL.md) rewrites a prompt in the
+Prompt Registry from real low-rated evidence and publishes it only on your explicit approval,
+using Claude's own reasoning in place of the server-side judge call.
+
 ## What's in this repo
 
 | Path                   | What it is                                                                                                                                                                                                                                                             |
@@ -231,7 +266,7 @@ Known gap: gRPC transport isn't supported (HTTP only).
 | `packages/judge-core/` | The LLM-as-judge prompt/scoring logic, published as `@agentx/judge-core` so `engine/` and AgentX's hosted SaaS backend share one implementation.                                                                                                                       |
 | `packages/agentx-eval/` | `@agentx/eval` - a minimal, zero-dependency TypeScript client for the engine's evaluation CI surface (datasets, runs, result submission, the CI gate, pairwise comparison).                                                                          |
 | `web/`                 | The dashboard - **not tracked in this repo**. Populated by building [AgentX-eval-front](https://github.com/AgentX-ai/AgentX-eval-front) in self-host mode, or by downloading its prebuilt release asset (see [Dashboard release process](#dashboard-release-process)). |
-| `skills/`              | Claude Code skills for self-host users to copy into their own `.claude/skills/` - e.g. `improve-prompt/`, which drives the Prompt Registry's propose loop using Claude's own reasoning instead of a server-side judge call.                                            |
+| `skills/`              | Claude Code skills for self-host users to copy into their own `.claude/skills/` - e.g. [`improve-prompt/`](skills/improve-prompt/SKILL.md), which drives the Prompt Registry's propose loop using Claude's own reasoning instead of a server-side judge call. The `/instrument`, `/run-eval`, `/eval-fix` and `/auto-improve` commands live in a separate repo - see [Skills for coding agents](#skills-for-coding-agents).                                            |
 | `install.sh`           | The `curl \| bash` installer - downloads the platform binary from GitHub Releases.                                                                                                                                                                                     |
 | `build.sh`             | Builds a local `dist/` laid out the same way a real install would, for testing the full distribution without cutting a release.                                                                                                                                        |
 | `Dockerfile`           | Multi-stage build producing a container image - see [Docker](#docker).                                                                                                                                                                                                 |
