@@ -83,8 +83,6 @@ browser, and prints the Default project API key for the SDK. Prefer a container?
   tool schema accumulates fresh failure evidence, generates the improvement proposal AND runs its
   baseline-vs-candidate validation automatically, then queues it under Insights -> Suggestions
   with the measured verdict attached. Humans keep the only pen: review, then publish or dismiss.
-  Or drive the same prompt-improvement loop from Claude Code - see
-  [Claude Code skills](#claude-code-skills).
 - **CI gate** - fail a build on eval regression: `report.gate(fail_under=7, no_regression=True)`
   after any SDK eval run returns an exit code, and every recorded gate lands in the dashboard's
   **CI Gates** tab (history plus a "would the latest run pass?" preview). See the docs for the
@@ -227,36 +225,48 @@ Known gap: gRPC transport isn't supported (HTTP only).
 
 ## Claude Code skills
 
-`skills/` ships [Claude Code](https://claude.com/claude-code) skills that drive self-host's
-improvement loops from your editor instead of the dashboard. They talk to a running engine over its
-normal HTTP API - nothing is special-cased for them. Copy the ones you want into a project's
-`.claude/skills/` (or `~/.claude/skills/` to have them available everywhere):
+Self-host pairs with **[AgentX-Eval-Skill](https://github.com/AgentX-ai/AgentX-Eval-Skill)** - a
+Claude Code plugin that runs the full trace → evaluate → fix → re-run loop against a running
+engine from your editor:
 
-```bash
-mkdir -p .claude/skills
-cp -r skills/improve-prompt .claude/skills/
+| Command | What it does |
+| --- | --- |
+| `/instrument` | Wire a Python agent to self-host: SDK, entry-point span, prove traces round-trip |
+| `/run-eval` | Evaluate against a dataset (create from templates, CSV, or live traces) and commit the harness |
+| `/eval-fix <id>` | Triage an eval report against real source, apply fixes, re-run on the same dataset |
+
+```
+/instrument ──► traced runs ──► /run-eval ──► score + analysis ──► /eval-fix ──► v1 vs v2
 ```
 
-| Skill                                               | What it does                                                                                                                                                                                        |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`improve-prompt/`](skills/improve-prompt/SKILL.md) | Rewrites a prompt in the Prompt Registry from real low-rated evidence, shows you the current text and the proposed one side by side, and publishes it as a new version once you explicitly approve. |
+Install (restart Claude Code after):
 
-**How `improve-prompt` works.** Ask for it in plain language once installed ("improve the
-support-agent prompt"). It reads the same evidence the dashboard's "Suggest improvement" button
-uses - the worst-rated eval-run results plus Online Evaluator ratings on production traffic tagged
-with that prompt's name, via `GET /evaluate/prompts/:id/examples` - but Claude's own reasoning
-stands in for the server-side judge call, so this path needs no `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`
-on the engine at all. It finds the engine the same way the SDK does: the API key from
-`$AGENTX_HOME/config.json` (written on the first `agentx-server` run, `~/.agentx` by default) and
-the base URL from `AGENTX_API_BASE_URL`, defaulting to `http://localhost:4700/api/v1`. A locally
-running engine therefore needs no extra configuration.
+```bash
+claude plugin marketplace add AgentX-ai/AgentX-Eval-Skill
+claude plugin install agentx@agentx
+```
 
-Nothing is written without your explicit approval in that same conversation, and the write itself
-goes through the exact `POST /evaluate/prompts/:id/versions` endpoint the dashboard's "Publish as
-new version" button calls - a rewrite only ever reaches storage through one human-approved path,
-whichever surface produced it. Your agent picks the result up on its next
-`client.evaluations.prompts.get("<name>")` call; the skill never touches your agent's own code or
-deployment.
+Also works in Cursor, Codex, and any agent that reads the
+[Agent Skills standard](https://agentskills.io) - see the
+[AgentX-Eval-Skill README](https://github.com/AgentX-ai/AgentX-Eval-Skill#install) for those
+install paths. The plugin talks to this engine over its normal HTTP API
+(`http://localhost:4700/api/v1` by default); nothing is special-cased.
+
+### Bundled in this repo
+
+This repo also ships one smaller skill under `skills/` for users who copy skills manually rather
+than installing the plugin:
+
+| Skill | What it does |
+| --- | --- |
+| [`improve-prompt/`](skills/improve-prompt/SKILL.md) | Rewrites a prompt in the Prompt Registry from real low-rated evidence, shows the diff, and publishes on explicit approval - the dashboard's "Suggest improvement" loop, judge-key-free. |
+
+```bash
+mkdir -p .claude/skills && cp -r skills/improve-prompt .claude/skills/
+```
+
+That is a focused subset. The full eval workflow lives in
+[AgentX-Eval-Skill](https://github.com/AgentX-ai/AgentX-Eval-Skill).
 
 ## What's in this repo
 
@@ -267,7 +277,7 @@ deployment.
 | `packages/judge-core/` | The LLM-as-judge prompt/scoring logic, published as `@agentx/judge-core` so `engine/` and AgentX's hosted SaaS backend share one implementation.                                                                                                                       |
 | `packages/agentx-eval/` | `@agentx/eval` - a minimal, zero-dependency TypeScript client for the engine's evaluation CI surface (datasets, runs, result submission, the CI gate, pairwise comparison).                                                                          |
 | `web/`                 | The dashboard - **not tracked in this repo**. Populated by building [AgentX-eval-front](https://github.com/AgentX-ai/AgentX-eval-front) in self-host mode, or by downloading its prebuilt release asset (see [Dashboard release process](#dashboard-release-process)). |
-| `skills/`              | Claude Code skills for self-host users - see [Claude Code skills](#claude-code-skills).                                                                                                                                                                                |
+| `skills/`              | Bundled Claude Code skill for Prompt Registry improvements (`improve-prompt/`) - see [Claude Code skills](#claude-code-skills). The full eval plugin is [AgentX-Eval-Skill](https://github.com/AgentX-ai/AgentX-Eval-Skill). |
 | `install.sh`           | The `curl \| bash` installer - downloads the platform binary from GitHub Releases.                                                                                                                                                                                     |
 | `build.sh`             | Builds a local `dist/` laid out the same way a real install would, for testing the full distribution without cutting a release.                                                                                                                                        |
 | `Dockerfile`           | Multi-stage build producing a container image - see [Docker](#docker).                                                                                                                                                                                                 |
