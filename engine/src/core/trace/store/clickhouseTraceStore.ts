@@ -272,8 +272,12 @@ export class ClickHouseTraceStore implements TraceStore {
 
   async countRootsPage(query: Omit<RootsPageQuery, "cursor" | "pageSize">): Promise<number> {
     const { conds, params } = this.rootsPageFilter(query);
-    const rows = await this.rows(`SELECT count(*) AS id FROM ${TABLE} WHERE ${conds.join(" AND ")}`, params);
-    return Number((rows[0] as unknown as { id: string })?.id ?? 0);
+    // NOT `AS id`: ClickHouse resolves SELECT aliases inside WHERE, so aliasing the aggregate
+    // to a real column name turns the search condition's `id ILIKE ...` into ILIKE on a UInt64
+    // and the whole query throws (countRoots gets away with it only because its conditions
+    // never mention `id`).
+    const rows = await this.rows(`SELECT count(*) AS total FROM ${TABLE} WHERE ${conds.join(" AND ")}`, params);
+    return Number((rows[0] as unknown as { total: string })?.total ?? 0);
   }
 
   async listRootsPage(query: RootsPageQuery): Promise<TraceRow[]> {
