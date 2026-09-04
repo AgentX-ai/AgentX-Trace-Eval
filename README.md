@@ -23,6 +23,7 @@ browser, and prints the Default project API key for the SDK. Prefer a container?
 - [Configuration](#configuration)
 - [Scaling tiers](#scaling-tiers)
 - [SDK & OpenTelemetry](#sdk--opentelemetry)
+- [Claude Code skills](#claude-code-skills)
 - [What's in this repo](#whats-in-this-repo)
 - [Building from source](#building-from-source)
 - [Dashboard release process](#dashboard-release-process)
@@ -82,6 +83,8 @@ browser, and prints the Default project API key for the SDK. Prefer a container?
   tool schema accumulates fresh failure evidence, generates the improvement proposal AND runs its
   baseline-vs-candidate validation automatically, then queues it under Insights -> Suggestions
   with the measured verdict attached. Humans keep the only pen: review, then publish or dismiss.
+  Or drive the same prompt-improvement loop from Claude Code - see
+  [Claude Code skills](#claude-code-skills).
 - **CI gate** - fail a build on eval regression: `report.gate(fail_under=7, no_regression=True)`
   after any SDK eval run returns an exit code, and every recorded gate lands in the dashboard's
   **CI Gates** tab (history plus a "would the latest run pass?" preview). See the docs for the
@@ -222,6 +225,39 @@ OTel traffic is a first-class citizen of the full loop, via three attribute conv
 
 Known gap: gRPC transport isn't supported (HTTP only).
 
+## Claude Code skills
+
+`skills/` ships [Claude Code](https://claude.com/claude-code) skills that drive self-host's
+improvement loops from your editor instead of the dashboard. They talk to a running engine over its
+normal HTTP API - nothing is special-cased for them. Copy the ones you want into a project's
+`.claude/skills/` (or `~/.claude/skills/` to have them available everywhere):
+
+```bash
+mkdir -p .claude/skills
+cp -r skills/improve-prompt .claude/skills/
+```
+
+| Skill                                               | What it does                                                                                                                                                                                        |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`improve-prompt/`](skills/improve-prompt/SKILL.md) | Rewrites a prompt in the Prompt Registry from real low-rated evidence, shows you the current text and the proposed one side by side, and publishes it as a new version once you explicitly approve. |
+
+**How `improve-prompt` works.** Ask for it in plain language once installed ("improve the
+support-agent prompt"). It reads the same evidence the dashboard's "Suggest improvement" button
+uses - the worst-rated eval-run results plus Online Evaluator ratings on production traffic tagged
+with that prompt's name, via `GET /evaluate/prompts/:id/examples` - but Claude's own reasoning
+stands in for the server-side judge call, so this path needs no `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`
+on the engine at all. It finds the engine the same way the SDK does: the API key from
+`$AGENTX_HOME/config.json` (written on the first `agentx-server` run, `~/.agentx` by default) and
+the base URL from `AGENTX_API_BASE_URL`, defaulting to `http://localhost:4700/api/v1`. A locally
+running engine therefore needs no extra configuration.
+
+Nothing is written without your explicit approval in that same conversation, and the write itself
+goes through the exact `POST /evaluate/prompts/:id/versions` endpoint the dashboard's "Publish as
+new version" button calls - a rewrite only ever reaches storage through one human-approved path,
+whichever surface produced it. Your agent picks the result up on its next
+`client.evaluations.prompts.get("<name>")` call; the skill never touches your agent's own code or
+deployment.
+
 ## What's in this repo
 
 | Path                   | What it is                                                                                                                                                                                                                                                             |
@@ -231,7 +267,7 @@ Known gap: gRPC transport isn't supported (HTTP only).
 | `packages/judge-core/` | The LLM-as-judge prompt/scoring logic, published as `@agentx/judge-core` so `engine/` and AgentX's hosted SaaS backend share one implementation.                                                                                                                       |
 | `packages/agentx-eval/` | `@agentx/eval` - a minimal, zero-dependency TypeScript client for the engine's evaluation CI surface (datasets, runs, result submission, the CI gate, pairwise comparison).                                                                          |
 | `web/`                 | The dashboard - **not tracked in this repo**. Populated by building [AgentX-eval-front](https://github.com/AgentX-ai/AgentX-eval-front) in self-host mode, or by downloading its prebuilt release asset (see [Dashboard release process](#dashboard-release-process)). |
-| `skills/`              | Claude Code skills for self-host users to copy into their own `.claude/skills/` - e.g. `improve-prompt/`, which drives the Prompt Registry's propose loop using Claude's own reasoning instead of a server-side judge call.                                            |
+| `skills/`              | Claude Code skills for self-host users - see [Claude Code skills](#claude-code-skills).                                                                                                                                                                                |
 | `install.sh`           | The `curl \| bash` installer - downloads the platform binary from GitHub Releases.                                                                                                                                                                                     |
 | `build.sh`             | Builds a local `dist/` laid out the same way a real install would, for testing the full distribution without cutting a release.                                                                                                                                        |
 | `Dockerfile`           | Multi-stage build producing a container image - see [Docker](#docker).                                                                                                                                                                                                 |
