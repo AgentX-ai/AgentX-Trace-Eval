@@ -32,18 +32,26 @@ prediction rather than a hopeful one.
 | --- | --- |
 | `yarn typecheck` | strict TypeScript across both workspaces |
 | `yarn workspace @agentx/engine lint` | async discipline the compiler cannot see, see `engine/eslint.config.mjs` |
+| `yarn workspace @agentx/judge-core test` | the shared judge prompt/scoring logic |
 | `yarn workspace @agentx/engine test` | the integration-first suite, on SQLite |
 | `yarn workspace @agentx/engine test:coverage` | the same suite behind the coverage floors |
-| `cd cli && gofmt -l . && go vet ./... && go test -race ./...` | the Go CLI |
+| `yarn workspace @agentx/eval typecheck && yarn workspace @agentx/eval build && yarn workspace @agentx/eval test` | the CI SDK's stub-server pin on the `/custom-agent-evaluations` wire contract |
+| `cd cli && test -z "$(gofmt -l .)" && go vet ./... && go test -race ./...` | the Go CLI |
 | `shellcheck install.sh build.sh scripts/*.sh` | the scripts users pipe into bash |
+
+The `test -z` around gofmt is not decoration: `gofmt -l` names the files it objects to on stdout
+and exits 0 either way, so a bare `gofmt -l . && ...` prints the complaint, runs on, and reports
+success, while the workflow's own emptiness check fails the build. Same check, so the local run
+predicts CI.
 
 CI additionally runs the engine suite a second time against real Postgres and ClickHouse
 services, and smoke tests the `bun build --compile` binary that releases actually ship. To
 reproduce the Postgres run locally, point `AGENTX_TEST_DB_URL` at a superuser connection string
 (and `AGENTX_TEST_CLICKHOUSE_URL` at a ClickHouse server for the telemetry-store suites); the
 suites create and drop their own throwaway databases, and skip entirely when the variables are
-unset. CI's typecheck also covers the `@agentx/eval` workspace, which the root `yarn typecheck`
-does not.
+unset. The root `yarn typecheck` and `yarn test` both skip the `@agentx/eval` workspace, which is
+why its row above spells the three commands out: they are the only local cover a change under
+`packages/agentx-eval/` gets before CI runs them.
 
 ## Tests
 
