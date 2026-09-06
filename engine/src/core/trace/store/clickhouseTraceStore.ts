@@ -299,6 +299,7 @@ export class ClickHouseTraceStore implements TraceStore {
   async queryWindow(filter: SpanWindowFilter): Promise<TraceRow[]> {
     const conds = [this.scope()];
     if (filter.since) conds.push(`created_at >= fromUnixTimestamp64Milli(${filter.since.getTime()})`);
+    if (filter.until) conds.push(`created_at < fromUnixTimestamp64Milli(${filter.until.getTime()})`);
     if (filter.productionOnly) conds.push(`(agentx_source IS NULL OR agentx_source != 'eval-run')`);
     if (filter.rootsOnly) conds.push("parent_span_id IS NULL");
     if (filter.withSessionOnly) conds.push("session_id IS NOT NULL");

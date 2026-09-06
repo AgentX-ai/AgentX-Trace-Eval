@@ -25,9 +25,11 @@ import {
   getTrend,
   getTopFailing,
   getOnlineEvaluatorRatings,
+  getScorerGroupRatings,
   getOnlineEvaluatorEvents,
   getCustomEvaluatorEvents,
   listTraceEvaluations,
+  type MonitoringRange,
   type MonitoringWindow,
   getScorerActivity,
 } from "../core/monitor/events.js";
@@ -98,6 +100,8 @@ import {
   testCustomModelConnection,
 } from "../core/evaluate/models.js";
 import { getAppSettings, updateAppSettings } from "../core/settings/appSettings.js";
+import { getModelCatalog } from "../core/settings/modelCatalog.js";
+import { DEFAULT_JUDGE_MODEL } from "../core/evaluate/judge.js";
 import {
   getProject,
   regenerateProjectApiKey,
@@ -117,6 +121,15 @@ import {
   queueTraceForReview,
 } from "../core/monitor/reviewQueue.js";
 import { validateSampleRateParam } from "../core/shared/sampleRate.js";
+import {
+  listScorerGroups,
+  getScorerGroup,
+  createScorerGroup,
+  updateScorerGroup,
+  deleteScorerGroup,
+  toScorerGroupWire,
+  type ScorerGroupOnline,
+} from "../core/monitor/scorerGroups.js";
 
 // Mounted at /api/v1/agent-monitoring - the paths AgentX-web-front's dashboard actually calls
 // (src/data/apiPaths.ts's getMonitoring*/*MonitoringProfile/*MonitoringPattern), a different
@@ -431,7 +444,7 @@ agentMonitoringDashboardRouter.post("/patterns/generate-regex", async (req: Requ
     return;
   }
   try {
-    const regex = await generateRegex(description);
+    const regex = await generateRegex(scopedDb(req), description);
     res.status(200).json({ regex });
   } catch (err) {
     res.status(502).json({ error: err instanceof Error ? err.message : "Failed to generate regex" });
@@ -523,6 +536,19 @@ function parseWindow(req: Request): MonitoringWindow {
   return raw === "24h" || raw === "30d" ? raw : "7d";
 }
 
+// Explicit epoch-ms bounds beat the window enum when both are present - the dashboard's custom
+// date ranges and non-enum presets (6h, 14d, ...) arrive as from/to. Span clamped to a year so a
+// typo'd bound can't turn one request into a full-table sweep.
+function parseRange(req: Request): MonitoringRange {
+  const from = Number(req.query.from);
+  const to = Number(req.query.to);
+  if (Number.isFinite(from) && Number.isFinite(to) && to > from) {
+    const YEAR_MS = 366 * 24 * 60 * 60 * 1000;
+    return { fromMs: Math.max(from, to - YEAR_MS), toMs: to };
+  }
+  return parseWindow(req);
+}
+
 // The Monitor metrics grid (spans/latency/cost/tokens/tools/platforms per bucket, with
 // agent/model/tool/framework/status filters) - see core/monitor/metrics.ts.
 agentMonitoringDashboardRouter.get("/metrics", async (req: Request, res: Response) => {
@@ -539,11 +565,11 @@ agentMonitoringDashboardRouter.get("/metrics", async (req: Request, res: Respons
 });
 
 agentMonitoringDashboardRouter.get("/kpis", async (req: Request, res: Response) => {
-  res.status(200).json(await getKpis(scopedDb(req), parseWindow(req)));
+  res.status(200).json(await getKpis(scopedDb(req), parseRange(req)));
 });
 
 agentMonitoringDashboardRouter.get("/trend", async (req: Request, res: Response) => {
-  res.status(200).json(await getTrend(scopedDb(req), parseWindow(req)));
+  res.status(200).json(await getTrend(scopedDb(req), parseRange(req)));
 });
 
 // Per-scorer signal activity (count + daily buckets) for the Scorers page's payoff column.
@@ -552,7 +578,7 @@ agentMonitoringDashboardRouter.get("/scorer-activity", async (req: Request, res:
 });
 
 agentMonitoringDashboardRouter.get("/top-failing", async (req: Request, res: Response) => {
-  res.status(200).json(await getTopFailing(scopedDb(req), parseWindow(req)));
+  res.status(200).json(await getTopFailing(scopedDb(req), parseRange(req)));
 });
 
 // Judge calibration (core/monitor/outcomeCalibration.ts) - how often AgentX's own verdict agreed
@@ -621,7 +647,7 @@ agentMonitoringDashboardRouter.get("/sessions/:sessionId/scores", async (req: Re
 // after the two parameterized /sessions/:sessionId routes above purely for reading order; Express
 // matches literal "/sessions" before ":sessionId" either way.
 agentMonitoringDashboardRouter.get("/sessions", async (req: Request, res: Response) => {
-  res.status(200).json(await listSessions(scopedDb(req), parseWindow(req)));
+  res.status(200).json(await listSessions(scopedDb(req), parseRange(req)));
 });
 
 // Manual trigger for the idle-session sweep (core/monitor/sessionSweep.ts) - the production path
@@ -634,13 +660,13 @@ agentMonitoringDashboardRouter.post("/session-sweep/run", async (_req: Request, 
 // Overview's "Total LLM cost" chart (core/monitor/cost.ts) - stacked by model, priced from Model
 // Portability's own $/M-token table.
 agentMonitoringDashboardRouter.get("/cost-trend", async (req: Request, res: Response) => {
-  res.status(200).json(await getCostTrend(scopedDb(req), parseWindow(req)));
+  res.status(200).json(await getCostTrend(scopedDb(req), parseRange(req)));
 });
 
 // Automatic per-trace classification (core/monitor/topics.ts) - opt-in via
 // AgentMonitoringProfile.topicsEnabled, one combined payload since it's all one "Topics" sub-view.
 agentMonitoringDashboardRouter.get("/topics", async (req: Request, res: Response) => {
-  const window = parseWindow(req);
+  const window = parseRange(req);
   const [trend, topIntents, issueBreakdown] = await Promise.all([
     getTopicsTrend(scopedDb(req), window),
     getTopIntents(scopedDb(req), window),
@@ -654,7 +680,7 @@ agentMonitoringDashboardRouter.get("/topics", async (req: Request, res: Response
 // (fitting UMAP over up to 300 points) than the three cheap aggregations that endpoint already
 // combines, so a caller only pays for it when the Map tab is actually open.
 agentMonitoringDashboardRouter.get("/topics/map", async (req: Request, res: Response) => {
-  const window = parseWindow(req);
+  const window = parseRange(req);
   res.status(200).json(await getTopicsMap(scopedDb(req), window));
 });
 
@@ -764,6 +790,91 @@ function parseOnlineSection(body: Record<string, unknown>): { ok: true; online: 
   if (typeof online !== "object" || Array.isArray(online)) return { ok: false };
   return { ok: true, online: online as JudgeScorerOnlineInput };
 }
+
+// ---- Scorer groups (core/monitor/scorerGroups.ts) --------------------------------------------
+// Scorers of any kind composed into one 0-10 score: members by reference with weights and
+// must-pass gates, usable as a dataset run's grader (scorerGroupId on POST /runs) and against
+// live traffic (online profile, alerting on the group score).
+const scorerGroupMemberSchema = z
+  .object({
+    kind: z.enum(["judge", "pattern", "custom"]),
+    refId: z.string().min(1).max(200),
+    weight: z.number().min(0).max(1000),
+    gate: z.boolean().optional(),
+  })
+  .strip();
+const scorerGroupOnlineSchema = z
+  .object({
+    enabled: z.boolean(),
+    sampleRate: z.number().min(0).max(1),
+    alertThreshold: z.number().min(0).max(10).nullable(),
+    severity: z.enum(["low", "medium", "high", "critical"]),
+  })
+  .strip();
+const createScorerGroupSchema = z
+  .object({
+    name: z.string().min(1).max(200),
+    description: z.string().max(2000).optional(),
+    members: z.array(scorerGroupMemberSchema).max(20),
+    online: scorerGroupOnlineSchema.nullable().optional(),
+  })
+  .strip();
+const updateScorerGroupSchema = createScorerGroupSchema.partial().strip();
+
+agentMonitoringDashboardRouter.get("/scorer-groups", async (req: Request, res: Response) => {
+  res.status(200).json({ scorerGroups: (await listScorerGroups(scopedDb(req))).map(toScorerGroupWire) });
+});
+
+agentMonitoringDashboardRouter.post(
+  "/scorer-groups",
+  validateBody(createScorerGroupSchema),
+  async (req: Request, res: Response) => {
+    const group = await createScorerGroup(scopedDb(req), {
+      name: req.body.name,
+      description: req.body.description,
+      members: req.body.members,
+      online: (req.body.online as ScorerGroupOnline | null | undefined) ?? null,
+    });
+    res.status(201).json({ scorerGroup: toScorerGroupWire(group) });
+  }
+);
+
+agentMonitoringDashboardRouter.get("/scorer-groups/:id", async (req: Request, res: Response) => {
+  const group = await getScorerGroup(scopedDb(req), req.params.id!);
+  if (!group) {
+    res.status(404).json({ error: "Scorer group not found" });
+    return;
+  }
+  res.status(200).json({ scorerGroup: toScorerGroupWire(group) });
+});
+
+agentMonitoringDashboardRouter.put(
+  "/scorer-groups/:id",
+  validateBody(updateScorerGroupSchema),
+  async (req: Request, res: Response) => {
+    const group = await updateScorerGroup(scopedDb(req), req.params.id!, {
+      name: req.body.name,
+      description: req.body.description,
+      members: req.body.members,
+      online: req.body.online as ScorerGroupOnline | null | undefined,
+    });
+    if (!group) {
+      res.status(404).json({ error: "Scorer group not found" });
+      return;
+    }
+    res.status(200).json({ scorerGroup: toScorerGroupWire(group) });
+  }
+);
+
+// Ratings history for one group - same shape as /online-evaluators/:id/ratings.
+agentMonitoringDashboardRouter.get("/scorer-groups/:id/ratings", async (req: Request, res: Response) => {
+  res.status(200).json(await getScorerGroupRatings(scopedDb(req), req.params.id!, parseWindow(req)));
+});
+
+agentMonitoringDashboardRouter.delete("/scorer-groups/:id", async (req: Request, res: Response) => {
+  const deleted = await deleteScorerGroup(scopedDb(req), req.params.id!);
+  res.status(deleted ? 200 : 404).json(deleted ? { ok: true } : { error: "Scorer group not found" });
+});
 
 agentMonitoringDashboardRouter.get("/judge-scorers", async (req: Request, res: Response) => {
   res.status(200).json({ judgeScorers: await listJudgeScorers(scopedDb(req)) });
@@ -1680,6 +1791,11 @@ agentMonitoringDashboardRouter.get("/settings", async (req: Request, res: Respon
   res.status(200).json({
     apiKey: project?.apiKey ?? null,
     monitoringDefaults,
+    // The default model for platform operations (topics, suggestions, coverage analysis,
+    // proposals, AI analysis...). Null = the engine's built-in default, shipped alongside so
+    // the UI can show it as the placeholder. Judge scorers configure their own model.
+    platformModel: settings.platformModel,
+    platformModelDefault: DEFAULT_JUDGE_MODEL,
     llm: {
       openai: { configured: !!settings.openaiApiKey, masked: settings.openaiApiKey ? maskSecret(settings.openaiApiKey) : null },
       anthropic: {
@@ -1687,8 +1803,19 @@ agentMonitoringDashboardRouter.get("/settings", async (req: Request, res: Respon
         masked: settings.anthropicApiKey ? maskSecret(settings.anthropicApiKey) : null,
       },
       gemini: { configured: !!settings.geminiApiKey, masked: settings.geminiApiKey ? maskSecret(settings.geminiApiKey) : null },
+      openrouter: {
+        configured: !!settings.openrouterApiKey,
+        masked: settings.openrouterApiKey ? maskSecret(settings.openrouterApiKey) : null,
+      },
     },
   });
+});
+
+// The model catalog for pickers: what this instance can call right now (builtin direct-
+// provider names, custom endpoints from the pricing catalog, and - when an OpenRouter key is
+// configured - the live OpenRouter catalog). See core/settings/modelCatalog.ts.
+agentMonitoringDashboardRouter.get("/models/catalog", async (req: Request, res: Response) => {
+  res.status(200).json(await getModelCatalog(scopedDb(req)));
 });
 
 // Project-level monitoring defaults (coverage/sample rate/retention -
@@ -1739,7 +1866,16 @@ agentMonitoringDashboardRouter.put(
 
 agentMonitoringDashboardRouter.put("/settings/llm-keys", async (req: Request, res: Response) => {
   const body = req.body ?? {};
-  const patch: { openaiApiKey?: string | null; anthropicApiKey?: string | null; geminiApiKey?: string | null } = {};
+  const patch: {
+    openaiApiKey?: string | null;
+    anthropicApiKey?: string | null;
+    geminiApiKey?: string | null;
+    openrouterApiKey?: string | null;
+    platformModel?: string | null;
+  } = {};
+  if ("platformModel" in body) {
+    patch.platformModel = typeof body.platformModel === "string" && body.platformModel.trim() ? body.platformModel.trim() : null;
+  }
   if ("openaiApiKey" in body) {
     patch.openaiApiKey = typeof body.openaiApiKey === "string" ? body.openaiApiKey : null;
   }
@@ -1748,6 +1884,9 @@ agentMonitoringDashboardRouter.put("/settings/llm-keys", async (req: Request, re
   }
   if ("geminiApiKey" in body) {
     patch.geminiApiKey = typeof body.geminiApiKey === "string" ? body.geminiApiKey : null;
+  }
+  if ("openrouterApiKey" in body) {
+    patch.openrouterApiKey = typeof body.openrouterApiKey === "string" ? body.openrouterApiKey : null;
   }
   const settings = await updateAppSettings(getDb(), patch);
   res.status(200).json({
@@ -1758,7 +1897,12 @@ agentMonitoringDashboardRouter.put("/settings/llm-keys", async (req: Request, re
         masked: settings.anthropicApiKey ? maskSecret(settings.anthropicApiKey) : null,
       },
       gemini: { configured: !!settings.geminiApiKey, masked: settings.geminiApiKey ? maskSecret(settings.geminiApiKey) : null },
+      openrouter: {
+        configured: !!settings.openrouterApiKey,
+        masked: settings.openrouterApiKey ? maskSecret(settings.openrouterApiKey) : null,
+      },
     },
+    platformModel: settings.platformModel,
   });
 });
 

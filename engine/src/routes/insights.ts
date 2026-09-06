@@ -5,7 +5,7 @@ import { validateBody } from "./validateBody.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { curateCasesFromTraces, getCoverage } from "../core/insights/coverage.js";
 import { probe, probeBatch } from "../core/insights/probe.js";
-import type { MonitoringWindow } from "../core/monitor/events.js";
+import type { MonitoringRange, MonitoringWindow } from "../core/monitor/events.js";
 
 // Insights: how well the evaluation datasets cover what production actually does. Reads report
 // gaps; the ONE write (POST /topics/curate, the rail's "Generate N cases from traces") fills a
@@ -24,6 +24,17 @@ const WINDOWS: MonitoringWindow[] = ["24h", "7d", "30d"];
 function parseWindow(req: Request): MonitoringWindow {
   const raw = String(req.query.window ?? "30d");
   return (WINDOWS as string[]).includes(raw) ? (raw as MonitoringWindow) : "30d";
+}
+
+// Same from/to override the monitoring dashboard routes accept - see parseRange there.
+function parseRange(req: Request): MonitoringRange {
+  const from = Number(req.query.from);
+  const to = Number(req.query.to);
+  if (Number.isFinite(from) && Number.isFinite(to) && to > from) {
+    const YEAR_MS = 366 * 24 * 60 * 60 * 1000;
+    return { fromMs: Math.max(from, to - YEAR_MS), toMs: to };
+  }
+  return parseWindow(req);
 }
 
 // Accepts `datasetId` or `datasetIds`, each repeated or comma-separated. Both spellings because the
@@ -50,7 +61,7 @@ const scopeOf = (body: { datasetIds?: string[]; datasetId?: string }): string[] 
 
 // The sweep: three headline numbers, the topic list with its state, and the off-map cases.
 insightsRouter.get("/coverage", async (req: Request, res: Response) => {
-  res.status(200).json(await getCoverage(scopedDb(req), { window: parseWindow(req), datasetIds: datasetIdsOf(req) }));
+  res.status(200).json(await getCoverage(scopedDb(req), { window: parseRange(req), datasetIds: datasetIdsOf(req) }));
 });
 
 const probeSchema = z

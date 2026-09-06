@@ -21,6 +21,47 @@ export function windowConfig(window: MonitoringWindow): { days: number; bucketHo
   }
 }
 
+// Every window-taking aggregate below (and its cousins in cost.ts/sessions.ts/topics.ts/
+// insights) also accepts explicit epoch-ms bounds - the dashboard's custom date ranges and
+// non-enum presets (6h, 14d, ...) both arrive this way. The enum stays as the preset shorthand
+// and keeps every existing caller compiling unchanged.
+export type MonitoringRange = MonitoringWindow | { fromMs: number; toMs: number };
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+export type ResolvedRange = {
+  sinceMs: number;
+  untilMs: number;
+  spanMs: number;
+  bucketMs: number;
+  // Echoed in responses where the wire used to carry the enum; "custom" for explicit bounds.
+  windowLabel: MonitoringWindow | "custom";
+};
+
+export function resolveRange(range: MonitoringRange): ResolvedRange {
+  if (typeof range === "string") {
+    const { days, bucketHours } = windowConfig(range);
+    // +1ms: the bound is half-open ([since, until)), and a preset window must include rows
+    // written in the very millisecond the request resolves - "the last 7 days" ends now,
+    // inclusively, exactly as it did before explicit bounds existed.
+    const untilMs = Date.now() + 1;
+    const spanMs = days * DAY_MS;
+    return { untilMs, sinceMs: untilMs - spanMs, spanMs, bucketMs: bucketHours * HOUR_MS, windowLabel: range };
+  }
+  const untilMs = Math.max(range.toMs, range.fromMs + 60_000);
+  const spanMs = untilMs - range.fromMs;
+  // Bucket scale follows the span the same way the presets do: hourly up to two days, daily
+  // beyond - so a 6h custom range charts like "24h" and a 90d one like "30d".
+  return {
+    sinceMs: range.fromMs,
+    untilMs,
+    spanMs,
+    bucketMs: spanMs <= 48 * HOUR_MS ? HOUR_MS : DAY_MS,
+    windowLabel: "custom",
+  };
+}
+
 export type EventRow = {
   id: string;
   projectId: string | null;
@@ -215,9 +256,9 @@ export async function listEventsSince(db: Db, since: Date): Promise<EventRow[]> 
   return rows as EventRow[];
 }
 
-async function listTraceLatenciesSince(db: Db, since: Date): Promise<number[]> {
+async function listTraceLatenciesSince(db: Db, since: Date, until?: Date): Promise<number[]> {
   // Production only: a nightly eval's latencies are not the fleet's P95.
-  const rows = (await traceStoreFor(db).queryWindow({ since, productionOnly: true })) as unknown as {
+  const rows = (await traceStoreFor(db).queryWindow({ since, until, productionOnly: true })) as unknown as {
     latencyMs: number | null;
   }[];
   return rows.map(r => r.latencyMs).filter((v): v is number => typeof v === "number").sort((a, b) => a - b);
@@ -260,7 +301,9 @@ function emptyCounts(): WindowedCounts {
 }
 
 function tallyEvent(counts: WindowedCounts, row: EventRow): void {
-  if (row.onlineEvaluatorId || row.customEvaluatorId) {
+  // Score-kind rows (online evaluators, scorer groups and their member verdicts) are ratings of
+  // a trace, not run outcomes - counting them inflated totalRuns per scorer that sampled a run.
+  if (row.onlineEvaluatorId || row.customEvaluatorId || row.polarity === "score") {
     return;
   }
   counts.total++;
@@ -308,7 +351,7 @@ async function feedbackDownvoteRate(db: Db, since: Date, until?: Date): Promise<
 }
 
 export type MonitoringKpisResponse = {
-  window: MonitoringWindow;
+  window: MonitoringWindow | "custom";
   totalRuns: number;
   healthRate: number | null;
   failureRate: number | null;
@@ -338,25 +381,22 @@ function delta(current: number | null, previous: number | null): number | null {
   return current - previous;
 }
 
-export async function getKpis(db: Db, window: MonitoringWindow): Promise<MonitoringKpisResponse> {
-  const { days } = windowConfig(window);
-  const windowMs = days * 24 * 60 * 60 * 1000;
-  const now = Date.now();
-  // One query covering the current window and the equal-length window immediately before it
+export async function getKpis(db: Db, range: MonitoringRange): Promise<MonitoringKpisResponse> {
+  const { sinceMs, untilMs, spanMs, windowLabel } = resolveRange(range);
+  // One query covering the current range and the equal-length span immediately before it
   // (needed for `deltas`), split in JS - same "fetch a set, compute in memory" style already used
   // throughout core/evaluate and core/monitor rather than dialect-specific SQL aggregation.
-  const since = new Date(now - windowMs * 2);
-  const allEvents = await listEventsSince(db, since);
-  const boundary = now - windowMs;
+  const allEvents = await listEventsSince(db, new Date(sinceMs - spanMs));
 
   const current = emptyCounts();
   const previous = emptyCounts();
   for (const row of allEvents) {
-    const bucket = row.createdAt.getTime() >= boundary ? current : previous;
-    tallyEvent(bucket, row);
+    const at = row.createdAt.getTime();
+    if (at >= untilMs) continue;
+    tallyEvent(at >= sinceMs ? current : previous, row);
   }
 
-  const currentLatencies = await listTraceLatenciesSince(db, new Date(boundary));
+  const currentLatencies = await listTraceLatenciesSince(db, new Date(sinceMs), new Date(untilMs));
   const p95LatencyMs = percentile(currentLatencies, 0.95);
 
   const currentHealthRate = healthRate(current);
@@ -365,11 +405,11 @@ export async function getKpis(db: Db, window: MonitoringWindow): Promise<Monitor
   const previousFailureRate = previous.total > 0 ? previous.failing / previous.total : null;
   const currentToolFailureRate = current.total > 0 ? current.toolFailing / current.total : null;
   const previousToolFailureRate = previous.total > 0 ? previous.toolFailing / previous.total : null;
-  const currentDownvoteRate = await feedbackDownvoteRate(db, new Date(boundary));
-  const previousDownvoteRate = await feedbackDownvoteRate(db, new Date(boundary - windowMs), new Date(boundary));
+  const currentDownvoteRate = await feedbackDownvoteRate(db, new Date(sinceMs), new Date(untilMs));
+  const previousDownvoteRate = await feedbackDownvoteRate(db, new Date(sinceMs - spanMs), new Date(sinceMs));
 
   return {
-    window,
+    window: windowLabel,
     totalRuns: current.total,
     healthRate: currentHealthRate,
     failureRate: currentFailureRate,
@@ -430,7 +470,7 @@ export async function getScorerActivity(
 
 export type MonitoringTrendPoint = { label: string; ts?: number; healthRate: number | null };
 export type MonitoringTrendResponse = {
-  window: MonitoringWindow;
+  window: MonitoringWindow | "custom";
   points: MonitoringTrendPoint[];
   previous?: MonitoringTrendPoint[];
   releases: never[];
@@ -450,20 +490,18 @@ function bucketize(rows: EventRow[], bucketStartMs: number, bucketCount: number,
   });
 }
 
-export async function getTrend(db: Db, window: MonitoringWindow): Promise<MonitoringTrendResponse> {
-  const { days, bucketHours } = windowConfig(window);
-  const bucketMs = bucketHours * 60 * 60 * 1000;
-  const bucketCount = Math.ceil((days * 24 * 60 * 60 * 1000) / bucketMs);
-  const now = Date.now();
-  const currentStart = now - bucketCount * bucketMs;
+export async function getTrend(db: Db, range: MonitoringRange): Promise<MonitoringTrendResponse> {
+  const { untilMs, spanMs, bucketMs, windowLabel } = resolveRange(range);
+  const bucketCount = Math.ceil(spanMs / bucketMs);
+  const currentStart = untilMs - bucketCount * bucketMs;
   const previousStart = currentStart - bucketCount * bucketMs;
 
-  const rows = await listEventsSince(db, new Date(previousStart));
+  const rows = (await listEventsSince(db, new Date(previousStart))).filter(r => r.createdAt.getTime() < untilMs);
   const currentRows = rows.filter(r => r.createdAt.getTime() >= currentStart);
   const previousRows = rows.filter(r => r.createdAt.getTime() < currentStart);
 
   return {
-    window,
+    window: windowLabel,
     points: bucketize(currentRows, currentStart, bucketCount, bucketMs),
     previous: bucketize(previousRows, previousStart, bucketCount, bucketMs),
     // "Releases" are agent-config-version deploy markers on the hosted SaaS's trend chart - no
@@ -475,7 +513,7 @@ export async function getTrend(db: Db, window: MonitoringWindow): Promise<Monito
 }
 
 export type MonitoringTopFailingResponse = {
-  window: MonitoringWindow;
+  window: MonitoringWindow | "custom";
   agents: { agentId: string; name?: string; failingRuns: number; failureRate: number | null }[];
   tools: { name: string; failures: number; callCount: number; failureRate: number | null }[];
   patterns: { patternKey: string; name: string; count: number }[];
@@ -485,9 +523,9 @@ export type MonitoringTopFailingResponse = {
 // ground truth rather than the signal log. Counts EVERY recorded call under its tool name (so
 // MCP-registered tools are included like any other), where the signal path only flags the first
 // failed call of a trace and knows no denominator for a rate.
-async function listToolCallStatsSince(db: Db, since: Date): Promise<Map<string, { total: number; failures: number }>> {
+async function listToolCallStatsSince(db: Db, since: Date, until?: Date): Promise<Map<string, { total: number; failures: number }>> {
   // Production only - eval datasets deliberately include failing tool calls.
-  const rows = (await traceStoreFor(db).queryWindow({ since, productionOnly: true })) as unknown as {
+  const rows = (await traceStoreFor(db).queryWindow({ since, until, productionOnly: true })) as unknown as {
     toolCalls: unknown;
   }[];
   const byTool = new Map<string, { total: number; failures: number }>();
@@ -514,16 +552,15 @@ async function listToolCallStatsSince(db: Db, since: Date): Promise<Map<string, 
   return byTool;
 }
 
-export async function getTopFailing(db: Db, window: MonitoringWindow, limit = 10): Promise<MonitoringTopFailingResponse> {
-  const { days } = windowConfig(window);
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const rows = await listEventsSince(db, since);
+export async function getTopFailing(db: Db, range: MonitoringRange, limit = 10): Promise<MonitoringTopFailingResponse> {
+  const { sinceMs, untilMs } = resolveRange(range);
+  const rows = (await listEventsSince(db, new Date(sinceMs))).filter(r => r.createdAt.getTime() < untilMs);
 
   const byAgent = new Map<string, { total: number; failing: number }>();
   const byPattern = new Map<string, { patternKey: string; name: string; count: number }>();
 
   for (const row of rows) {
-    if (row.onlineEvaluatorId || row.customEvaluatorId) {
+    if (row.onlineEvaluatorId || row.customEvaluatorId || row.polarity === "score") {
       continue;
     }
     if (row.agentId) {
@@ -558,7 +595,7 @@ export async function getTopFailing(db: Db, window: MonitoringWindow, limit = 10
     .sort((a, b) => b.failingRuns - a.failingRuns)
     .slice(0, limit);
 
-  const toolStats = await listToolCallStatsSince(db, since);
+  const toolStats = await listToolCallStatsSince(db, new Date(sinceMs), new Date(untilMs));
   const tools = Array.from(toolStats.entries())
     .map(([name, { total, failures }]) => ({
       name,
@@ -574,7 +611,7 @@ export async function getTopFailing(db: Db, window: MonitoringWindow, limit = 10
     .sort((a, b) => b.count - a.count)
     .slice(0, limit);
 
-  return { window, agents, tools, patterns };
+  return { window: resolveRange(range).windowLabel, agents, tools, patterns };
 }
 
 export type OnlineEvaluatorRatingPoint = { label: string; ts: number; averageRating: number | null; count: number };
@@ -594,6 +631,40 @@ export async function getOnlineEvaluatorRatings(
 
   const rows = (await listEventsSince(db, new Date(bucketStartMs))).filter(
     r => r.onlineEvaluatorId === evaluatorId && r.rating !== null
+  );
+
+  const buckets: { sum: number; count: number }[] = Array.from({ length: bucketCount }, () => ({ sum: 0, count: 0 }));
+  for (const row of rows) {
+    const index = Math.floor((row.createdAt.getTime() - bucketStartMs) / bucketMs);
+    if (index >= 0 && index < bucketCount) {
+      buckets[index]!.sum += row.rating as number;
+      buckets[index]!.count++;
+    }
+  }
+
+  const points = buckets.map(({ sum, count }, i) => {
+    const ts = bucketStartMs + i * bucketMs;
+    return { label: new Date(ts).toISOString(), ts, averageRating: count > 0 ? sum / count : null, count };
+  });
+
+  return { window, points };
+}
+
+// Scorer-group ratings history - same bucket math as getOnlineEvaluatorRatings above, keyed on
+// the group's event patternKey (`scorer-group:<id>`), so the Groups panel gets the exact
+// ratings-chart treatment online evaluators have.
+export async function getScorerGroupRatings(
+  db: Db,
+  groupId: string,
+  window: MonitoringWindow
+): Promise<{ window: MonitoringWindow; points: OnlineEvaluatorRatingPoint[] }> {
+  const { days, bucketHours } = windowConfig(window);
+  const bucketMs = bucketHours * 60 * 60 * 1000;
+  const bucketCount = Math.ceil((days * 24 * 60 * 60 * 1000) / bucketMs);
+  const bucketStartMs = Date.now() - bucketCount * bucketMs;
+
+  const rows = (await listEventsSince(db, new Date(bucketStartMs))).filter(
+    r => r.patternKey === `scorer-group:${groupId}` && r.type === "scorer_group_score" && r.rating !== null
   );
 
   const buckets: { sum: number; count: number }[] = Array.from({ length: bucketCount }, () => ({ sum: 0, count: 0 }));
@@ -684,6 +755,8 @@ export async function getOnlineEvaluatorEvents(
 // "Judge scores" section. Evaluator names are resolved so the dialog needs no second fetch.
 export type TraceEvaluationEntry = {
   id: string;
+  // "judge" = an online evaluator's verdict; "group" = a scorer group's aggregate score.
+  kind: "judge" | "group";
   evaluatorId: string;
   evaluatorName: string;
   rating: number;
@@ -698,9 +771,12 @@ export async function listTraceEvaluations(db: Db, traceId: string): Promise<Tra
       ? db.db.select().from(db.schema.monitorEvents).where(cond).all()
       : await db.db.select().from(db.schema.monitorEvents).where(cond)
   ) as EventRow[];
+  // Judge verdicts AND scorer-group scores: both are 0-10 opinions of this trace, and the
+  // Trace Details popup shows either (with a toggle when both exist). `kind` tells them apart.
   const scored = rows.filter(
-    (r): r is EventRow & { onlineEvaluatorId: string; rating: number } =>
-      r.onlineEvaluatorId !== null && r.rating !== null
+    (r): r is EventRow & { rating: number } =>
+      r.rating !== null &&
+      (r.onlineEvaluatorId !== null || r.type === "scorer_group_score" || r.type === "scorer_group_member_score")
   );
   scored.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
@@ -713,15 +789,54 @@ export async function listTraceEvaluations(db: Db, traceId: string): Promise<Tra
   for (const evaluator of evaluatorRows) {
     nameById.set(evaluator.id, evaluator.name);
   }
+  const { listScorerGroups } = await import("./scorerGroups.js");
+  const groupNameById = new Map((await listScorerGroups(db)).map(group => [group.id, group.name]));
 
-  return scored.map(row => ({
-    id: row.id,
-    evaluatorId: row.onlineEvaluatorId,
-    evaluatorName: nameById.get(row.onlineEvaluatorId) ?? row.onlineEvaluatorId,
-    rating: row.rating,
-    justification: row.justification,
-    createdAt: row.createdAt,
-  }));
+  return scored.map(row => {
+    if (row.onlineEvaluatorId !== null) {
+      return {
+        id: row.id,
+        kind: "judge" as const,
+        evaluatorId: row.onlineEvaluatorId,
+        evaluatorName: nameById.get(row.onlineEvaluatorId) ?? row.onlineEvaluatorId,
+        rating: row.rating,
+        justification: row.justification,
+        createdAt: row.createdAt,
+      };
+    }
+    if (row.type === "scorer_group_member_score") {
+      // Member verdicts carry a JSON payload in `justification` ({name, detail}) - internal to
+      // this pair of functions, decoded here into a normal judge-score entry.
+      let name = "(scorer)";
+      let detail: string | null = null;
+      try {
+        const payload = JSON.parse(row.justification ?? "{}") as { name?: string; detail?: string };
+        name = payload.name ?? name;
+        detail = payload.detail ?? null;
+      } catch {
+        detail = row.justification;
+      }
+      return {
+        id: row.id,
+        kind: "judge" as const,
+        evaluatorId: row.patternKey,
+        evaluatorName: name,
+        rating: row.rating,
+        justification: detail,
+        createdAt: row.createdAt,
+      };
+    }
+    const groupId = row.patternKey.slice("scorer-group:".length);
+    return {
+      id: row.id,
+      kind: "group" as const,
+      evaluatorId: row.patternKey,
+      evaluatorName: groupNameById.get(groupId) ?? "(removed group)",
+      rating: row.rating,
+      justification: row.justification,
+      createdAt: row.createdAt,
+    };
+  });
 }
 
 export type CustomEvaluatorEvent = {
@@ -786,7 +901,14 @@ export async function getCustomEvaluatorEvents(
 // failing verdict with the worst margin below its bar; if all passed, it is the lowest passing
 // score. Attribution (scorer name), coverage (judgeCount), and the full per-judge breakdown
 // ride along so "which judge, and what did the others say" is a tooltip, not a dialog.
-export type TraceJudgeVerdict = { scorerName: string; rating: number; threshold: number | null; failing: boolean };
+export type TraceJudgeVerdict = {
+  scorerName: string;
+  rating: number;
+  threshold: number | null;
+  failing: boolean;
+  // True for a scorer-group aggregate - when present it owns the Score chip headline.
+  isGroup?: boolean;
+};
 export type TraceJudgeScores = {
   rating: number;
   threshold: number | null;
@@ -802,7 +924,9 @@ export async function judgeScoreSummaryByTrace(db: Db, traceIds: string[]): Prom
   if (traceIds.length === 0) return new Map();
   const cond = and(
     eq(db.schema.monitorEvents.projectId, db.projectId),
-    eq(db.schema.monitorEvents.type, "online_eval_score"),
+    // Scorer-group verdicts count alongside online-evaluator verdicts: both are a judge-style
+    // 0-10 rating of the trace, and the Live Traces score chip should reflect whichever ran.
+    inArray(db.schema.monitorEvents.type, ["online_eval_score", "scorer_group_score"]),
     inArray(db.schema.monitorEvents.traceId, traceIds),
     isNotNull(db.schema.monitorEvents.rating)
   );
@@ -810,18 +934,21 @@ export async function judgeScoreSummaryByTrace(db: Db, traceIds: string[]): Prom
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.monitorEvents).where(cond).all()
       : await db.db.select().from(db.schema.monitorEvents).where(cond)
-  ) as Array<{ traceId: string | null; rating: number | null; onlineEvaluatorId: string | null }>;
+  ) as Array<{ traceId: string | null; rating: number | null; onlineEvaluatorId: string | null; patternKey: string }>;
   if (rows.length === 0) return new Map();
 
   const { listOnlineEvaluatorRows } = await import("./onlineEvaluators.js");
   const scorers = new Map((await listOnlineEvaluatorRows(db)).map(row => [row.id, row]));
+  const { listScorerGroups } = await import("./scorerGroups.js");
+  const groups = new Map((await listScorerGroups(db)).map(group => [group.id, group]));
 
   // Worst rating per (trace, scorer) first - one scorer sampling a trace repeatedly is still
-  // one judge's opinion, not extra coverage.
+  // one judge's opinion, not extra coverage. Group events key on their patternKey
+  // (`scorer-group:<id>`), evaluator events on the evaluator id.
   const perTraceScorer = new Map<string, Map<string, number>>();
   for (const row of rows) {
     if (row.traceId === null || row.rating === null) continue;
-    const key = row.onlineEvaluatorId ?? "unknown";
+    const key = row.onlineEvaluatorId ?? row.patternKey ?? "unknown";
     const byScorer = perTraceScorer.get(row.traceId) ?? new Map<string, number>();
     const current = byScorer.get(key);
     if (current === undefined || row.rating < current) byScorer.set(key, row.rating);
@@ -831,6 +958,17 @@ export async function judgeScoreSummaryByTrace(db: Db, traceIds: string[]): Prom
   const summaries = new Map<string, TraceJudgeScores>();
   for (const [traceId, byScorer] of perTraceScorer) {
     const verdicts: TraceJudgeVerdict[] = [...byScorer.entries()].map(([scorerId, rating]) => {
+      if (scorerId.startsWith("scorer-group:")) {
+        const group = groups.get(scorerId.slice("scorer-group:".length));
+        const threshold = group?.online?.alertThreshold ?? null;
+        return {
+          scorerName: group ? `${group.name} (group)` : "(removed group)",
+          rating,
+          threshold,
+          failing: threshold !== null && rating < threshold,
+          isGroup: true,
+        };
+      }
       const scorer = scorers.get(scorerId);
       const threshold = scorer?.alertThreshold ?? null;
       return {
@@ -841,7 +979,16 @@ export async function judgeScoreSummaryByTrace(db: Db, traceIds: string[]): Prom
         failing: threshold !== null && rating < threshold,
       };
     });
-    summaries.set(traceId, summarizeJudgeVerdicts(verdicts));
+    // A group score IS the composed final opinion, so when one exists it owns the Score chip -
+    // the individual judge verdicts stay in the list for the expanded/detail views.
+    const groupVerdicts = verdicts.filter(v => v.isGroup);
+    const headline = summarizeJudgeVerdicts(groupVerdicts.length > 0 ? groupVerdicts : verdicts);
+    summaries.set(traceId, {
+      ...headline,
+      verdicts,
+      judgeCount: verdicts.length,
+      failingCount: verdicts.filter(v => v.failing).length,
+    });
   }
   return summaries;
 }

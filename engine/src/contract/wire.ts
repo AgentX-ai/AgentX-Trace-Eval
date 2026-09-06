@@ -85,6 +85,10 @@ export const settingsResponseSchema = z
   .object({
     apiKey: z.string().nullable(),
     monitoringDefaults: monitoringDefaultsSchema,
+    // Default model for platform operations (topics, suggestions, coverage analysis,
+    // proposals...); null = the built-in default, shipped alongside for the UI placeholder.
+    platformModel: z.string().nullable(),
+    platformModelDefault: z.string(),
     llm: z.record(z.object({ configured: z.boolean(), masked: z.string().nullable() }).strict()),
   })
   .strict();
@@ -371,7 +375,7 @@ export const insightTopicSchema = z
 
 export const insightsCoverageResponseSchema = z
   .object({
-    window: z.enum(["24h", "7d", "30d"]),
+    window: z.enum(["24h", "7d", "30d", "custom"]),
     datasetIds: z.array(z.string()),
     degraded: z.boolean(),
     provisional: z.boolean(),
@@ -485,6 +489,8 @@ export const runGateResultSchema = z
   .object({
     runId: z.string(),
     datasetId: z.string(),
+    // Set when the gate targets a named additional scorer; null = the primary rating gates.
+    gatedScorer: z.object({ id: z.string(), name: z.string() }).strict().nullable(),
     averageRating: z.number().nullable(),
     resultCount: z.number(),
     baselineRunId: z.string().nullable(),
@@ -624,7 +630,23 @@ export const improvementReportSchema = z
 
 export const improvementReportResponseSchema = z.object({ report: improvementReportSchema }).strict();
 
+export const modelCatalogSchema = z
+  .object({
+    models: z.array(
+      z.object({ id: z.string(), label: z.string(), source: z.enum(["builtin", "custom", "openrouter"]) }).strict()
+    ),
+    openrouterConfigured: z.boolean(),
+  })
+  .strict();
+
 export const WIRE_CONTRACT = [
+  {
+    method: "get" as const,
+    path: "/agent-monitoring/models/catalog",
+    summary: "Models this instance can call - feeds every model picker",
+    response: modelCatalogSchema,
+    name: "ModelCatalog",
+  },
   {
     method: "get" as const,
     path: "/agent-monitoring/improvement-groups",

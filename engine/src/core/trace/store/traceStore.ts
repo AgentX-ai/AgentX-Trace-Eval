@@ -42,6 +42,8 @@ export type TraceRow = {
 // shape (root spans with a non-empty output).
 export type SpanWindowFilter = {
   since?: Date;
+  // Exclusive upper bound - custom date ranges end in the past, not at "now".
+  until?: Date;
   productionOnly?: boolean;
   rootsOnly?: boolean;
   withSessionOnly?: boolean;

@@ -196,6 +196,11 @@ export const evaluationRuns = sqliteTable("evaluation_runs", {
   version: text("version"),
   runSource: text("run_source"),
   sdkInfo: text("sdk_info", { mode: "json" }),
+  // Additional judge scorers for this run: each scores every result alongside the primary
+  // scorer (one agent execution, N verdicts). Ids of standalone evaluation_settings rows.
+  additionalScorerIds: text("additional_scorer_ids", { mode: "json" }),
+  // Grades this run with a Scorer group instead of a single judge scorer (scorerGroups.ts).
+  scorerGroupId: text("scorer_group_id"),
   // [{ questionIndex, variants: string[] }] - generated once at initRun time (core/evaluate/
   // judge.ts's generateSmokeTestVariants) for questions with main_question.smokeTest.enabled,
   // frozen for the lifetime of the run so a later call can't see it change mid-run.
@@ -235,6 +240,10 @@ export const evaluationRunResults = sqliteTable(
     // scorer on the dataset at run time (core/evaluate/codeScorer.ts). Open-ended/named like
     // datasets.codeScorers, hence one JSON column rather than fixed columns.
     codeScorerResults: text("code_scorer_results", { mode: "json" }),
+    // Verdicts from the run's ADDITIONAL judge scorers, one entry per scorer:
+    // [{ scorerId, name, rating, justification }]. The primary scorer stays in rating/
+    // justification - gates, averages, and calibration keep reading one column.
+    judgeScorerResults: text("judge_scorer_results", { mode: "json" }),
     rating: real("rating"),
     justification: text("justification"),
     status: text("status").notNull(),
@@ -557,6 +566,21 @@ export const monitorOnlineEvaluators = sqliteTable("monitor_online_evaluators", 
 // Promoted out of Pattern's condition-row "external" detector (core/monitor/conditions.ts) - a
 // URL the user controls, POSTed the trace, expected to answer {matches, reason}. See
 // core/monitor/customEvaluators.ts's runCustomEvaluators for the full contract.
+// A Scorer group (core/monitor/scorerGroups.ts): scorers of any kind composed into one 0-10
+// score via per-member weights and must-pass gates. Members by reference:
+// [{ kind: "judge" | "pattern" | "custom", refId, weight, gate }]. `online` is the live-traffic
+// profile ({ enabled, sampleRate, alertThreshold, severity }) or null for offline-only.
+export const scorerGroups = sqliteTable("scorer_groups", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  name: text("name").notNull(),
+  description: text("description"),
+  members: text("members", { mode: "json" }).notNull(),
+  online: text("online", { mode: "json" }),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
 export const customEvaluators = sqliteTable("custom_evaluators", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
@@ -925,6 +949,14 @@ export const appSettings = sqliteTable("app_settings", {
   openaiApiKey: text("openai_api_key"),
   anthropicApiKey: text("anthropic_api_key"),
   geminiApiKey: text("gemini_api_key"),
+  // OpenRouter key: unlocks the vendor/model catalog (any id containing "/") for every model
+  // field - platform model, judge scorers, playground - via OpenRouter's OpenAI-compat API.
+  openrouterApiKey: text("openrouter_api_key"),
+  // The default model for PLATFORM operations (topic mapping, suggestions/drafts, dataset
+  // coverage analysis, prompt/tool proposals, AI analysis, attention digest, auto-improve
+  // reports). Null = the built-in DEFAULT_JUDGE_MODEL. Deliberately separate from judge
+  // scorers' per-scorer judgeModel - scoring config stays on the scorer.
+  platformModel: text("platform_model"),
   // Session-signing secret for AGENTX_AUTH=enabled mode, generated on first enabled boot when
   // AGENTX_AUTH_SECRET isn't set - persisted so sessions survive restarts (instance-wide, like
   // the rest of this table).

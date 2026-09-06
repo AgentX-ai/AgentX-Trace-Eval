@@ -22,6 +22,7 @@ async function countTracesToday(db: Db): Promise<number> {
 import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
 import { traceStoreFor } from "../core/trace/store/index.js";
 import { runCustomEvaluators } from "../core/monitor/customEvaluators.js";
+import { runScorerGroupsOnline } from "../core/monitor/scorerGroups.js";
 import { runClassification } from "../core/monitor/topics.js";
 import { logger } from "../log.js";
 import { runRules } from "../core/monitor/rules.js";
@@ -145,6 +146,14 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
     ).catch(err => {
       logger.error({ err: err instanceof Error ? err.message : err }, "Online evaluator scoring failed:");
     });
+
+    // Scorer groups score live traffic the same fire-and-forget way - see
+    // core/monitor/scorerGroups.ts's runScorerGroupsOnline.
+    runScorerGroupsOnline(db, { input: parsed.data.input, output: parsed.data.output }, { agentId, traceId }).catch(
+      err => {
+        logger.error({ err: err instanceof Error ? err.message : err }, "Scorer group scoring failed:");
+      }
+    );
 
     // Same independent, opt-in-by-creating-one posture as online evaluators above - see
     // core/monitor/customEvaluators.ts.

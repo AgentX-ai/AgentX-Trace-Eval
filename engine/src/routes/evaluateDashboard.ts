@@ -436,7 +436,10 @@ const profileConfigSchema = z.object({
   scorers: z.object({
     evaluationSettingsId: z.string().max(200).nullable().optional(),
     patternIds: z.array(z.string().max(200)).max(200),
+    // Legacy dashboards stored online-profile ids here; current ones store judge scorer ids in
+    // additionalScorerIds. Both survive the round trip.
     onlineEvaluatorIds: z.array(z.string().max(200)).max(200),
+    additionalScorerIds: z.array(z.string().max(200)).max(200).optional(),
   }),
   testInput: z.object({
     mode: z.enum(["dataset", "query"]),
@@ -627,6 +630,13 @@ evaluateDashboardRouter.post("/datasets/:datasetId/run-with-connector", async (r
   const result = await startConnectorRun(scopedDb(req), req.params.datasetId!, body.connectorId, {
     // Optional named subset: only cases tagged with this split run (original indexes kept).
     split: typeof body.split === "string" ? body.split : undefined,
+    // Primary judge scorer (previously the dialog's pick was silently dropped and connector
+    // runs always graded with dataset defaults) + additional judges for multi-verdict runs.
+    scorerId: typeof body.scorerId === "string" && body.scorerId ? body.scorerId : undefined,
+    additionalScorerIds: Array.isArray(body.additionalScorerIds)
+      ? body.additionalScorerIds.filter((id: unknown): id is string => typeof id === "string" && !!id)
+      : undefined,
+    scorerGroupId: typeof body.scorerGroupId === "string" && body.scorerGroupId ? body.scorerGroupId : undefined,
   });
   if (!result) {
     res.status(404).json({ error: "Dataset not found" });
@@ -670,6 +680,7 @@ evaluateDashboardRouter.post("/playground/run", async (req: Request, res: Respon
     tools: extractPlaygroundTools(body),
     patternIds: extractIds(body.patternIds),
     onlineEvaluatorIds: extractIds(body.onlineEvaluatorIds),
+    additionalScorerIds: extractIds(body.additionalScorerIds),
     maxTokens: typeof body.maxTokens === "number" ? body.maxTokens : undefined,
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
   });
@@ -1483,6 +1494,7 @@ function toResultWire(r: RunResultRow, evaluationSettingsQuestions: unknown, dat
     bleuScore: r.bleuScore ?? undefined,
     rougeScore: r.rougeScore ?? undefined,
     codeScorerResults: r.codeScorerResults ?? undefined,
+    judgeScorerResults: r.judgeScorerResults ?? undefined,
   };
 }
 
@@ -1501,7 +1513,40 @@ async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) 
   const rated = results.filter(r => r.rating != null).map(r => r.rating as number);
   const averageRating = rated.length ? rated.reduce((a, b) => a + b, 0) / rated.length : null;
 
+  // Per-scorer aggregate for multi-judge runs: primary (the rating column) + one entry per
+  // additional judge, averaged from the verdicts embedded in each result row.
+  const additionalAgg = new Map<string, { name: string; sum: number; scored: number }>();
+  for (const row of results as Array<{ judgeScorerResults?: Array<{ scorerId: string; name: string; rating: number | null }> | null }>) {
+    for (const verdict of row.judgeScorerResults ?? []) {
+      if (verdict.rating == null) continue;
+      const agg = additionalAgg.get(verdict.scorerId) ?? { name: verdict.name, sum: 0, scored: 0 };
+      agg.sum += verdict.rating;
+      agg.scored += 1;
+      additionalAgg.set(verdict.scorerId, agg);
+    }
+  }
+  const scorerBreakdown =
+    additionalAgg.size > 0
+      ? [
+          {
+            scorerId: run.evaluationSettingsId ?? null,
+            name: "Primary scorer",
+            primary: true,
+            averageRating: averageRating != null ? Math.round(averageRating * 100) / 100 : null,
+            scored: rated.length,
+          },
+          ...[...additionalAgg.entries()].map(([scorerId, agg]) => ({
+            scorerId,
+            name: agg.name,
+            primary: false,
+            averageRating: Math.round((agg.sum / agg.scored) * 100) / 100,
+            scored: agg.scored,
+          })),
+        ]
+      : null;
+
   return {
+    scorerBreakdown,
     _id: run.id,
     evaluationSettings: evaluationSettings ?? undefined,
     datasetId: dataset ? { _id: dataset._id, name: dataset.name, description: dataset.description } : run.datasetId,

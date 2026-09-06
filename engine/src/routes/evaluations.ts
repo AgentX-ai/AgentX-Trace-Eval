@@ -136,7 +136,8 @@ evaluationsRouter.get("/evaluation-settings/:id", async (req: Request, res: Resp
 });
 
 evaluationsRouter.post("/runs", async (req: Request, res: Response) => {
-  const { datasetId, evaluationSettingsId, evaluationSubject, runSource, sdk, split } = req.body ?? {};
+  const { datasetId, evaluationSettingsId, scorerGroupId, additionalScorerIds, evaluationSubject, runSource, sdk, split } =
+    req.body ?? {};
   if (typeof datasetId !== "string" || !datasetId) {
     res.status(400).json({ error: "datasetId is required" });
     return;
@@ -144,6 +145,10 @@ evaluationsRouter.post("/runs", async (req: Request, res: Response) => {
   const run = await initRun(scopedDb(req), {
     datasetId,
     evaluationSettingsId,
+    scorerGroupId: typeof scorerGroupId === "string" && scorerGroupId ? scorerGroupId : undefined,
+    additionalScorerIds: Array.isArray(additionalScorerIds)
+      ? additionalScorerIds.filter((id: unknown): id is string => typeof id === "string" && !!id)
+      : undefined,
     evaluationSubject,
     runSource,
     sdk,
@@ -323,7 +328,16 @@ evaluationsRouter.get("/runs/:runId/gate", async (req: Request, res: Response) =
     res.status(400).json({ error: "At least one check is required: failUnder=<0-10> and/or noRegression=true" });
     return;
   }
-  const gate = await computeRunGate(scopedDb(req), req.params.runId!, { failUnder, noRegression, tolerance });
+  // ?scorer=<id-or-name>: gate on a named ADDITIONAL scorer's average instead of the primary
+  // rating - "fail if Safety < 8 even when the blended average looks fine".
+  const scorer = typeof req.query.scorer === "string" && req.query.scorer.trim() ? req.query.scorer.trim() : null;
+  const gate = await computeRunGate(scopedDb(req), req.params.runId!, { failUnder, noRegression, tolerance, scorer });
+  if (gate && "unknownScorer" in (gate as Record<string, unknown>)) {
+    res.status(400).json({
+      error: `No additional scorer "${scorer}" on this run - gate names must match an additional scorer's id or name`,
+    });
+    return;
+  }
   if (!gate) {
     res.status(404).json({ error: "Run not found" });
     return;

@@ -1,11 +1,11 @@
 import { nanoid } from "nanoid";
 import { UMAP } from "umap-js";
-import { and, desc, eq, gte } from "drizzle-orm";
+import { and, desc, eq, gte, lt } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
-import { callJudgeJson, computeEmbedding, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
+import { resolvePlatformModel, callJudgeJson, computeEmbedding, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { passesSampleRate } from "./routing.js";
 import { getMonitoringDefaults } from "../project/projects.js";
-import type { MonitoringWindow } from "./events.js";
+import { resolveRange, type MonitoringRange, type MonitoringWindow } from "./events.js";
 import { logger } from "../../log.js";
 
 // Third per-trace background pass, alongside detect.ts's runMonitorCheck (pattern matching) and
@@ -156,7 +156,7 @@ export async function runClassification(
     // vice versa; see computeEmbedding's own null-on-failure posture), no reason to serialize them.
     const [result, embedding] = await Promise.all([
       callJudgeJson({
-        model: DEFAULT_JUDGE_MODEL,
+        model: await resolvePlatformModel(db),
         jsonSchema: classificationSchema,
         userMessage: `Classify this AI agent interaction.\n\nUser input:\n${inputText}\n\nAgent response:\n${outputText}${existingIntentsBlock}\n\nRespond with JSON matching the schema.`,
       }),
@@ -198,8 +198,12 @@ export function windowConfig(window: MonitoringWindow): { days: number; bucketHo
 // Phase 0 topic list - the aggregations below (trend/top-intents/issue-breakdown/map) each
 // re-read the window for their own accumulator, and coverage is a fifth one of those, not a new
 // way of reading the table.
-export async function listClassificationsSince(db: Db, since: Date): Promise<ClassificationRow[]> {
-  const cond = and(gte(db.schema.monitorClassifications.createdAt, since), eq(db.schema.monitorClassifications.projectId, db.projectId));
+export async function listClassificationsSince(db: Db, since: Date, until?: Date): Promise<ClassificationRow[]> {
+  const bounds = [gte(db.schema.monitorClassifications.createdAt, since), eq(db.schema.monitorClassifications.projectId, db.projectId)];
+  if (until) {
+    bounds.push(lt(db.schema.monitorClassifications.createdAt, until));
+  }
+  const cond = and(...bounds);
   const rows =
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.monitorClassifications).where(cond).all()
@@ -215,13 +219,15 @@ export type TopicsTrendPoint = {
   negative: number;
 };
 
-export async function getTopicsTrend(db: Db, window: MonitoringWindow): Promise<{ window: MonitoringWindow; points: TopicsTrendPoint[] }> {
-  const { days, bucketHours } = windowConfig(window);
-  const bucketMs = bucketHours * 60 * 60 * 1000;
-  const bucketCount = Math.ceil((days * 24 * 60 * 60 * 1000) / bucketMs);
-  const bucketStartMs = Date.now() - bucketCount * bucketMs;
+export async function getTopicsTrend(
+  db: Db,
+  range: MonitoringRange
+): Promise<{ window: MonitoringWindow | "custom"; points: TopicsTrendPoint[] }> {
+  const { untilMs, spanMs, bucketMs, windowLabel } = resolveRange(range);
+  const bucketCount = Math.ceil(spanMs / bucketMs);
+  const bucketStartMs = untilMs - bucketCount * bucketMs;
 
-  const rows = await listClassificationsSince(db, new Date(bucketStartMs));
+  const rows = await listClassificationsSince(db, new Date(bucketStartMs), new Date(untilMs));
 
   const buckets: { positive: number; neutral: number; negative: number }[] = Array.from({ length: bucketCount }, () => ({
     positive: 0,
@@ -240,15 +246,14 @@ export async function getTopicsTrend(db: Db, window: MonitoringWindow): Promise<
     return { label: new Date(ts).toISOString(), ts, ...counts };
   });
 
-  return { window, points };
+  return { window: windowLabel, points };
 }
 
 export type TopIntent = { intent: string; count: number };
 
-export async function getTopIntents(db: Db, window: MonitoringWindow, limit = 10): Promise<TopIntent[]> {
-  const { days } = windowConfig(window);
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const rows = await listClassificationsSince(db, since);
+export async function getTopIntents(db: Db, range: MonitoringRange, limit = 10): Promise<TopIntent[]> {
+  const { sinceMs, untilMs } = resolveRange(range);
+  const rows = await listClassificationsSince(db, new Date(sinceMs), new Date(untilMs));
 
   const byIntent = new Map<string, number>();
   for (const row of rows) {
@@ -263,10 +268,9 @@ export async function getTopIntents(db: Db, window: MonitoringWindow, limit = 10
 
 export type IssueBreakdownEntry = { issueType: string; count: number };
 
-export async function getIssueBreakdown(db: Db, window: MonitoringWindow): Promise<IssueBreakdownEntry[]> {
-  const { days } = windowConfig(window);
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const rows = await listClassificationsSince(db, since);
+export async function getIssueBreakdown(db: Db, range: MonitoringRange): Promise<IssueBreakdownEntry[]> {
+  const { sinceMs, untilMs } = resolveRange(range);
+  const rows = await listClassificationsSince(db, new Date(sinceMs), new Date(untilMs));
 
   const byIssue = new Map<string, number>();
   for (const row of rows) {
@@ -307,10 +311,9 @@ const MIN_POINTS_FOR_MAP = 10;
 // long-running install with thousands of classified traces doesn't turn this into a slow request.
 const MAX_MAP_POINTS = 300;
 
-export async function getTopicsMap(db: Db, window: MonitoringWindow): Promise<TopicsMapResult> {
-  const { days } = windowConfig(window);
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const rows = (await listClassificationsSince(db, since))
+export async function getTopicsMap(db: Db, range: MonitoringRange): Promise<TopicsMapResult> {
+  const { sinceMs, untilMs } = resolveRange(range);
+  const rows = (await listClassificationsSince(db, new Date(sinceMs), new Date(untilMs)))
     .filter((r): r is ClassificationRow & { embedding: number[] } => Array.isArray(r.embedding) && r.embedding.length > 0)
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
     .slice(0, MAX_MAP_POINTS);

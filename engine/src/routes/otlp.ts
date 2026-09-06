@@ -5,6 +5,7 @@ import { scopedDb } from "../auth/apiKey.js";
 import { ingestTraceSchema, beginIngestTraceQueued, type IngestTraceInput, type QueuedIngestResult } from "../core/trace/ingest.js";
 import { runMonitorCheck } from "../core/monitor/detect.js";
 import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
+import { runScorerGroupsOnline } from "../core/monitor/scorerGroups.js";
 import { runCustomEvaluators } from "../core/monitor/customEvaluators.js";
 import { runRules } from "../core/monitor/rules.js";
 import { runClassification } from "../core/monitor/topics.js";
@@ -130,6 +131,10 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
 
     runOnlineEvaluators(db, { input: input.input, output: input.output, metadata: input.metadata }, { agentId, traceId }).catch(err => {
       logger.error({ err: err instanceof Error ? err.message : err }, "Online evaluator scoring failed:");
+    });
+
+    runScorerGroupsOnline(db, { input: input.input, output: input.output }, { agentId, traceId }).catch(err => {
+      logger.error({ err: err instanceof Error ? err.message : err }, "Scorer group scoring failed:");
     });
 
     runCustomEvaluators(

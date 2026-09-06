@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import { eq, and, gte, inArray, lt, max } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
-import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
+import { resolvePlatformModel, callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
 import { getDataset } from "./datasets.js";
 import { getTraceRow } from "../trace/ingest.js";
 import { listPlaygroundRunsByPrompt } from "./playgroundRuns.js";
@@ -651,6 +651,7 @@ export async function proposePromptImprovement(
 ): Promise<ProposalResult | null> {
   const gathered = await getWorstRatedExamples(db, promptId, opts);
   if (!gathered) return null;
+  const platformModel = await resolvePlatformModel(db);
 
   // A caller (the dashboard's evidence checklist) can narrow generation down to the examples a
   // human picked as representative, instead of always using every worst-rated example gathered.
@@ -669,7 +670,7 @@ export async function proposePromptImprovement(
     revisedText: null,
     reasoning: null,
     changes: [],
-    judgeModel: DEFAULT_JUDGE_MODEL,
+    judgeModel: platformModel,
     scope: gathered.scope,
     examples: [],
   };
@@ -699,7 +700,7 @@ ${examplesText}
 Where an "Expected" answer is given, use it as ground truth for what the response should have looked like, not just the judge feedback's paraphrase of it. Rewrite the prompt to address the recurring issues shown above. Return the complete revised prompt text (not a diff or partial edit), a short overall explanation of what changed and why, and an itemized list of specific changes, each tagged "added" (a new instruction), "tightened" (an existing instruction clarified or strengthened), or "removed" (an instruction taken out), with a one-sentence description each.`;
 
   const judgeResult = await callJudgeJson({
-    model: DEFAULT_JUDGE_MODEL,
+    model: platformModel,
     userMessage,
     jsonSchema: {
       type: "object",
@@ -736,7 +737,7 @@ Where an "Expected" answer is given, use it as ground truth for what the respons
     revisedText: payload.revisedPrompt,
     reasoning: payload.reasoning,
     changes: Array.isArray(payload.changes) ? payload.changes : [],
-    judgeModel: DEFAULT_JUDGE_MODEL,
+    judgeModel: platformModel,
     scope: gathered.scope,
     examples: selectedExamples,
   };
@@ -761,7 +762,7 @@ export type FailureThemesResult = {
   scope: { versionScoped: boolean; window: MonitoringWindow };
 };
 
-async function clusterFailureThemes(examples: WorstRatedExample[]): Promise<FailureTheme[]> {
+async function clusterFailureThemes(platformModel: string, examples: WorstRatedExample[]): Promise<FailureTheme[]> {
   const examplesText = examples
     .map((r, i) => `Example ${i}: ${r.justification ?? `Output: ${r.output}`}`)
     .join("\n");
@@ -773,7 +774,7 @@ ${examplesText}
 Group these into 3-6 short, specific recurring failure themes (e.g. "Curt or unempathetic tone", "No concrete next step offered"). Every example should belong to at least one theme; an example can belong to more than one if it exhibits multiple problems. Return each theme's short label and the example numbers that exhibit it.`;
 
   const judgeResult = await callJudgeJson({
-    model: DEFAULT_JUDGE_MODEL,
+    model: platformModel,
     userMessage,
     jsonSchema: {
       type: "object",
@@ -816,7 +817,7 @@ export async function getFailureThemes(
   if (gathered.examples.length === 0) {
     return { themes: [], scope: gathered.scope };
   }
-  const themes = await clusterFailureThemes(gathered.examples);
+  const themes = await clusterFailureThemes(await resolvePlatformModel(db), gathered.examples);
   return { themes, scope: gathered.scope };
 }
 

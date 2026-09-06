@@ -30,6 +30,7 @@ export type PlaygroundProfileConfig = {
     evaluationSettingsId?: string | null;
     patternIds: string[];
     onlineEvaluatorIds: string[];
+    additionalScorerIds?: string[];
   };
   testInput: {
     mode: "dataset" | "query";

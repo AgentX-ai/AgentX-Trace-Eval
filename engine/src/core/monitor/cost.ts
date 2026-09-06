@@ -1,7 +1,7 @@
 import type { Db } from "../../storage/db.js";
 import { traceStoreFor } from "../trace/store/index.js";
 import { listPortabilityModels, estimateCostUSD, normalizeModelId } from "../evaluate/models.js";
-import type { MonitoringWindow } from "./events.js";
+import { resolveRange, type MonitoringRange, type MonitoringWindow } from "./events.js";
 import { EVAL_RUN_SOURCE } from "../trace/evalTraffic.js";
 
 // Overview's "Total LLM cost" chart (Braintrust-style stacked bar, but stacked by model rather
@@ -27,10 +27,10 @@ function windowConfig(window: MonitoringWindow): { days: number; bucketHours: nu
 
 type CostTraceRow = { model: string | null; inputTokens: number | null; outputTokens: number | null; createdAt: Date; source: string | null };
 
-async function listCostTracesSince(db: Db, since: Date): Promise<CostTraceRow[]> {
+async function listCostTracesSince(db: Db, since: Date, until?: Date): Promise<CostTraceRow[]> {
   // Every row in the window, not just root spans: an OTel multi-span session's individual
   // LLM-call spans each carry their own tokens; filtering to roots would undercount real spend.
-  return (await traceStoreFor(db).queryWindow({ since })) as CostTraceRow[];
+  return (await traceStoreFor(db).queryWindow({ since, until })) as CostTraceRow[];
 }
 
 // The reserved stack key for spend from eval-run traffic. Eval spend is real money, so the
@@ -44,7 +44,7 @@ export type CostTrendPoint = {
 };
 
 export type CostTrendResponse = {
-  window: MonitoringWindow;
+  window: MonitoringWindow | "custom";
   points: CostTrendPoint[];
   // Models actually seen with priced spend in the window, sorted by total cost descending - the
   // frontend uses this order both for stack-segment order and the legend rows below the chart.
@@ -90,14 +90,13 @@ export async function listUnpricedModels(db: Db): Promise<UnpricedModel[]> {
   return Array.from(byModel.values()).sort((a, b) => b.traces - a.traces);
 }
 
-export async function getCostTrend(db: Db, window: MonitoringWindow): Promise<CostTrendResponse> {
-  const { days, bucketHours } = windowConfig(window);
-  const bucketMs = bucketHours * 60 * 60 * 1000;
-  const bucketCount = Math.ceil((days * 24 * 60 * 60 * 1000) / bucketMs);
-  const bucketStartMs = Date.now() - bucketCount * bucketMs;
+export async function getCostTrend(db: Db, range: MonitoringRange): Promise<CostTrendResponse> {
+  const { untilMs, spanMs, bucketMs, windowLabel } = resolveRange(range);
+  const bucketCount = Math.ceil(spanMs / bucketMs);
+  const bucketStartMs = untilMs - bucketCount * bucketMs;
 
   const [rows, pricingModels] = await Promise.all([
-    listCostTracesSince(db, new Date(bucketStartMs)),
+    listCostTracesSince(db, new Date(bucketStartMs), new Date(untilMs)),
     listPortabilityModels(db),
   ]);
   const pricingByModel = new Map(pricingModels.map(model => [model.id, model]));
@@ -144,5 +143,5 @@ export async function getCostTrend(db: Db, window: MonitoringWindow): Promise<Co
     return { label: new Date(ts).toISOString(), ts, byModel };
   });
 
-  return { window, points, models, totalsByModel, totalCost };
+  return { window: windowLabel, points, models, totalsByModel, totalCost };
 }

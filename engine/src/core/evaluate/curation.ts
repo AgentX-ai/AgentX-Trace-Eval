@@ -3,7 +3,7 @@ import { traceStoreFor } from "../trace/store/index.js";
 import { getTraceRow, type TraceRow } from "../trace/ingest.js";
 import { reconstructMessages } from "./portability.js";
 import { getDataset, updateDataset, extractSimilarityConfig, extractCodeScorers } from "./datasets.js";
-import { callJudgeJson, computeEmbedding, DEFAULT_JUDGE_MODEL } from "./judge.js";
+import { resolvePlatformModel, callJudgeJson, computeEmbedding, DEFAULT_JUDGE_MODEL } from "./judge.js";
 import { extractText } from "../monitor/events.js";
 import { cosine, normalizeText } from "../shared/vector.js";
 
@@ -106,7 +106,7 @@ const SUGGEST_EXPECTED_SCHEMA = {
 // point for the human editing the case, never auto-saved. Kept deliberately generic: it sees one
 // turn, not the dataset's criteria, because at curation time the case may be headed for a dataset
 // that doesn't exist yet.
-export async function suggestExpected(input: {
+export async function suggestExpected(db: Db, input: {
   query: string;
   actualOutput?: string;
   error?: string;
@@ -120,7 +120,7 @@ export async function suggestExpected(input: {
   if (input.error) parts.push(`The agent errored: ${input.error}`);
   const result = await callJudgeJson({
     userMessage: parts.join("\n\n"),
-    model: input.judgeModel || DEFAULT_JUDGE_MODEL,
+    model: input.judgeModel || (await resolvePlatformModel(db)),
     jsonSchema: SUGGEST_EXPECTED_SCHEMA,
     maxTokens: 1000,
   });

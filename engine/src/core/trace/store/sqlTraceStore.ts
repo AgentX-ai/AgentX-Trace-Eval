@@ -232,6 +232,7 @@ export class SqlTraceStore implements TraceStore {
     const t = db.schema.traces;
     const conditions: SQL[] = [eq(t.projectId, db.projectId) as SQL];
     if (filter.since) conditions.push(gte(t.createdAt, filter.since));
+    if (filter.until) conditions.push(lt(t.createdAt, filter.until));
     if (filter.productionOnly) conditions.push(productionOnlyCond(db));
     if (filter.rootsOnly) conditions.push(isNull(t.parentSpanId));
     if (filter.withSessionOnly) conditions.push(isNotNull(t.sessionId));

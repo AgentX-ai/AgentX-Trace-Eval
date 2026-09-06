@@ -763,6 +763,17 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
       project_id TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS scorer_groups (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      name TEXT NOT NULL,
+      description TEXT,
+      members TEXT NOT NULL,
+      online TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS agent_connectors (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -1054,6 +1065,7 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
     ["monitor_events", "ALTER TABLE monitor_events ADD COLUMN score REAL"],
     ["monitor_events", "ALTER TABLE monitor_events ADD COLUMN session_id TEXT"],
     ["evaluation_runs", "ALTER TABLE evaluation_runs ADD COLUMN version TEXT"],
+    ["evaluation_runs", "ALTER TABLE evaluation_runs ADD COLUMN scorer_group_id TEXT"],
     ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0"],
     ["evaluation_settings", "ALTER TABLE evaluation_settings ADD COLUMN status TEXT NOT NULL DEFAULT 'published'"],
     ["monitor_online_evaluators", "ALTER TABLE monitor_online_evaluators ADD COLUMN evaluation_settings_id TEXT"],
@@ -1083,6 +1095,9 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
     ["portability_models", "ALTER TABLE portability_models ADD COLUMN base_url TEXT"],
     ["portability_models", "ALTER TABLE portability_models ADD COLUMN api_key TEXT"],
     ["evaluation_analyses", "ALTER TABLE evaluation_analyses ADD COLUMN judge_models TEXT"],
+    // pairwise_comparisons shipped before the both-orders pass existed; an install upgraded past
+    // that point 500s on every new comparison without this (fresh DBs get it via CREATE TABLE).
+    ["pairwise_comparisons", "ALTER TABLE pairwise_comparisons ADD COLUMN both_orders INTEGER NOT NULL DEFAULT 0"],
     ["monitor_signal_feedback", "ALTER TABLE monitor_signal_feedback ADD COLUMN event_id TEXT"],
     ["monitor_profiles", "ALTER TABLE monitor_profiles ADD COLUMN topics_enabled INTEGER NOT NULL DEFAULT 0"],
     ["traces", "ALTER TABLE traces ADD COLUMN span_id TEXT"],
@@ -1178,6 +1193,10 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
     ["app_settings", "ALTER TABLE app_settings ADD COLUMN metric_pack_seeded_at INTEGER"],
     ["app_settings", "ALTER TABLE app_settings ADD COLUMN metric_pack_version INTEGER"],
     ["app_settings", "ALTER TABLE app_settings ADD COLUMN framework_casefolded_at INTEGER"],
+    ["app_settings", "ALTER TABLE app_settings ADD COLUMN platform_model TEXT"],
+    ["app_settings", "ALTER TABLE app_settings ADD COLUMN openrouter_api_key TEXT"],
+    ["evaluation_runs", "ALTER TABLE evaluation_runs ADD COLUMN additional_scorer_ids TEXT"],
+    ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN judge_scorer_results TEXT"],
     ["tool_schemas", "ALTER TABLE tool_schemas ADD COLUMN test_endpoint_url TEXT"],
     ["tool_schemas", "ALTER TABLE tool_schemas ADD COLUMN resolved_evidence TEXT"],
     ["playground_runs", "ALTER TABLE playground_runs ADD COLUMN kind TEXT"],
@@ -2103,6 +2122,17 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
       project_id TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS scorer_groups (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      name TEXT NOT NULL,
+      description TEXT,
+      members JSONB NOT NULL,
+      online JSONB,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS agent_connectors (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -2374,6 +2404,8 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
     ALTER TABLE monitor_patterns ADD COLUMN IF NOT EXISTS sample_rate DOUBLE PRECISION NOT NULL DEFAULT 1;
     ALTER TABLE monitor_patterns ADD COLUMN IF NOT EXISTS scope_mode TEXT NOT NULL DEFAULT 'all';
     ALTER TABLE monitor_patterns ADD COLUMN IF NOT EXISTS agent_ids JSONB;
+    ALTER TABLE pairwise_comparisons ADD COLUMN IF NOT EXISTS both_orders BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS scorer_group_id TEXT;
     ALTER TABLE monitor_profiles ADD COLUMN IF NOT EXISTS channels JSONB;
     ALTER TABLE monitor_signals ADD COLUMN IF NOT EXISTS review_status TEXT;
     ALTER TABLE monitor_signals ADD COLUMN IF NOT EXISTS resolution_reason TEXT;
@@ -2452,6 +2484,10 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
     ALTER TABLE portability_models ADD COLUMN IF NOT EXISTS price_per_m_cache_write_tokens DOUBLE PRECISION;
     ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS gemini_api_key TEXT;
     ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS framework_casefolded_at TIMESTAMP;
+    ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS platform_model TEXT;
+    ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS openrouter_api_key TEXT;
+    ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS additional_scorer_ids JSONB;
+    ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS judge_scorer_results JSONB;
     ALTER TABLE outcome_reports ADD COLUMN IF NOT EXISTS is_negative BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS topics_enabled BOOLEAN NOT NULL DEFAULT false;
     ALTER TABLE projects ADD COLUMN IF NOT EXISTS topics_sample_rate DOUBLE PRECISION NOT NULL DEFAULT 1;
