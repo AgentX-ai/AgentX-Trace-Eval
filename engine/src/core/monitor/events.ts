@@ -664,7 +664,10 @@ export async function getScorerGroupRatings(
   const bucketStartMs = Date.now() - bucketCount * bucketMs;
 
   const rows = (await listEventsSince(db, new Date(bucketStartMs))).filter(
-    r => r.patternKey === `scorer-group:${groupId}` && r.type === "scorer_group_score" && r.rating !== null
+    r =>
+      r.patternKey === `scorer-group:${groupId}` &&
+      (r.type === "scorer_group_score" || r.type === "scorer_group_session_score") &&
+      r.rating !== null
   );
 
   const buckets: { sum: number; count: number }[] = Array.from({ length: bucketCount }, () => ({ sum: 0, count: 0 }));

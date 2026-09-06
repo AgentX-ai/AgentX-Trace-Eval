@@ -37,8 +37,11 @@ const TRANSIENT_MARKERS = [
   "/suggest-",
   "/estimate",
   "/test-connection",
-  "/tune",
-  "/validate",
+  // Deliberately narrow: "/tune" alone would also swallow /tune/publish - the one tuning call
+  // that permanently rewrites a production rubric and MUST land in the audit trail.
+  "/tune/validate",
+  "/tune/preview",
+  "/validate-tuning",
   "/mcp-oauth",
 ];
 

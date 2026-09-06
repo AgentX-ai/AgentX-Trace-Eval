@@ -323,6 +323,7 @@ export const monitorClassifications = pgTable("monitor_classifications", {
   projectId: text("project_id"),
   // See schema.sqlite.ts's embedding column for the full comment.
   embedding: jsonb("embedding"),
+  inputEmbedding: jsonb("input_embedding"),
 });
 
 

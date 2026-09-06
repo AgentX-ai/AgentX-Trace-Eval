@@ -22,13 +22,20 @@ outcomesRouter.post("/", async (req: Request, res: Response) => {
     res.status(400).json({ error: "isNegative (boolean) is required" });
     return;
   }
-  if (!body.traceId && !body.evaluationRunResultId) {
-    res.status(400).json({ error: "traceId or evaluationRunResultId is required" });
+  const traceId = typeof body.traceId === "string" && body.traceId.trim() ? body.traceId : undefined;
+  const runResultId =
+    typeof body.evaluationRunResultId === "string" && body.evaluationRunResultId.trim()
+      ? body.evaluationRunResultId
+      : undefined;
+  // Both checked as STRINGS - a numeric/object id used to pass the truthy guard and then be
+  // stored as null, creating an orphan ground-truth row calibration can never join.
+  if (!traceId && !runResultId) {
+    res.status(400).json({ error: "traceId or evaluationRunResultId (string) is required" });
     return;
   }
   const report = await createOutcomeReport(scopedDb(req), {
-    traceId: typeof body.traceId === "string" ? body.traceId : undefined,
-    evaluationRunResultId: typeof body.evaluationRunResultId === "string" ? body.evaluationRunResultId : undefined,
+    traceId,
+    evaluationRunResultId: runResultId,
     outcome: body.outcome,
     isNegative: body.isNegative,
     reason: typeof body.reason === "string" ? body.reason : undefined,

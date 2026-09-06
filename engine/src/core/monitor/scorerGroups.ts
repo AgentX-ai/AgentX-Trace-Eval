@@ -47,6 +47,11 @@ export type ScorerGroupOnline = {
   // On the GROUP score, 0-10. Null = never raise a Signal (chart-only).
   alertThreshold: number | null;
   severity: string;
+  // "trace" (default) scores each sampled ingested trace; "session" scores whole multi-turn
+  // sessions once they have been idle for idleSeconds - the same trigger session-scoped online
+  // evaluators use (see sessionSweep.ts, which owns the group-session loop).
+  scope?: "trace" | "session";
+  idleSeconds?: number;
 };
 
 export type ScorerGroupRow = {
@@ -282,7 +287,7 @@ async function scoreJudgeMember(db: Db, member: ScorerGroupMember, content: Grou
   }
 }
 
-async function scorePatternMember(db: Db, member: ScorerGroupMember, content: GroupScoringContent): Promise<MemberScore> {
+export async function scorePatternMember(db: Db, member: ScorerGroupMember, content: GroupScoringContent): Promise<MemberScore> {
   const base = { kind: member.kind, refId: member.refId, weight: member.weight, gate: member.gate };
   const pattern = await getPatternRow(db, member.refId);
   if (!pattern) {
@@ -313,7 +318,7 @@ async function scorePatternMember(db: Db, member: ScorerGroupMember, content: Gr
   }
 }
 
-async function scoreCustomMember(db: Db, member: ScorerGroupMember, content: GroupScoringContent): Promise<MemberScore> {
+export async function scoreCustomMember(db: Db, member: ScorerGroupMember, content: GroupScoringContent): Promise<MemberScore> {
   const base = { kind: member.kind, refId: member.refId, weight: member.weight, gate: member.gate };
   const evaluator = (await getCustomEvaluatorRow(db, member.refId)) as CustomEvaluatorRow | null;
   if (!evaluator) {
@@ -396,7 +401,11 @@ export async function runScorerGroupsOnline(
   trace: { input: unknown; output: unknown; toolCalls?: unknown },
   ctx: { agentId: string | null; traceId: string | null }
 ): Promise<void> {
-  const groups = (await listScorerGroups(db)).filter(g => g.online?.enabled);
+  // Session-scoped groups are the idle-session sweep's job (sessionSweep.ts) - scoring them
+  // here too would judge every individual trace of a conversation a second time.
+  const groups = (await listScorerGroups(db)).filter(
+    g => g.online?.enabled && (g.online.scope ?? "trace") !== "session"
+  );
   if (groups.length === 0) return;
   const inputText = typeof trace.input === "string" ? trace.input : JSON.stringify(trace.input ?? "");
   const outputText = typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output ?? "");

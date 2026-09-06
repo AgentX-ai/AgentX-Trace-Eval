@@ -262,7 +262,7 @@ agentMonitoringDashboardRouter.get("/review-queue", async (req: Request, res: Re
       status: typeof status === "string" ? status : undefined,
       source: typeof source === "string" ? source : undefined,
     },
-    limit ? Math.min(Number(limit) || 100, 200) : 100
+    limit ? Math.min(Math.max(1, Number(limit) || 100), 200) : 100
   );
   res.status(200).json(result);
 });
@@ -347,7 +347,7 @@ agentMonitoringDashboardRouter.get("/signals", async (req: Request, res: Respons
       agentId: typeof agentId === "string" ? await resolveExistingAgentId(scopedDb(req), agentId) : undefined,
       polarity: typeof polarity === "string" ? polarity : undefined,
     },
-    limit ? Math.min(Number(limit) || 50, 100) : 50
+    limit ? Math.min(Math.max(1, Number(limit) || 50), 100) : 50
   );
   res.status(200).json({ signals });
 });
@@ -412,6 +412,18 @@ agentMonitoringDashboardRouter.put("/patterns/:patternId", async (req: Request, 
   // full replace, not a sparse patch), so conditions are re-derived the same way createPattern
   // derives them, from whatever shape (multi-condition builder or legacy fields) was submitted.
   const conditions = legacyPayloadToConditions(body);
+  // A client that explicitly sent condition fields but produced zero usable conditions gets a
+  // 400 - previously the old conditions were silently kept while the caller believed its
+  // "replace" landed. Requests that omit condition fields entirely still mean "keep".
+  const sentConditionFields =
+    body.conditions !== undefined ||
+    body.includeTerms !== undefined ||
+    body.regex !== undefined ||
+    body.semanticPrompt !== undefined;
+  if (sentConditionFields && conditions.length === 0) {
+    res.status(400).json({ error: "Add at least one condition (includeTerms, regex, or semanticPrompt)" });
+    return;
+  }
   const regexCheck = validateConditionRegexes(conditions);
   if (!regexCheck.ok) {
     res.status(400).json({ error: regexCheck.error });
@@ -516,8 +528,20 @@ agentMonitoringDashboardRouter.put("/profiles/:agentId", async (req: Request, re
 
 agentMonitoringDashboardRouter.patch("/profiles/:agentId/approval-policy", async (req: Request, res: Response) => {
   const body = req.body ?? {};
+  // Shape-checked (a flat string->string map) so a typo'd or malformed policy is a 400, not a
+  // silently-persisted governance setting the caller believes was applied.
+  const policy = body.approvalPolicy;
+  const isStringMap =
+    !!policy &&
+    typeof policy === "object" &&
+    !Array.isArray(policy) &&
+    Object.values(policy).every(value => typeof value === "string");
+  if (policy !== null && !isStringMap) {
+    res.status(400).json({ error: "approvalPolicy must be an object of string values (or null to clear)" });
+    return;
+  }
   const agentId = await resolveAgentId(scopedDb(req), req.params.agentId!);
-  const profile = await updateProfile(scopedDb(req), agentId, { approvalPolicy: body.approvalPolicy });
+  const profile = await updateProfile(scopedDb(req), agentId, { approvalPolicy: policy });
   res.status(200).json(profile);
 });
 
@@ -809,6 +833,10 @@ const scorerGroupOnlineSchema = z
     sampleRate: z.number().min(0).max(1),
     alertThreshold: z.number().min(0).max(10).nullable(),
     severity: z.enum(["low", "medium", "high", "critical"]),
+    // "trace" (default) scores each sampled trace at ingest; "session" scores whole multi-turn
+    // sessions via the idle-session sweep once quiet for idleSeconds.
+    scope: z.enum(["trace", "session"]).optional(),
+    idleSeconds: z.number().int().min(0).max(86400).optional(),
   })
   .strip();
 const createScorerGroupSchema = z
@@ -868,6 +896,12 @@ agentMonitoringDashboardRouter.put(
 
 // Ratings history for one group - same shape as /online-evaluators/:id/ratings.
 agentMonitoringDashboardRouter.get("/scorer-groups/:id/ratings", async (req: Request, res: Response) => {
+  // 404 for an unknown group rather than an all-empty 200 - an integration polling a deleted
+  // group's history should learn it is gone, not read "no scores yet" forever.
+  if (!(await getScorerGroup(scopedDb(req), req.params.id!))) {
+    res.status(404).json({ error: "Scorer group not found" });
+    return;
+  }
   res.status(200).json(await getScorerGroupRatings(scopedDb(req), req.params.id!, parseWindow(req)));
 });
 
@@ -1923,9 +1957,19 @@ agentMonitoringDashboardRouter.get("/traces/:traceId/portability-preview", async
 });
 
 agentMonitoringDashboardRouter.post("/traces/:traceId/portability", async (req: Request, res: Response) => {
-  const modelIds = Array.isArray(req.body?.modelIds) ? req.body.modelIds.filter((id: unknown) => typeof id === "string") : [];
+  // Deduped and capped: each entry is TWO real provider calls (completion + judge), so an
+  // unbounded/repeated list is an unbounded LLM bill in a single request.
+  const modelIds = [
+    ...new Set(
+      Array.isArray(req.body?.modelIds) ? req.body.modelIds.filter((id: unknown) => typeof id === "string") : []
+    ),
+  ] as string[];
   if (modelIds.length === 0) {
     res.status(400).json({ error: "modelIds must be a non-empty array" });
+    return;
+  }
+  if (modelIds.length > 10) {
+    res.status(400).json({ error: "At most 10 models per portability check" });
     return;
   }
   const result = await runModelPortabilityCheck(scopedDb(req), req.params.traceId!, modelIds);

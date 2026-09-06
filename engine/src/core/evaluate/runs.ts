@@ -825,8 +825,8 @@ export async function computeLiveStatistics(db: Db, runId: string) {
   const rated = results.filter(r => r.rating != null).map(r => r.rating as number);
   return {
     averageRating: rated.length ? rated.reduce((a, b) => a + b, 0) / rated.length : null,
-    minRating: rated.length ? Math.min(...rated) : null,
-    maxRating: rated.length ? Math.max(...rated) : null,
+    minRating: rated.length ? rated.reduce((a, b) => (b < a ? b : a)) : null,
+    maxRating: rated.length ? rated.reduce((a, b) => (b > a ? b : a)) : null,
     ratedCount: rated.length,
     // A run with 30 judge-skipped rows used to be indistinguishable on the wire from a run with
     // 30 fewer cases. skipped = judge could not score (failure/no reference); failed = the
@@ -1083,8 +1083,8 @@ export async function getRun(db: Db, runId: string) {
     averageRating,
     liveStatistics: {
       averageRating,
-      minRating: rated.length ? Math.min(...rated) : null,
-      maxRating: rated.length ? Math.max(...rated) : null,
+      minRating: rated.length ? rated.reduce((a, b) => (b < a ? b : a)) : null,
+      maxRating: rated.length ? rated.reduce((a, b) => (b > a ? b : a)) : null,
       ratedCount: rated.length,
       skippedCount: (results as { status?: string | null }[]).filter(r => r.status === "skipped").length,
       failedCount: (results as { status?: string | null }[]).filter(r => r.status === "failed").length,

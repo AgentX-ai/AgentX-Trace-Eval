@@ -19,6 +19,16 @@ import { matchesAgentScope, passesSampleRate } from "./routing.js";
 import { upsertSignal } from "./signals.js";
 import { recordEvent } from "./events.js";
 import { acquireSweepLease } from "../shared/sweepLease.js";
+import {
+  listScorerGroups,
+  scorePatternMember,
+  scoreCustomMember,
+  aggregateGroupScore,
+  describeGroupScore,
+  type MemberScore,
+  type ScorerGroupRow,
+} from "./scorerGroups.js";
+import { reserveOnlineJudgeCall } from "./onlineEvaluators.js";
 import { SESSION_BASELINE_KEY } from "./builtinEvaluators.js";
 import { logger } from "../../log.js";
 
@@ -337,6 +347,96 @@ export async function runSessionEvaluatorCheck(db: Db, sessionId: string, evalua
   });
 }
 
+// A group's judge MEMBER scoring a session needs only the rating and justification - findings
+// and drift belong to full session evaluators, not to one blended opinion inside a group.
+const MEMBER_SESSION_SCORE_SCHEMA = {
+  type: "object",
+  properties: {
+    rating: { type: "number", description: "0-10 rating for the whole session against the criteria" },
+    justification: { type: "string", description: "What the session did well or where it failed the criteria" },
+  },
+  required: ["rating", "justification"],
+};
+
+// Session-scope scorer-group scoring: every member scores the SAME assembled transcript. Judge
+// members get the structured session prompt built from their criteria (never their per-trace
+// judgePrompt - same rule as session evaluators); pattern and custom members receive the whole
+// transcript as both input and output, so "contains"-style conditions and script scorers read
+// the conversation, not one turn. Failures isolate per member exactly like trace-scope groups.
+export async function scoreSessionWithGroup(
+  db: Db,
+  group: ScorerGroupRow,
+  sessionId: string
+): Promise<{
+  score: number | null;
+  gatedBy: string | null;
+  members: MemberScore[];
+  justification: string;
+  anchorTraceId: string | null;
+  spanCount: number;
+} | null> {
+  const spans = (await listSessionSpans(db, sessionId)) as SpanWire[];
+  if (spans.length === 0) return null;
+  const { transcript, elidedNote } = buildSessionTranscript(spans, { includeToolLines: true });
+  const roots = spans.filter(s => !s.parentSpanId);
+  const anchorTraceId = (roots.length > 0 ? roots[roots.length - 1] : spans[spans.length - 1])?._id ?? null;
+
+  const members: MemberScore[] = [];
+  for (const member of group.members) {
+    const base = { kind: member.kind, refId: member.refId, weight: member.weight, gate: member.gate };
+    if (member.kind === "judge") {
+      const settings = await getEvaluationSettingsRow(db, member.refId);
+      if (!settings) {
+        members.push({ ...base, name: member.refId, goodness: null, detail: "-", error: "Scorer no longer exists" });
+        continue;
+      }
+      const name = settings.name ?? member.refId;
+      try {
+        const result = await callJudgeJson({
+          model: settings.judgeModel ?? DEFAULT_JUDGE_MODEL,
+          jsonSchema: MEMBER_SESSION_SCORE_SCHEMA,
+          userMessage: buildSessionJudgeMessage({
+            elidedNote,
+            criteria: settings,
+            toolDefinitions: null,
+            transcript,
+            withDrift: false,
+          }),
+          maxTokens: 1200,
+        });
+        const payload = result.payload as { rating?: unknown; justification?: unknown } | null;
+        const rating = typeof payload?.rating === "number" ? Math.max(0, Math.min(10, payload.rating)) : null;
+        if (rating === null) {
+          members.push({ ...base, name, goodness: null, detail: "-", error: "Judge returned no usable verdict" });
+        } else {
+          const justification = typeof payload?.justification === "string" ? payload.justification : "";
+          members.push({ ...base, name, goodness: rating / 10, detail: `${rating}/10 (${justification.slice(0, 140)})` });
+        }
+      } catch (err) {
+        members.push({ ...base, name, goodness: null, detail: "-", error: err instanceof Error ? err.message : "Judge failed" });
+      }
+    } else if (member.kind === "pattern") {
+      members.push(
+        await scorePatternMember(db, member, { input: transcript, output: transcript, traceId: anchorTraceId })
+      );
+    } else {
+      members.push(
+        await scoreCustomMember(db, member, { input: transcript, output: transcript, traceId: anchorTraceId })
+      );
+    }
+  }
+
+  const { score, gatedBy } = aggregateGroupScore(members);
+  return {
+    score,
+    gatedBy,
+    members,
+    justification: describeGroupScore({ score, gatedBy }, members),
+    anchorTraceId,
+    spanCount: spans.length,
+  };
+}
+
 // One pass over every project: find idle, unscored (or grown-since-scored) multi-turn sessions
 // and judge them against each enabled session-scoped evaluator. Exported for the manual-trigger
 // route (used by tests/demos); startSessionSweep below is the production path.
@@ -363,7 +463,12 @@ export async function sweepSessionsOnce(): Promise<{ judged: number }> {
     // enabled toggle replaced the old project-level coherence switch, and pausing it stops the
     // baseline judging like pausing any evaluator.
     const evaluators = (await listOnlineEvaluatorRows(db)).filter(e => e.enabled && e.scope === "session");
-    if (evaluators.length === 0) return;
+    // Session-scoped scorer GROUPS ride the same sweep: one idle trigger, one freshness rule,
+    // one judged-per-tick budget - the group score is just a composed verdict about the session.
+    const sessionGroups = (await listScorerGroups(db)).filter(
+      g => g.online?.enabled && g.online.scope === "session"
+    );
+    if (evaluators.length === 0 && sessionGroups.length === 0) return;
 
     const { sessions } = await listSessions(db, candidateWindow());
     const now = Date.now();
@@ -477,6 +582,116 @@ export async function sweepSessionsOnce(): Promise<{ judged: number }> {
           logger.error(
             { err },
             `Session sweep: evaluator "${evaluator.name}" failed on session ${session.sessionId}`
+          );
+        }
+      }
+
+      for (const group of sessionGroups) {
+        if (judged >= MAX_JUDGED_PER_SWEEP) break;
+        const online = group.online!;
+        if (now - lastActivity < (online.idleSeconds ?? 120) * 1000) continue;
+
+        const kind = `scorer-group:${group.id}`;
+        const latest = scores.find(s => s.kind === kind);
+        if (latest && new Date(latest.createdAt).getTime() >= lastActivity) continue;
+        if (!passesSampleRate(online.sampleRate)) continue;
+        // Judge members are real LLM spend, so they draw from the same online judge budget as
+        // trace-scope group scoring - all slots up front, and a refused reservation skips the
+        // whole group (a partial panel would score a different recipe than the one configured).
+        const judgeMemberCount = group.members.filter(m => m.kind === "judge").length;
+        let budgetOk = true;
+        for (let i = 0; i < judgeMemberCount; i++) {
+          if (!(await reserveOnlineJudgeCall(db))) {
+            budgetOk = false;
+            break;
+          }
+        }
+        if (!budgetOk) continue;
+
+        try {
+          const result = await scoreSessionWithGroup(db, group, session.sessionId);
+          if (!result) continue;
+          judged++;
+          if (result.score === null) {
+            // No member produced a score (judge outage, deleted refs). Same posture as the
+            // evaluator path: record the failure, insert no score row, let the next tick retry.
+            await recordEvent(db, {
+              signalId: null,
+              patternKey: kind,
+              type: "online_eval_judge_failure",
+              severity: "low",
+              polarity: "score",
+              agentId: session.agentId,
+              traceId: result.anchorTraceId,
+              onlineEvaluatorId: null,
+              rating: null,
+              justification: "No group member produced a usable score for this session",
+              sessionId: session.sessionId,
+            });
+            continue;
+          }
+          await insertSessionScore(db, {
+            sessionId: session.sessionId,
+            kind,
+            rating: result.score,
+            justification: result.justification,
+            spanCount: result.spanCount,
+            judgeModel: "scorer-group",
+          });
+
+          let signalId: string | null = null;
+          if (online.alertThreshold !== null && result.score < online.alertThreshold) {
+            const signal = await upsertSignal(
+              db,
+              {
+                type: "scorer_group_low_session_score",
+                severity: online.severity,
+                polarity: "failure",
+                summary: `Scorer group "${group.name}" rated session ${session.sessionId} ${result.score.toFixed(1)}/10 (below the ${online.alertThreshold} threshold): ${result.justification}`,
+                patternKey: kind,
+                rootCause: group.name,
+              },
+              { agentId: session.agentId, traceId: result.anchorTraceId }
+            );
+            signalId = signal._id;
+          }
+
+          // Same dual-write trace-scope group scoring does: the aggregate joins the group's
+          // ratings history (getScorerGroupRatings keys on this patternKey), member verdicts
+          // land alongside for the detailed breakdown.
+          await recordEvent(db, {
+            signalId,
+            patternKey: kind,
+            type: "scorer_group_session_score",
+            severity: "low",
+            polarity: "score",
+            agentId: session.agentId,
+            traceId: result.anchorTraceId,
+            onlineEvaluatorId: null,
+            rating: result.score,
+            justification: result.justification,
+            sessionId: session.sessionId,
+          });
+          for (const member of result.members) {
+            if (member.goodness === null) continue;
+            await recordEvent(db, {
+              signalId: null,
+              patternKey: `${kind}:${member.kind}:${member.refId}`,
+              type: "scorer_group_member_score",
+              severity: "low",
+              polarity: "score",
+              agentId: session.agentId,
+              traceId: result.anchorTraceId,
+              onlineEvaluatorId: null,
+              rating: Math.round(member.goodness * 100) / 10,
+              justification: JSON.stringify({ name: member.name, detail: member.detail }),
+              sessionId: session.sessionId,
+            });
+          }
+        } catch (err) {
+          logger.error(
+            { err },
+            `Session sweep: scorer group "${group.name}" failed on session ${session.sessionId}`
           );
         }
       }

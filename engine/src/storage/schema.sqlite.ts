@@ -497,6 +497,9 @@ export const monitorClassifications = sqliteTable("monitor_classifications", {
   // the Topics "Map" view's UMAP projection (core/monitor/topics.ts's getTopicsMap); not
   // backfilled for rows classified before this column existed.
   embedding: text("embedding", { mode: "json" }),
+  // Query-only embedding (the trace INPUT alone) - the coverage map's question space, where an
+  // identical question from production and a dataset lands in the same spot. Backfilled lazily.
+  inputEmbedding: text("input_embedding", { mode: "json" }),
 });
 
 // core/insights/: one cached embedding per distinct dataset case query. Keyed by a content hash

@@ -345,3 +345,77 @@ describe("scorer groups", () => {
     expect(kpis.totalRuns).toBe(1);
   }, 30_000);
 });
+
+describe("session-scope scorer groups", () => {
+  it("the idle-session sweep scores a multi-turn session with a session-scoped group", async () => {
+    const harshId = await makeJudge("Session harsh", "HARSHMARK"); // rates 2
+    const group = await api(
+      "/agent-monitoring/scorer-groups",
+      postJson({
+        name: "Session group",
+        members: [{ kind: "judge", refId: harshId, weight: 1 }],
+        // idleSeconds 0: the session qualifies as idle immediately, so the manual sweep run
+        // below picks it up without the test having to wait out a real idle window.
+        online: { enabled: true, sampleRate: 1, alertThreshold: 5, severity: "high", scope: "session", idleSeconds: 0 },
+      })
+    );
+    expect(group.status).toBe(201);
+    const groupId = (group.body as { scorerGroup: { _id: string } }).scorerGroup._id;
+    const wired = (group.body as { scorerGroup: { online: { scope?: string; idleSeconds?: number } } }).scorerGroup;
+    expect(wired.online.scope).toBe("session");
+
+    // Two turns in one session - the sweep only judges multi-turn sessions.
+    for (const [i, [input, output]] of [
+      ["book a table", "sure, for when?"],
+      ["tomorrow 7pm", "booked!"],
+    ].entries()) {
+      const ingested = await api(
+        "/ingest/traces",
+        postJson({ name: "conv-agent", span_id: `sg-sess-${i}`, session_id: "sg-conv-1", input, output })
+      );
+      expect(ingested.status).toBe(200);
+    }
+    // The ingest path must NOT score a session-scoped group per trace - give the async
+    // pipeline a beat, then assert no per-trace group event exists yet.
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const preSweep = (await api(`/agent-monitoring/scorer-groups/${groupId}/ratings?window=24h`)).body as {
+      points: Array<{ count: number }>;
+    };
+    expect(preSweep.points.every(p => p.count === 0)).toBe(true);
+
+    const swept = await api("/agent-monitoring/session-sweep/run", postJson({}));
+    expect(swept.status).toBe(200);
+
+    // The group verdict lands as a session score (kind scorer-group:<id>)...
+    const scores = (await api("/agent-monitoring/sessions/sg-conv-1/scores")).body as {
+      scores: Array<{ kind: string; rating: number | null; justification: string | null }>;
+    };
+    const groupScore = scores.scores.find(s => s.kind === `scorer-group:${groupId}`);
+    expect(groupScore, "expected a scorer-group session score").toBeTruthy();
+    expect(groupScore!.rating).toBe(2);
+    expect(groupScore!.justification).toContain("Session harsh");
+
+    // ...raises a below-threshold Signal keyed on the group...
+    const signals = ((await api("/agent-monitoring/signals")).body as {
+      signals: Array<{ patternKey?: string; type?: string; summary?: string }>;
+    }).signals.filter(s => s.patternKey === `scorer-group:${groupId}`);
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals[0]!.type).toBe("scorer_group_low_session_score");
+    expect(signals[0]!.summary).toContain("rated session sg-conv-1");
+
+    // ...and joins the group's ratings history alongside trace-scope verdicts.
+    const ratings = (await api(`/agent-monitoring/scorer-groups/${groupId}/ratings?window=24h`)).body as {
+      points: Array<{ count: number; averageRating: number | null }>;
+    };
+    const rated = ratings.points.filter(p => p.count > 0);
+    expect(rated.length).toBeGreaterThan(0);
+    expect(rated[0]!.averageRating).toBe(2);
+
+    // Freshness: a second sweep with no new session activity judges nothing again.
+    await api("/agent-monitoring/session-sweep/run", postJson({}));
+    const after = (await api("/agent-monitoring/sessions/sg-conv-1/scores")).body as {
+      scores: Array<{ kind: string }>;
+    };
+    expect(after.scores.filter(s => s.kind === `scorer-group:${groupId}`).length).toBe(1);
+  }, 45_000);
+});

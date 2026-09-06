@@ -4,6 +4,7 @@ import { asyncRouter } from "./asyncRouter.js";
 import { validateBody } from "./validateBody.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { curateCasesFromTraces, getCoverage } from "../core/insights/coverage.js";
+import { getCoverageMap } from "../core/insights/coverageMap.js";
 import { probe, probeBatch } from "../core/insights/probe.js";
 import type { MonitoringRange, MonitoringWindow } from "../core/monitor/events.js";
 
@@ -62,6 +63,13 @@ const scopeOf = (body: { datasetIds?: string[]; datasetId?: string }): string[] 
 // The sweep: three headline numbers, the topic list with its state, and the off-map cases.
 insightsRouter.get("/coverage", async (req: Request, res: Response) => {
   res.status(200).json(await getCoverage(scopedDb(req), { window: parseRange(req), datasetIds: datasetIdsOf(req) }));
+});
+
+// The coverage MAP: production traces and dataset cases in ONE joint UMAP projection - see
+// core/insights/coverageMap.ts. Separate route because the UMAP fit is genuinely heavier than
+// the coverage sweep, and a caller only pays for it with the Map tab open.
+insightsRouter.get("/coverage/map", async (req: Request, res: Response) => {
+  res.status(200).json(await getCoverageMap(scopedDb(req), { window: parseRange(req), datasetIds: datasetIdsOf(req) }));
 });
 
 const probeSchema = z

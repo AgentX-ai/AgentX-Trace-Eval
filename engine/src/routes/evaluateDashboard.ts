@@ -273,6 +273,10 @@ evaluateDashboardRouter.get("/evaluationSettings/:id/versions", async (req: Requ
 
 evaluateDashboardRouter.delete("/evaluationSettings/:id/versions/:versionId", async (req: Request, res: Response) => {
   const deleted = await deleteEvaluationSettingsVersion(scopedDb(req), req.params.id!, req.params.versionId!);
+  if (!deleted) {
+    res.status(404).json({ error: "Version not found" });
+    return;
+  }
   res.status(200).json({ deleted });
 });
 
@@ -296,6 +300,10 @@ evaluateDashboardRouter.get("/datasets/:id/versions", async (req: Request, res: 
 
 evaluateDashboardRouter.delete("/datasets/:id/versions/:versionId", async (req: Request, res: Response) => {
   const deleted = await deleteDatasetVersion(scopedDb(req), req.params.id!, req.params.versionId!);
+  if (!deleted) {
+    res.status(404).json({ error: "Version not found" });
+    return;
+  }
   res.status(200).json({ deleted });
 });
 
@@ -559,8 +567,8 @@ evaluateDashboardRouter.post("/agent-connectors", async (req: Request, res: Resp
     res.status(400).json({ error: "name is required" });
     return;
   }
-  if (typeof body.url !== "string" || !body.url.trim()) {
-    res.status(400).json({ error: "url is required" });
+  if (!isHttpUrl(body.url)) {
+    res.status(400).json({ error: "url must be an http(s) URL" });
     return;
   }
   const connector = await createAgentConnector(scopedDb(req), {
@@ -574,6 +582,10 @@ evaluateDashboardRouter.post("/agent-connectors", async (req: Request, res: Resp
 
 evaluateDashboardRouter.put("/agent-connectors/:id", async (req: Request, res: Response) => {
   const body = req.body ?? {};
+  if (body.url !== undefined && !isHttpUrl(body.url)) {
+    res.status(400).json({ error: "url must be an http(s) URL" });
+    return;
+  }
   const connector = await updateAgentConnector(scopedDb(req), req.params.id!, {
     name: typeof body.name === "string" ? body.name : undefined,
     url: typeof body.url === "string" ? body.url : undefined,
@@ -601,8 +613,8 @@ evaluateDashboardRouter.delete("/agent-connectors/:id", async (req: Request, res
 // posture as core/evaluate/models.ts's testCustomModelConnection.
 evaluateDashboardRouter.post("/agent-connectors/test-connection", async (req: Request, res: Response) => {
   const body = req.body ?? {};
-  if (typeof body.url !== "string" || !body.url.trim()) {
-    res.status(400).json({ error: "url is required" });
+  if (!isHttpUrl(body.url)) {
+    res.status(400).json({ error: "url must be an http(s) URL" });
     return;
   }
   const result = await testAgentConnectorConnection({
@@ -671,7 +683,9 @@ evaluateDashboardRouter.post("/playground/run", async (req: Request, res: Respon
     const ids = value.filter((id): id is string => typeof id === "string" && id.trim().length > 0);
     return ids.length > 0 ? ids : undefined;
   };
-  const result = await runPlayground(scopedDb(req), {
+  let result;
+  try {
+    result = await runPlayground(scopedDb(req), {
     model: body.model,
     messages: body.messages,
     query: body.query,
@@ -684,9 +698,15 @@ evaluateDashboardRouter.post("/playground/run", async (req: Request, res: Respon
     onlineEvaluatorIds: extractIds(body.onlineEvaluatorIds),
     additionalScorerIds: extractIds(body.additionalScorerIds),
     scorerGroupId: typeof body.scorerGroupId === "string" && body.scorerGroupId ? body.scorerGroupId : undefined,
-    maxTokens: typeof body.maxTokens === "number" ? body.maxTokens : undefined,
-    temperature: typeof body.temperature === "number" ? body.temperature : undefined,
-  });
+      maxTokens: typeof body.maxTokens === "number" ? body.maxTokens : undefined,
+      temperature: typeof body.temperature === "number" ? body.temperature : undefined,
+    });
+  } catch (err) {
+    // Same class and shape as /synthesize-cases: the common real-world failure here is a
+    // missing/invalid provider key, and it must not read as an engine fault (500).
+    res.status(502).json({ error: err instanceof Error ? err.message : "Playground run failed" });
+    return;
+  }
   res.status(200).json(result);
 });
 
@@ -811,7 +831,11 @@ evaluateDashboardRouter.patch("/playground/runs/:id", async (req: Request, res: 
     res.status(400).json({ error: "results is required" });
     return;
   }
-  await updatePlaygroundRunResults(scopedDb(req), req.params.id!, body.results);
+  const updated = await updatePlaygroundRunResults(scopedDb(req), req.params.id!, body.results);
+  if (!updated) {
+    res.status(404).json({ error: "Playground run not found" });
+    return;
+  }
   res.status(200).json({ ok: true });
 });
 
@@ -961,6 +985,10 @@ evaluateDashboardRouter.post("/mcp/tools", async (req: Request, res: Response) =
   // The OAuth redirect URI must be browser-reachable: explicit AGENTX_PUBLIC_URL wins (proxied
   // deployments), else the origin this request arrived on (localhost self-host).
   const base = process.env.AGENTX_PUBLIC_URL?.trim() || `${req.protocol}://${req.get("host")}`;
+  if (!isHttpUrl(body.serverUrl)) {
+    res.status(400).json({ error: "serverUrl must be an http(s) URL" });
+    return;
+  }
   const result = await loadMcpTools({
     serverUrl: body.serverUrl,
     headers,
@@ -1568,8 +1596,8 @@ async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) 
     resultCount: results.length,
     liveStatistics: {
       averageRating,
-      minRating: rated.length ? Math.min(...rated) : null,
-      maxRating: rated.length ? Math.max(...rated) : null,
+      minRating: rated.length ? rated.reduce((a, b) => (b < a ? b : a)) : null,
+      maxRating: rated.length ? rated.reduce((a, b) => (b > a ? b : a)) : null,
       ratedCount: rated.length,
       skippedCount: results.filter(r => r.status === "skipped").length,
       failedCount: results.filter(r => r.status === "failed").length,

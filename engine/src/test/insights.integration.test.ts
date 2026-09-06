@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import { openTestDb, type TestDb } from "./dbHarness.js";
 import type { Db } from "../storage/db.js";
 import { curateCasesFromTraces, getCoverage } from "../core/insights/coverage.js";
+import { getCoverageMap } from "../core/insights/coverageMap.js";
 import { probe, probeBatch } from "../core/insights/probe.js";
 import { caseKeyFor } from "../core/insights/cases.js";
 import { createDataset, getDataset } from "../core/evaluate/datasets.js";
@@ -113,6 +114,8 @@ async function classify(opts: {
     createdAt: opts.createdAt ?? new Date(),
     projectId: db.projectId,
     embedding: opts.angle === null ? null : unit(opts.angle),
+    // Question-space twin (coverage map) - same angle keeps the test geometry readable.
+    inputEmbedding: opts.angle === null ? null : unit(opts.angle),
   });
 }
 
@@ -793,5 +796,95 @@ describe("the probe", () => {
     expect(result.rollup.covered).toBe(1);
     expect(result.rollup.gap).toBe(1);
     expect(result.rollup.untestedAndUnasked).toBe(1);
+  });
+});
+
+describe("coverage map (joint UMAP over both sources)", () => {
+  it("projects production traces and dataset cases into one picture, topics matched consistently", async () => {
+    const scoped = test.scoped(await test.newProject("Map"));
+    const saved = db;
+    db = scoped;
+    try {
+      for (let i = 0; i < 6; i++) {
+        await classify({ intent: "refund request", angle: SAME });
+        await classify({ intent: "vpn issue", angle: UNRELATED });
+      }
+      const dsId = await newDataset("map-ds", [
+        { query: "I want a refund", angle: SAME },
+        { query: "refund my order", angle: NEAR },
+        // Far from BOTH topic centroids - must land as "unmatched", not get force-assigned.
+        { query: "totally unrelated thing", angle: 2.8 },
+      ]);
+
+      const result = await getCoverageMap(db, { window: "7d", datasetIds: [dsId] });
+      expect(result.insufficientData).toBe(false);
+      expect(result.degradedReason).toBeNull();
+
+      const production = result.points.filter(p => p.source === "production");
+      const dataset = result.points.filter(p => p.source === "dataset");
+      expect(production).toHaveLength(12);
+      expect(dataset).toHaveLength(3);
+      // One joint projection: every point has real coordinates.
+      expect(result.points.every(p => Number.isFinite(p.x) && Number.isFinite(p.y))).toBe(true);
+
+      // Dataset points carry the SAME topic assignment the coverage table would give them.
+      const byQuery = Object.fromEntries(dataset.map(p => [p.query, p.topic]));
+      expect(byQuery["I want a refund"]).toBe("refund request");
+      expect(byQuery["refund my order"]).toBe("refund request");
+      expect(byQuery["totally unrelated thing"]).toBe("unmatched");
+
+      const refund = result.topics.find(t => t.topic === "refund request");
+      expect(refund).toMatchObject({ productionCount: 6, datasetCount: 2 });
+
+      // THE property the map exists for: an identical question from both sources (identical
+      // question-space vectors here) sits together, far from the unrelated cluster.
+      const dist = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+        Math.hypot(a.x - b.x, a.y - b.y);
+      const refundCase = dataset.find(p => p.query === "I want a refund")!;
+      const nearestRefundProd = Math.min(
+        ...production.filter(p => p.topic === "refund request").map(p => dist(p, refundCase))
+      );
+      const nearestVpnProd = Math.min(...production.filter(p => p.topic === "vpn issue").map(p => dist(p, refundCase)));
+      expect(nearestRefundProd).toBeLessThan(nearestVpnProd);
+
+      // Dataset scoping is honored - an empty scope covers every dataset, a bogus one none.
+      const scopedOut = await getCoverageMap(db, { window: "7d", datasetIds: ["nope"] });
+      expect(scopedOut.insufficientData).toBe(true);
+    } finally {
+      db = saved;
+    }
+  });
+
+  it("refuses to draw below the point floor or without embeddings, with an honest reason", async () => {
+    const scoped = test.scoped(await test.newProject("MapEmpty"));
+    const saved = db;
+    db = scoped;
+    try {
+      // Classified traffic but zero dataset cases.
+      for (let i = 0; i < 6; i++) {
+        await classify({ intent: "refund request", angle: SAME });
+      }
+      const noCases = await getCoverageMap(db, { window: "7d" });
+      expect(noCases.insufficientData).toBe(true);
+      expect(noCases.degradedReason).toContain("No dataset cases");
+
+      // Cases but no embedded production traffic.
+      const scoped2 = test.scoped(await test.newProject("MapEmpty2"));
+      db = scoped2;
+      const dsId = await newDataset("bare", [{ query: "hello", angle: SAME }]);
+      const noTraces = await getCoverageMap(db, { window: "7d", datasetIds: [dsId] });
+      expect(noTraces.insufficientData).toBe(true);
+      expect(noTraces.degradedReason).toContain("No classified production traffic");
+
+      // Historical rows without a question-space embedding (and nothing registered to embed
+      // them with) are excluded and counted, never silently dropped.
+      for (let i = 0; i < 3; i++) {
+        await classify({ intent: "legacy", angle: null });
+      }
+      const pendingRes = await getCoverageMap(db, { window: "7d", datasetIds: [dsId] });
+      expect(pendingRes.traceEmbeddingsPending).toBe(3);
+    } finally {
+      db = saved;
+    }
   });
 });
