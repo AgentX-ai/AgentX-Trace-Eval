@@ -175,6 +175,12 @@ evaluationsRouter.post("/runs/:runId/results", async (req: Request, res: Respons
     res.status(400).json({ error: `Batch size must not exceed ${MAX_BATCH_SIZE}` });
     return;
   }
+  // Element shape is validated HERE, not discovered as a TypeError inside appendResults - a
+  // null/non-object element used to surface as a 409 carrying the raw engine error message.
+  if (!results.every((item: unknown) => !!item && typeof item === "object" && !Array.isArray(item))) {
+    res.status(400).json({ error: "Every results entry must be an object" });
+    return;
+  }
 
   try {
     const outcome = await appendResults(scopedDb(req), req.params.runId!, batchId, results);
@@ -186,7 +192,14 @@ evaluationsRouter.post("/runs/:runId/results", async (req: Request, res: Respons
     // run.average_rating updates as scoring lands, not only at finalize.
     res.status(200).json({ ...outcome, liveStatistics: await computeLiveStatistics(scopedDb(req), req.params.runId!) });
   } catch (err) {
-    res.status(409).json({ error: err instanceof Error ? err.message : "Unable to append results" });
+    // The only expected throw is the terminal-state guard - a real conflict. Anything else is
+    // an engine fault and must not masquerade as one.
+    const message = err instanceof Error ? err.message : "Unable to append results";
+    if (message.includes("terminal state")) {
+      res.status(409).json({ error: message });
+      return;
+    }
+    throw err;
   }
 });
 

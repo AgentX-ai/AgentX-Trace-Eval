@@ -135,10 +135,12 @@ export class SqlTraceStore implements TraceStore {
   async listBySession(sessionId: string): Promise<TraceRow[]> {
     const db = this.db;
     const cond = and(eq(db.schema.traces.sessionId, sessionId), eq(db.schema.traces.projectId, db.projectId));
+    // Capped: a runaway agent session with tens of thousands of spans must not pull them all
+    // into the heap on every dialog open. 5000 is far beyond any real conversation.
     const rows =
       db.kind === "sqlite"
-        ? db.db.select().from(db.schema.traces).where(cond).all()
-        : await db.db.select().from(db.schema.traces).where(cond);
+        ? db.db.select().from(db.schema.traces).where(cond).limit(5000).all()
+        : await db.db.select().from(db.schema.traces).where(cond).limit(5000);
     return rows as TraceRow[];
   }
 

@@ -86,14 +86,24 @@ export async function createPlaygroundRun(
 // A run that's already been pruned out from under an in-progress grid (rare - only possible if
 // someone runs 50+ grids without ever reloading the page in one sitting) no-ops rather than
 // throwing: the in-flight run just stops persisting further, it never breaks the UI mid-run.
-export async function updatePlaygroundRunResults(db: Db, id: string, results: unknown): Promise<void> {
+export async function updatePlaygroundRunResults(db: Db, id: string, results: unknown): Promise<boolean> {
   const row = { results, updatedAt: new Date() };
   const cond = and(eq(db.schema.playgroundRuns.id, id), eq(db.schema.playgroundRuns.projectId, db.projectId));
+  // Existence-checked so the route can 404 - PATCHing a deleted/foreign id used to answer
+  // {ok:true} while writing nothing.
+  const existing =
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.playgroundRuns).where(cond).all()[0]
+      : (await db.db.select().from(db.schema.playgroundRuns).where(cond))[0];
+  if (!existing) {
+    return false;
+  }
   if (db.kind === "sqlite") {
     await db.db.update(db.schema.playgroundRuns).set(row).where(cond);
   } else {
     await db.db.update(db.schema.playgroundRuns).set(row).where(cond);
   }
+  return true;
 }
 
 // Every playground_runs row that reviewed a given prompt - the read side of gatherPlaygroundExamples

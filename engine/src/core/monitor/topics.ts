@@ -36,6 +36,10 @@ export type ClassificationRow = {
   // OPENAI_API_KEY was set or the embeddings call failed (see computeEmbedding), or for rows
   // classified before this column existed.
   embedding: number[] | null;
+  // The trace INPUT alone - the coverage map's question space (an identical question from
+  // production and a dataset case embeds identically here). Null for historical rows; the
+  // coverage map backfills lazily (coverageMap.ts).
+  inputEmbedding: number[] | null;
 };
 
 const ISSUE_TYPES = ["none", "refusal", "hallucination", "off_topic", "incomplete", "other"] as const;
@@ -77,6 +81,7 @@ async function recordClassification(
     sentiment: string;
     issueType: string;
     embedding: number[] | null;
+    inputEmbedding: number[] | null;
   }
 ): Promise<void> {
   const row: ClassificationRow = {
@@ -89,6 +94,7 @@ async function recordClassification(
     issueType: input.issueType as ClassificationRow["issueType"],
     createdAt: new Date(),
     embedding: input.embedding,
+    inputEmbedding: input.inputEmbedding,
   };
   if (db.kind === "sqlite") {
     await db.db.insert(db.schema.monitorClassifications).values(row);
@@ -154,13 +160,16 @@ export async function runClassification(
     // Embedding runs alongside the judge call, not after it - same trace text, independent
     // failure modes (a missing/bad OPENAI_API_KEY shouldn't block the classification itself, and
     // vice versa; see computeEmbedding's own null-on-failure posture), no reason to serialize them.
-    const [result, embedding] = await Promise.all([
+    const [result, embedding, inputEmbedding] = await Promise.all([
       callJudgeJson({
         model: await resolvePlatformModel(db),
         jsonSchema: classificationSchema,
         userMessage: `Classify this AI agent interaction.\n\nUser input:\n${inputText}\n\nAgent response:\n${outputText}${existingIntentsBlock}\n\nRespond with JSON matching the schema.`,
       }),
       computeEmbedding(`${inputText}\n\n${outputText}`),
+      // Question-space twin for the coverage map: the input alone, so an identical question
+      // from a dataset case (query-only embedding) lands in the same spot.
+      computeEmbedding(inputText),
     ]);
     const payload = result.payload as { intent?: string; sentiment?: string; issueType?: string } | null;
     if (!payload?.intent || !payload.sentiment || !payload.issueType) {
@@ -173,6 +182,7 @@ export async function runClassification(
       sentiment: payload.sentiment,
       issueType: payload.issueType,
       embedding,
+      inputEmbedding,
     });
   } catch (err) {
     logger.error({ err: err instanceof Error ? err.message : err }, "Trace classification failed:");

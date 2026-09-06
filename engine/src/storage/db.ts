@@ -721,6 +721,7 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
       case_key TEXT NOT NULL,
       query TEXT NOT NULL,
       embedding TEXT,
+      input_embedding TEXT,
       embedding_full TEXT,
       model TEXT,
       created_at INTEGER NOT NULL
@@ -1098,6 +1099,7 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
     // pairwise_comparisons shipped before the both-orders pass existed; an install upgraded past
     // that point 500s on every new comparison without this (fresh DBs get it via CREATE TABLE).
     ["pairwise_comparisons", "ALTER TABLE pairwise_comparisons ADD COLUMN both_orders INTEGER NOT NULL DEFAULT 0"],
+    ["monitor_classifications", "ALTER TABLE monitor_classifications ADD COLUMN input_embedding TEXT"],
     ["monitor_signal_feedback", "ALTER TABLE monitor_signal_feedback ADD COLUMN event_id TEXT"],
     ["monitor_profiles", "ALTER TABLE monitor_profiles ADD COLUMN topics_enabled INTEGER NOT NULL DEFAULT 0"],
     ["traces", "ALTER TABLE traces ADD COLUMN span_id TEXT"],
@@ -2082,6 +2084,7 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
       case_key TEXT NOT NULL,
       query TEXT NOT NULL,
       embedding JSONB,
+      input_embedding JSONB,
       embedding_full JSONB,
       model TEXT,
       created_at TIMESTAMP NOT NULL
@@ -2406,6 +2409,7 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
     ALTER TABLE monitor_patterns ADD COLUMN IF NOT EXISTS agent_ids JSONB;
     ALTER TABLE pairwise_comparisons ADD COLUMN IF NOT EXISTS both_orders BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS scorer_group_id TEXT;
+    ALTER TABLE monitor_classifications ADD COLUMN IF NOT EXISTS input_embedding JSONB;
     ALTER TABLE monitor_profiles ADD COLUMN IF NOT EXISTS channels JSONB;
     ALTER TABLE monitor_signals ADD COLUMN IF NOT EXISTS review_status TEXT;
     ALTER TABLE monitor_signals ADD COLUMN IF NOT EXISTS resolution_reason TEXT;

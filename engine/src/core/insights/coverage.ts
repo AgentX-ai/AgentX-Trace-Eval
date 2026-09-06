@@ -261,7 +261,7 @@ export function mergeSynonymousTopics(groups: TopicGroup[]): TopicGroup[] {
 
 type Match = { score: number; matched: boolean; margin: number };
 
-type Similarity = {
+export type Similarity = {
   kind: "embedding" | "lexical";
   bands: { covered: number; related: number };
   /**
@@ -287,7 +287,7 @@ function matchOn(score: number, bands: { covered: number; related: number }): Ma
 const lexicalTopicMatch = (item: DatasetCase, group: TopicGroup): Match =>
   matchOn(overlap(contentWords(item.query), group.words), LEXICAL_BANDS);
 
-function embeddingSimilarity(): Similarity {
+export function embeddingSimilarity(): Similarity {
   return {
     kind: "embedding",
     bands: SIMILARITY_BANDS,

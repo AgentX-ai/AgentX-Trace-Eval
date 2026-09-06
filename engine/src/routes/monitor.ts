@@ -95,8 +95,10 @@ monitorRouter.get("/patterns/:id", async (req: Request, res: Response) => {
 });
 
 monitorRouter.get("/profiles/:agentId", async (req: Request, res: Response) => {
-  const agentId = await resolveAgentId(scopedDb(req), req.params.agentId!);
-  const profile = await getProfile(scopedDb(req), agentId);
+  // Read-side resolution: a GET must never create an agent row (resolveAgentId auto-registers
+  // unknown names - correct for the PUT below, wrong for a lookup or a stale-id poll).
+  const agentId = await resolveExistingAgentId(scopedDb(req), req.params.agentId!);
+  const profile = agentId ? await getProfile(scopedDb(req), agentId) : null;
   res.status(200).json({ profile: profile ?? null });
 });
 
@@ -131,7 +133,7 @@ monitorRouter.get("/signals", async (req: Request, res: Response) => {
       agentId: typeof agentId === "string" ? await resolveExistingAgentId(scopedDb(req), agentId) : undefined,
       polarity: typeof polarity === "string" ? polarity : undefined,
     },
-    limit ? Math.min(Number(limit) || 50, 100) : 50
+    limit ? Math.min(Math.max(1, Number(limit) || 50), 100) : 50
   );
   res.status(200).json({ signals });
 });
