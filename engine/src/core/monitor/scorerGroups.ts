@@ -11,6 +11,9 @@ import { runScriptScorer, loadScorerSpans } from "./scriptScorer.js";
 import { passesSampleRate } from "./routing.js";
 import { recordEvent } from "./events.js";
 import { upsertSignal } from "./signals.js";
+import { getProfileRow } from "./profiles.js";
+import { notifyWebhooks, extractWebhookUrls } from "./webhooks.js";
+import { reserveOnlineJudgeCall } from "./onlineEvaluators.js";
 import { logger } from "../../log.js";
 
 // A Scorer group: several scorers of ANY kind - LLM judges, patterns (templates included), and
@@ -397,10 +400,26 @@ export async function runScorerGroupsOnline(
   if (groups.length === 0) return;
   const inputText = typeof trace.input === "string" ? trace.input : JSON.stringify(trace.input ?? "");
   const outputText = typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output ?? "");
+  // Same webhook fan-out low online-evaluator scores get - a below-threshold group score is a
+  // failure detection, and it pages the same channels.
+  const alertProfile = ctx.agentId ? await getProfileRow(db, ctx.agentId) : null;
 
   for (const group of groups) {
     const online = group.online!;
     if (!passesSampleRate(online.sampleRate)) continue;
+    // Judge members are real LLM spend at the sample rate, so they draw from the SAME online
+    // judge budget evaluators reserve from (reserveOnlineJudgeCall) - one slot per judge member,
+    // taken up front. A refused reservation skips the whole group for this trace: a partial
+    // panel would score the group on a different recipe than the one configured.
+    const judgeMemberCount = group.members.filter(m => m.kind === "judge").length;
+    let budgetOk = true;
+    for (let i = 0; i < judgeMemberCount; i++) {
+      if (!(await reserveOnlineJudgeCall(db))) {
+        budgetOk = false;
+        break;
+      }
+    }
+    if (!budgetOk) return;
     try {
       const result = await computeGroupScore(db, group, {
         input: inputText,
@@ -427,6 +446,13 @@ export async function runScorerGroupsOnline(
           { agentId: ctx.agentId, traceId: ctx.traceId, evidence: { input: trace.input, output: trace.output } }
         );
         signalId = signal._id;
+        notifyWebhooks(extractWebhookUrls(alertProfile?.channels), {
+          summary,
+          severity: online.severity,
+          patternKey: `scorer-group:${group.id}`,
+          agentId: ctx.agentId,
+          rootCause: group.name,
+        });
       }
 
       await recordEvent(db, {
