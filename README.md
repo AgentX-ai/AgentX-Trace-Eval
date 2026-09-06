@@ -430,8 +430,9 @@ receiver verified against both protobuf and JSON payloads. The dashboard covers 
 self-host surface: Observe (live traces and sessions, with end-user feedback chips), Monitor
 (signals triage plus the KPI cards - scores, latency, spans, cost, tokens, the platform mix,
 and tool executions with the error rate overlaid), Review and Scorers (human labels; pattern,
-online, and custom evaluators, trace- and session-scoped), Topics, Evaluate (runs, datasets
-curated straight from production traffic, standalone evaluator configs, version history,
+online, and custom evaluators, trace- and session-scoped, composable into weighted scorer
+groups), Topics, Evaluate (runs, datasets curated straight from production traffic, standalone
+evaluator configs, version history,
 per-case run comparison, Model Portability, and Playground), Insights (Suggestions and Dataset
 coverage, with the Prompts and Tools & MCPs registries - validated proposals and
 unregistered-tool surfacing - reached from the sidebar's Manage section), CI Gates (recorded
@@ -445,7 +446,9 @@ map, Model Comparison, and Judge Calibration against reported outcomes and end-u
   fundamentally tied to AgentX's native agent config-branching system, which self-host doesn't
   have. The version-comparison and Prompt Registry features are the self-host analogs.
 - Guardrail hasn't been started.
-- Evaluate's async whole-run analysis (`analyze_run`/`get_report`) is out of scope for now.
+- The SDK's `list_models` call isn't served on the `custom-agent-evaluations` router yet; every
+  other `EvaluationsClient` path, including whole-run analysis (`analyze_run`/
+  `get_analysis_status`/`get_report`, synchronous here rather than queued), is.
 
 See [CHANGELOG.md](CHANGELOG.md) for the detailed, narrative build/verification history behind
 every feature above.
