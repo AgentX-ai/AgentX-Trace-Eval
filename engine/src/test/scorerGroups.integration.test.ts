@@ -23,6 +23,18 @@ beforeAll(async () => {
     req.on("end", () => {
       const rating = raw.includes("HARSHMARK") ? 2 : 8;
       res.setHeader("content-type", "application/json");
+      // Judges arrive via the Responses API (judge-core); the Playground's model completion
+      // uses chat completions - serve whichever shape the path asks for.
+      if ((req.url ?? "").includes("/chat/completions")) {
+        res.end(
+          JSON.stringify({
+            id: "chat_stub",
+            choices: [{ message: { role: "assistant", content: "stub answer" } }],
+            usage: { prompt_tokens: 5, completion_tokens: 5 },
+          })
+        );
+        return;
+      }
       res.end(
         JSON.stringify({
           id: "resp_stub",
@@ -173,6 +185,22 @@ describe("scorer groups", () => {
     };
     expect(detail.scorerGroupId).toBe(groupId);
     expect(detail.scorerBreakdown[0]).toMatchObject({ name: "Blend group (group)", primary: true });
+
+    // A group MEMBER is gate-able by name ("fail the run if the Harsh judge is low, whatever
+    // the blend says") - and an unknown member is still a hard 400.
+    const memberGate = (await api(`/custom-agent-evaluations/runs/${runId}/gate?failUnder=5&scorer=Harsh judge`))
+      .body as { passed: boolean; gatedScorer: { name: string } | null; averageRating: number | null };
+    expect(memberGate.gatedScorer?.name).toBe("Harsh judge");
+    expect(memberGate.averageRating).toBe(2);
+    expect(memberGate.passed).toBe(false);
+    expect((await api(`/custom-agent-evaluations/runs/${runId}/gate?failUnder=5&scorer=Nope`)).status).toBe(400);
+
+    // The dashboard list wire names the group (Evaluate page's Scorers column).
+    const listed = (await api("/evaluate/list?limit=20")).body as {
+      evaluations: Array<{ scorerGroupId?: string | null; scorerGroupName?: string | null }>;
+    };
+    const listedRun = listed.evaluations.find(e => e.scorerGroupId === groupId);
+    expect(listedRun?.scorerGroupName).toBe("Blend group");
   });
 
   it("a must-pass gate zeroes the group score when its member fails", async () => {
@@ -213,6 +241,41 @@ describe("scorer groups", () => {
     expect(scored.rating).toBe(0);
     expect(scored.justification).toContain("Gated to 0");
   });
+
+  it("grades a Playground cell with a group: aggregate rating + member verdicts", async () => {
+    const kindId = await makeJudge("PG kind", "KINDMARK"); // stub rates 8
+    const patternId = await makePattern("PG sorry", "sorry");
+    const group = await api(
+      "/agent-monitoring/scorer-groups",
+      postJson({
+        name: "PG group",
+        members: [
+          { kind: "judge", refId: kindId, weight: 1 },
+          { kind: "pattern", refId: patternId, weight: 1 },
+        ],
+      })
+    );
+    const groupId = (group.body as { scorerGroup: { _id: string } }).scorerGroup._id;
+
+    const run = await api(
+      "/evaluate/playground/run",
+      postJson({ model: "stub-judge-g", messages: [], query: "hi?", scorerGroupId: groupId })
+    );
+    expect(run.status).toBe(200);
+    const body = run.body as {
+      rating: number | null;
+      justification: string | null;
+      judgeScorerResults?: Array<{ name: string; rating: number | null }>;
+      codeScorerResults?: Array<{ name: string; score: number | null }>;
+    };
+    // Stub answer contains no "sorry": judge 8 (0.8) + clean pattern (1.0) -> 0.9 -> 9.0.
+    expect(body.rating).toBeCloseTo(9, 5);
+    expect(body.justification).toContain("Weighted blend");
+    expect(body.judgeScorerResults).toEqual([
+      expect.objectContaining({ name: "PG kind", rating: 8 }),
+    ]);
+    expect(body.codeScorerResults).toEqual([expect.objectContaining({ name: "PG sorry", score: 1 })]);
+  }, 90_000);
 
   it("scores live traffic and raises a Signal below the group threshold", async () => {
     const harshId = await makeJudge("Live harsh", "HARSHMARK"); // rates 2

@@ -319,7 +319,8 @@ type ScorableTrace = { input?: unknown; output?: unknown; metadata?: unknown };
 // single process; multi-replica drift is bounded at one burst per replica.
 const onlineJudgeSpend = new Map<string, { day: string; count: number }>();
 let onlineJudgeReservationChain: Promise<void> = Promise.resolve();
-async function reserveOnlineJudgeCall(db: Db): Promise<boolean> {
+// Exported for scorerGroups.ts: group judge members draw from the same online judge budget.
+export async function reserveOnlineJudgeCall(db: Db): Promise<boolean> {
   const cap = Number(process.env.AGENTX_QUOTA_ONLINE_JUDGE_CALLS_PER_DAY || 0);
   if (!Number.isFinite(cap) || cap <= 0) return true;
   let granted = false;

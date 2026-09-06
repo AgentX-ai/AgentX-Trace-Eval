@@ -135,6 +135,10 @@ export type PlaygroundRunInput = {
   // own rubric/judge model. Unlike the primary judge these are not gated on `expected` - with no
   // reference the judge simply scores reference-free, same as the online dry-runs.
   additionalScorerIds?: string[];
+  // Grade the cell with a Scorer group instead of judgeCriteria: the group's 0-10 aggregate
+  // fills `rating`, member verdicts land in judgeScorerResults/codeScorerResults - the same
+  // contract group-graded dataset runs have (runs.ts). Wins over judgeCriteria when both come.
+  scorerGroupId?: string;
   // Per-model overrides from Playground's "Model settings" - see callModelWithTools's `options`
   // param. Both omitted preserves today's exact defaults.
   maxTokens?: number;
@@ -358,9 +362,41 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
 
     let rating: number | null = null;
     let justification: string | null = null;
+    let groupMemberJudges: PlaygroundJudgeScorerResult[] | undefined;
+    let groupMemberChecks: CodeScorerResult[] | undefined;
+    if (input.scorerGroupId) {
+      // Group grading: the group IS the recipe - judgeCriteria is not consulted, and unlike the
+      // primary judge below the group is NOT gated on `expected` (patterns/code members and
+      // reference-free judges all score without one, same as live scoring).
+      const { getScorerGroup, computeGroupScore, describeGroupScore } = await import("../monitor/scorerGroups.js");
+      const group = await getScorerGroup(db, input.scorerGroupId);
+      if (group) {
+        const groupResult = await computeGroupScore(db, group, {
+          input: input.query,
+          output: completion.text,
+          expected: input.expected,
+          toolCalls: completion.toolCalls.length > 0 ? completion.toolCalls : undefined,
+        });
+        rating = groupResult.score;
+        justification = describeGroupScore(groupResult, groupResult.members);
+        groupMemberJudges = groupResult.members
+          .filter(m => m.kind === "judge")
+          .map(m => ({
+            scorerId: m.refId,
+            name: m.name,
+            rating: m.goodness === null ? null : Math.round(m.goodness * 100) / 10,
+            justification: m.error ?? m.detail,
+          }));
+        groupMemberChecks = groupResult.members
+          .filter(m => m.kind !== "judge")
+          .map(m => ({ name: m.name, score: m.goodness, reasoning: m.error ? undefined : m.detail, error: m.error }));
+      } else {
+        justification = "Scorer group no longer exists.";
+      }
+    }
     // Only score when there's a ground truth to compare against - a question with no
     // expectedResults still runs and shows output, it just never blocks on a judge call.
-    if (input.expected) {
+    if (!input.scorerGroupId && input.expected) {
       try {
         const scored = await scoreAgainstCriteria(
           {
@@ -392,7 +428,7 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
       input.onlineEvaluatorIds && input.onlineEvaluatorIds.length > 0
         ? await runPlaygroundOnlineEvaluatorChecks(db, input.onlineEvaluatorIds, { input: input.query, output: completion.text })
         : undefined;
-    const judgeScorerResults =
+    const additionalJudgeResults =
       input.additionalScorerIds && input.additionalScorerIds.length > 0
         ? await runPlaygroundJudgeScorerChecks(db, input.additionalScorerIds, {
             input: input.query,
@@ -401,13 +437,17 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
             judgeGuideline: input.judgeGuideline,
           })
         : undefined;
+    const judgeScorerResults =
+      groupMemberJudges || additionalJudgeResults
+        ? [...(groupMemberJudges ?? []), ...(additionalJudgeResults ?? [])]
+        : undefined;
 
     // Code scorers run AFTER the judges (same ordering as runs.ts's scoreOneResult) so a scorer
     // can read the verdicts via `scores` and combine them into a custom final score. Playground
     // has no similarity metrics, so those slots are null. Not gated on `expected`, and each
     // scorer still isolates its own failure into { score: null, error }.
     const enabledCodeScorers = (input.codeScorers ?? []).filter(s => s.enabled);
-    const codeScorerResults =
+    const attachedCheckResults =
       enabledCodeScorers.length > 0
         ? await Promise.all(
             enabledCodeScorers.map(scorer =>
@@ -429,6 +469,10 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
               })
             )
           )
+        : undefined;
+    const codeScorerResults =
+      groupMemberChecks || attachedCheckResults
+        ? [...(groupMemberChecks ?? []), ...(attachedCheckResults ?? [])]
         : undefined;
 
     return {

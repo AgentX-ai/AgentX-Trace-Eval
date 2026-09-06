@@ -72,6 +72,7 @@ import {
   updateToolSchemaMeta,
 } from "../core/evaluate/toolSchemas.js";
 import { runPlayground, extractPlaygroundTools, callPlaygroundTool } from "../core/evaluate/playground.js";
+import { getScorerGroup } from "../core/monitor/scorerGroups.js";
 import { runConversationSimulation } from "../core/evaluate/simulation.js";
 import { generateSyntheticCases } from "../core/evaluate/synthesize.js";
 import { loadMcpTools } from "../core/evaluate/mcp.js";
@@ -435,6 +436,7 @@ const profileConfigSchema = z.object({
   }),
   scorers: z.object({
     evaluationSettingsId: z.string().max(200).nullable().optional(),
+    scorerGroupId: z.string().max(200).nullable().optional(),
     patternIds: z.array(z.string().max(200)).max(200),
     // Legacy dashboards stored online-profile ids here; current ones store judge scorer ids in
     // additionalScorerIds. Both survive the round trip.
@@ -681,6 +683,7 @@ evaluateDashboardRouter.post("/playground/run", async (req: Request, res: Respon
     patternIds: extractIds(body.patternIds),
     onlineEvaluatorIds: extractIds(body.onlineEvaluatorIds),
     additionalScorerIds: extractIds(body.additionalScorerIds),
+    scorerGroupId: typeof body.scorerGroupId === "string" && body.scorerGroupId ? body.scorerGroupId : undefined,
     maxTokens: typeof body.maxTokens === "number" ? body.maxTokens : undefined,
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
   });
@@ -1504,11 +1507,13 @@ function toResultWire(r: RunResultRow, evaluationSettingsQuestions: unknown, dat
 // liveStatistics.averageRating, not results.length, and a rating of exactly 0 (e.g. an errored
 // result) must not be treated as "no rating yet" (0 !== null).
 async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) {
-  const [dataset, evaluationSettings, results, analysisRow] = await Promise.all([
+  const scorerGroupId = (run as { scorerGroupId?: string | null }).scorerGroupId ?? null;
+  const [dataset, evaluationSettings, results, analysisRow, scorerGroup] = await Promise.all([
     getDataset(db, run.datasetId),
     getMergedEvaluationSettings(db, run.evaluationSettingsId ?? run.datasetId),
     getRunResults(db, run.id),
     getEvaluationAnalysisRow(db, run.id),
+    scorerGroupId ? getScorerGroup(db, scorerGroupId) : Promise.resolve(null),
   ]);
   const rated = results.filter(r => r.rating != null).map(r => r.rating as number);
   const averageRating = rated.length ? rated.reduce((a, b) => a + b, 0) / rated.length : null;
@@ -1529,8 +1534,8 @@ async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) 
     additionalAgg.size > 0
       ? [
           {
-            scorerId: run.evaluationSettingsId ?? null,
-            name: "Primary scorer",
+            scorerId: run.evaluationSettingsId ?? scorerGroup?.id ?? null,
+            name: scorerGroup ? `${scorerGroup.name} (group)` : "Primary scorer",
             primary: true,
             averageRating: averageRating != null ? Math.round(averageRating * 100) / 100 : null,
             scored: rated.length,
@@ -1548,6 +1553,10 @@ async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) 
   return {
     scorerBreakdown,
     _id: run.id,
+    // Group-graded runs: name the group so the Evaluate list's Scorers column doesn't claim
+    // the dataset's own twin config graded the run.
+    scorerGroupId: scorerGroup?.id ?? null,
+    scorerGroupName: scorerGroup?.name ?? null,
     evaluationSettings: evaluationSettings ?? undefined,
     datasetId: dataset ? { _id: dataset._id, name: dataset.name, description: dataset.description } : run.datasetId,
     results: includeResults ? results.map(r => toResultWire(r, evaluationSettings?.questions, dataset?.questions)) : [],

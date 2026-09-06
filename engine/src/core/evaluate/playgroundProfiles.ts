@@ -28,6 +28,7 @@ export type PlaygroundProfileConfig = {
   models: { ids: string[]; settings?: Record<string, { maxTokens?: string; temperature?: string }> };
   scorers: {
     evaluationSettingsId?: string | null;
+    scorerGroupId?: string | null;
     patternIds: string[];
     onlineEvaluatorIds: string[];
     additionalScorerIds?: string[];
