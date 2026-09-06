@@ -28,6 +28,9 @@ export type AppSettings = {
   openaiApiKey: string | null;
   anthropicApiKey: string | null;
   geminiApiKey: string | null;
+  openrouterApiKey: string | null;
+  // Default model for platform operations; null = the engine's built-in default.
+  platformModel: string | null;
 };
 
 type AppSettingsRow = AppSettings & { id: string; updatedAt: Date };
@@ -45,6 +48,8 @@ export async function getAppSettings(db: Db): Promise<AppSettings> {
     openaiApiKey: row?.openaiApiKey ?? null,
     anthropicApiKey: row?.anthropicApiKey ?? null,
     geminiApiKey: row?.geminiApiKey ?? null,
+    openrouterApiKey: row?.openrouterApiKey ?? null,
+    platformModel: row?.platformModel ?? null,
   };
 }
 
@@ -52,13 +57,21 @@ export async function getAppSettings(db: Db): Promise<AppSettings> {
 // `if (key)` truthiness check would still treat as falsy-but-present - nicer to just store null).
 export async function updateAppSettings(
   db: Db,
-  patch: { openaiApiKey?: string | null; anthropicApiKey?: string | null; geminiApiKey?: string | null }
+  patch: {
+    openaiApiKey?: string | null;
+    anthropicApiKey?: string | null;
+    geminiApiKey?: string | null;
+    openrouterApiKey?: string | null;
+    platformModel?: string | null;
+  }
 ): Promise<AppSettings> {
   const existing = await getRow(db);
   const next: AppSettings = {
     openaiApiKey: "openaiApiKey" in patch ? patch.openaiApiKey || null : (existing?.openaiApiKey ?? null),
     anthropicApiKey: "anthropicApiKey" in patch ? patch.anthropicApiKey || null : (existing?.anthropicApiKey ?? null),
     geminiApiKey: "geminiApiKey" in patch ? patch.geminiApiKey || null : (existing?.geminiApiKey ?? null),
+    openrouterApiKey: "openrouterApiKey" in patch ? patch.openrouterApiKey || null : (existing?.openrouterApiKey ?? null),
+    platformModel: "platformModel" in patch ? patch.platformModel || null : (existing?.platformModel ?? null),
   };
   const row = { id: settingsRowId(), ...next, updatedAt: new Date() };
 

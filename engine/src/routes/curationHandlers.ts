@@ -36,7 +36,7 @@ export async function handleSuggestExpected(req: Request, res: Response) {
     return;
   }
   try {
-    const suggestion = await suggestExpected({
+    const suggestion = await suggestExpected(scopedDb(req), {
       query,
       actualOutput: typeof actualOutput === "string" ? actualOutput : undefined,
       error: typeof error === "string" ? error : undefined,

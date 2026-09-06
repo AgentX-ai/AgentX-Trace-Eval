@@ -1,5 +1,5 @@
 import type { Db } from "../../storage/db.js";
-import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
+import { resolvePlatformModel, callJudgeJson, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { evaluatePatternConditions, type PatternCondition, type SemanticJudge, type TraceLike } from "./conditions.js";
 import { listCustomPatterns, getPatternRow } from "./patterns.js";
 import { getProfileRow } from "./profiles.js";
@@ -313,9 +313,19 @@ const semanticMatchSchema = {
 // ANTHROPIC_API_KEY). Returns `reason` alongside the boolean (previously discarded here) so
 // callers can surface it on the resulting signal, same as Custom Evaluators' own
 // {matches, reason} contract does (core/monitor/customEvaluators.ts).
-export const llmSemanticJudge: SemanticJudge = async (rubric, text) => {
+// Model-parameterized so live detection uses the settings-backed platform model; the bare
+// llmSemanticJudge export keeps the built-in default for callers without a db (playground).
+export const semanticJudgeFor =
+  (model: string): SemanticJudge =>
+  async (rubric, text) => {
+    return llmSemanticJudgeWith(model, rubric, text);
+  };
+
+export const llmSemanticJudge: SemanticJudge = async (rubric, text) => llmSemanticJudgeWith(DEFAULT_JUDGE_MODEL, rubric, text);
+
+const llmSemanticJudgeWith = async (model: string, rubric: string, text: string) => {
   const result = await callJudgeJson({
-    model: DEFAULT_JUDGE_MODEL,
+    model,
     jsonSchema: semanticMatchSchema,
     userMessage: `Does the following text match this rubric?\n\nRubric: ${rubric}\n\nText:\n${text}\n\nRespond with JSON {"matches": true|false, "reason": "..."}.`,
   });
@@ -340,7 +350,7 @@ async function detectCustomPatterns(db: Db, trace: TraceLike, agentId: string | 
         conditions: pattern.conditions as PatternCondition[],
         responseText,
         trace,
-        semanticJudge: llmSemanticJudge,
+        semanticJudge: semanticJudgeFor(await resolvePlatformModel(db)),
       });
     } catch (err) {
       // A "semantic" condition failing (missing judge API key, provider outage) must not silently
@@ -405,7 +415,7 @@ export async function runMonitorCheck(
           conditions: pattern.conditions as PatternCondition[],
           responseText,
           trace,
-          semanticJudge: llmSemanticJudge,
+          semanticJudge: semanticJudgeFor(await resolvePlatformModel(db)),
         });
       } catch (err) {
         logger.error({ err: err instanceof Error ? err.message : err }, `Pattern "${pattern.name}" failed to evaluate:`);

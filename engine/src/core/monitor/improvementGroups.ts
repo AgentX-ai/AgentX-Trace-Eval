@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { Db } from "../../storage/db.js";
-import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
+import { resolvePlatformModel, callJudgeJson, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { logger } from "../../log.js";
 
 // Auto-improve: close the loop from human-confirmed production failures to a code fix.
@@ -295,7 +295,7 @@ ${evidenceBlock}`;
 
   const result = await callJudgeJson({
     userMessage,
-    model: options.model ?? DEFAULT_JUDGE_MODEL,
+    model: options.model ?? (await resolvePlatformModel(db)),
     jsonSchema: REPORT_SCHEMA,
     maxTokens: 4000,
   });

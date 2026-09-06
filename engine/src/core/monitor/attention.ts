@@ -1,6 +1,6 @@
 import { and, eq, gte, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
-import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
+import { resolvePlatformModel, callJudgeJson, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { getAgentNamesById } from "./agents.js";
 import { listSignalRows } from "./signals.js";
 import { listOnlineEvaluatorRows } from "./onlineEvaluators.js";
@@ -175,7 +175,7 @@ async function computeInsight(db: Db, items: AttentionItem[], key: string): Prom
     )
     .join("\n");
   const result = await callJudgeJson({
-    model: DEFAULT_JUDGE_MODEL,
+    model: await resolvePlatformModel(db),
     jsonSchema: insightSchema,
     userMessage: `These are the top open quality signals for an AI agent. In ONE short sentence (max 25 words, plain language, no preamble), say what they have in common or which is the most actionable root cause. If they are unrelated, say which one to fix first and why.\n\n${lines}`,
   });

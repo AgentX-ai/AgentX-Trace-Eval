@@ -39,6 +39,16 @@ export { getProviderForModel, applyJudgePromptTemplate, computeJaccardSimilarity
 // plain OpenAI API key can call, so self-host defaults to a real public model name instead.
 export const DEFAULT_JUDGE_MODEL = "gpt-5.6-luna";
 
+// The default model for PLATFORM operations - topic mapping, suggestions/drafts, dataset
+// coverage synthesis, prompt/tool proposals, AI analysis, the attention digest, auto-improve
+// reports. Settings-backed (Platform Settings > Platform model) with the judge default as the
+// fallback; deliberately separate from judge scorers' own judgeModel config, which stays on
+// the scorer.
+export async function resolvePlatformModel(db: import("../../storage/db.js").Db): Promise<string> {
+  const settings = await getAppSettings(db).catch(() => null);
+  return settings?.platformModel?.trim() || DEFAULT_JUDGE_MODEL;
+}
+
 // Ported verbatim (via @agentx/judge-core) from the hosted SaaS's default judge instructions, so
 // a self-host run with no custom judgePrompt scores the same way.
 export const DEFAULT_JUDGE_PROMPT = SHARED_DEFAULT_JUDGE_PROMPT;
@@ -70,6 +80,25 @@ async function getAnthropic(): Promise<Anthropic | null> {
     cachedAnthropicClient = key ? new Anthropic({ apiKey: key }) : null;
   }
   return cachedAnthropicClient;
+}
+
+// OpenRouter: one key, hundreds of models, OpenAI-compatible chat completions - the same
+// fold-into-the-openai-branch trick as Gemini below. Any model id containing "/" (OpenRouter's
+// vendor/model shape: "anthropic/claude-sonnet-4.6", "meta-llama/llama-4-70b") routes here,
+// which makes the whole catalog usable from every model field in the product once the key is
+// configured. Marked isCustom so structured output uses the tolerant path - not every routed
+// model implements strict json_schema.
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+let cachedOpenRouterKey: string | null = null;
+let cachedOpenRouterClient: OpenAI | null = null;
+async function getOpenRouter(): Promise<OpenAI | null> {
+  const settings = await getAppSettings(getDb());
+  const key = settings.openrouterApiKey || envKey("OPENROUTER_API_KEY");
+  if (key !== cachedOpenRouterKey) {
+    cachedOpenRouterKey = key;
+    cachedOpenRouterClient = key ? new OpenAI({ apiKey: key, baseURL: OPENROUTER_BASE_URL }) : null;
+  }
+  return cachedOpenRouterClient;
 }
 
 // Gemini has no separate branch anywhere below: Google publishes an OpenAI-compatible endpoint
@@ -122,8 +151,8 @@ function getCustomClient(row: PortabilityModelRow): OpenAI {
 type ModelRouting = {
   provider: "openai" | "anthropic";
   openaiClient: OpenAI | null;
-  keyLabel: "OpenAI" | "Anthropic" | "Gemini";
-  envVar: "OPENAI_API_KEY" | "ANTHROPIC_API_KEY" | "GEMINI_API_KEY";
+  keyLabel: "OpenAI" | "Anthropic" | "Gemini" | "OpenRouter";
+  envVar: "OPENAI_API_KEY" | "ANTHROPIC_API_KEY" | "GEMINI_API_KEY" | "OPENROUTER_API_KEY";
   isGemini: boolean;
   // Custom baseURL (vLLM/Ollama/LM Studio/...) - like isGemini, marks an OpenAI-compat endpoint
   // that reuses the OpenAI code path but may not implement every native-OpenAI feature (strict
@@ -139,6 +168,16 @@ async function resolveModelRouting(model: string): Promise<ModelRouting> {
       openaiClient: getCustomClient(custom),
       keyLabel: "OpenAI",
       envVar: "OPENAI_API_KEY",
+      isGemini: false,
+      isCustom: true,
+    };
+  }
+  if (!custom && model.includes("/")) {
+    return {
+      provider: "openai",
+      openaiClient: await getOpenRouter(),
+      keyLabel: "OpenRouter",
+      envVar: "OPENROUTER_API_KEY",
       isGemini: false,
       isCustom: true,
     };

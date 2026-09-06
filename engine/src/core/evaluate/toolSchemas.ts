@@ -3,7 +3,7 @@ import { and, eq, gte, lt, max } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { traceStoreFor } from "../trace/store/index.js";
 import { getTraceRow } from "../trace/ingest.js";
-import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
+import { resolvePlatformModel, callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
 import { extractText } from "../monitor/events.js";
 import { listPlaygroundRunRows } from "./playgroundRuns.js";
 
@@ -704,7 +704,7 @@ export async function proposeToolSchemaImprovement(
   // proposePromptImprovement already has. Omitted = use everything gathered.
   options: { windowDays?: number; exampleIds?: string[]; judgeModel?: string } = {}
 ) {
-  const judgeModel = options.judgeModel ?? DEFAULT_JUDGE_MODEL;
+  const judgeModel = options.judgeModel ?? (await resolvePlatformModel(db));
   const withVersions = await getToolSchemaWithVersionsWire(db, toolSchemaId);
   if (!withVersions) return null;
   const current = withVersions.versions.find(v => v.version === withVersions.currentVersion);

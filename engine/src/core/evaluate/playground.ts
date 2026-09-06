@@ -130,6 +130,11 @@ export type PlaygroundRunInput = {
   // runPlaygroundOnlineEvaluatorChecks below) - Playground stays "compute and return" throughout.
   patternIds?: string[];
   onlineEvaluatorIds?: string[];
+  // Extra LLM judge scorers that each also grade this one response - the Playground's version of
+  // dataset runs' additionalScorerIds (runs.ts): one model call, N verdicts, each scored by its
+  // own rubric/judge model. Unlike the primary judge these are not gated on `expected` - with no
+  // reference the judge simply scores reference-free, same as the online dry-runs.
+  additionalScorerIds?: string[];
   // Per-model overrides from Playground's "Model settings" - see callModelWithTools's `options`
   // param. Both omitted preserves today's exact defaults.
   maxTokens?: number;
@@ -156,6 +161,14 @@ export type PlaygroundOnlineEvaluatorCheckResult = {
   error?: string;
 };
 
+export type PlaygroundJudgeScorerResult = {
+  scorerId: string;
+  name: string;
+  rating: number | null;
+  justification: string | null;
+  error?: string;
+};
+
 export type PlaygroundRunResult = {
   output: string | null;
   latencyMs: number | null;
@@ -168,6 +181,7 @@ export type PlaygroundRunResult = {
   toolCalls?: ToolCallTrace[];
   patternChecks?: PlaygroundPatternCheckResult[];
   onlineEvaluatorChecks?: PlaygroundOnlineEvaluatorCheckResult[];
+  judgeScorerResults?: PlaygroundJudgeScorerResult[];
   error: string | null;
 };
 
@@ -276,6 +290,44 @@ async function runPlaygroundOnlineEvaluatorChecks(
   return results;
 }
 
+// Playground's version of runs.ts's additional-judge scoring: each checked judge scorer grades
+// the same response by its own rubric and judge model. Failures isolate per scorer (rating null
+// + error), a deleted scorer degrades to "not scored by it" - both postures copied from runs.ts.
+async function runPlaygroundJudgeScorerChecks(
+  db: Db,
+  scorerIds: string[],
+  content: { input: string; output: string; expected?: string; judgeGuideline?: string }
+): Promise<PlaygroundJudgeScorerResult[]> {
+  const results: PlaygroundJudgeScorerResult[] = [];
+  for (const scorerId of scorerIds) {
+    const settings = await getEvaluationSettingsRow(db, scorerId);
+    if (!settings) continue; // deleted since the run started
+    const name = settings.name ?? scorerId;
+    try {
+      const { rating, justification } = await scoreAgainstCriteria(
+        {
+          acceptanceCriteria: settings.acceptanceCriteria ?? "",
+          rejectionCriteria: settings.rejectionCriteria ?? "",
+          evaluationCriteria: settings.evaluationCriteria ?? "",
+          judgePrompt: (settings.judgePrompt ?? "").trim() || DEFAULT_JUDGE_PROMPT,
+          judgeModel: settings.judgeModel ?? DEFAULT_JUDGE_MODEL,
+        },
+        content
+      );
+      results.push({ scorerId, name, rating, justification });
+    } catch (err) {
+      results.push({
+        scorerId,
+        name,
+        rating: null,
+        justification: null,
+        error: err instanceof Error ? err.message : "Scoring failed",
+      });
+    }
+  }
+  return results;
+}
+
 export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<PlaygroundRunResult> {
   const model = await getPortabilityModel(db, input.model);
 
@@ -303,26 +355,6 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
     );
     const latencyMs = Date.now() - start;
     const estimatedCostUSD = estimateCostUSD(model, completion.usage?.inputTokens ?? null, completion.usage?.outputTokens ?? null);
-
-    // Runs independent of judge scoring below (not gated on `expected`) - each scorer isolates
-    // its own failure into { score: null, error } (see codeScorer.ts's runCodeScorer), so a
-    // broken/timed-out scorer never blanks the real model output that already succeeded.
-    const enabledCodeScorers = (input.codeScorers ?? []).filter(s => s.enabled);
-    const codeScorerResults =
-      enabledCodeScorers.length > 0
-        ? await Promise.all(
-            enabledCodeScorers.map(scorer =>
-              runCodeScorer(scorer, {
-                input: input.query,
-                output: completion.text,
-                expected: input.expected,
-                // The round-trip's real recorded tool calls (callModelWithTools' trace) - lets a
-                // scorer assert on tool behavior, see codeScorer.ts's ScorerArgs.
-                toolCalls: completion.toolCalls.length > 0 ? completion.toolCalls : undefined,
-              })
-            )
-          )
-        : undefined;
 
     let rating: number | null = null;
     let justification: string | null = null;
@@ -360,6 +392,44 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
       input.onlineEvaluatorIds && input.onlineEvaluatorIds.length > 0
         ? await runPlaygroundOnlineEvaluatorChecks(db, input.onlineEvaluatorIds, { input: input.query, output: completion.text })
         : undefined;
+    const judgeScorerResults =
+      input.additionalScorerIds && input.additionalScorerIds.length > 0
+        ? await runPlaygroundJudgeScorerChecks(db, input.additionalScorerIds, {
+            input: input.query,
+            output: completion.text,
+            expected: input.expected,
+            judgeGuideline: input.judgeGuideline,
+          })
+        : undefined;
+
+    // Code scorers run AFTER the judges (same ordering as runs.ts's scoreOneResult) so a scorer
+    // can read the verdicts via `scores` and combine them into a custom final score. Playground
+    // has no similarity metrics, so those slots are null. Not gated on `expected`, and each
+    // scorer still isolates its own failure into { score: null, error }.
+    const enabledCodeScorers = (input.codeScorers ?? []).filter(s => s.enabled);
+    const codeScorerResults =
+      enabledCodeScorers.length > 0
+        ? await Promise.all(
+            enabledCodeScorers.map(scorer =>
+              runCodeScorer(scorer, {
+                input: input.query,
+                output: completion.text,
+                expected: input.expected,
+                // The round-trip's real recorded tool calls (callModelWithTools' trace) - lets a
+                // scorer assert on tool behavior, see codeScorer.ts's ScorerArgs.
+                toolCalls: completion.toolCalls.length > 0 ? completion.toolCalls : undefined,
+                scores: {
+                  rating,
+                  judges: Object.fromEntries((judgeScorerResults ?? []).map(v => [v.name, v.rating])),
+                  vectorSimilarity: null,
+                  jaccardSimilarity: null,
+                  bleuScore: null,
+                  rougeScore: null,
+                },
+              })
+            )
+          )
+        : undefined;
 
     return {
       output: completion.text,
@@ -373,6 +443,7 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
       toolCalls: completion.toolCalls.length > 0 ? completion.toolCalls : undefined,
       patternChecks,
       onlineEvaluatorChecks,
+      judgeScorerResults,
       error: null,
     };
   } catch (err) {

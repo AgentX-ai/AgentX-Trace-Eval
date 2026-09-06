@@ -1,7 +1,7 @@
 import { and, eq, gte, isNotNull, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { traceStoreFor } from "../trace/store/index.js";
-import type { MonitoringWindow } from "./events.js";
+import { resolveRange, type MonitoringRange, type MonitoringWindow } from "./events.js";
 import { getAgentNamesById } from "./agents.js";
 import { listOnlineEvaluatorRows } from "./onlineEvaluators.js";
 import { SESSION_BASELINE_KEY } from "./builtinEvaluators.js";
@@ -70,15 +70,16 @@ export type SessionSummary = {
 };
 
 export type SessionsResponse = {
-  window: MonitoringWindow;
+  window: MonitoringWindow | "custom";
   sessions: SessionSummary[];
 };
 
-export async function listSessions(db: Db, window: MonitoringWindow): Promise<SessionsResponse> {
-  const since = new Date(Date.now() - windowDays(window) * 24 * 60 * 60 * 1000);
+export async function listSessions(db: Db, range: MonitoringRange): Promise<SessionsResponse> {
+  const { sinceMs, untilMs, windowLabel } = resolveRange(range);
   // Production only: an eval run's per-case sessions are not conversations anyone held.
   const rows = (await traceStoreFor(db).queryWindow({
-    since,
+    since: new Date(sinceMs),
+    until: new Date(untilMs),
     withSessionOnly: true,
     productionOnly: true,
   })) as unknown as SessionTraceRow[];
@@ -188,5 +189,5 @@ export async function listSessions(db: Db, window: MonitoringWindow): Promise<Se
 
   // Most recently active first, matching Live Traces' own newest-first ordering.
   sessions.sort((a, b) => b.lastAt.localeCompare(a.lastAt));
-  return { window, sessions };
+  return { window: windowLabel, sessions };
 }

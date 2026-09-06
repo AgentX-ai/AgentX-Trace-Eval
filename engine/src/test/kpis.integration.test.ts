@@ -216,3 +216,45 @@ describe("top failing", () => {
     expect(toolPattern.reduce((sum, p) => sum + p.count, 0)).toBe(TOOL_FAILURES);
   });
 });
+
+describe("explicit from/to bounds", () => {
+  it("a custom range covering the seed counts everything; one ending before it counts nothing", async () => {
+    const now = Date.now();
+    // Everything above was seeded within this test run - a range spanning the last hour holds it
+    // all, and the response labels itself "custom" rather than pretending to be a preset.
+    const covering = (await engine.json(
+      `/api/v1/agent-monitoring/kpis?from=${now - 60 * 60 * 1000}&to=${now + 1000}`,
+      { apiKey: key }
+    )) as { status: number; body: Kpis & { window: string } };
+    expect(covering.status).toBe(200);
+    expect(covering.body.window).toBe("custom");
+    expect(covering.body.totalRuns).toBe(TOTAL);
+
+    // A range that ended two hours before the seed existed must see an empty project, not
+    // fall back to "the last 7 days" - that silent fallback is the bug explicit bounds replace.
+    const before = (await engine.json(
+      `/api/v1/agent-monitoring/kpis?from=${now - 3 * 60 * 60 * 1000}&to=${now - 2 * 60 * 60 * 1000}`,
+      { apiKey: key }
+    )) as { status: number; body: Kpis };
+    expect(before.status).toBe(200);
+    expect(before.body.totalRuns).toBe(0);
+
+    // Sessions and the trend endpoint speak the same params.
+    const trend = (await engine.json(
+      `/api/v1/agent-monitoring/trend?from=${now - 60 * 60 * 1000}&to=${now + 1000}`,
+      { apiKey: key }
+    )) as { status: number; body: { window: string; points: { ts?: number }[] } };
+    expect(trend.status).toBe(200);
+    expect(trend.body.window).toBe("custom");
+    // Hourly buckets for a sub-48h span, and no bucket starts after the requested end.
+    expect(trend.body.points.length).toBeGreaterThan(0);
+    expect(Math.max(...trend.body.points.map(p => p.ts ?? 0))).toBeLessThanOrEqual(now + 1000);
+
+    // Malformed bounds (to <= from) fall back to the window preset instead of erroring.
+    const fallback = (await engine.json(`/api/v1/agent-monitoring/kpis?from=${now}&to=${now - 1}`, {
+      apiKey: key,
+    })) as { status: number; body: { window: string } };
+    expect(fallback.status).toBe(200);
+    expect(fallback.body.window).toBe("7d");
+  });
+});

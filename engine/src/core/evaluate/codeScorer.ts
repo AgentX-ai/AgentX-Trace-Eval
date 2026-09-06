@@ -24,12 +24,28 @@ export type CodeScorerResult = {
 // boundary.
 const CODE_SCORER_TIMEOUT_MS = 3000;
 
+// The item's OTHER verdicts, handed to code scorers so one can combine them - the "custom
+// weighted final score over judge ratings and deterministic metrics" use case. Judge ratings are
+// 0-10; the similarity metrics are 0-1; anything not enabled/available is null. Populated by the
+// surfaces that score judges first (dataset runs, playground); undefined elsewhere - a scorer
+// reading it should null-check, same as `expected`.
+export type ScorerScores = {
+  // The primary judge's rating.
+  rating: number | null;
+  // Additional judge scorers' ratings, keyed by scorer name (multi-judge runs).
+  judges: Record<string, number | null>;
+  vectorSimilarity: number | null;
+  jaccardSimilarity: number | null;
+  bleuScore: number | null;
+  rougeScore: number | null;
+};
+
 // toolCalls: the trace's recorded tool-call array when the caller has one (connector-driven runs,
 // playground runs with tools, and anywhere a real trace backs the result) - lets a scorer assert
 // on tool behavior ("required tool was called", "arguments parse against my schema"), the same
 // structured tool_calls access Langfuse exposes to its code evaluators. Undefined when the result
 // simply has no tool data; a scorer reading it should null-check, same as `expected`.
-type ScorerArgs = { input: string; output: string; expected?: string; toolCalls?: unknown };
+type ScorerArgs = { input: string; output: string; expected?: string; toolCalls?: unknown; scores?: ScorerScores };
 
 // Executes one dataset-defined scorer function against one result. JS/TS only, run in-process via
 // node:vm rather than shelling out to python3/node on PATH - the engine ships as a single
@@ -64,9 +80,15 @@ function executeInSandbox(code: string, args: ScorerArgs): unknown {
   // separately-invoked reference afterward - the latter would run outside the timeout window
   // entirely, since vm only bounds synchronous execution during the call it wraps.
   const context = vm.createContext({
-    __args: { input: args.input, output: args.output, expected: args.expected, toolCalls: args.toolCalls },
+    __args: {
+      input: args.input,
+      output: args.output,
+      expected: args.expected,
+      toolCalls: args.toolCalls,
+      scores: args.scores,
+    },
   });
-  const wrapped = `(function({ input, output, expected, toolCalls }) {\n${code}\n})(__args);`;
+  const wrapped = `(function({ input, output, expected, toolCalls, scores }) {\n${code}\n})(__args);`;
   const script = new vm.Script(wrapped, { filename: "code-scorer.js" });
   return script.runInContext(context, { timeout: CODE_SCORER_TIMEOUT_MS });
 }

@@ -38,7 +38,7 @@ export async function startConnectorRun(
   db: Db,
   datasetId: string,
   connectorId: string,
-  options: { split?: string } = {}
+  options: { split?: string; scorerId?: string; additionalScorerIds?: string[]; scorerGroupId?: string } = {}
 ): Promise<ConnectorRunResult | null> {
   const dataset = await getDataset(db, datasetId);
   if (!dataset) {
@@ -50,7 +50,14 @@ export async function startConnectorRun(
   }
 
   const split = options.split?.trim() || undefined;
-  const initResult = await initRun(db, { datasetId, runSource: "connector", split });
+  const initResult = await initRun(db, {
+    datasetId,
+    evaluationSettingsId: options.scorerId,
+    additionalScorerIds: options.additionalScorerIds,
+    scorerGroupId: options.scorerGroupId,
+    runSource: "connector",
+    split,
+  });
   if (!initResult) {
     return null;
   }

@@ -1,7 +1,7 @@
 import http from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEngine, postJson, type TestEngine } from "./server.js";
-import { improvementGroupsResponseSchema, improvementReportResponseSchema } from "../contract/wire.js";
+import { improvementGroupsResponseSchema, improvementReportResponseSchema, modelCatalogSchema } from "../contract/wire.js";
 
 // Auto-improve, end to end: a low judge score raises a signal; a human CONFIRMS it in review;
 // the confirmed occurrence lands in the "Confirmed failures" improvement group automatically
@@ -159,6 +159,14 @@ describe("auto-improve loop", () => {
     // Unknown ids are honest 404s, not empty reports.
     expect((await api("/agent-monitoring/improvement-reports/nope")).status).toBe(404);
 
+    // The model catalog behind the pickers: builtin default + the registered custom endpoint;
+    // OpenRouter absent until a key is configured (a list of uncallable models is noise).
+    const catalog = modelCatalogSchema.parse((await api("/agent-monitoring/models/catalog")).body);
+    expect(catalog.openrouterConfigured).toBe(false);
+    expect(catalog.models.some(m => m.source === "builtin" && m.label.includes("engine default"))).toBe(true);
+    expect(catalog.models.some(m => m.id === "stub-judge-i" && m.source === "custom")).toBe(true);
+    expect(catalog.models.some(m => m.source === "openrouter")).toBe(false);
+
     // --- Batch lifecycle: generating SEALED the group and cleared the accumulator ------------
     const afterSeal = improvementGroupsResponseSchema.parse((await api("/agent-monitoring/improvement-groups")).body);
     // The spent batch keeps its source case and is renamed with its seal time...
@@ -192,10 +200,18 @@ describe("auto-improve loop", () => {
     expect(collecting.memberCount).toBe(1);
     expect(secondRound.improvementGroups.find(g => g._id === group._id)!.memberCount).toBe(1);
 
-    // Spending the new batch yields a NEW report bound to the NEW group.
+    // Spending the new batch yields a NEW report bound to the NEW group - this time with NO
+    // per-call model: the settings-backed PLATFORM MODEL (Platform Settings) must drive it.
+    const setModel = await api("/agent-monitoring/settings/llm-keys", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ platformModel: "stub-judge-i" }),
+    });
+    expect(setModel.status).toBe(200);
+    const settings = await api("/agent-monitoring/settings");
+    expect((settings.body as { platformModel: string | null }).platformModel).toBe("stub-judge-i");
     const secondReport = improvementReportResponseSchema.parse(
-      (await api(`/agent-monitoring/improvement-groups/${collecting._id}/report`, { ...postJson({ model: "stub-judge-i" }) }))
-        .body
+      (await api(`/agent-monitoring/improvement-groups/${collecting._id}/report`, { ...postJson({}) })).body
     ).report;
     expect(secondReport._id).not.toBe(report._id);
     expect(secondReport.groupId).toBe(collecting._id);

@@ -1,5 +1,5 @@
 import type { Db } from "../../storage/db.js";
-import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
+import { resolvePlatformModel, callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
 import { getDataset } from "./datasets.js";
 
 // Synthetic golden-case generation: paste a source document (policy text, API docs, FAQ, spec)
@@ -73,7 +73,7 @@ SOURCE:
 ${sourceText}`;
 
   const result = await callJudgeJson({
-    model: DEFAULT_JUDGE_MODEL,
+    model: await resolvePlatformModel(db),
     jsonSchema: SYNTHESIS_SCHEMA,
     userMessage,
     maxTokens: 4000,
@@ -91,5 +91,5 @@ ${sourceText}`;
   if (cases.length === 0) {
     return { error: "The generator returned no usable cases - try a longer or more specific source" };
   }
-  return { cases, judgeModel: DEFAULT_JUDGE_MODEL };
+  return { cases, judgeModel: await resolvePlatformModel(db) };
 }

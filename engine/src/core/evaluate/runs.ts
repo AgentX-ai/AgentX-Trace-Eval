@@ -37,6 +37,7 @@ function plainContextText(raw: unknown): string | null {
 import { getEvaluationSettingsRow, type EvaluationSettingsRow } from "./evaluationSettings.js";
 import type { SimilarityConfig } from "./datasets.js";
 import { runCodeScorer, type CodeScorerConfig, type CodeScorerResult } from "./codeScorer.js";
+import { getScorerGroup, computeGroupScore, describeGroupScore, type ScorerGroupRow } from "../monitor/scorerGroups.js";
 import { extractWebhookUrls, notifyWebhooks } from "../monitor/webhooks.js";
 import { listProfileRows } from "../monitor/profiles.js";
 import { logger } from "../../log.js";
@@ -95,6 +96,25 @@ type ResolvedRunConfig = {
 
 // Exported for proposalValidation.ts, which grades baseline-vs-candidate runs with exactly the
 // grading config a real run of that dataset would use.
+// One additional judge scorer's resolved config plus identity - the verdicts it writes into
+// each result's judgeScorerResults carry the name so the UI never needs a join.
+export type AdditionalScorerConfig = { scorerId: string; name: string; config: ResolvedRunConfig };
+export type AdditionalJudgeResult = { scorerId: string; name: string; rating: number | null; justification: string | null };
+
+export async function resolveAdditionalScorerConfigs(
+  db: Db,
+  datasetId: string,
+  scorerIds: string[]
+): Promise<AdditionalScorerConfig[]> {
+  const configs: AdditionalScorerConfig[] = [];
+  for (const scorerId of scorerIds) {
+    const settings = await getEvaluationSettingsRow(db, scorerId);
+    if (!settings) continue; // a deleted scorer degrades to "not scored by it", never a failed run
+    configs.push({ scorerId, name: settings.name ?? scorerId, config: await resolveRunConfig(db, datasetId, scorerId) });
+  }
+  return configs;
+}
+
 export async function resolveRunConfig(
   db: Db,
   datasetId: string,
@@ -168,6 +188,13 @@ export async function initRun(
   input: {
     datasetId: string;
     evaluationSettingsId?: string;
+    // Grade with a Scorer group instead of a single judge scorer: the group's 0-10 aggregate
+    // fills the rating column, member verdicts land per-row. Mutually exclusive with
+    // evaluationSettingsId/additionalScorerIds (group wins).
+    scorerGroupId?: string;
+    // Extra judge scorers: each passes its own verdict on every result, alongside the primary
+    // scorer, from ONE agent execution. Capped, deduped, and the primary is never repeated.
+    additionalScorerIds?: string[];
     evaluationSubject?: unknown;
     runSource?: string;
     sdk?: unknown;
@@ -183,16 +210,22 @@ export async function initRun(
     return null;
   }
   const id = nanoid();
+  const additionalScorerIds = [...new Set(input.additionalScorerIds ?? [])]
+    .filter(scorerId => scorerId && scorerId !== input.evaluationSettingsId)
+    .slice(0, 4);
   const smokeTestVariants = await generateSmokeTestVariantsForDataset(dataset.questions);
   const subject =
     input.split && input.split.trim()
       ? { ...((input.evaluationSubject as Record<string, unknown> | null) ?? {}), split: input.split.trim() }
       : input.evaluationSubject ?? null;
+  const scorerGroup = input.scorerGroupId ? await getScorerGroup(db, input.scorerGroupId) : null;
   const runRow = {
     id,
     projectId: db.projectId,
     datasetId: input.datasetId,
-    evaluationSettingsId: input.evaluationSettingsId ?? null,
+    evaluationSettingsId: scorerGroup ? null : (input.evaluationSettingsId ?? null),
+    scorerGroupId: scorerGroup?.id ?? null,
+    additionalScorerIds: scorerGroup ? null : additionalScorerIds.length ? additionalScorerIds : null,
     evaluationSubject: subject,
     version: extractVersion(subject),
     runSource: input.runSource ?? "sdk",
@@ -290,9 +323,18 @@ async function getTraceRowForScoring(db: Db, traceId: string): Promise<{ toolCal
 // though the numbers had been calculated.
 type ScoredResult = { rating: number | null; justification: string; judgeError: Error | null } & SimilarityScores & {
     codeScorerResults: CodeScorerResult[];
+    judgeScorerResults: AdditionalJudgeResult[];
   };
 
-async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: SubmittedResult): Promise<ScoredResult> {
+async function scoreOneResult(
+  db: Db,
+  config: ResolvedRunConfig,
+  item: SubmittedResult,
+  additionalConfigs: AdditionalScorerConfig[] = [],
+  // Grades with a Scorer group instead of the primary judge: member verdicts land in
+  // judgeScorerResults/codeScorerResults and the group's 0-10 aggregate fills the rating.
+  scorerGroup: ScorerGroupRow | null = null
+): Promise<ScoredResult> {
   // toolContext="detailed": definitions for the tools this result's trace actually used
   // (trace-captured metadata.tools first, registry by name as fallback).
   const itemToolDefinitions =
@@ -332,7 +374,9 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
   // Two grading modes: a reference-centric rubric has nothing to grade without this item's
   // expected results - skip the judge call (rating null, explicit reason) rather than let it
   // score an empty reference. Similarity/code scorers still run; they have their own inputs.
-  const judgePromise: Promise<{ rating: number | null; justification: string; judgeError: Error | null }> =
+  const judgePromise: Promise<{ rating: number | null; justification: string; judgeError: Error | null }> = scorerGroup
+    ? Promise.resolve({ rating: null, justification: "", judgeError: null })
+    :
     config.requiresExpected && !expected
       ? Promise.resolve({
           rating: null,
@@ -359,7 +403,33 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
             judgeError: err instanceof Error ? err : new Error(String(err)),
           })
         );
-  const [judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore, codeScorerResults] = await Promise.all([
+  // Additional judges reuse the SAME per-item context (expected/trajectory/retrieval/tools) the
+  // primary judge got - the expensive renders happen once, each extra scorer costs one judge
+  // call. Failures isolate per scorer (rating null + the error as justification), never taking
+  // down the primary verdict or each other.
+  const additionalJudgesPromise: Promise<AdditionalJudgeResult[]> = Promise.all(
+    additionalConfigs.map(async ({ scorerId, name, config: extra }): Promise<AdditionalJudgeResult> => {
+      if (extra.requiresExpected && !expected) {
+        return { scorerId, name, rating: null, justification: "Skipped: needs a reference answer and the case has none." };
+      }
+      try {
+        const verdict = await scoreAgainstCriteria(extra, {
+          input: item.input?.query || "",
+          output: actual || "",
+          expected,
+          judgeGuideline: mainQ?.judgeGuideline,
+          context: retrievalContext,
+          trajectory: extra.toolContext !== "none" ? (trajectory ?? undefined) : undefined,
+          toolDefinitions: itemToolDefinitions ?? undefined,
+        });
+        return { scorerId, name, rating: verdict.rating, justification: verdict.justification };
+      } catch (err) {
+        return { scorerId, name, rating: null, justification: err instanceof Error ? err.message : "Scoring failed" };
+      }
+    })
+  );
+
+  const [judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore, judgeScorerResults] = await Promise.all([
     judgePromise,
     config.similarityConfig.vectorSimilarity?.enabled
       ? computeVectorSimilarity(expected, actual, config.similarityConfig.vectorSimilarity.model)
@@ -369,15 +439,59 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
     Promise.resolve(config.similarityConfig.jaccardSimilarity?.enabled ? computeJaccardSimilarity(expected, actual) : null),
     Promise.resolve(config.similarityConfig.bleuScore?.enabled ? computeBleuScore(expected, actual) : null),
     Promise.resolve(config.similarityConfig.rougeScore?.enabled ? computeRougeScore(expected, actual) : null),
-    // Each code scorer isolates its own failure into { score: null, error } (see codeScorer.ts's
-    // runCodeScorer) - a broken/timed-out scorer never rejects this Promise.all or takes down the
-    // judge rating / similarity scores alongside it.
-    Promise.all(
-      config.codeScorers.map(scorer =>
-        runCodeScorer(scorer, { input: item.input?.query || "", output: actual || "", expected, toolCalls })
-      )
-    ),
+    additionalJudgesPromise,
   ]);
+
+  // Code scorers run AFTER the judges and metrics deliberately, so a scorer can read them via
+  // `scores` and combine them - e.g. a custom weighted final score over judge verdicts and
+  // similarity metrics. They're in-process and bounded (3s), so sequencing them behind the judge
+  // call they can now read costs ~nothing. Each still isolates its own failure into
+  // { score: null, error } (see codeScorer.ts) - a broken scorer never takes down the item.
+  const scores = {
+    rating: judged.rating,
+    judges: Object.fromEntries(judgeScorerResults.map(v => [v.name, v.rating])),
+    vectorSimilarity,
+    jaccardSimilarity,
+    bleuScore,
+    rougeScore,
+  };
+  const codeScorerResults = await Promise.all(
+    (scorerGroup ? [] : config.codeScorers).map(scorer =>
+      runCodeScorer(scorer, { input: item.input?.query || "", output: actual || "", expected, toolCalls, scores })
+    )
+  );
+
+  // Scorer-group grading: every member scores this result, the group's 0-10 aggregate becomes
+  // the rating, judge members surface as labeled verdicts and deterministic members as scorer
+  // rows - so the existing result UI renders a group run with no new columns.
+  if (scorerGroup) {
+    const groupResult = await computeGroupScore(db, scorerGroup, {
+      input: item.input?.query || "",
+      output: actual || "",
+      expected,
+      traceId: item.traceId ?? null,
+      toolCalls,
+    });
+    judged.rating = groupResult.score;
+    judged.justification = describeGroupScore(groupResult, groupResult.members);
+    for (const member of groupResult.members) {
+      if (member.kind === "judge") {
+        judgeScorerResults.push({
+          scorerId: member.refId,
+          name: member.name,
+          rating: member.goodness === null ? null : Math.round(member.goodness * 100) / 10,
+          justification: member.error ?? member.detail,
+        });
+      } else {
+        codeScorerResults.push({
+          name: member.name,
+          score: member.goodness,
+          reasoning: member.error ? undefined : member.detail,
+          error: member.error,
+        });
+      }
+    }
+  }
 
   // Trajectory match: a case that declares expected tool calls gets a deterministic pass/fail
   // scored against the linked trace's actual sequence. Reported through codeScorerResults so it
@@ -442,7 +556,7 @@ async function scoreOneResult(db: Db, config: ResolvedRunConfig, item: Submitted
     }
   }
 
-  return { ...judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore, codeScorerResults };
+  return { ...judged, vectorSimilarity, jaccardSimilarity, bleuScore, rougeScore, codeScorerResults, judgeScorerResults };
 }
 
 export async function appendResults(
@@ -460,6 +574,14 @@ export async function appendResults(
   }
 
   const config = await resolveRunConfig(db, run.datasetId, run.evaluationSettingsId);
+  const additionalConfigs = await resolveAdditionalScorerConfigs(
+    db,
+    run.datasetId,
+    (run.additionalScorerIds as string[] | null) ?? []
+  );
+  const scorerGroup = (run as { scorerGroupId?: string | null }).scorerGroupId
+    ? await getScorerGroup(db, (run as { scorerGroupId?: string | null }).scorerGroupId!)
+    : null;
 
   let accepted = 0;
   let duplicates = 0;
@@ -474,6 +596,7 @@ export async function appendResults(
     bleuScore: number | null;
     rougeScore: number | null;
     codeScorerResults: CodeScorerResult[] | null;
+    judgeScorerResults: AdditionalJudgeResult[] | null;
     deduped?: boolean;
   }[] = [];
 
@@ -499,6 +622,7 @@ export async function appendResults(
         bleuScore: existing.bleuScore,
         rougeScore: existing.rougeScore,
         codeScorerResults: existing.codeScorerResults,
+        judgeScorerResults: (existing.judgeScorerResults as AdditionalJudgeResult[] | null) ?? null,
         deduped: true,
       });
       continue;
@@ -509,6 +633,7 @@ export async function appendResults(
     let status: "scored" | "failed" | "skipped" = "scored";
     let similarity: SimilarityScores = { vectorSimilarity: null, jaccardSimilarity: null, bleuScore: null, rougeScore: null };
     let codeScorerResults: CodeScorerResult[] = [];
+    let judgeScorerResults: AdditionalJudgeResult[] = [];
 
     if (item.error) {
       status = "failed";
@@ -516,10 +641,11 @@ export async function appendResults(
       justification = `Case failed with error: ${item.error.type}: ${item.error.message}`;
     } else {
       try {
-        const scored = await scoreOneResult(db, config, item);
+        const scored = await scoreOneResult(db, config, item, additionalConfigs, scorerGroup);
         // Kept regardless of the judge outcome - all a run without an LLM key has to show.
         similarity = scored;
         codeScorerResults = scored.codeScorerResults;
+        judgeScorerResults = scored.judgeScorerResults;
         if (scored.judgeError) {
           status = "skipped";
           justification = scored.judgeError.message;
@@ -565,6 +691,7 @@ export async function appendResults(
       bleuScore: similarity.bleuScore,
       rougeScore: similarity.rougeScore,
       codeScorerResults: codeScorerResults.length > 0 ? codeScorerResults : null,
+      judgeScorerResults: judgeScorerResults.length > 0 ? judgeScorerResults : null,
       rating,
       justification,
       status,
@@ -600,6 +727,9 @@ export async function appendResults(
         bleuScore: winner?.bleuScore ?? similarity.bleuScore,
         rougeScore: winner?.rougeScore ?? similarity.rougeScore,
         codeScorerResults: winner?.codeScorerResults ?? (codeScorerResults.length > 0 ? codeScorerResults : null),
+        judgeScorerResults:
+          (winner?.judgeScorerResults as AdditionalJudgeResult[] | null) ??
+          (judgeScorerResults.length > 0 ? judgeScorerResults : null),
         deduped: true,
       });
       continue;
@@ -616,6 +746,7 @@ export async function appendResults(
       bleuScore: similarity.bleuScore,
       rougeScore: similarity.rougeScore,
       codeScorerResults: codeScorerResults.length > 0 ? codeScorerResults : null,
+      judgeScorerResults: judgeScorerResults.length > 0 ? judgeScorerResults : null,
     });
   }
 
@@ -640,6 +771,7 @@ async function getExistingResult(db: Db, runId: string, idempotencyKey: string) 
     bleuScore: number | null;
     rougeScore: number | null;
     codeScorerResults: CodeScorerResult[] | null;
+    judgeScorerResults: unknown;
   };
   const cond = and(
     eq(db.schema.evaluationRunResults.runId, runId),
@@ -661,6 +793,7 @@ async function getRunRow(db: Db, id: string) {
     id: string;
     datasetId: string;
     evaluationSettingsId: string | null;
+    additionalScorerIds: unknown;
     status: string;
     evaluationSubject: unknown;
   };
@@ -862,6 +995,40 @@ export async function getRun(db: Db, runId: string) {
   const rated = (results as { rating: number | null }[]).filter(r => r.rating != null).map(r => r.rating as number);
   const averageRating = rated.length ? rated.reduce((a, b) => a + b, 0) / rated.length : null;
 
+  // Per-scorer aggregate: the primary scorer's average (the rating column) plus one row per
+  // additional judge, averaged from the verdicts embedded in judgeScorerResults - so a run
+  // scored on N dimensions reports N numbers, not one blended one.
+  const additionalAgg = new Map<string, { name: string; sum: number; scored: number }>();
+  for (const row of results as Array<{ judgeScorerResults?: AdditionalJudgeResult[] | null }>) {
+    for (const verdict of row.judgeScorerResults ?? []) {
+      if (verdict.rating == null) continue;
+      const agg = additionalAgg.get(verdict.scorerId) ?? { name: verdict.name, sum: 0, scored: 0 };
+      agg.sum += verdict.rating;
+      agg.scored += 1;
+      additionalAgg.set(verdict.scorerId, agg);
+    }
+  }
+  const primarySettings = run.evaluationSettingsId ? await getEvaluationSettingsRow(db, run.evaluationSettingsId) : null;
+  const runScorerGroup = (run as { scorerGroupId?: string | null }).scorerGroupId
+    ? await getScorerGroup(db, (run as { scorerGroupId?: string | null }).scorerGroupId!)
+    : null;
+  const scorerBreakdown = [
+    {
+      scorerId: run.evaluationSettingsId ?? runScorerGroup?.id ?? null,
+      name: runScorerGroup ? `${runScorerGroup.name} (group)` : primarySettings?.name ?? "Primary scorer",
+      primary: true,
+      averageRating: averageRating != null ? Math.round(averageRating * 100) / 100 : null,
+      scored: rated.length,
+    },
+    ...[...additionalAgg.entries()].map(([scorerId, agg]) => ({
+      scorerId,
+      name: agg.name,
+      primary: false,
+      averageRating: Math.round((agg.sum / agg.scored) * 100) / 100,
+      scored: agg.scored,
+    })),
+  ];
+
   // Per-result rows for the SDK (EvaluationRunContext.results() / get_run): the scores the run
   // produced, with questionText resolved from the dataset so a consumer doesn't need a second
   // lookup. Additive - existing consumers of this payload only read the summary fields above.
@@ -885,6 +1052,7 @@ export async function getRun(db: Db, runId: string) {
     bleuScore: r.bleuScore ?? null,
     rougeScore: r.rougeScore ?? null,
     codeScorerResults: r.codeScorerResults ?? null,
+    judgeScorerResults: r.judgeScorerResults ?? null,
     isSmokeTestVariant: r.isSmokeTestVariant ?? false,
     smokeTestVariantText: r.smokeTestVariantText ?? null,
     // scored | skipped (judge could not score) | failed (the submitted result carried an
@@ -903,6 +1071,10 @@ export async function getRun(db: Db, runId: string) {
     runId: run.id,
     datasetId: run.datasetId,
     evaluationSettingsId: run.evaluationSettingsId,
+    scorerGroupId: runScorerGroup?.id ?? null,
+    scorerGroupName: runScorerGroup?.name ?? null,
+    additionalScorerIds: (run.additionalScorerIds as string[] | null) ?? null,
+    scorerBreakdown,
     // What this run was ABOUT (subject identity, version tag, split) - previously only the
     // dashboard wire carried it, so an SDK reader could not see its own run's split.
     evaluationSubject: run.evaluationSubject ?? null,
@@ -943,6 +1115,8 @@ export type RunGateCheck = {
 export type RunGateResult = {
   runId: string;
   datasetId: string;
+  // When the gate targets a named additional scorer, its identity - null = the primary rating.
+  gatedScorer: { id: string; name: string } | null;
   averageRating: number | null;
   resultCount: number;
   baselineRunId: string | null;
@@ -956,11 +1130,29 @@ const DEFAULT_GATE_TOLERANCE = 0.5;
 export async function computeRunGate(
   db: Db,
   runId: string,
-  opts: { failUnder?: number | null; noRegression?: boolean; tolerance?: number }
+  opts: { failUnder?: number | null; noRegression?: boolean; tolerance?: number; scorer?: string | null }
 ): Promise<RunGateResult | null> {
   const run = await getRun(db, runId);
   const runRow = await getRunRowFull(db, runId);
   if (!run || !runRow) return null;
+
+  // Gate on a NAMED additional scorer (id or name): "fail if Safety < 8 even when the average
+  // is fine". The scorer's average comes from the breakdown getRun already computed; an unknown
+  // name is a hard error at the route, not a silently-passing gate on nothing.
+  type BreakdownEntry = { scorerId: string | null; name: string; primary: boolean; averageRating: number | null };
+  const breakdown = (run as { scorerBreakdown?: BreakdownEntry[] }).scorerBreakdown ?? [];
+  let gatedScorer: { id: string; name: string } | null = null;
+  let gatedAverage: number | null = run.averageRating;
+  if (opts.scorer) {
+    const match = breakdown.find(
+      entry => !entry.primary && (entry.scorerId === opts.scorer || entry.name === opts.scorer)
+    );
+    if (!match || !match.scorerId) {
+      return { unknownScorer: opts.scorer } as unknown as RunGateResult & { unknownScorer: string };
+    }
+    gatedScorer = { id: match.scorerId, name: match.name };
+    gatedAverage = match.averageRating;
+  }
 
   // Baseline = the dataset's most recent completed run that finished before this one and has at
   // least one rating. Walked newest-first with a small cap so one empty/failed run in between
@@ -983,15 +1175,21 @@ export async function computeRunGate(
       .slice(0, 5);
     for (const candidate of candidates) {
       const summary = await getRun(db, candidate.id);
-      if (summary?.averageRating != null) {
+      if (!summary) continue;
+      const candidateAvg = gatedScorer
+        ? ((summary as { scorerBreakdown?: BreakdownEntry[] }).scorerBreakdown ?? []).find(
+            entry => entry.scorerId === gatedScorer!.id
+          )?.averageRating ?? null
+        : summary.averageRating;
+      if (candidateAvg != null) {
         baselineRunId = candidate.id;
-        baselineAverage = Math.round(summary.averageRating * 100) / 100;
+        baselineAverage = Math.round(candidateAvg * 100) / 100;
         break;
       }
     }
   }
 
-  const avg = run.averageRating != null ? Math.round(run.averageRating * 100) / 100 : null;
+  const avg = gatedAverage != null ? Math.round(gatedAverage * 100) / 100 : null;
   const tolerance = opts.tolerance ?? DEFAULT_GATE_TOLERANCE;
   const checks: RunGateCheck[] = [];
 
@@ -1027,6 +1225,7 @@ export async function computeRunGate(
   return {
     runId,
     datasetId: run.datasetId,
+    gatedScorer,
     averageRating: avg,
     resultCount: run.resultCount,
     baselineRunId,
@@ -1076,6 +1275,7 @@ export async function listRunRows(db: Db): Promise<FullRunRow[]> {
 
 export type RunResultRow = {
   idempotencyKey: string;
+  judgeScorerResults: AdditionalJudgeResult[] | null;
   questionIndex: number | null;
   runNumber: number | null;
   input: { query?: string } | null;

@@ -1,5 +1,5 @@
 import type { Db } from "../../storage/db.js";
-import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
+import { resolvePlatformModel, callJudgeJson, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { getSignal } from "./signals.js";
 import { listFeedbackForSignal } from "./feedback.js";
 
@@ -13,9 +13,9 @@ const regexSchema = { type: "object", properties: { regex: { type: "string" } },
 // AgentX-web-front's PatternConditionRow sends only a plain-language description (see
 // useGenerateMonitoringPatternRegex.ts) and writes the result straight into a condition's `value`
 // field verbatim, so this must return a bare pattern body, no slashes/flags/anchors assumed.
-export async function generateRegex(description: string): Promise<string> {
+export async function generateRegex(db: Db, description: string): Promise<string> {
   const result = await callJudgeJson({
-    model: DEFAULT_JUDGE_MODEL,
+    model: await resolvePlatformModel(db),
     jsonSchema: regexSchema,
     userMessage:
       `Write a single regular expression (JavaScript/PCRE-compatible, no slashes, no flags) that matches: ${description}\n\n` +
@@ -80,7 +80,7 @@ export async function suggestHumanFeedback(db: Db, signalId: string, occurrenceI
     .filter((line): line is string => line !== null)
     .join("\n");
 
-  const result = await callJudgeJson({ model: DEFAULT_JUDGE_MODEL, jsonSchema: feedbackSchema, userMessage });
+  const result = await callJudgeJson({ model: await resolvePlatformModel(db), jsonSchema: feedbackSchema, userMessage });
   const payload = result.payload as { feedback?: string } | null;
   if (typeof payload?.feedback !== "string" || !payload.feedback.trim()) {
     throw new Error("Judge model did not return usable feedback");
@@ -147,7 +147,7 @@ export async function suggestExpectedResults(
     .filter((line): line is string => line !== null)
     .join("\n");
 
-  const result = await callJudgeJson({ model: DEFAULT_JUDGE_MODEL, jsonSchema: expectedResultsSchema, userMessage });
+  const result = await callJudgeJson({ model: await resolvePlatformModel(db), jsonSchema: expectedResultsSchema, userMessage });
   const payload = result.payload as { expectedResults?: string; resolution?: string } | null;
   if (typeof payload?.expectedResults !== "string" || !payload.expectedResults.trim()) {
     throw new Error("Judge model did not return usable expected results");

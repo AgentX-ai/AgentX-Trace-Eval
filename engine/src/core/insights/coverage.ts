@@ -1,6 +1,7 @@
 import type { Db } from "../../storage/db.js";
 import { traceStoreFor } from "../trace/store/index.js";
-import { listClassificationsSince, windowConfig, type ClassificationRow } from "../monitor/topics.js";
+import { listClassificationsSince, type ClassificationRow } from "../monitor/topics.js";
+import { resolveRange, type MonitoringRange } from "../monitor/events.js";
 import { extractText, type MonitoringWindow } from "../monitor/events.js";
 import { SIMILARITY_BANDS, addCaseToDataset, previewCaseFromTrace } from "../evaluate/curation.js";
 import { centroid, contentWords, cosine, normalizeText, overlap } from "../shared/vector.js";
@@ -68,7 +69,7 @@ export type TopicCoverage = {
 };
 
 export type CoverageResult = {
-  window: MonitoringWindow;
+  window: MonitoringWindow | "custom";
   datasetIds: string[];
   /** True when the numbers came from the lexical fallback rather than embeddings. */
   degraded: boolean;
@@ -415,11 +416,10 @@ function suggestedActionFor(state: CoverageState, topic: string, gap: number, pe
 
 export async function getCoverage(
   db: Db,
-  options: { window: MonitoringWindow; datasetIds?: string[] }
+  options: { window: MonitoringRange; datasetIds?: string[] }
 ): Promise<CoverageResult> {
-  const { days } = windowConfig(options.window);
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const rows = await listClassificationsSince(db, since);
+  const { sinceMs, untilMs, windowLabel } = resolveRange(options.window);
+  const rows = await listClassificationsSince(db, new Date(sinceMs), new Date(untilMs));
   const datasetIds = options.datasetIds ?? [];
 
   const allGroups = groupByIntent(rows);
@@ -454,7 +454,7 @@ export async function getCoverage(
 
   if (groups.length === 0) {
     return {
-      window: options.window,
+      window: windowLabel,
       datasetIds,
       degraded: sim.kind !== "embedding",
       degradedReason,
@@ -659,7 +659,7 @@ export async function getCoverage(
   const presenceCoverage = weighted(t => t.trafficShare, t => (t.caseCount > 0 ? 1 : 0));
 
   return {
-    window: options.window,
+    window: windowLabel,
     datasetIds,
     degraded: sim.kind !== "embedding",
     degradedReason,
@@ -690,11 +690,10 @@ export type CurateFromTracesResult =
 // coverage with rows the dedupe would reject. Newest traces first, distinct trace ids.
 export async function curateCasesFromTraces(
   db: Db,
-  options: { topic: string; datasetId: string; window: MonitoringWindow; limit: number }
+  options: { topic: string; datasetId: string; window: MonitoringRange; limit: number }
 ): Promise<CurateFromTracesResult> {
-  const { days } = windowConfig(options.window);
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const rows = await listClassificationsSince(db, since);
+  const { sinceMs, untilMs } = resolveRange(options.window);
+  const rows = await listClassificationsSince(db, new Date(sinceMs), new Date(untilMs));
   const groups = groupByIntent(rows);
   const group = groups.find(g => g.topic === options.topic || g.aliases.includes(options.topic));
   if (!group) {

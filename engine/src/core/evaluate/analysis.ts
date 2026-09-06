@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { getRunRowFull, getRunResults, type RunResultRow } from "./runs.js";
-import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
+import { resolvePlatformModel, callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
 import { analysisNarrativeSchemaProperties, type AnalysisNarrative } from "@agentx/judge-core";
 
 // Self-host's own "Analyze" (AI Analysis) feature - see the plan's Context section for why this
@@ -283,7 +283,7 @@ export async function runEvaluationAnalysis(
     return null;
   }
   const requested = (opts.judges ?? []).map(j => j.model).filter((m): m is string => !!m);
-  const judgeModels = (requested.length ? requested : [DEFAULT_JUDGE_MODEL]).slice(0, MAX_JUDGES);
+  const judgeModels = (requested.length ? requested : [await resolvePlatformModel(db)]).slice(0, MAX_JUDGES);
   const judgeModel = judgeModels[0]!;
   const results = await getRunResults(db, evaluationId);
   const statistics = computeStatistics(results);

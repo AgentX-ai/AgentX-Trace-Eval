@@ -118,6 +118,8 @@ export const evaluationRuns = pgTable("evaluation_runs", {
   version: text("version"),
   runSource: text("run_source"),
   sdkInfo: jsonb("sdk_info"),
+  additionalScorerIds: jsonb("additional_scorer_ids"),
+  scorerGroupId: text("scorer_group_id"),
   smokeTestVariants: jsonb("smoke_test_variants"),
   status: text("status").notNull().default("in_progress"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
@@ -149,6 +151,7 @@ export const evaluationRunResults = pgTable(
     rougeScore: doublePrecision("rouge_score"),
     // See schema.sqlite.ts's evaluationRunResults.codeScorerResults for the exact shape.
     codeScorerResults: jsonb("code_scorer_results"),
+    judgeScorerResults: jsonb("judge_scorer_results"),
     rating: doublePrecision("rating"),
     justification: text("justification"),
     status: text("status").notNull(),
@@ -355,6 +358,18 @@ export const monitorOnlineEvaluators = pgTable("monitor_online_evaluators", {
 });
 
 // See schema.sqlite.ts's customEvaluators for the full comment.
+// Mirror of schema.sqlite.ts's scorerGroups - see core/monitor/scorerGroups.ts.
+export const scorerGroups = pgTable("scorer_groups", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  name: text("name").notNull(),
+  description: text("description"),
+  members: jsonb("members").notNull(),
+  online: jsonb("online"),
+  createdAt: timestamp("created_at").notNull(),
+  updatedAt: timestamp("updated_at").notNull(),
+});
+
 export const customEvaluators = pgTable("custom_evaluators", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
@@ -587,6 +602,8 @@ export const appSettings = pgTable("app_settings", {
   openaiApiKey: text("openai_api_key"),
   anthropicApiKey: text("anthropic_api_key"),
   geminiApiKey: text("gemini_api_key"),
+  openrouterApiKey: text("openrouter_api_key"),
+  platformModel: text("platform_model"),
   authSecret: text("auth_secret"),
   metricPackSeededAt: timestamp("metric_pack_seeded_at", { mode: "date" }),
   frameworkCasefoldedAt: timestamp("framework_casefolded_at", { mode: "date" }),
