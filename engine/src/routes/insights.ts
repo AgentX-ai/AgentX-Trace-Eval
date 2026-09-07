@@ -29,9 +29,13 @@ function parseWindow(req: Request): MonitoringWindow {
 
 // Same from/to override the monitoring dashboard routes accept - see parseRange there.
 function parseRange(req: Request): MonitoringRange {
-  const from = Number(req.query.from);
-  const to = Number(req.query.to);
-  if (Number.isFinite(from) && Number.isFinite(to) && to > from) {
+  // Number("") is 0 (finite!), so a blank ?from= must not silently become epoch 0 - only
+  // non-empty numeric strings qualify, both bounds must be positive, and to must exceed from.
+  const rawFrom = typeof req.query.from === "string" ? req.query.from.trim() : "";
+  const rawTo = typeof req.query.to === "string" ? req.query.to.trim() : "";
+  const from = rawFrom === "" ? Number.NaN : Number(rawFrom);
+  const to = rawTo === "" ? Number.NaN : Number(rawTo);
+  if (Number.isFinite(from) && Number.isFinite(to) && from > 0 && to > from) {
     const YEAR_MS = 366 * 24 * 60 * 60 * 1000;
     return { fromMs: Math.max(from, to - YEAR_MS), toMs: to };
   }

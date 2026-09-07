@@ -53,7 +53,7 @@ import { getModelComparison } from "../core/monitor/modelComparison.js";
 import { listSessionScores } from "../core/monitor/sessionScores.js";
 import { listSessions } from "../core/monitor/sessions.js";
 import {
-  sweepSessionsOnce,
+  runManualSweep,
   runSessionBaselineCheck,
   runSessionEvaluatorCheck,
   isSessionScoreFresh,
@@ -129,6 +129,8 @@ import {
   deleteScorerGroup,
   toScorerGroupWire,
   type ScorerGroupOnline,
+  type ScorerGroupMember,
+  validateGroupMembers,
 } from "../core/monitor/scorerGroups.js";
 
 // Mounted at /api/v1/agent-monitoring - the paths AgentX-web-front's dashboard actually calls
@@ -564,9 +566,13 @@ function parseWindow(req: Request): MonitoringWindow {
 // date ranges and non-enum presets (6h, 14d, ...) arrive as from/to. Span clamped to a year so a
 // typo'd bound can't turn one request into a full-table sweep.
 function parseRange(req: Request): MonitoringRange {
-  const from = Number(req.query.from);
-  const to = Number(req.query.to);
-  if (Number.isFinite(from) && Number.isFinite(to) && to > from) {
+  // Number("") is 0 (finite!), so a blank ?from= must not silently become epoch 0 - only
+  // non-empty numeric strings qualify, both bounds must be positive, and to must exceed from.
+  const rawFrom = typeof req.query.from === "string" ? req.query.from.trim() : "";
+  const rawTo = typeof req.query.to === "string" ? req.query.to.trim() : "";
+  const from = rawFrom === "" ? Number.NaN : Number(rawFrom);
+  const to = rawTo === "" ? Number.NaN : Number(rawTo);
+  if (Number.isFinite(from) && Number.isFinite(to) && from > 0 && to > from) {
     const YEAR_MS = 366 * 24 * 60 * 60 * 1000;
     return { fromMs: Math.max(from, to - YEAR_MS), toMs: to };
   }
@@ -677,8 +683,11 @@ agentMonitoringDashboardRouter.get("/sessions", async (req: Request, res: Respon
 // Manual trigger for the idle-session sweep (core/monitor/sessionSweep.ts) - the production path
 // is the 60s interval started at boot; this exists for tests and demos that shouldn't have to
 // wait a tick. Sweeps ALL projects (the sweep is instance-wide by design), auth still required.
-agentMonitoringDashboardRouter.post("/session-sweep/run", async (_req: Request, res: Response) => {
-  res.status(200).json(await sweepSessionsOnce());
+agentMonitoringDashboardRouter.post("/session-sweep/run", async (req: Request, res: Response) => {
+  // Scoped to the caller's project (a key must not spend other tenants' budgets) and
+  // serialized - a concurrent sweep returns { judged: 0, skipped: true } instead of
+  // double-judging the sessions the in-flight one is still scoring.
+  res.status(200).json(await runManualSweep(scopedDb(req).projectId));
 });
 
 // Overview's "Total LLM cost" chart (core/monitor/cost.ts) - stacked by model, priced from Model
@@ -843,7 +852,7 @@ const createScorerGroupSchema = z
   .object({
     name: z.string().min(1).max(200),
     description: z.string().max(2000).optional(),
-    members: z.array(scorerGroupMemberSchema).max(20),
+    members: z.array(scorerGroupMemberSchema).min(1).max(20),
     online: scorerGroupOnlineSchema.nullable().optional(),
   })
   .strip();
@@ -857,6 +866,13 @@ agentMonitoringDashboardRouter.post(
   "/scorer-groups",
   validateBody(createScorerGroupSchema),
   async (req: Request, res: Response) => {
+    const memberProblems = await validateGroupMembers(scopedDb(req), req.body.members, {
+      onlineEnabled: !!(req.body.online as ScorerGroupOnline | null)?.enabled,
+    });
+    if (memberProblems.length > 0) {
+      res.status(400).json({ error: memberProblems.join("; ") });
+      return;
+    }
     const group = await createScorerGroup(scopedDb(req), {
       name: req.body.name,
       description: req.body.description,
@@ -880,6 +896,29 @@ agentMonitoringDashboardRouter.put(
   "/scorer-groups/:id",
   validateBody(updateScorerGroupSchema),
   async (req: Request, res: Response) => {
+    // Validate what the group WILL be, not just what the request carries: new members must
+    // hold up against the stored online profile (a members-only PUT on a live group), and a
+    // newly-enabled profile must hold up against the stored members (an online-only PUT that
+    // would take a reference-centric judge live).
+    const existing = await getScorerGroup(scopedDb(req), req.params.id!);
+    if (!existing) {
+      res.status(404).json({ error: "Scorer group not found" });
+      return;
+    }
+    const effectiveMembers = (req.body.members as ScorerGroupMember[] | undefined) ?? existing.members;
+    const bodyOnline = req.body.online as ScorerGroupOnline | null | undefined;
+    const effectiveOnlineEnabled =
+      bodyOnline === null ? false : bodyOnline !== undefined ? !!bodyOnline.enabled : !!existing.online?.enabled;
+    if (req.body.members !== undefined || (bodyOnline !== undefined && bodyOnline !== null)) {
+      const memberProblems = await validateGroupMembers(scopedDb(req), effectiveMembers, {
+        onlineEnabled: effectiveOnlineEnabled,
+        grandfathered: new Set(existing.members.map(m => `${m.kind}:${m.refId}`)),
+      });
+      if (memberProblems.length > 0) {
+        res.status(400).json({ error: memberProblems.join("; ") });
+        return;
+      }
+    }
     const group = await updateScorerGroup(scopedDb(req), req.params.id!, {
       name: req.body.name,
       description: req.body.description,

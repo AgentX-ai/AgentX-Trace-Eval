@@ -721,7 +721,6 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
       case_key TEXT NOT NULL,
       query TEXT NOT NULL,
       embedding TEXT,
-      input_embedding TEXT,
       embedding_full TEXT,
       model TEXT,
       created_at INTEGER NOT NULL
@@ -2084,7 +2083,6 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
       case_key TEXT NOT NULL,
       query TEXT NOT NULL,
       embedding JSONB,
-      input_embedding JSONB,
       embedding_full JSONB,
       model TEXT,
       created_at TIMESTAMP NOT NULL
