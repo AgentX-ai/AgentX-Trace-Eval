@@ -236,8 +236,10 @@ export class ClickHouseTraceStore implements TraceStore {
   }
 
   async listBySession(sessionId: string): Promise<TraceRow[]> {
+    // Same cap and ordering as the SQL store: oldest-first so a truncated runaway session
+    // keeps the conversation's beginning (the transcript's anchor), and 5000 bounds the heap.
     const rows = await this.rows(
-      `SELECT * FROM ${TABLE} WHERE ${this.scope()} AND session_id = {sessionId:String}`,
+      `SELECT * FROM ${TABLE} WHERE ${this.scope()} AND session_id = {sessionId:String} ORDER BY started_at ASC, created_at ASC LIMIT 5000`,
       { sessionId }
     );
     return rows.map(fromStored);

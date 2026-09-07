@@ -20,6 +20,7 @@ import {
   recordGateResult,
   computeLiveStatistics,
   MAX_BATCH_SIZE, getRunResults, type RunResultRow,} from "../core/evaluate/runs.js";
+import { getScorerGroup } from "../core/monitor/scorerGroups.js";
 import { createPrompt, getPromptForSdk, listPromptsForSdk } from "../core/evaluate/prompts.js";
 import { runEvaluationAnalysis, getEvaluationAnalysisStatus, getEvaluationAnalysisRow } from "../core/evaluate/analysis.js";
 import { handleCasePreview, handleSuggestExpected, handleAddCase } from "./curationHandlers.js";
@@ -142,6 +143,16 @@ evaluationsRouter.post("/runs", async (req: Request, res: Response) => {
     res.status(400).json({ error: "datasetId is required" });
     return;
   }
+  if (evaluationSettingsId !== undefined && evaluationSettingsId !== null && typeof evaluationSettingsId !== "string") {
+    res.status(400).json({ error: "evaluationSettingsId must be a string" });
+    return;
+  }
+  // A typo'd (or cross-project) group id must not silently downgrade the whole run to the
+  // dataset's own grading - the 201 would look identical and nothing downstream could tell.
+  if (typeof scorerGroupId === "string" && scorerGroupId && !(await getScorerGroup(scopedDb(req), scorerGroupId))) {
+    res.status(404).json({ error: "Scorer group not found" });
+    return;
+  }
   const run = await initRun(scopedDb(req), {
     datasetId,
     evaluationSettingsId,
@@ -195,7 +206,7 @@ evaluationsRouter.post("/runs/:runId/results", async (req: Request, res: Respons
     // The only expected throw is the terminal-state guard - a real conflict. Anything else is
     // an engine fault and must not masquerade as one.
     const message = err instanceof Error ? err.message : "Unable to append results";
-    if (message.includes("terminal state")) {
+    if (message.includes("terminal state") || message.includes("scorer group grading this run")) {
       res.status(409).json({ error: message });
       return;
     }
@@ -267,6 +278,12 @@ evaluationsRouter.post("/runs/:runId/analyze", async (req: Request, res: Respons
 });
 
 evaluationsRouter.get("/runs/:runId/analyze-status", async (req: Request, res: Response) => {
+  // 404 for an unknown run, like /report below - "not_started" for a typo'd id kept a poll
+  // loop waiting forever.
+  if (!(await getRun(scopedDb(req), req.params.runId!))) {
+    res.status(404).json({ error: "Run not found" });
+    return;
+  }
   res.status(200).json(await getEvaluationAnalysisStatus(scopedDb(req), req.params.runId!));
 });
 

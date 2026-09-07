@@ -779,6 +779,10 @@ export async function listTraceEvaluations(db: Db, traceId: string): Promise<Tra
   const scored = rows.filter(
     (r): r is EventRow & { rating: number } =>
       r.rating !== null &&
+      // Session-scoped verdicts carry a sessionId and anchor the session's LAST trace only as
+      // a triage jump target - rendering them here would present a whole-conversation opinion
+      // as a rating of that single reply.
+      r.sessionId === null &&
       (r.onlineEvaluatorId !== null || r.type === "scorer_group_score" || r.type === "scorer_group_member_score")
   );
   scored.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());

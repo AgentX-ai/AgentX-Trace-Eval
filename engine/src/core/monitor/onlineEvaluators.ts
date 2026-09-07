@@ -332,8 +332,17 @@ export async function reserveOnlineJudgeCall(db: Db): Promise<boolean> {
       const midnight = new Date();
       midnight.setHours(0, 0, 0, 0);
       const rows = await listEventsSince(db, midnight);
+      // Approximate judge calls made today: per-trace and per-session evaluator verdicts and
+      // failures, plus scorer-group JUDGE member verdicts (their patternKey embeds the member
+      // kind - pattern/custom members cost no judge call and are excluded). Restart-resistant:
+      // without the group terms, a mid-day restart re-seeded 0 and handed the cap out twice.
       const spent = rows.filter(
-        r => r.onlineEvaluatorId && (r.type === "online_eval_score" || r.type === "online_eval_judge_failure")
+        r =>
+          (r.onlineEvaluatorId &&
+            (r.type === "online_eval_score" ||
+              r.type === "online_eval_judge_failure" ||
+              r.type === "online_eval_session_score")) ||
+          (r.type === "scorer_group_member_score" && r.patternKey.includes(":judge:"))
       ).length;
       entry = { day, count: spent };
       onlineJudgeSpend.set(key, entry);

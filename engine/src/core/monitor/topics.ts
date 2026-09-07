@@ -123,6 +123,18 @@ export async function getClassificationForTrace(db: Db, traceId: string): Promis
 
 type ScorableTrace = { input?: unknown; output?: unknown };
 
+// The question-space text for a trace input: the bare query when the input is the common
+// { query: "..." } shape, else the string itself, else its JSON. Exported for the coverage
+// map's lazy backfill so live-classified and backfilled rows embed the SAME text - the two
+// spellings of one question must never land in two clusters.
+export function questionTextOf(input: unknown): string {
+  if (typeof input === "string") return input;
+  if (input && typeof input === "object" && typeof (input as { query?: unknown }).query === "string") {
+    return (input as { query: string }).query;
+  }
+  return input == null ? "" : JSON.stringify(input);
+}
+
 export async function runClassification(
   db: Db,
   trace: ScorableTrace,
@@ -167,9 +179,10 @@ export async function runClassification(
         userMessage: `Classify this AI agent interaction.\n\nUser input:\n${inputText}\n\nAgent response:\n${outputText}${existingIntentsBlock}\n\nRespond with JSON matching the schema.`,
       }),
       computeEmbedding(`${inputText}\n\n${outputText}`),
-      // Question-space twin for the coverage map: the input alone, so an identical question
-      // from a dataset case (query-only embedding) lands in the same spot.
-      computeEmbedding(inputText),
+      // Question-space twin for the coverage map: the bare question text (questionTextOf), so
+      // an identical question from a dataset case (query-only embedding) lands in the same
+      // spot - stringified envelopes like {"query": ..., "user_id": ...} must not.
+      computeEmbedding(questionTextOf(trace.input)),
     ]);
     const payload = result.payload as { intent?: string; sentiment?: string; issueType?: string } | null;
     if (!payload?.intent || !payload.sentiment || !payload.issueType) {

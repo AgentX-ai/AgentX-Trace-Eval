@@ -573,7 +573,7 @@ evaluateDashboardRouter.post("/agent-connectors", async (req: Request, res: Resp
   }
   const connector = await createAgentConnector(scopedDb(req), {
     name: body.name,
-    url: body.url,
+    url: String(body.url).trim(),
     headers: body.headers && typeof body.headers === "object" ? body.headers : undefined,
     timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : undefined,
   });
@@ -683,9 +683,11 @@ evaluateDashboardRouter.post("/playground/run", async (req: Request, res: Respon
     const ids = value.filter((id): id is string => typeof id === "string" && id.trim().length > 0);
     return ids.length > 0 ? ids : undefined;
   };
-  let result;
-  try {
-    result = await runPlayground(scopedDb(req), {
+  // No try/catch: runPlayground catches its own body and reports provider failures as
+  // { output: null, error } in a 200, and getPortabilityModel returns null (not a throw) for
+  // unknown models - anything that escapes IS a genuine engine fault and belongs to the
+  // async error handler as the 500 it is, not a masqueraded 502/400.
+  const result = await runPlayground(scopedDb(req), {
     model: body.model,
     messages: body.messages,
     query: body.query,
@@ -698,15 +700,9 @@ evaluateDashboardRouter.post("/playground/run", async (req: Request, res: Respon
     onlineEvaluatorIds: extractIds(body.onlineEvaluatorIds),
     additionalScorerIds: extractIds(body.additionalScorerIds),
     scorerGroupId: typeof body.scorerGroupId === "string" && body.scorerGroupId ? body.scorerGroupId : undefined,
-      maxTokens: typeof body.maxTokens === "number" ? body.maxTokens : undefined,
-      temperature: typeof body.temperature === "number" ? body.temperature : undefined,
-    });
-  } catch (err) {
-    // Same class and shape as /synthesize-cases: the common real-world failure here is a
-    // missing/invalid provider key, and it must not read as an engine fault (500).
-    res.status(502).json({ error: err instanceof Error ? err.message : "Playground run failed" });
-    return;
-  }
+    maxTokens: typeof body.maxTokens === "number" ? body.maxTokens : undefined,
+    temperature: typeof body.temperature === "number" ? body.temperature : undefined,
+  });
   res.status(200).json(result);
 });
 
@@ -1538,7 +1534,12 @@ async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) 
   const scorerGroupId = (run as { scorerGroupId?: string | null }).scorerGroupId ?? null;
   const [dataset, evaluationSettings, results, analysisRow, scorerGroup] = await Promise.all([
     getDataset(db, run.datasetId),
-    getMergedEvaluationSettings(db, run.evaluationSettingsId ?? run.datasetId),
+    // A group-graded run was NOT graded by any evaluationSettings row - presenting the dataset
+    // twin as its config would contradict scorerGroupName right next to it. The dataset's own
+    // questions still resolve through `dataset` above.
+    scorerGroupId
+      ? Promise.resolve(null)
+      : getMergedEvaluationSettings(db, run.evaluationSettingsId ?? run.datasetId),
     getRunResults(db, run.id),
     getEvaluationAnalysisRow(db, run.id),
     scorerGroupId ? getScorerGroup(db, scorerGroupId) : Promise.resolve(null),

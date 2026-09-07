@@ -103,6 +103,40 @@ function toRow(raw: Record<string, unknown>): ScorerGroupRow {
   };
 }
 
+// Create/update-time member validation: a typo'd refId used to 201 and produce a group that
+// permanently scores null (silently, one "Scorer no longer exists" member at a time), and a
+// reference-centric judge (requiresExpected) could ride a group straight past the guard that
+// 409s it as a standalone online evaluator. Returns human-readable problems; empty = valid.
+export async function validateGroupMembers(
+  db: Db,
+  members: ScorerGroupMember[],
+  options: { onlineEnabled: boolean; grandfathered?: Set<string> }
+): Promise<string[]> {
+  const problems: string[] = [];
+  for (const member of members) {
+    // A ref that is ALREADY stored on this group is never rejected: a scorer deleted after the
+    // group was built legitimately dangles (scoring degrades it to "not scored"), and the
+    // dashboard round-trips the full member list on every save - refusing the dangling entry
+    // would make the whole group uneditable. Only NEW refs must resolve.
+    const stored = options.grandfathered?.has(`${member.kind}:${member.refId}`) ?? false;
+    if (member.kind === "judge") {
+      const settings = await getEvaluationSettingsRow(db, member.refId);
+      if (!settings) {
+        if (!stored) problems.push(`Unknown judge scorer id "${member.refId}"`);
+      } else if (options.onlineEnabled && settings.requiresExpected) {
+        problems.push(
+          `"${settings.name}" needs a reference answer (requiresExpected) and cannot grade live traffic - disable requiresExpected or keep the group's live scoring off`
+        );
+      }
+    } else if (member.kind === "pattern") {
+      if (!stored && !(await getPatternRow(db, member.refId))) problems.push(`Unknown pattern id "${member.refId}"`);
+    } else {
+      if (!stored && !(await getCustomEvaluatorRow(db, member.refId))) problems.push(`Unknown scorer id "${member.refId}"`);
+    }
+  }
+  return problems;
+}
+
 export function normalizeMembers(raw: unknown): ScorerGroupMember[] {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -171,7 +205,13 @@ export async function updateScorerGroup(
   if (input.name !== undefined) patch.name = input.name;
   if (input.description !== undefined) patch.description = input.description;
   if (input.members !== undefined) patch.members = normalizeMembers(input.members);
-  if (input.online !== undefined) patch.online = input.online;
+  if (input.online !== undefined) {
+    // Merge, don't replace: a client that predates scope/idleSeconds (round-tripping only
+    // {enabled, sampleRate, alertThreshold, severity}) must not silently flip a session group
+    // back to per-trace scoring. online:null still detaches explicitly.
+    patch.online =
+      input.online === null ? null : ({ ...(existing.online ?? {}), ...input.online } as ScorerGroupOnline);
+  }
   const cond = and(eq(db.schema.scorerGroups.id, id), eq(db.schema.scorerGroups.projectId, db.projectId));
   if (db.kind === "sqlite") {
     db.db.update(db.schema.scorerGroups).set(patch).where(cond).run();
@@ -216,6 +256,10 @@ const GATE_FLOOR = 0.5;
 export function aggregateGroupScore(members: MemberScore[]): { score: number | null; gatedBy: string | null } {
   const gated = members.find(m => m.gate && m.goodness !== null && m.goodness < GATE_FLOOR);
   if (gated) return { score: 0, gatedBy: gated.name };
+  // Fail-closed: a must-pass member that could NOT score (judge outage, deleted ref, scorer
+  // 500) means the configured recipe was not evaluated - producing a blend without the gate
+  // would report "passed" for a safety check that never ran. No score is the honest answer.
+  if (members.some(m => m.gate && m.goodness === null)) return { score: null, gatedBy: null };
   let total = 0;
   let weightUsed = 0;
   for (const m of members) {
@@ -229,6 +273,10 @@ export function aggregateGroupScore(members: MemberScore[]): { score: number | n
 
 export function describeGroupScore(result: { score: number | null; gatedBy: string | null }, members: MemberScore[]): string {
   if (result.gatedBy) return `Gated to 0 by "${result.gatedBy}" (must-pass member failed).`;
+  const gateErrored = members.find(m => m.gate && m.goodness === null);
+  if (gateErrored) {
+    return `No score: must-pass member "${gateErrored.name}" could not score (${gateErrored.error ?? "scorer failed"}).`;
+  }
   const parts = members
     .filter(m => m.goodness !== null && m.weight > 0)
     .map(m => `${m.name} ${m.detail} ×${m.weight}`);
@@ -281,7 +329,8 @@ async function scoreJudgeMember(db: Db, member: ScorerGroupMember, content: Grou
       },
       { input: content.input, output: content.output, expected: content.expected }
     );
-    return { ...base, name, goodness: rating / 10, detail: `${rating}/10 (${justification.slice(0, 140)})` };
+    const clamped = Math.max(0, Math.min(10, rating));
+    return { ...base, name, goodness: clamped / 10, detail: `${clamped}/10 (${justification.slice(0, 140)})` };
   } catch (err) {
     return { ...base, name, goodness: null, detail: "-", error: err instanceof Error ? err.message : "Judge failed" };
   }
@@ -428,7 +477,7 @@ export async function runScorerGroupsOnline(
         break;
       }
     }
-    if (!budgetOk) return;
+    if (!budgetOk) continue;
     try {
       const result = await computeGroupScore(db, group, {
         input: inputText,

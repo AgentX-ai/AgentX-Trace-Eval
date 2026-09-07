@@ -474,6 +474,12 @@ async function scoreOneResult(
     });
     judged.rating = groupResult.score;
     judged.justification = describeGroupScore(groupResult, groupResult.members);
+    if (groupResult.score === null) {
+      // No member scored (or a must-pass member could not run) - surface it as a judge error
+      // so the row lands as "skipped" with the group's explanation, instead of a scored-null
+      // row that liveStatistics counts in no bucket at all.
+      judged.judgeError = new Error(judged.justification || "The scorer group produced no score");
+    }
     for (const member of groupResult.members) {
       if (member.kind === "judge") {
         judgeScorerResults.push({
@@ -579,9 +585,13 @@ export async function appendResults(
     run.datasetId,
     (run.additionalScorerIds as string[] | null) ?? []
   );
-  const scorerGroup = (run as { scorerGroupId?: string | null }).scorerGroupId
-    ? await getScorerGroup(db, (run as { scorerGroupId?: string | null }).scorerGroupId!)
-    : null;
+  const runGroupId = (run as { scorerGroupId?: string | null }).scorerGroupId ?? null;
+  const scorerGroup = runGroupId ? await getScorerGroup(db, runGroupId) : null;
+  if (runGroupId && !scorerGroup) {
+    // Falling through to the dataset's own config would grade half the run on a different
+    // rubric than the half scored before the deletion - refuse loudly instead.
+    throw new Error("The scorer group grading this run no longer exists");
+  }
 
   let accepted = 0;
   let duplicates = 0;
@@ -1071,7 +1081,9 @@ export async function getRun(db: Db, runId: string) {
     runId: run.id,
     datasetId: run.datasetId,
     evaluationSettingsId: run.evaluationSettingsId,
-    scorerGroupId: runScorerGroup?.id ?? null,
+    // The STORED id, not the resolved row's - a deleted group must not erase which grader
+    // produced this run's ratings.
+    scorerGroupId: (run as { scorerGroupId?: string | null }).scorerGroupId ?? null,
     scorerGroupName: runScorerGroup?.name ?? null,
     additionalScorerIds: (run.additionalScorerIds as string[] | null) ?? null,
     scorerBreakdown,
