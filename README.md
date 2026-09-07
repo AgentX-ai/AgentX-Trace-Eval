@@ -281,12 +281,14 @@ That is a focused subset. The full eval workflow lives in
 | `install.sh`           | The `curl \| bash` installer - downloads the platform binary from GitHub Releases.                                                                                                                                                                                     |
 | `build.sh`             | Builds a local `dist/` laid out the same way a real install would, for testing the full distribution without cutting a release.                                                                                                                                        |
 | `Dockerfile`           | Multi-stage build producing a container image - see [Docker](#docker).                                                                                                                                                                                                 |
-| `scripts/`             | `smoke-test.sh` / `smoke_test.py` - end-to-end verification against a real running engine and the real Python SDK.                                                                                                                                                     |
+| `scripts/`             | `smoke-test.sh` / `smoke_test.py` - end-to-end verification against a real running engine and the real Python SDK. `smoke-binary.sh` covers the compiled binary instead, which takes the `bun:sqlite` branch nothing under `engine/src/test` reaches.                    |
 
 ## Building from source
 
 Prerequisites: [Go](https://go.dev/), Node.js + [Yarn](https://yarnpkg.com/), and
 [Bun](https://bun.sh/) (only needed for the compiled single-binary path, not day-to-day dev).
+CI builds on Node.js 24.x, Bun 1.3.14, and the Go toolchain in `cli/go.mod`, so those are the
+versions a local pass predicts a green build against.
 
 ```bash
 git clone git@github.com:AgentX-ai/AgentX-trace-eval.git && cd AgentX-trace-eval
