@@ -67,12 +67,12 @@ browser, and prints the Default project API key for the SDK. Prefer a container?
   actually produces (from Monitor's classified traces) to the cases in your datasets, and reports
   three numbers: traffic-weighted coverage, topic breadth, and risk-weighted coverage - the gap
   between the first and third being the useful one ("you test what is common, not what is
-  dangerous"). Coverage is a *facility-location* value over the topic's real traces rather than a
+  dangerous"). Coverage is a _facility-location_ value over the topic's real traces rather than a
   case count, so near-duplicate cases add nothing and the number cannot be inflated by generating
   copies. Includes a **probe**: ask whether the datasets cover one specific query (or paste a
   whole list - a launch spec, a support macro export - as a pre-launch gate). The probe's
   "covered" verdict reuses the exact similarity threshold `addCaseToDataset` dedupes on, so
-  covered means *the dataset would reject this query as a duplicate*, and it distinguishes a real
+  covered means _the dataset would reject this query as a duplicate_, and it distinguishes a real
   gap from a question nobody asks rather than inventing work. Degrades to labelled lexical
   matching without an embeddings key; never writes a dataset.
 - **Judge tuning** - the judges get judged: each online evaluator's verdicts are measured
@@ -229,11 +229,11 @@ Self-host pairs with **[AgentX-Eval-Skill](https://github.com/AgentX-ai/AgentX-E
 Claude Code plugin that runs the full trace → evaluate → fix → re-run loop against a running
 engine from your editor:
 
-| Command | What it does |
-| --- | --- |
-| `/instrument` | Wire a Python agent to self-host: SDK, entry-point span, prove traces round-trip |
-| `/run-eval` | Evaluate against a dataset (create from templates, CSV, or live traces) and commit the harness |
-| `/eval-fix <id>` | Triage an eval report against real source, apply fixes, re-run on the same dataset |
+| Command          | What it does                                                                                   |
+| ---------------- | ---------------------------------------------------------------------------------------------- |
+| `/instrument`    | Wire a Python agent to self-host: SDK, entry-point span, prove traces round-trip               |
+| `/run-eval`      | Evaluate against a dataset (create from templates, CSV, or live traces) and commit the harness |
+| `/eval-fix <id>` | Triage an eval report against real source, apply fixes, re-run on the same dataset             |
 
 ```
 /instrument ──► traced runs ──► /run-eval ──► score + analysis ──► /eval-fix ──► v1 vs v2
@@ -257,8 +257,8 @@ install paths. The plugin talks to this engine over its normal HTTP API
 This repo also ships one smaller skill under `skills/` for users who copy skills manually rather
 than installing the plugin:
 
-| Skill | What it does |
-| --- | --- |
+| Skill                                               | What it does                                                                                                                                                                            |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`improve-prompt/`](skills/improve-prompt/SKILL.md) | Rewrites a prompt in the Prompt Registry from real low-rated evidence, shows the diff, and publishes on explicit approval - the dashboard's "Suggest improvement" loop, judge-key-free. |
 
 ```bash
@@ -270,18 +270,18 @@ That is a focused subset. The full eval workflow lives in
 
 ## What's in this repo
 
-| Path                   | What it is                                                                                                                                                                                                                                                             |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cli/`                 | Go CLI (`agentx`/`agentx-server`) - installer glue and process supervisor. Launches the bundled engine binary, opens the browser, handles shutdown.                                                                                                                    |
-| `engine/`              | TypeScript governance engine + HTTP API (Trace, Evaluate, Monitor). Compiles to a single native executable via Bun (`bun build --compile`) so end users never need Node/Bun installed.                                                                                 |
-| `packages/judge-core/` | The LLM-as-judge prompt/scoring logic, published as `@agentx/judge-core` so `engine/` and AgentX's hosted SaaS backend share one implementation.                                                                                                                       |
-| `packages/agentx-eval/` | `@agentx/eval` - a minimal, zero-dependency TypeScript client for the engine's evaluation CI surface (datasets, runs, result submission, the CI gate, pairwise comparison).                                                                          |
-| `web/`                 | The dashboard - **not tracked in this repo**. Populated by building [AgentX-eval-front](https://github.com/AgentX-ai/AgentX-eval-front) in self-host mode, or by downloading its prebuilt release asset (see [Dashboard release process](#dashboard-release-process)). |
-| `skills/`              | Bundled Claude Code skill for Prompt Registry improvements (`improve-prompt/`) - see [Claude Code skills](#claude-code-skills). The full eval plugin is [AgentX-Eval-Skill](https://github.com/AgentX-ai/AgentX-Eval-Skill). |
-| `install.sh`           | The `curl \| bash` installer - downloads the platform binary from GitHub Releases.                                                                                                                                                                                     |
-| `build.sh`             | Builds a local `dist/` laid out the same way a real install would, for testing the full distribution without cutting a release.                                                                                                                                        |
-| `Dockerfile`           | Multi-stage build producing a container image - see [Docker](#docker).                                                                                                                                                                                                 |
-| `scripts/`             | `smoke-test.sh` / `smoke_test.py` - end-to-end verification against a real running engine and the real Python SDK.                                                                                                                                                     |
+| Path                    | What it is                                                                                                                                                                                                                                                             |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cli/`                  | Go CLI (`agentx`/`agentx-server`) - installer glue and process supervisor. Launches the bundled engine binary, opens the browser, handles shutdown.                                                                                                                    |
+| `engine/`               | TypeScript governance engine + HTTP API (Trace, Evaluate, Monitor). Compiles to a single native executable via Bun (`bun build --compile`) so end users never need Node/Bun installed.                                                                                 |
+| `packages/judge-core/`  | The LLM-as-judge prompt/scoring logic, published as `@agentx/judge-core` so `engine/` and AgentX's hosted SaaS backend share one implementation.                                                                                                                       |
+| `packages/agentx-eval/` | `@agentx/eval` - a minimal, zero-dependency TypeScript client for the engine's evaluation CI surface (datasets, runs, result submission, the CI gate, pairwise comparison).                                                                                            |
+| `web/`                  | The dashboard - **not tracked in this repo**. Populated by building [AgentX-eval-front](https://github.com/AgentX-ai/AgentX-eval-front) in self-host mode, or by downloading its prebuilt release asset (see [Dashboard release process](#dashboard-release-process)). |
+| `skills/`               | Bundled Claude Code skill for Prompt Registry improvements (`improve-prompt/`) - see [Claude Code skills](#claude-code-skills). The full eval plugin is [AgentX-Eval-Skill](https://github.com/AgentX-ai/AgentX-Eval-Skill).                                           |
+| `install.sh`            | The `curl \| bash` installer - downloads the platform binary from GitHub Releases.                                                                                                                                                                                     |
+| `build.sh`              | Builds a local `dist/` laid out the same way a real install would, for testing the full distribution without cutting a release.                                                                                                                                        |
+| `Dockerfile`            | Multi-stage build producing a container image - see [Docker](#docker).                                                                                                                                                                                                 |
+| `scripts/`              | `smoke-test.sh` / `smoke_test.py` - end-to-end verification against a real running engine and the real Python SDK.                                                                                                                                                     |
 
 ## Building from source
 
@@ -396,60 +396,6 @@ OPENAI_API_KEY=sk-... ./scripts/smoke-test.sh
 Runs against SQLite by default; pass `AGENTX_DB_URL=postgres://...` (e.g. a throwaway Dockerized
 Postgres) to verify against Postgres instead - see the script's own header for the exact command.
 
-## Dashboard release process
-
-`AgentX-eval-front` (the app that builds into `web/`) is AgentX's private frontend dedicated to
-this Governance dashboard. Rather than open-sourcing it, only its **build output** is public:
-every merge to that repo's main builds the dashboard in self-host mode and publishes
-`agentx-web.tar.gz` as an `eval-front-v<series>.<n>` release **on that repo** - the dashboard's
-own versioned channel (the series, e.g. 0.3, is bumped manually via that repo's
-`.github/web-release-series` file; `<n>` auto-increments per merge). Releases here work the
-same way: every merge to main that passes the Tests workflow triggers `release.yml`, which
-versions itself as `v<series>.<n>` from this repo's `.github/release-series` file (series
-bumped manually, `<n>` auto-incremented), fetches the newest of those dashboard bundles, and
-publishes engine binaries + dashboard together - each release an immutable engine+dashboard
-pair, no hand-pushed tags. The running pair is visible in the dashboard: Settings shows
-`Engine vX · UI vY` in its corner. `install.sh`, `build.sh`, and the `Dockerfile` all
-fetch the bundle from this repo's releases - nobody installing or building this repo, including
-outside contributors, ever needs access to that private repo.
-
-One-time setup, one secret per direction:
-
-- this repo's `EVAL_FRONT_RELEASE_TOKEN`: a fine-grained PAT with read access to
-  `AgentX-eval-front` releases, used by `release.yml` to fetch the bundle.
-- `AgentX-eval-front`'s `SELFHOST_RELEASE_TOKEN`: a fine-grained PAT with release/contents write
-  access to this repo, used only by that repo's manual escape hatch - dispatching its "Publish
-  self-host web bundle" workflow with an explicit tag replaces that one release's dashboard in
-  place (e.g. a dashboard hotfix for an already-published release).
-
-## Project status
-
-Trace, Evaluate, and Monitor are wired end-to-end and verified against the real Python SDK, both
-SQLite and Postgres, and the compiled single-binary distribution - including a real OTLP/HTTP
-receiver verified against both protobuf and JSON payloads. The dashboard covers Governance's full
-self-host surface: Observe (live traces and sessions, with end-user feedback chips), Monitor
-(signals triage plus the KPI cards - scores, latency, spans, cost, tokens, the platform mix,
-and tool executions with the error rate overlaid), Review and Scorers (human labels; pattern,
-online, and custom evaluators, trace- and session-scoped, composable into weighted scorer
-groups), Topics, Evaluate (runs, datasets curated straight from production traffic, standalone
-evaluator configs, version history,
-per-case run comparison, Model Portability, and Playground), Insights (Suggestions and Dataset
-coverage, with the Prompts and Tools & MCPs registries - validated proposals and
-unregistered-tool surfacing - reached from the sidebar's Manage section), CI Gates (recorded
-gate history plus a latest-run preview, under Automations), and Overview (KPIs, trends, topic
-map, Model Comparison, and Judge Calibration against reported outcomes and end-user feedback).
-
-**Known gaps:**
-
-- No hot-reload loop between an `AgentX-eval-front` dev server and this engine yet.
-- Autotune's candidate-branch creation/evaluation/merging is out of scope, not deferred: it's
-  fundamentally tied to AgentX's native agent config-branching system, which self-host doesn't
-  have. The version-comparison and Prompt Registry features are the self-host analogs.
-- Guardrail hasn't been started.
-- The SDK's `list_models` call isn't served on the `custom-agent-evaluations` router yet; every
-  other `EvaluationsClient` path, including whole-run analysis (`analyze_run`/
-  `get_analysis_status`/`get_report`, synchronous here rather than queued), is.
-
 See [CHANGELOG.md](CHANGELOG.md) for the detailed, narrative build/verification history behind
 every feature above.
 
@@ -466,16 +412,3 @@ substance of a code review here: wire casing, the response contract, body valida
 queries, migrations.
 
 Vulnerabilities go to [SECURITY.md](SECURITY.md), privately, rather than to a public issue.
-
-## License
-
-[Elastic License 2.0](LICENSE) (ELv2). In practice: use it freely - self-host it at work,
-modify it, embed it in your stack, run it commercially. The only things you may not do are
-offer it to third parties as a hosted/managed service, or tamper with license-key-protected
-functionality. Versions released before this change remain Apache-2.0 under their original
-tags.
-
-The [AgentX Python SDK](https://github.com/AgentX-ai/AgentX-Python) stays permissively
-licensed - restrictions here apply to the engine, never to code embedded in your application.
-The vendored OpenTelemetry proto schema (`engine/src/otel/protoSchema.ts`) remains Apache-2.0
-per its upstream license.
