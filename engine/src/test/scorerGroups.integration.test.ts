@@ -419,3 +419,123 @@ describe("session-scope scorer groups", () => {
     expect(after.scores.filter(s => s.kind === `scorer-group:${groupId}`).length).toBe(1);
   }, 45_000);
 });
+
+// ---------------------------------------------------------------------------------------------
+// Backend matrix: the same session-scope flow on Postgres (control plane dialect #2) and with
+// ClickHouse telemetry (spans live in CH, session sweep reads them through the trace store).
+// Opt-in like every other dialect suite: AGENTX_TEST_DB_URL / AGENTX_TEST_CLICKHOUSE_URL.
+// ---------------------------------------------------------------------------------------------
+
+async function runSessionGroupFlow(eng: TestEngine, projectName: string) {
+  const created = await eng.json("/api/v1/projects", { ...postJson({ name: projectName }), apiKey: null });
+  const projectKey = (created.body as { project: { apiKey: string } }).project.apiKey;
+  const call = (path: string, init?: Parameters<TestEngine["json"]>[1]) =>
+    eng.json(`/api/v1${path}`, { apiKey: projectKey, ...(init ?? {}) });
+
+  const model = await call(
+    "/agent-monitoring/portability/models",
+    postJson({
+      id: "stub-judge-sx",
+      provider: "custom",
+      label: "Stub judge SX",
+      baseUrl: stubUrl,
+      pricePerMInputTokens: 0,
+      pricePerMOutputTokens: 0,
+    })
+  );
+  expect(model.status).toBe(201);
+  const judge = await call(
+    "/agent-monitoring/judge-scorers",
+    postJson({ name: "Matrix harsh", judge: { evaluationCriteria: "Judge with HARSHMARK.", judgeModel: "stub-judge-sx" } })
+  );
+  expect(judge.status).toBe(201);
+  const judgeId = (judge.body as { judgeScorer: { _id: string } }).judgeScorer._id;
+
+  const group = await call(
+    "/agent-monitoring/scorer-groups",
+    postJson({
+      name: "Matrix session group",
+      members: [{ kind: "judge", refId: judgeId, weight: 1 }],
+      online: { enabled: true, sampleRate: 1, alertThreshold: 5, severity: "high", scope: "session", idleSeconds: 0 },
+    })
+  );
+  expect(group.status).toBe(201);
+  const groupId = (group.body as { scorerGroup: { _id: string } }).scorerGroup._id;
+
+  for (const [i, [input, output]] of [
+    ["first question", "vague answer"],
+    ["follow-up", "still vague"],
+  ].entries()) {
+    const ingested = await call(
+      "/ingest/traces",
+      postJson({ name: "matrix-agent", span_id: `mx-${i}`, session_id: "mx-conv-1", input, output })
+    );
+    expect(ingested.status).toBe(200);
+  }
+  // CH mode ingests through a queue; wait until the session's spans are readable before sweeping.
+  let spanCount = 0;
+  for (let i = 0; i < 40 && spanCount < 2; i++) {
+    const spans = (await call("/ingest/sessions/mx-conv-1/spans")).body as { spans?: unknown[] };
+    spanCount = spans.spans?.length ?? 0;
+    if (spanCount < 2) await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  expect(spanCount).toBe(2);
+
+  const swept = await call("/agent-monitoring/session-sweep/run", postJson({}));
+  expect(swept.status).toBe(200);
+
+  const scores = (await call("/agent-monitoring/sessions/mx-conv-1/scores")).body as {
+    scores: Array<{ kind: string; rating: number | null }>;
+  };
+  const groupScore = scores.scores.find(s => s.kind === `scorer-group:${groupId}`);
+  expect(groupScore, "expected a scorer-group session score").toBeTruthy();
+  expect(groupScore!.rating).toBe(2);
+
+  const signals = ((await call("/agent-monitoring/signals")).body as {
+    signals: Array<{ patternKey?: string; type?: string }>;
+  }).signals.filter(s => s.patternKey === `scorer-group:${groupId}`);
+  expect(signals.length).toBeGreaterThan(0);
+  expect(signals[0]!.type).toBe("scorer_group_low_session_score");
+
+  const ratings = (await call(`/agent-monitoring/scorer-groups/${groupId}/ratings?window=24h`)).body as {
+    points: Array<{ count: number; averageRating: number | null }>;
+  };
+  expect(ratings.points.some(p => p.count > 0 && p.averageRating === 2)).toBe(true);
+}
+
+const PG_AVAILABLE = Boolean(process.env.AGENTX_TEST_DB_URL);
+describe.skipIf(!PG_AVAILABLE)("session-scope scorer groups on Postgres", () => {
+  let pgEngine: TestEngine;
+  beforeAll(async () => {
+    pgEngine = await startEngine({ OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "", GEMINI_API_KEY: "" }, { postgres: true });
+  }, 90_000);
+  afterAll(async () => {
+    await pgEngine?.stop();
+  });
+
+  it("sweeps, scores, and signals identically on the Postgres control plane", async () => {
+    expect(pgEngine.backend).toBe("postgres");
+    await runSessionGroupFlow(pgEngine, "sg-session-pg");
+  }, 45_000);
+});
+
+const CH_URL_MATRIX = process.env.AGENTX_TEST_CLICKHOUSE_URL;
+describe.skipIf(!CH_URL_MATRIX)("session-scope scorer groups with ClickHouse telemetry", () => {
+  let chEngine: TestEngine;
+  beforeAll(async () => {
+    chEngine = await startEngine({
+      OPENAI_API_KEY: "",
+      ANTHROPIC_API_KEY: "",
+      GEMINI_API_KEY: "",
+      AGENTX_TELEMETRY_URL: CH_URL_MATRIX!,
+    });
+  }, 90_000);
+  afterAll(async () => {
+    await chEngine?.stop();
+  });
+
+  it("the sweep assembles the transcript from ClickHouse spans and scores it", async () => {
+    expect(chEngine.log()).toContain("Telemetry store: ClickHouse");
+    await runSessionGroupFlow(chEngine, "sg-session-ch");
+  }, 45_000);
+});
