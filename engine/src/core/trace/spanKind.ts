@@ -31,6 +31,11 @@ export const SPAN_KINDS = [
   "guardrail",
   "evaluator",
   "prompt",
+  // A long-term-memory operation (Mem0/Zep/Letta-style recall or store) - distinct from
+  // "retrieval" on purpose: retrieval fetches KNOWLEDGE for the answer (and feeds the RAG
+  // judges' {context}), memory recalls/persists USER-OR-AGENT STATE across conversations.
+  // Reads and writes share the one kind; the span's name/metadata says which.
+  "memory",
 ] as const;
 
 export type SpanKind = (typeof SPAN_KINDS)[number];
@@ -56,6 +61,17 @@ const ALIASES: Record<string, SpanKind> = {
   create_agent: "agent",
   // OTel: "embeddings". MLflow/LangSmith: "embedding".
   embeddings: "embedding",
+  // Memory operations, every spelling the memory SDKs and their users write. All fold onto
+  // "memory" - the read/write split lives in the span name/metadata, not the kind.
+  memory_read: "memory",
+  memory_write: "memory",
+  "memory-read": "memory",
+  "memory-write": "memory",
+  memory_search: "memory",
+  memory_store: "memory",
+  memory_update: "memory",
+  memory_retrieval: "memory",
+  recall: "memory",
   // MLflow's own vocabulary for the rest.
   llm: "llm",
   parser: "chain",
@@ -109,6 +125,7 @@ export function resolveSpanKind(span: SpanKindInput): SpanKind {
   const name = span.name ?? "";
   if (/^llm call/i.test(name)) return "llm";
   if (/^retriev/i.test(name)) return "retrieval";
+  if (/^memory/i.test(name)) return "memory";
   // Everything else is a step in the middle. Note this is where the timeline used to say "tool",
   // which is how an unrecognized span got drawn as a tool call it never was.
   return "chain";
@@ -116,7 +133,10 @@ export function resolveSpanKind(span: SpanKindInput): SpanKind {
 
 // Whether this span is a retrieval, for the RAG judges' {context} extraction. Kept as its own
 // name because that is what the call sites are asking, and it is the one kind with a hard
-// behavioural consequence rather than a label.
+// behavioural consequence rather than a label. "memory" spans deliberately do NOT qualify:
+// {context} means "the knowledge the answer should be grounded in", and a recalled user
+// preference is state, not grounding - a groundedness judge fed memory recalls would penalize
+// answers for not citing them.
 export function isRetrievalSpan(span: SpanKindInput): boolean {
   return resolveSpanKind(span) === "retrieval";
 }

@@ -113,7 +113,7 @@ export const traceListItemSchema = z
     // Always present and always resolved (core/trace/spanKind.ts): the engine classifies each
     // span once so no reader has to re-derive it. Never optional - "chain" is the answer for a
     // span nothing could be said about, not an absent field.
-    spanKind: z.enum(["agent", "llm", "tool", "retrieval", "chain", "embedding", "reranker", "guardrail", "evaluator", "prompt"]),
+    spanKind: z.enum(["agent", "llm", "tool", "retrieval", "chain", "embedding", "reranker", "guardrail", "evaluator", "prompt", "memory"]),
     // "eval-run" for traffic produced inside an offline evaluation; absent for production.
     trafficSource: z.string().optional(),
     parentSpanId: z.string().optional(),

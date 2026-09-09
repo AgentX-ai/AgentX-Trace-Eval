@@ -88,3 +88,24 @@ describe("isRetrievalSpan", () => {
     expect(isRetrievalSpan({ name: "LLM Call 1", parentSpanId: "p" })).toBe(false);
   });
 });
+
+describe("memory span kind", () => {
+  it("normalizes every memory spelling onto the one kind", () => {
+    for (const raw of ["memory", "MEMORY", "memory_read", "memory-write", "memory_search", "memory_store", "recall"]) {
+      expect(normalizeSpanKind(raw)).toBe("memory");
+    }
+  });
+
+  it("infers memory from SDK-style names, stated kinds still win", () => {
+    expect(resolveSpanKind({ name: "Memory recall" })).toBe("memory");
+    expect(resolveSpanKind({ name: "memory_store user prefs" })).toBe("memory");
+    // A stated kind beats the name - a tool that happens to be called "memory..." says so.
+    expect(resolveSpanKind({ spanKind: "tool", name: "Memory recall" })).toBe("tool");
+  });
+
+  it("memory is NOT retrieval: recalled state never feeds the RAG judges' {context}", () => {
+    expect(isRetrievalSpan({ spanKind: "memory" })).toBe(false);
+    expect(isRetrievalSpan({ name: "Memory recall" })).toBe(false);
+  });
+});
+
