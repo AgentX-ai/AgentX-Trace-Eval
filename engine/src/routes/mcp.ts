@@ -1,4 +1,5 @@
 import express, { type Express, type NextFunction, type Request, type RequestHandler, type Response } from "express";
+import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -161,6 +162,20 @@ export function registerMcp(app: Express, deps: McpDeps): void {
   const resourceMetadataUrl = oauth ? getOAuthProtectedResourceMetadataUrl(resource) : null;
 
   if (provider) {
+    // The consent decision verifies a session or a project API key per submission, so it gets a
+    // ceiling of its own on top of the shared credential limiter - built here with
+    // express-rate-limit directly (the same shape as apiV1.ts's projectMutationLimit) so the
+    // guard is visible at the route, not hidden behind an injected handler. 60 decisions per 15
+    // minutes per IP is far above any human consent flow and well below a key-guessing loop.
+    const consentLimit = rateLimit({
+      windowMs: 15 * 60 * 1000,
+      max: 60,
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      handler: (_req, res) => {
+        res.status(429).json({ statusCode: 429, message: "Too many requests" });
+      },
+    });
     // Consent form submission - registered BEFORE the SDK router so `/authorize/decision` never
     // reaches the SDK's `/authorize` prefix handler. The engine's own credential limiter guards
     // the SDK endpoints; the SDK's built-in per-endpoint limiters are disabled so the two ceilings
@@ -168,6 +183,7 @@ export function registerMcp(app: Express, deps: McpDeps): void {
     app.post(
       "/authorize/decision",
       deps.credentialLimit,
+      consentLimit,
       express.urlencoded({ extended: false }),
       validateBody(decisionBodySchema),
       asyncHandler(async (req: Request, res: Response) => {

@@ -496,6 +496,37 @@ describe("MCP endpoint, AGENTX_AUTH=disabled", () => {
     await claude.text();
   });
 
+  it("only links an http(s) client_uri on the consent page", async () => {
+    // The SDK's registration schema already refuses javascript: and data: URIs; anything else
+    // with a scheme that is not http(s) is stored but must not become an anchor.
+    const res = await fetch(`${originOf(engine)}/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_name: "Sneaky",
+        client_uri: "file:///etc/passwd",
+        redirect_uris: ["http://localhost:4444/cb"],
+        token_endpoint_auth_method: "none",
+      }),
+    });
+    expect(res.status).toBe(201);
+    const { client_id } = (await res.json()) as { client_id: string };
+    const url = new URL(`${originOf(engine)}/authorize`);
+    url.search = new URLSearchParams({
+      response_type: "code",
+      client_id,
+      redirect_uri: "http://localhost:4444/cb",
+      code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+      code_challenge_method: "S256",
+    }).toString();
+    const page = await fetch(url);
+    const html = await page.text();
+    expect(page.status).toBe(200);
+    expect(html).toContain("Sneaky");
+    expect(html).not.toContain("file:");
+    expect(html).not.toContain("<a href");
+  });
+
   it("binds the grant to this server's resource identifier", async () => {
     const { provider } = await beginOAuth(engine);
     const url = new URL(provider.authorizationUrl!);

@@ -113,6 +113,18 @@ function redirectWith(res: Response, redirectUri: string, params: Record<string,
   res.redirect(302, url.href);
 }
 
+// Registered client metadata is attacker-supplied (anyone can call /register), and HTML escaping
+// does not neutralize a `javascript:` href - only an http(s) client_uri becomes a link.
+function httpUrlOrNull(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function pageHeaders(res: Response): string {
   const nonce = randomBytes(16).toString("base64");
   res.set("Cache-Control", "no-store");
@@ -207,7 +219,7 @@ export class EngineOAuthProvider implements OAuthServerProvider {
       renderAuthorizePage(
         {
           clientName: client.client_name ?? client.client_id,
-          clientUri: client.client_uri ?? null,
+          clientUri: httpUrlOrNull(client.client_uri),
           scopes: bundle.scope.split(" ").filter(Boolean),
           redirectHost: new URL(bundle.redirect_uri).host,
           hidden,
