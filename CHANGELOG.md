@@ -981,3 +981,24 @@ Python SDK stays permissively licensed (it ships inside customer applications). 
 OpenTelemetry proto schema keeps its upstream Apache-2.0 notice. Applied to LICENSE, the README
 badge and License section, CONTRIBUTING's contribution terms, and the workspace package.json
 license fields (SPDX id `Elastic-2.0`).
+
+---
+
+**MCP connector.** The engine now serves its own remote MCP server at `POST /mcp` (Streamable
+HTTP, stateless so replicas need no sticky sessions), with nineteen read-only `agentx_*` tools
+mirroring the hosted connector's names, each a thin adapter over the same project-scoped core
+function the matching dashboard route calls, and each tool call audited as `mcp.tool_call`. Two
+credential paths: a bearer project API key (Claude Code, `mcp-remote`, the Agent SDK, CI), and
+OAuth 2.1 for claude.ai, where the engine is its own authorization server on top of the MCP SDK's
+`mcpAuthRouter`: RFC 9728/8414 metadata, dynamic client registration behind a redirect
+allow-list, PKCE, single-use codes, hashed opaque tokens (1h access / 30d refresh, rotated),
+RFC 7009 revocation, audience binding to `<AGENTX_PUBLIC_URL>/mcp`, and a server-rendered consent
+page that asks for a dashboard sign-in plus project pick in `AGENTX_AUTH=enabled` and for the
+project API key in disabled mode. Regenerating a project key revokes its grants; grants are
+listed and revoked under `/api/v1/mcp/grants` (under wire contract). Verified end to end with the
+real MCP SDK client in `engine/src/test/mcp.integration.test.ts` - discovery, registration,
+consent, code exchange, refresh rotation, revocation, cross-project isolation, the tampered/denied/
+replayed/PKCE-mismatch failure paths, and both auth modes - and by hand with a running engine.
+The suite's Postgres describe ran green against a local Postgres 16 as well as SQLite. Not yet
+verified: an actual claude.ai connector through a tunnel (the SDK client is the closest stand-in
+available offline).

@@ -1,6 +1,45 @@
 # Self-host MCP server: plan
 
-**Status:** design. Nothing below is implemented yet.
+**Status:** Phases 1 and 2 are implemented; Phase 3 is still design.
+
+| Shipped | Where |
+|---|---|
+| `POST /mcp` (stateless Streamable HTTP), key + OAuth bearer auth, 405 on other verbs | `engine/src/routes/mcp.ts` |
+| Nineteen read-only `agentx_*` tools, audited per call | `engine/src/core/mcp/tools.ts`, `server.ts` |
+| OAuth 2.1 authorization server: DCR allow-list, consent page in both auth modes, PKCE, hashed tokens, refresh rotation, revocation, audience binding | `engine/src/core/mcp/oauthProvider.ts`, `oauthStore.ts`, `authorizePage.ts`, `config.ts` |
+| Tables in both dialects | `engine/src/storage/schema.{sqlite,pg}.ts`, `db.ts` |
+| Grants list/revoke (`/api/v1/mcp/grants`, under wire contract) and key-regeneration cascade | `engine/src/routes/mcp.ts`, `apiV1.ts`, `agentMonitoringDashboard.ts` |
+| Tests: SDK client end to end, both auth modes, failure paths | `engine/src/test/mcp.integration.test.ts` |
+| README section, configuration rows | `README.md` |
+
+**Three things changed during implementation.**
+
+1. **Only one scope exists.** `mcp:write` was dropped from the consent page until a write tool
+   ships - a checkbox that gates nothing is the placebo knob CONTRIBUTING.md bans. §2.3 and §2.4
+   below still describe the two-scope end state.
+2. **The issuer defaults to loopback.** With no `AGENTX_PUBLIC_URL`, the issuer is
+   `http://localhost:<port>` rather than "OAuth off": the spec allows plain HTTP on loopback, so
+   Claude Code can run the real OAuth flow against a local engine, and the integration tests
+   exercise the exact code path claude.ai will. A non-loopback `http://` public URL still
+   disables OAuth with a boot warning.
+3. **Consent requests are signed, not stored.** The authorize page carries the request back as
+   HMAC-signed hidden fields (keyed by the persisted instance secret), so multi-replica
+   deployments need no pending-request table and a tampered form fails before any principal check.
+
+**Verified on both dialects**: the suite's opt-in Postgres describe ran against a local
+Postgres 16 alongside the SQLite run. **Still unverified:** a real claude.ai connector through a
+tunnel (the SDK's own OAuth client is the closest offline stand-in and passes).
+
+### Localhost
+
+"Localhost MCP" means different things per surface, and only the last row needs Phase 2:
+
+| Surface | How it reaches a local engine | Needs |
+|---|---|---|
+| Claude Code | `claude mcp add --transport http agentx http://localhost:4700/mcp --header "Authorization: Bearer <key>"` (or `/mcp` login via the loopback OAuth issuer) | Phase 1 |
+| Claude Desktop, Cursor, other stdio-only hosts | `npx mcp-remote http://localhost:4700/mcp --header "Authorization: Bearer <key>"` in the host's MCP config; an `agentx mcp` stdio proxy in the Go CLI would remove the Node dependency (Phase 3) | Phase 1 |
+| Agent SDK, scripts, CI | Any HTTP MCP client with the header | Phase 1 |
+| claude.ai web / mobile, Messages API connector | Cannot reach localhost at all - Anthropic's servers open the connection. Expose the engine (cloudflared, ngrok, Tailscale Funnel), set `AGENTX_PUBLIC_URL` to that HTTPS URL, connect | Phase 2 |
 
 **Goal:** a Claude user adds `https://<their-self-host>/mcp` as a custom connector in claude.ai
 (or `claude mcp add` in Claude Code) and Claude can read traces, sessions, signals, datasets,

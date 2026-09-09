@@ -639,6 +639,30 @@ export const modelCatalogSchema = z
   })
   .strict();
 
+// ---- GET /mcp/grants -----------------------------------------------------------------------
+
+// OAuth grants issued to MCP clients (claude.ai connectors, Claude Code) for the caller's
+// project - the dashboard's "connected apps" list. One row per live grant; revoking one kills
+// its refresh chain and every access token minted from it (routes/mcp.ts).
+export const mcpGrantsResponseSchema = z
+  .object({
+    grants: z.array(
+      z
+        .object({
+          grantId: z.string(),
+          clientId: z.string(),
+          clientName: z.string().nullable(),
+          userId: z.string().nullable(),
+          scopes: z.array(z.string()),
+          createdAt: isoDate,
+          lastUsedAt: isoDate.nullable(),
+          expiresAt: isoDate,
+        })
+        .strict()
+    ),
+  })
+  .strict();
+
 export const WIRE_CONTRACT = [
   {
     method: "get" as const,
@@ -787,5 +811,12 @@ export const WIRE_CONTRACT = [
     summary: "The same verdict for a list of queries, plus a rollup",
     response: insightsProbeBatchResponseSchema,
     name: "InsightsProbeBatchResponse",
+  },
+  {
+    method: "get" as const,
+    path: "/mcp/grants",
+    summary: "OAuth grants issued to MCP clients for the project",
+    response: mcpGrantsResponseSchema,
+    name: "McpGrantsResponse",
   },
 ];

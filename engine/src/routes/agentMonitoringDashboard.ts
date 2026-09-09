@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import { asyncRouter } from "./asyncRouter.js";
 import { getDb, type Db } from "../storage/db.js";
+import { revokeProjectGrants } from "../core/mcp/oauthStore.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { createPattern, updatePattern, deletePattern, listPatternsWire, legacyPayloadToConditions } from "../core/monitor/patterns.js";
 import { BUILT_IN_MONITOR_PATTERNS, builtInPatternsWire } from "../core/monitor/detect.js";
@@ -1981,6 +1982,10 @@ agentMonitoringDashboardRouter.put("/settings/llm-keys", async (req: Request, re
 
 agentMonitoringDashboardRouter.post("/settings/api-key/regenerate", async (req: Request, res: Response) => {
   const project = await regenerateProjectApiKey(getDb(), req.projectId!);
+  // An MCP OAuth token is a stand-in for this key (core/mcp/oauthProvider.ts), so rotating the
+  // key revokes every connector grant with it - otherwise "regenerate" would leave a live path
+  // to the project's data that the new key never authorized.
+  await revokeProjectGrants(getDb(), req.projectId!);
   res.status(200).json({ apiKey: project?.apiKey ?? null });
 });
 

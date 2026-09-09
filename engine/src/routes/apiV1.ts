@@ -45,6 +45,7 @@ import {
 } from "../auth/betterAuth.js";
 import { mailerConfigured } from "../auth/mailer.js";
 import { openapiRouter } from "./openapi.js";
+import { mcpGrantsRouter } from "./mcp.js";
 
 export type ApiV1Deps = {
   credentialLimit: RequestHandler;
@@ -232,6 +233,10 @@ export function registerApiV1(app: Express, deps: ApiV1Deps): void {
   }
   // Operator admin (inert without AGENTX_ADMIN_TOKEN - see routes/admin.ts).
   router.use("/admin", credentialLimit, adminRouter);
+  // OAuth grants issued to MCP clients for the caller's project (routes/mcp.ts) - the
+  // "connected apps" list and its revoke button. Key-authenticated like every other per-project
+  // read; the OAuth endpoints themselves live at the application root.
+  router.use("/mcp", credentialLimit, apiKey, mcpGrantsRouter);
   router.use("/agent-monitoring", dataPlaneLimit, apiKey, agentMonitoringDashboardRouter);
   router.use("/evaluate", dataPlaneLimit, apiKey, evaluateDashboardRouter);
   router.use("/insights", dataPlaneLimit, apiKey, insightsRouter);
