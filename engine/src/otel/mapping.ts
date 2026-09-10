@@ -53,11 +53,17 @@ function renderMessages(messages: unknown[] | undefined): string | undefined {
   if (!messages || messages.length === 0) {
     return undefined;
   }
-  const lines = (messages as Message[]).map(m => {
+  const lines = (messages as (Message | null | undefined)[]).map(m => {
+    // A null/garbage element is trivially producible on the wire (gen_ai.input.messages as
+    // the JSON string "[null]", or an empty AnyValue branch) - it must render as noise, not
+    // throw and 500 the whole OTLP export batch into an exporter retry loop.
+    if (!m || typeof m !== "object") {
+      return String(m ?? "");
+    }
     const role = m.role ?? "unknown";
     if (Array.isArray(m.parts)) {
       const text = m.parts
-        .map(p => (typeof p.content === "string" ? p.content : JSON.stringify(p.content)))
+        .map(p => (p && typeof p === "object" && typeof p.content === "string" ? p.content : JSON.stringify(p?.content ?? null)))
         .join(" ");
       return `${role}: ${text}`;
     }
@@ -230,7 +236,9 @@ export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
     (model ? ("llm" as const) : null);
 
   const latencyNanos = span.endTimeUnixNano - span.startTimeUnixNano;
-  const latencyMs = latencyNanos > 0n ? Number(latencyNanos / 1_000_000n) : undefined;
+  // 0n means "no/unparseable timestamp" (normalize.ts) - an end time minus a missing start
+  // is ~55,000 years, which pinned the p95 histogram and fired latency alerts forever.
+  const latencyMs = span.startTimeUnixNano > 0n && latencyNanos > 0n ? Number(latencyNanos / 1_000_000n) : undefined;
 
   return {
     name: span.name,

@@ -672,13 +672,19 @@ export const authOrganizations = pgTable("auth_organization", {
   metadata: text("metadata"),
 });
 
-export const authMembers = pgTable("auth_member", {
-  id: text("id").primaryKey(),
-  organizationId: text("organization_id").notNull(),
-  userId: text("user_id").notNull(),
-  role: text("role").notNull().default("member"),
-  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
-});
+export const authMembers = pgTable(
+  "auth_member",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id").notNull(),
+    userId: text("user_id").notNull(),
+    role: text("role").notNull().default("member"),
+    createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  },
+  // Mirrors schema.sqlite.ts - one membership per (org, user); accept inserts with
+  // onConflictDoNothing against this index.
+  table => ({ orgUserUnique: uniqueIndex("auth_member_org_user").on(table.organizationId, table.userId) })
+);
 
 export const authInvitations = pgTable("auth_invitation", {
   id: text("id").primaryKey(),

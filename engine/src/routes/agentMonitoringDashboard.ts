@@ -1,3 +1,4 @@
+import rateLimitMiddleware from "express-rate-limit";
 import type { Request, Response } from "express";
 import { asyncRouter } from "./asyncRouter.js";
 import { getDb, type Db } from "../storage/db.js";
@@ -43,7 +44,7 @@ import {
   getImprovementReport,
   listImprovementReports,
 } from "../core/monitor/improvementGroups.js";
-import {
+import { signTuningValidation, verifyTuningValidation,
   getEvaluatorCalibration,
   proposeJudgeTuning,
   validateJudgeTuning,
@@ -1179,7 +1180,19 @@ agentMonitoringDashboardRouter.get(
   }
 );
 
-agentMonitoringDashboardRouter.post("/online-evaluators/:evaluatorId/tune", async (req: Request, res: Response) => {
+// Per-route ceiling for the judge-tuning trio, ON TOP of the data-plane limiter the whole
+// router sits behind (apiV1.ts mounts it; CodeQL cannot see cross-file parent limiters, and
+// these routes deserve a tighter bound anyway: tune/validate are real LLM spend per call,
+// publish verifies provenance and writes rubric versions). 20/min is far above any human or
+// SDK flow and far below a brute-force loop.
+const tuningRouteLimit = rateLimitMiddleware({
+  windowMs: 60_000,
+  limit: 20,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+});
+
+agentMonitoringDashboardRouter.post("/online-evaluators/:evaluatorId/tune", tuningRouteLimit, async (req: Request, res: Response) => {
   const body = req.body ?? {};
   try {
     const result = await proposeJudgeTuning(scopedDb(req), req.params.evaluatorId!, {
@@ -1204,6 +1217,7 @@ agentMonitoringDashboardRouter.post("/online-evaluators/:evaluatorId/tune", asyn
 
 agentMonitoringDashboardRouter.post(
   "/online-evaluators/:evaluatorId/tune/validate",
+  tuningRouteLimit,
   async (req: Request, res: Response) => {
     const body = req.body ?? {};
     for (const key of ["acceptanceCriteria", "rejectionCriteria", "evaluationCriteria"]) {
@@ -1232,7 +1246,26 @@ agentMonitoringDashboardRouter.post(
         res.status(422).json(result);
         return;
       }
-      res.status(200).json(result);
+      // Signed provenance: binds THIS evaluator + THIS exact candidate package to the
+      // measured verdict, so publish can verify the stamp instead of trusting the client.
+      const verdictForToken = (result as { verdict?: string; netAgreementGain?: number }).verdict;
+      const validationToken =
+        typeof verdictForToken === "string"
+          ? signTuningValidation(
+              req.params.evaluatorId!,
+              {
+                acceptanceCriteria: body.acceptanceCriteria,
+                rejectionCriteria: body.rejectionCriteria,
+                evaluationCriteria: body.evaluationCriteria,
+                judgePrompt: typeof body.judgePrompt === "string" ? body.judgePrompt : undefined,
+              },
+              verdictForToken,
+              typeof (result as { netAgreementGain?: number }).netAgreementGain === "number"
+                ? (result as { netAgreementGain: number }).netAgreementGain
+                : null
+            )
+          : undefined;
+      res.status(200).json({ ...result, ...(validationToken ? { validationToken } : {}) });
     } catch (err) {
       res.status(502).json({ error: err instanceof Error ? err.message : "Validation failed" });
     }
@@ -1241,6 +1274,7 @@ agentMonitoringDashboardRouter.post(
 
 agentMonitoringDashboardRouter.post(
   "/online-evaluators/:evaluatorId/tune/publish",
+  tuningRouteLimit,
   async (req: Request, res: Response) => {
     const body = req.body ?? {};
     for (const key of ["acceptanceCriteria", "rejectionCriteria", "evaluationCriteria"]) {
@@ -1278,10 +1312,34 @@ agentMonitoringDashboardRouter.post(
         return;
       }
     }
-    const provenance = validation?.verdict
-      ? `[judge tuning: validated ${validation.verdict}${
-          typeof validation.netAgreementGain === "number" ? `, net agreement ${validation.netAgreementGain >= 0 ? "+" : ""}${validation.netAgreementGain}` : ""
-        }]`
+    // Provenance honesty: a token minted by /tune/validate proves the verdict was measured
+    // for EXACTLY this candidate package on this evaluator. Without one (older clients), the
+    // stamp says client-asserted - the version history must never present an unverified
+    // claim as a measurement. A token that fails verification (criteria edited after
+    // validating, or another evaluator's token) is a hard 409, not a downgrade.
+    const token = (validation as { token?: string } | undefined)?.token;
+    let verified: { verdict: string; netAgreementGain: number | null } | null = null;
+    if (typeof token === "string" && token) {
+      verified = verifyTuningValidation(token, req.params.evaluatorId!, {
+        acceptanceCriteria: body.acceptanceCriteria,
+        rejectionCriteria: body.rejectionCriteria,
+        evaluationCriteria: body.evaluationCriteria,
+        judgePrompt: typeof body.judgePrompt === "string" && body.judgePrompt.trim() ? body.judgePrompt : undefined,
+      });
+      if (!verified) {
+        res.status(409).json({
+          error:
+            "The validation token does not match what is being published - the criteria changed after validation (or the token belongs to another scorer). Re-run POST .../tune/validate on this exact package.",
+        });
+        return;
+      }
+    }
+    const stampVerdict = verified?.verdict ?? validation?.verdict;
+    const stampGain = verified ? verified.netAgreementGain : (validation?.netAgreementGain ?? null);
+    const provenance = stampVerdict
+      ? `[judge tuning: validated ${stampVerdict}${
+          typeof stampGain === "number" ? `, net agreement ${stampGain >= 0 ? "+" : ""}${stampGain}` : ""
+        }${verified ? "" : " (client-asserted)"}]`
       : "[judge tuning: published without validation]";
     const updated = await patchEvaluationSettings(
       scopedDb(req),
@@ -1290,9 +1348,11 @@ agentMonitoringDashboardRouter.post(
         acceptanceCriteria: body.acceptanceCriteria,
         rejectionCriteria: body.rejectionCriteria,
         evaluationCriteria: body.evaluationCriteria,
-        // Only when the tuning proposal actually revised the prompt - an absent field leaves the
-        // config's prompt untouched, so criteria-only tunes keep their old publish behavior.
-        ...(typeof body.judgePrompt === "string" && body.judgePrompt.trim() ? { judgePrompt: body.judgePrompt } : {}),
+        // Matches validate's semantics exactly: any STRING judgePrompt (blank included, a
+        // legitimate "prompt removed" proposal) ships; only an absent field leaves the
+        // config's prompt untouched. Publish silently no-oping on blank meant "validated
+        // improved" could describe a package the publish didn't actually ship.
+        ...(typeof body.judgePrompt === "string" ? { judgePrompt: body.judgePrompt } : {}),
       },
       { versionProvenance: provenance }
     );
@@ -1314,7 +1374,13 @@ function isValidHttpUrl(value: unknown): value is string {
   }
   try {
     const url = new URL(value.trim());
-    return url.protocol === "http:" || url.protocol === "https:";
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return false;
+    }
+    // Same egress posture as connectors/webhooks: loopback/private allowed (self-host reality),
+    // cloud metadata endpoints never - an external scorer pointed there is a credential grab.
+    const host = url.hostname.toLowerCase();
+    return !(host === "metadata.google.internal" || host === "metadata.goog" || /^169\.254\./.test(host) || host === "fd00:ec2::254");
   } catch {
     return false;
   }

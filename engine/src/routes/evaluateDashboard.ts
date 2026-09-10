@@ -954,10 +954,20 @@ function isHttpUrl(value: unknown): boolean {
   if (typeof value !== "string" || !value.trim()) return false;
   try {
     const url = new URL(value.trim());
-    return url.protocol === "http:" || url.protocol === "https:";
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    // Self-host deliberately allows loopback/private targets (operators point connectors and
+    // webhooks at their own services) - but cloud metadata endpoints are never a legitimate
+    // connector, and a stored URL reaching one is a server-side credential grab. Blocked at
+    // write time; DNS-rebinding-grade defenses are out of scope for a trusted-operator tier.
+    return !isMetadataTarget(url.hostname);
   } catch {
     return false;
   }
+}
+
+function isMetadataTarget(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === "metadata.google.internal" || host === "metadata.goog" || /^169\.254\./.test(host) || host === "[fd00:ec2::254]" || host === "fd00:ec2::254";
 }
 
 // Remote MCP introspection for Register Tool (core/evaluate/mcp.ts): connect, tools/list, hand

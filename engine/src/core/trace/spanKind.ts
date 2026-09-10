@@ -87,7 +87,9 @@ export function normalizeSpanKind(raw: unknown): SpanKind | null {
   const value = raw.trim().toLowerCase();
   if (!value) return null;
   if ((SPAN_KINDS as readonly string[]).includes(value)) return value as SpanKind;
-  return ALIASES[value] ?? null;
+  // hasOwn, not bare indexing: "constructor"/"toString" on a plain object literal would
+  // return Object.prototype members, storing a serialized function as the span's kind.
+  return Object.hasOwn(ALIASES, value) ? ALIASES[value]! : null;
 }
 
 export type SpanKindInput = {

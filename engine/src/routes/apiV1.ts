@@ -139,7 +139,21 @@ export function registerApiV1(app: Express, deps: ApiV1Deps): void {
         res.status(403).json({ error: "No organization membership" });
         return;
       }
-      organizationId = orgs[0] ?? null;
+      // A user in several orgs must SAY which one - orgs[0] out of an unordered membership
+      // query silently filed the project under an arbitrary organization.
+      const requestedOrg = (req.body ?? {}).organizationId;
+      if (typeof requestedOrg === "string" && requestedOrg) {
+        if (!orgs.includes(requestedOrg)) {
+          res.status(403).json({ error: "Not a member of that organization" });
+          return;
+        }
+        organizationId = requestedOrg;
+      } else if (orgs.length > 1) {
+        res.status(400).json({ error: "You belong to several organizations - pass organizationId to pick one." });
+        return;
+      } else {
+        organizationId = orgs[0] ?? null;
+      }
     }
     // Disabled mode deliberately allows keyless creation: /auth/config hands the default key to
     // anyone who asks, so requiring it here adds a step without adding protection - and every

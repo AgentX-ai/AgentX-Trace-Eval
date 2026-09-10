@@ -44,6 +44,30 @@ export const EXPORT_ENTITIES = {
   // The one table without an `id` column: its primary key is the run it analyzed.
   "evaluation-analyses": { table: "evaluationAnalyses", sinceColumn: "createdAt", keyColumn: "evaluationId" },
   "custom-evaluators": { table: "customEvaluators", sinceColumn: "createdAt" },
+  // Scorer groups are grading config (members, weights, gates, online profile) - a restore
+  // without them loses every composed grader while its member scorers survive individually.
+  "scorer-groups": { table: "scorerGroups", sinceColumn: "createdAt" },
+  // The Improve loop's registries and outputs: prompts/tools plus their version histories are
+  // the same "paid-for, unreproducible" class as rubric versions above, and improvement
+  // reports are LLM output money already spent.
+  prompts: { table: "prompts", sinceColumn: "createdAt" },
+  "prompt-versions": { table: "promptVersions", sinceColumn: "createdAt" },
+  "tool-schemas": { table: "toolSchemas", sinceColumn: "createdAt" },
+  "tool-schema-versions": { table: "toolSchemaVersions", sinceColumn: "createdAt" },
+  "improvement-proposals": { table: "improvementProposals", sinceColumn: "createdAt" },
+  "improvement-groups": { table: "improvementGroups", sinceColumn: "createdAt" },
+  "improvement-group-members": { table: "improvementGroupMembers", sinceColumn: "addedAt" },
+  "improvement-reports": { table: "improvementReports", sinceColumn: "createdAt" },
+  // Operational registries a restore needs to look like the same install: tracked agents,
+  // per-agent monitoring profiles (webhook channels included), HTTP agent connectors, saved
+  // Playground runs, and the audit log.
+  agents: { table: "agents", sinceColumn: "createdAt" },
+  "monitor-profiles": { table: "monitorProfiles", sinceColumn: "createdAt" },
+  "agent-connectors": { table: "agentConnectors", sinceColumn: "createdAt" },
+  "playground-runs": { table: "playgroundRuns", sinceColumn: "createdAt" },
+  "audit-events": { table: "auditEvents", sinceColumn: "createdAt" },
+  // Deliberately excluded (derived/ephemeral, cheap to rebuild): monitorRollups,
+  // insightCaseEmbeddings, sweepLeases, usage counters. The completeness test names them.
 } as const;
 
 export type ExportEntity = keyof typeof EXPORT_ENTITIES;

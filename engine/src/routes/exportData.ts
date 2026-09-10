@@ -1,3 +1,4 @@
+import { logger } from "../log.js";
 import type { Request, Response } from "express";
 import { asyncRouter } from "./asyncRouter.js";
 import { scopedDb } from "../auth/apiKey.js";
@@ -50,20 +51,41 @@ exportRouter.get("/:entity", async (req: Request, res: Response) => {
   res.setHeader("content-disposition", `attachment; filename="${entity}.ndjson"`);
 
   let cursor: string | null = null;
-  for (;;) {
-    const batch = await fetchExportBatch(db, entity, since, cursor);
-    for (const row of batch) {
-      // Respect socket backpressure so a huge table never balloons the response buffer.
-      if (!res.write(`${JSON.stringify(row)}\n`)) {
-        await new Promise<void>(resolve => res.once("drain", () => resolve()));
+  try {
+    for (;;) {
+      if (res.destroyed) {
+        // Client went away (Ctrl-C on curl, closed tab) - stop paging, release everything.
+        return;
       }
+      const batch = await fetchExportBatch(db, entity, since, cursor);
+      for (const row of batch) {
+        // Respect socket backpressure so a huge table never balloons the response buffer.
+        // Wait on drain OR close: a destroyed socket never drains, and waiting only on
+        // drain leaked this handler (and its DB cursor loop) for the process lifetime on
+        // every aborted export.
+        if (!res.write(`${JSON.stringify(row)}\n`)) {
+          await new Promise<void>(resolve => {
+            res.once("drain", resolve);
+            res.once("close", resolve);
+          });
+          if (res.destroyed) {
+            return;
+          }
+        }
+      }
+      if (batch.length < EXPORT_BATCH) {
+        break;
+      }
+      // Keyed on the entity's cursor column - evaluation-analyses has no `id`, and a cursor of
+      // String(undefined) would page forever.
+      cursor = String(batch[batch.length - 1]![exportKeyName(entity)]);
     }
-    if (batch.length < EXPORT_BATCH) {
-      break;
-    }
-    // Keyed on the entity's cursor column - evaluation-analyses has no `id`, and a cursor of
-    // String(undefined) would page forever.
-    cursor = String(batch[batch.length - 1]![exportKeyName(entity)]);
+    res.end();
+  } catch (err) {
+    // Headers are already committed (200 + attachment): a clean end here would hand the
+    // operator a silently TRUNCATED backup - the one failure a backup surface must never
+    // hide. Destroy the socket so the client sees a broken transfer instead.
+    logger.error({ err, entity }, "Export stream failed mid-flight - destroying the response");
+    res.destroy(err instanceof Error ? err : new Error("export failed"));
   }
-  res.end();
 });

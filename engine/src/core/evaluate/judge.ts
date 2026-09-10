@@ -341,6 +341,10 @@ export async function callJudgeJson({
     strictSchema: strictSchema && !isGemini && !isCustom,
     openaiClient,
     anthropicClient: await getAnthropic(),
+    // Authoritative: judge-core must not re-derive routing from the model NAME - a custom
+    // OpenAI-compat model whose id starts with "claude-" (a Bedrock/LiteLLM proxy keeping the
+    // upstream id) would otherwise be sent to the Anthropic client, ignoring its baseUrl.
+    provider,
   });
 }
 

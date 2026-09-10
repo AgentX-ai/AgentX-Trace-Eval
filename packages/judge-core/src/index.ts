@@ -89,6 +89,7 @@ export async function callJudgeJson({
   strictSchema = false,
   openaiClient,
   anthropicClient,
+  provider,
 }: {
   userMessage: string;
   model: string;
@@ -104,8 +105,12 @@ export async function callJudgeJson({
   strictSchema?: boolean;
   openaiClient?: OpenAI | null;
   anthropicClient?: Anthropic | null;
+  // The caller's RESOLVED provider. When set it is authoritative: a custom/OpenAI-compat
+  // model whose id happens to start with "claude-" must NOT be re-derived onto the Anthropic
+  // client by the name heuristic below - the caller already routed it (baseUrl and all).
+  provider?: LlmProvider;
 }): Promise<JudgeCallResult> {
-  const first = await callJudgeJsonOnce({ userMessage, model, jsonSchema, maxTokens, strictSchema, openaiClient, anthropicClient });
+  const first = await callJudgeJsonOnce({ userMessage, model, jsonSchema, maxTokens, strictSchema, openaiClient, anthropicClient, provider });
   // One automatic retry on a recoverable model failure (empty response or unparseable JSON),
   // with the failure spelled out - a single flaky generation should not permanently lose a
   // verdict. Client-missing returns (payload null, no failureReason) are not retried: the
@@ -125,6 +130,7 @@ export async function callJudgeJson({
     strictSchema,
     openaiClient,
     anthropicClient,
+    provider,
   });
   return { ...retry, usage: sumUsage(first.usage, retry.usage), retried: true };
 }
@@ -137,6 +143,7 @@ async function callJudgeJsonOnce({
   strictSchema,
   openaiClient,
   anthropicClient,
+  provider: statedProvider,
 }: {
   userMessage: string;
   model: string;
@@ -145,8 +152,9 @@ async function callJudgeJsonOnce({
   strictSchema: boolean;
   openaiClient?: OpenAI | null;
   anthropicClient?: Anthropic | null;
+  provider?: LlmProvider;
 }): Promise<JudgeCallResult> {
-  const provider = getProviderForModel(model);
+  const provider = statedProvider ?? getProviderForModel(model);
 
   if (provider === "openai") {
     return callOpenAIJson({ userMessage, model, jsonSchema, maxTokens, strictSchema, client: openaiClient ?? null });

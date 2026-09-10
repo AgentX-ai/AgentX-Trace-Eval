@@ -106,7 +106,17 @@ export async function getPortabilityModelRaw(db: Db, id: string): Promise<Portab
       : ((await db.db.select().from(db.schema.portabilityModels).where(eq(db.schema.portabilityModels.id, id)))[0] as
           | PortabilityModelRow
           | undefined);
-  return row ?? null;
+  if (!row) return null;
+  // Same tenant visibility rule as listPortabilityModels: the seeded global catalog
+  // (organizationId null) plus THIS org's own rows. Model ids are one global namespace, so a
+  // free-string judgeModel naming another org's custom model must resolve to NOTHING here -
+  // otherwise every judge call it powers rides that org's baseUrl and key with this org's
+  // prompts (the exact cross-tenant spend auth/mode.ts forbids).
+  if (isMultiTenant()) {
+    const org = tenantOrgId();
+    if (row.organizationId != null && row.organizationId !== org) return null;
+  }
+  return row;
 }
 
 export type SavePortabilityModelInput = {

@@ -1047,13 +1047,20 @@ export const authOrganizations = sqliteTable("auth_organization", {
   metadata: text("metadata"),
 });
 
-export const authMembers = sqliteTable("auth_member", {
-  id: text("id").primaryKey(),
-  organizationId: text("organization_id").notNull(),
-  userId: text("user_id").notNull(),
-  role: text("role").notNull().default("member"),
-  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
-});
+export const authMembers = sqliteTable(
+  "auth_member",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id").notNull(),
+    userId: text("user_id").notNull(),
+    role: text("role").notNull().default("member"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  // One membership per (org, user): concurrent invite-accepts race the memberIn check, and
+  // duplicate rows double-count in the admin member tally. The accept path inserts with
+  // onConflictDoNothing against this index.
+  table => ({ orgUserUnique: uniqueIndex("auth_member_org_user").on(table.organizationId, table.userId) })
+);
 
 export const authInvitations = sqliteTable("auth_invitation", {
   id: text("id").primaryKey(),
