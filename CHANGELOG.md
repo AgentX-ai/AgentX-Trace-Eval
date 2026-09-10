@@ -1001,4 +1001,10 @@ consent, code exchange, refresh rotation, revocation, cross-project isolation, t
 replayed/PKCE-mismatch failure paths, and both auth modes - and by hand with a running engine.
 The suite's Postgres describe ran green against a local Postgres 16 as well as SQLite. Not yet
 verified: an actual claude.ai connector through a tunnel (the SDK client is the closest stand-in
-available offline).
+available offline). A follow-up review pass hardened the grant lifecycle: authorization codes are
+claimed atomically and PKCE is verified after the claim (a wrong verifier burns the code), refresh
+rotation writes the new pair before retiring the old and tolerates a retry inside a 60-second grace
+window while treating later reuse as theft (whole grant revoked), a scope-narrowed refresh narrows
+only the access token, and a dashboard user's grant is re-checked against their organization
+membership on every refresh and token verification. The consent page's CSP now lists the client's
+callback origin in `form-action`, which Chromium applies to the post-submit redirect.

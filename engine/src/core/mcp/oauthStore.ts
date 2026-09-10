@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, isNull, lt } from "drizzle-orm";
+import { and, eq, isNull, lt, notInArray } from "drizzle-orm";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { Db } from "../../storage/db.js";
 
@@ -22,6 +22,7 @@ export type TokenRow = {
   resource: string | null;
   expiresAt: Date;
   revokedAt: Date | null;
+  rotatedAt: Date | null;
   createdAt: Date;
   lastUsedAt: Date | null;
 };
@@ -136,14 +137,16 @@ export async function getCode(db: Db, codeHash: string): Promise<CodeRow | undef
   return row ? normalizeCode(row as Record<string, unknown>) : undefined;
 }
 
-// Single use: the row is gone the moment it is exchanged, so a replayed code fails as unknown.
-export async function deleteCode(db: Db, codeHash: string): Promise<void> {
+// Single use, atomically: DELETE ... RETURNING hands the row to exactly one caller, so two
+// exchanges racing on the same code (a client retrying after a timeout) cannot both mint. The
+// row is gone whether or not the exchange then succeeds - a replayed code fails as unknown.
+export async function claimCode(db: Db, codeHash: string): Promise<CodeRow | undefined> {
   const cond = eq(db.schema.mcpOauthCodes.codeHash, codeHash);
-  if (db.kind === "sqlite") {
-    await db.db.delete(db.schema.mcpOauthCodes).where(cond);
-  } else {
-    await db.db.delete(db.schema.mcpOauthCodes).where(cond);
-  }
+  const deleted =
+    db.kind === "sqlite"
+      ? db.db.delete(db.schema.mcpOauthCodes).where(cond).returning().all()
+      : await db.db.delete(db.schema.mcpOauthCodes).where(cond).returning();
+  return deleted[0] ? normalizeCode(deleted[0] as Record<string, unknown>) : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -191,10 +194,26 @@ export async function revokeGrant(db: Db, grantId: string): Promise<void> {
   }
 }
 
-// Refresh rotation: the used refresh token and the access tokens it covered die together; the
-// caller inserts the replacement pair under the same grant id.
-export async function retireForRotation(db: Db, grantId: string): Promise<void> {
-  await revokeGrant(db, grantId);
+// Refresh rotation, run AFTER the replacement pair is written so a failed insert leaves the old
+// tokens usable: every other live access token under the grant is revoked, and the presented
+// refresh token is marked rotated (not revoked) so a retry inside REFRESH_ROTATION_GRACE_MS can
+// be recognized as such by the provider.
+export async function retireForRotation(db: Db, grantId: string, presentedHash: string, keepHashes: string[]): Promise<void> {
+  const others = and(
+    eq(db.schema.mcpOauthTokens.grantId, grantId),
+    eq(db.schema.mcpOauthTokens.kind, "access"),
+    isNull(db.schema.mcpOauthTokens.revokedAt),
+    notInArray(db.schema.mcpOauthTokens.tokenHash, keepHashes)
+  );
+  const presented = and(eq(db.schema.mcpOauthTokens.tokenHash, presentedHash), isNull(db.schema.mcpOauthTokens.rotatedAt));
+  const now = new Date();
+  if (db.kind === "sqlite") {
+    await db.db.update(db.schema.mcpOauthTokens).set({ revokedAt: now }).where(others);
+    await db.db.update(db.schema.mcpOauthTokens).set({ rotatedAt: now }).where(presented);
+  } else {
+    await db.db.update(db.schema.mcpOauthTokens).set({ revokedAt: now }).where(others);
+    await db.db.update(db.schema.mcpOauthTokens).set({ rotatedAt: now }).where(presented);
+  }
 }
 
 // Every live grant on a project - the "connected apps" list, and the cascade when the project's
@@ -222,7 +241,8 @@ export async function listGrants(db: Db, projectId: string): Promise<GrantSummar
   const cond = and(
     eq(db.schema.mcpOauthTokens.projectId, projectId),
     eq(db.schema.mcpOauthTokens.kind, "refresh"),
-    isNull(db.schema.mcpOauthTokens.revokedAt)
+    isNull(db.schema.mcpOauthTokens.revokedAt),
+    isNull(db.schema.mcpOauthTokens.rotatedAt)
   );
   const rows = (
     db.kind === "sqlite"
@@ -295,6 +315,7 @@ function normalizeToken(row: Record<string, unknown>): TokenRow {
     resource: (row.resource as string | null) ?? null,
     expiresAt: row.expiresAt as Date,
     revokedAt: (row.revokedAt as Date | null) ?? null,
+    rotatedAt: (row.rotatedAt as Date | null) ?? null,
     createdAt: row.createdAt as Date,
     lastUsedAt: (row.lastUsedAt as Date | null) ?? null,
   };

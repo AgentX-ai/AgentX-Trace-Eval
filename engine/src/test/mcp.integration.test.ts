@@ -177,13 +177,17 @@ const EXPECTED_TOOLS = [
   "agentx_probe_coverage",
 ];
 
+const ROTATION_GRACE_MS = 1500;
+
 describe("MCP endpoint, AGENTX_AUTH=disabled", () => {
   let engine: TestEngine;
   let otherKey = "";
   let sessionId = "";
 
   beforeAll(async () => {
-    engine = await startEngine();
+    // A short rotation grace window (default 60s) so the reuse-after-grace path below runs in
+    // test time; everything else is the production configuration.
+    engine = await startEngine({ AGENTX_MCP_REFRESH_GRACE_MS: String(ROTATION_GRACE_MS) });
     sessionId = `mcp-session-${Date.now()}`;
     for (const turn of ["first turn", "second turn"]) {
       const res = await engine.json("/api/v1/ingest/traces", postJson({ name: "mcp-agent", input: turn, output: `answer to ${turn}`, session_id: sessionId }));
@@ -367,6 +371,9 @@ describe("MCP endpoint, AGENTX_AUTH=disabled", () => {
     expect(page.html).toContain('name="api_key"');
     expect(page.html).toContain("Test connector");
     expect(page.html).toContain("frame-ancestors 'none'");
+    // Chromium applies form-action to the redirect that follows the submit, so the client's
+    // callback origin must be listed or the approval never leaves the consent page.
+    expect(page.html).toContain(`form-action 'self' ${new URL(provider.redirectUrl).origin};`);
     expect(page.html).not.toContain(engine.apiKey);
     expect(page.form.get("client_id")).toBe(provider.info!.client_id);
     expect(page.form.get("sig")).toMatch(/^[a-f0-9]{64}$/);
@@ -417,6 +424,18 @@ describe("MCP endpoint, AGENTX_AUTH=disabled", () => {
     });
     expect(badVerifier.status).toBe(400);
     expect(badVerifier.body.error).toBe("invalid_grant");
+
+    // ...and burned the code: the right verifier no longer helps, so a stolen code cannot be
+    // brute-forced against its challenge for the rest of its lifetime.
+    const rightVerifierTooLate = await tokenRequest(engine, {
+      grant_type: "authorization_code",
+      code: freshCode,
+      code_verifier: second.provider.verifier,
+      client_id: second.provider.info!.client_id,
+      redirect_uri: second.provider.redirectUrl,
+    });
+    expect(rightVerifierTooLate.status).toBe(400);
+    expect(rightVerifierTooLate.body.error).toBe("invalid_grant");
   });
 
   it("rotates on refresh, lists the grant, and revokes it end to end", async () => {
@@ -425,14 +444,20 @@ describe("MCP endpoint, AGENTX_AUTH=disabled", () => {
 
     const refreshed = await tokenRequest(engine, { grant_type: "refresh_token", refresh_token: provider.toks!.refresh_token!, client_id: provider.info!.client_id });
     expect(refreshed.status).toBe(200);
+    expect(refreshed.body.scope).toBe("mcp:read");
     const newAccess = refreshed.body.access_token as string;
     expect(newAccess).not.toBe(oldAccess);
     expect((await rawToolsList(engine, { Authorization: `Bearer ${oldAccess}` })).status).toBe(401);
     expect((await rawToolsList(engine, { Authorization: `Bearer ${newAccess}` })).status).toBe(200);
 
-    // The used refresh token is dead too.
-    const reuse = await tokenRequest(engine, { grant_type: "refresh_token", refresh_token: provider.toks!.refresh_token!, client_id: provider.info!.client_id });
-    expect(reuse.status).toBe(400);
+    // Presenting the rotated-out token again inside the grace window is a retry (two
+    // conversations refreshing at once), not an attack: it gets a pair of its own and the first
+    // successor keeps working.
+    const retry = await tokenRequest(engine, { grant_type: "refresh_token", refresh_token: provider.toks!.refresh_token!, client_id: provider.info!.client_id });
+    expect(retry.status, JSON.stringify(retry.body)).toBe(200);
+    expect(retry.body.access_token).not.toBe(newAccess);
+    expect((await rawToolsList(engine, { Authorization: `Bearer ${newAccess}` })).status).toBe(200);
+    expect((await rawToolsList(engine, { Authorization: `Bearer ${retry.body.access_token as string}` })).status).toBe(200);
 
     const grants = await engine.json("/api/v1/mcp/grants");
     expect(grants.status).toBe(200);
@@ -450,6 +475,38 @@ describe("MCP endpoint, AGENTX_AUTH=disabled", () => {
     expect((await rawToolsList(engine, { Authorization: `Bearer ${newAccess}` })).status).toBe(401);
     const after = await engine.json("/api/v1/mcp/grants");
     expect((after.body as { grants: { grantId: string }[] }).grants.some(g => g.grantId === mine!.grantId)).toBe(false);
+  });
+
+  it("treats a refresh token reused after the grace window as theft and revokes the grant", async () => {
+    const { provider } = await grantWithKey(engine, engine.apiKey);
+    const original = provider.toks!.refresh_token!;
+    const first = await tokenRequest(engine, { grant_type: "refresh_token", refresh_token: original, client_id: provider.info!.client_id });
+    expect(first.status).toBe(200);
+    const liveAccess = first.body.access_token as string;
+    expect((await rawToolsList(engine, { Authorization: `Bearer ${liveAccess}` })).status).toBe(200);
+
+    await new Promise(resolve => setTimeout(resolve, ROTATION_GRACE_MS + 200));
+    const reuse = await tokenRequest(engine, { grant_type: "refresh_token", refresh_token: original, client_id: provider.info!.client_id });
+    expect(reuse.status).toBe(400);
+    expect(reuse.body.error).toBe("invalid_grant");
+    // OAuth 2.1 section 4.3.1: the whole grant goes, successor tokens included.
+    expect((await rawToolsList(engine, { Authorization: `Bearer ${liveAccess}` })).status).toBe(401);
+    const successor = await tokenRequest(engine, { grant_type: "refresh_token", refresh_token: first.body.refresh_token as string, client_id: provider.info!.client_id });
+    expect(successor.status).toBe(400);
+  });
+
+  it("survives two concurrent refreshes of the same token", async () => {
+    const { provider } = await grantWithKey(engine, engine.apiKey);
+    const params = { grant_type: "refresh_token", refresh_token: provider.toks!.refresh_token!, client_id: provider.info!.client_id };
+    const [a, b] = await Promise.all([tokenRequest(engine, params), tokenRequest(engine, params)]);
+    expect([a.status, b.status], JSON.stringify([a.body, b.body])).toEqual([200, 200]);
+    for (const result of [a, b]) {
+      expect((await rawToolsList(engine, { Authorization: `Bearer ${result.body.access_token as string}` })).status).toBe(200);
+    }
+    // One grant, not two: the connected-apps list still shows a single entry for this client.
+    const grants = await engine.json("/api/v1/mcp/grants");
+    const mine = (grants.body as { grants: { clientId: string }[] }).grants.filter(g => g.clientId === provider.info!.client_id);
+    expect(mine).toHaveLength(1);
   });
 
   it("supports RFC 7009 revocation from the client side", async () => {
@@ -632,6 +689,46 @@ describe("MCP OAuth, AGENTX_AUTH=enabled", () => {
     const decision = await decide(engine, page.form, { action: "approve", project_id: secondProject._id }, strangerCookie);
     expect(decision.status).toBe(403);
     expect(decision.location).toBeNull();
+  });
+
+  it("cuts a member's grant off when they are removed from the organization", async () => {
+    const orgs = await engine.json("/api/v1/auth-org/organizations", { apiKey: null, headers: { cookie: ownerCookie } });
+    const orgId = (orgs.body as { organizations: { _id: string }[] }).organizations[0]!._id;
+    const invited = await engine.json(`/api/v1/auth-org/organizations/${orgId}/invitations`, {
+      ...postJson({ email: "stranger@example.com", role: "member" }),
+      apiKey: null,
+      headers: { cookie: ownerCookie, "content-type": "application/json" },
+    });
+    expect(invited.status, JSON.stringify(invited.body)).toBe(201);
+    const invitationId = (invited.body as { invitation: { _id: string } }).invitation._id;
+    const accepted = await engine.json(`/api/v1/auth-org/invitations/${invitationId}/accept`, { method: "POST", apiKey: null, headers: { cookie: strangerCookie } });
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+
+    // Now a member: the grant goes through and the token works.
+    const { provider, transport } = await beginOAuth(engine);
+    const page = await consentPage(engine, provider.authorizationUrl!, strangerCookie);
+    const decision = await decide(engine, page.form, { action: "approve", project_id: secondProject._id }, strangerCookie);
+    expect(decision.status, decision.body).toBe(302);
+    await transport.finishAuth(new URL(decision.location!).searchParams.get("code")!);
+    const client = new Client({ name: "mcp-test-oauth", version: "0" });
+    await client.connect(new StreamableHTTPClientTransport(mcpUrl(engine), { authProvider: provider }));
+    await client.close();
+    const access = provider.toks!.access_token;
+    expect((await rawToolsList(engine, { Authorization: `Bearer ${access}` })).status).toBe(200);
+
+    // Removed from the org: the still-unexpired access token and the refresh chain both die on
+    // their next use, not at the 30-day mark.
+    const members = await engine.json(`/api/v1/auth-org/organizations/${orgId}/members`, { apiKey: null, headers: { cookie: ownerCookie } });
+    const membership = (members.body as { members: { _id: string; email: string }[] }).members.find(m => m.email === "stranger@example.com");
+    expect(membership).toBeDefined();
+    const removed = await engine.request(`/api/v1/auth-org/organizations/${orgId}/members/${membership!._id}`, { method: "DELETE", apiKey: null, headers: { cookie: ownerCookie } });
+    expect(removed.status).toBe(200);
+    expect((await rawToolsList(engine, { Authorization: `Bearer ${access}` })).status).toBe(401);
+    const refresh = await tokenRequest(engine, { grant_type: "refresh_token", refresh_token: provider.toks!.refresh_token!, client_id: provider.info!.client_id });
+    expect(refresh.status).toBe(400);
+    expect(refresh.body.error).toBe("invalid_grant");
+    const grants = await engine.json("/api/v1/mcp/grants", { apiKey: secondProject.apiKey });
+    expect((grants.body as { grants: { clientId: string }[] }).grants.some(g => g.clientId === provider.info!.client_id)).toBe(false);
   });
 });
 

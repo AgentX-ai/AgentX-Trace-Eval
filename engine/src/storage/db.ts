@@ -1073,6 +1073,7 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
       resource TEXT,
       expires_at INTEGER NOT NULL,
       revoked_at INTEGER,
+      rotated_at INTEGER,
       created_at INTEGER NOT NULL,
       last_used_at INTEGER
     );
@@ -2473,6 +2474,7 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
       resource TEXT,
       expires_at TIMESTAMP NOT NULL,
       revoked_at TIMESTAMP,
+      rotated_at TIMESTAMP,
       created_at TIMESTAMP NOT NULL,
       last_used_at TIMESTAMP
     );

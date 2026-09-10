@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { Request, Response } from "express";
 import { nanoid } from "nanoid";
 import type { AuthorizationParams, OAuthServerProvider } from "@modelcontextprotocol/sdk/server/auth/provider.js";
@@ -28,12 +28,13 @@ import {
   AUTHORIZE_REQUEST_TTL_MS,
   MCP_READ_SCOPE,
   MCP_SCOPES_SUPPORTED,
+  REFRESH_ROTATION_GRACE_MS,
   REFRESH_TOKEN_TTL_MS,
   redirectUriAllowed,
   resourceMatches,
 } from "./config.js";
 import {
-  deleteCode,
+  claimCode,
   getClient,
   getCode,
   getToken,
@@ -97,12 +98,22 @@ function bundleSignature(bundle: Bundle, secret: string): string {
 }
 
 function normalizeScopes(requested: string[] | undefined): string[] {
+  // The SDK splits the raw `scope` parameter on spaces, so an empty or padded value arrives as
+  // empty strings rather than as "absent".
+  requested = requested?.filter(Boolean);
   if (!requested || requested.length === 0) return [MCP_READ_SCOPE];
   const unknown = requested.filter(scope => !MCP_SCOPES_SUPPORTED.includes(scope));
   if (unknown.length > 0) {
     throw new InvalidScopeError(`Unknown scope(s): ${unknown.join(", ")}. Supported: ${MCP_SCOPES_SUPPORTED.join(", ")}`);
   }
   return [...new Set(requested)];
+}
+
+// RFC 7636 S256: BASE64URL(SHA256(code_verifier)) must equal the challenge the code was bound to.
+function pkceVerifies(codeVerifier: string | undefined, codeChallenge: string): boolean {
+  if (!codeVerifier) return false;
+  const digest = createHash("sha256").update(codeVerifier).digest("base64url");
+  return digest.length === codeChallenge.length && timingSafeEqual(Buffer.from(digest), Buffer.from(codeChallenge));
 }
 
 function redirectWith(res: Response, redirectUri: string, params: Record<string, string | undefined>): void {
@@ -136,6 +147,10 @@ function pageHeaders(res: Response): string {
 
 export class EngineOAuthProvider implements OAuthServerProvider {
   readonly clientsStore: OAuthRegisteredClientsStore;
+  // PKCE is verified here, inside exchangeAuthorizationCode, AFTER the code has been claimed:
+  // the SDK's local check runs before the exchange and leaves a code live when the verifier is
+  // wrong, which would let an attacker who stole a code keep guessing verifiers for ten minutes.
+  readonly skipLocalPkceValidation = true;
 
   constructor(
     private readonly resource: URL,
@@ -222,6 +237,7 @@ export class EngineOAuthProvider implements OAuthServerProvider {
           clientUri: httpUrlOrNull(client.client_uri),
           scopes: bundle.scope.split(" ").filter(Boolean),
           redirectHost: new URL(bundle.redirect_uri).host,
+          redirectOrigin: new URL(bundle.redirect_uri).origin,
           hidden,
           mode,
           error,
@@ -314,6 +330,18 @@ export class EngineOAuthProvider implements OAuthServerProvider {
     redirectWith(res, bundle.redirect_uri, { code, state: bundle.state });
   }
 
+  // A grant approved by a dashboard user stays valid only while that user can still see the
+  // project: membership is re-read on every refresh and every access-token check (one indexed
+  // lookup, the same cost as the project-exists check next to it), so removing someone from the
+  // organization cuts their connector off at the next request rather than at the 30-day mark.
+  // Key-approved grants (disabled mode, userId null) have no user to lose.
+  private async grantStillAuthorized(row: TokenRow, project: { organizationId: string | null }): Promise<boolean> {
+    if (!row.userId) return true;
+    if (!row.organizationId || project.organizationId !== row.organizationId) return false;
+    if (authMode() !== "enabled") return true;
+    return (await getUserOrganizationIds(row.userId)).includes(row.organizationId);
+  }
+
   async challengeForAuthorizationCode(client: OAuthClientInformationFull, authorizationCode: string): Promise<string> {
     const row = await getCode(getDb(), hashSecret(authorizationCode));
     if (!row || row.clientId !== client.client_id) {
@@ -325,20 +353,22 @@ export class EngineOAuthProvider implements OAuthServerProvider {
   async exchangeAuthorizationCode(
     client: OAuthClientInformationFull,
     authorizationCode: string,
-    _codeVerifier?: string,
+    codeVerifier?: string,
     redirectUri?: string,
     resource?: URL
   ): Promise<OAuthTokens> {
     const db = getDb();
-    const codeHash = hashSecret(authorizationCode);
-    const row = await getCode(db, codeHash);
-    // Consumed on first sight, valid or not: a replayed code must fail even if this exchange does.
-    if (row) await deleteCode(db, codeHash);
+    // Claimed (deleted) on first sight, valid or not: a replayed or concurrently retried code
+    // must fail even if this exchange does, and a wrong verifier burns the code.
+    const row = await claimCode(db, hashSecret(authorizationCode));
     if (!row || row.clientId !== client.client_id) {
       throw new InvalidGrantError("Invalid authorization code");
     }
     if (row.expiresAt.getTime() < Date.now()) {
       throw new InvalidGrantError("Authorization code has expired");
+    }
+    if (!pkceVerifies(codeVerifier, row.codeChallenge)) {
+      throw new InvalidGrantError("code_verifier does not match the code_challenge");
     }
     if (redirectUri && !redirectUriMatches(redirectUri, row.redirectUri)) {
       throw new InvalidGrantError("redirect_uri does not match the authorization request");
@@ -348,7 +378,7 @@ export class EngineOAuthProvider implements OAuthServerProvider {
     }
     void pruneExpired(db).catch((err: unknown) => logger.warn({ err }, "MCP OAuth prune failed"));
     void touchClient(db, client.client_id).catch(() => undefined);
-    return this.mint({
+    const minted = await this.mint({
       grantId: nanoid(),
       clientId: client.client_id,
       projectId: row.projectId,
@@ -357,6 +387,7 @@ export class EngineOAuthProvider implements OAuthServerProvider {
       scopes: row.scopes,
       resource: row.resource ?? resource?.href ?? null,
     });
+    return minted.tokens;
   }
 
   async exchangeRefreshToken(
@@ -366,29 +397,51 @@ export class EngineOAuthProvider implements OAuthServerProvider {
     resource?: URL
   ): Promise<OAuthTokens> {
     const db = getDb();
-    const row = await getToken(db, hashSecret(refreshToken));
+    const presentedHash = hashSecret(refreshToken);
+    const row = await getToken(db, presentedHash);
     if (!row || row.kind !== "refresh" || row.clientId !== client.client_id || row.revokedAt || row.expiresAt.getTime() < Date.now()) {
       throw new InvalidGrantError("Invalid refresh token");
     }
-    if (scopes && scopes.some(scope => !row.scopes.includes(scope))) {
+    // Rotation (OAuth 2.1 for public clients). A token already rotated out is either a retry
+    // inside the grace window - two conversations refreshing at once, or a response the client
+    // never saw - which gets another pair under the same grant, or a reuse after it, which is
+    // the replay signature the spec says to answer by killing the whole grant.
+    const retry = row.rotatedAt !== null;
+    if (retry && Date.now() - row.rotatedAt!.getTime() > REFRESH_ROTATION_GRACE_MS) {
+      await revokeGrant(db, row.grantId);
+      logger.warn({ clientId: row.clientId, projectId: row.projectId, grantId: row.grantId }, "MCP OAuth refresh token reuse; grant revoked");
+      throw new InvalidGrantError("Refresh token was already used");
+    }
+    const project = await getProjectRow(db, row.projectId);
+    if (!project || !(await this.grantStillAuthorized(row, project))) {
+      await revokeGrant(db, row.grantId);
+      throw new InvalidGrantError("The grant is no longer authorized");
+    }
+    const requested = scopes?.filter(Boolean) ?? [];
+    if (requested.some(scope => !row.scopes.includes(scope))) {
       throw new InvalidScopeError("Requested scope exceeds the original grant");
     }
     if (resource && !resourceMatches(resource, this.resource)) {
       throw new InvalidTargetError(`This MCP server's resource identifier is ${this.resource.href}`);
     }
-    // Rotation (OAuth 2.1 for public clients): the presented refresh token and every access
-    // token under the grant are retired before the replacement pair is written.
-    await retireForRotation(db, row.grantId);
     void touchClient(db, client.client_id).catch(() => undefined);
-    return this.mint({
+    // The replacement pair is written first, then the old tokens retired, so a failure between
+    // the two leaves the client with a working grant rather than none. RFC 6749 section 6: a
+    // narrowed scope applies to the new access token only; the refresh chain keeps the grant's.
+    const minted = await this.mint({
       grantId: row.grantId,
       clientId: row.clientId,
       projectId: row.projectId,
       organizationId: row.organizationId,
       userId: row.userId,
-      scopes: scopes && scopes.length > 0 ? scopes : row.scopes,
+      scopes: row.scopes,
+      accessScopes: requested.length > 0 ? requested : row.scopes,
       resource: row.resource,
     });
+    if (!retry) {
+      await retireForRotation(db, row.grantId, presentedHash, minted.hashes);
+    }
+    return minted.tokens;
   }
 
   private async mint(grant: {
@@ -397,11 +450,14 @@ export class EngineOAuthProvider implements OAuthServerProvider {
     projectId: string;
     organizationId: string | null;
     userId: string | null;
+    // The grant's scopes, carried by the refresh token; the access token may carry a subset.
     scopes: string[];
+    accessScopes?: string[];
     resource: string | null;
-  }): Promise<OAuthTokens> {
+  }): Promise<{ tokens: OAuthTokens; hashes: string[] }> {
     const accessToken = newAccessToken();
     const refreshToken = newRefreshToken();
+    const accessScopes = grant.accessScopes ?? grant.scopes;
     const now = new Date();
     const base = {
       grantId: grant.grantId,
@@ -409,23 +465,26 @@ export class EngineOAuthProvider implements OAuthServerProvider {
       projectId: grant.projectId,
       organizationId: grant.organizationId,
       userId: grant.userId,
-      scopes: grant.scopes,
       resource: grant.resource,
       revokedAt: null,
+      rotatedAt: null,
       createdAt: now,
       lastUsedAt: null,
     };
     const rows: TokenRow[] = [
-      { ...base, tokenHash: hashSecret(accessToken), kind: "access", expiresAt: new Date(now.getTime() + ACCESS_TOKEN_TTL_MS) },
-      { ...base, tokenHash: hashSecret(refreshToken), kind: "refresh", expiresAt: new Date(now.getTime() + REFRESH_TOKEN_TTL_MS) },
+      { ...base, tokenHash: hashSecret(accessToken), kind: "access", scopes: accessScopes, expiresAt: new Date(now.getTime() + ACCESS_TOKEN_TTL_MS) },
+      { ...base, tokenHash: hashSecret(refreshToken), kind: "refresh", scopes: grant.scopes, expiresAt: new Date(now.getTime() + REFRESH_TOKEN_TTL_MS) },
     ];
     await insertTokens(getDb(), rows);
     return {
-      access_token: accessToken,
-      token_type: "bearer",
-      expires_in: Math.floor(ACCESS_TOKEN_TTL_MS / 1000),
-      refresh_token: refreshToken,
-      scope: grant.scopes.join(" "),
+      tokens: {
+        access_token: accessToken,
+        token_type: "bearer",
+        expires_in: Math.floor(ACCESS_TOKEN_TTL_MS / 1000),
+        refresh_token: refreshToken,
+        scope: accessScopes.join(" "),
+      },
+      hashes: rows.map(row => row.tokenHash),
     };
   }
 
@@ -444,8 +503,13 @@ export class EngineOAuthProvider implements OAuthServerProvider {
     if (!resourceMatches(row.resource, this.resource)) {
       throw new InvalidTokenError("Access token was not issued for this resource");
     }
-    if (!(await getProjectRow(db, row.projectId))) {
+    const project = await getProjectRow(db, row.projectId);
+    if (!project) {
       throw new InvalidTokenError("The project this token was issued for no longer exists");
+    }
+    if (!(await this.grantStillAuthorized(row, project))) {
+      await revokeGrant(db, row.grantId);
+      throw new InvalidTokenError("The user who approved this connection can no longer access the project");
     }
     void touchToken(db, row.tokenHash).catch(() => undefined);
     return {

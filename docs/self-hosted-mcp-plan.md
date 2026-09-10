@@ -184,7 +184,7 @@ supplies storage and the login/consent step.
 |---|---|---|
 | `mcp_oauth_clients` | id, client_name, redirect_uris (json), token_endpoint_auth_method, client_secret_hash (nullable), created_at, last_used_at | DCR output; also holds any manually provisioned client |
 | `mcp_oauth_codes` | code_hash, client_id, project_id, organization_id, user_id (nullable), scopes, code_challenge, redirect_uri, resource, expires_at | single use, 10 min |
-| `mcp_oauth_tokens` | token_hash, kind (access/refresh), client_id, project_id, organization_id, user_id (nullable), scopes, resource, expires_at, revoked_at, parent_refresh_hash | opaque random tokens, sha256 at rest; access 1h, refresh 30d, rotated on use |
+| `mcp_oauth_tokens` | token_hash, kind (access/refresh), grant_id, client_id, project_id, organization_id, user_id (nullable), scopes, resource, expires_at, revoked_at, rotated_at | opaque random tokens, sha256 at rest; access 1h, refresh 30d, rotated on use. A rotated-out refresh token presented again within a 60s grace window is a retry (mints another pair); after it, reuse revokes the whole grant |
 
 Tokens are hashed even though project keys are stored in plaintext today: these are derived,
 short-lived credentials and hashing them is free.
@@ -275,8 +275,14 @@ which `requireMcpAuth` copies onto the request.
 - [ ] `/mcp` never answers without a credential that resolves to a project.
 - [ ] Tokens: opaque, hashed at rest, 1h access / 30d refresh, refresh rotation, revocation.
 - [ ] Audience: `resource` checked on every token; no token passthrough anywhere.
-- [ ] Redirect URIs: exact match, allow-listed; codes single-use with a 10-minute TTL.
-- [ ] PKCE S256 required (SDK enforces); `state` echoed untouched.
+- [ ] Redirect URIs: exact match, allow-listed; codes single-use with a 10-minute TTL, claimed
+      atomically (`DELETE ... RETURNING`) so a concurrent retry cannot double-mint.
+- [ ] PKCE S256 required, verified by the engine after the code is claimed (a wrong verifier burns
+      the code); `state` echoed untouched.
+- [ ] A dashboard user's grant is re-checked against their organization membership on every
+      refresh and every access-token verification; removal from the org cuts the connector off.
+- [ ] Consent page CSP lists the client's callback origin in `form-action` (Chromium applies it to
+      the redirect that follows the submit).
 - [ ] Authorize page: session or key proof, nonce-bound decision POST, `X-Frame-Options: DENY`,
       no autosubmit.
 - [ ] `/register`, `/authorize`, `/token` under `credentialLimit`; `/mcp` under `dataPlaneLimit`.

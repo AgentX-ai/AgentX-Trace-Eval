@@ -183,7 +183,7 @@ async function main() {
   // MCP connector surface (routes/mcp.ts): POST /mcp plus the OAuth endpoints at the root.
   // Registered after the API and before the SPA fallback below, which would otherwise answer
   // /mcp and /.well-known/* with index.html.
-  registerMcp(app, { credentialLimit, dataPlaneLimit, apiKey, port: PORT });
+  registerMcp(app, { credentialLimit, dataPlaneLimit, port: PORT });
 
   // The dashboard bundle is AgentX's real, full frontend (see README's "Open source scope"), so
   // it still calls a handful of hosted-SaaS-only endpoints this engine doesn't implement

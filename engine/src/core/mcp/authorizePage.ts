@@ -10,6 +10,10 @@ export type AuthorizePageInput = {
   clientUri: string | null;
   scopes: string[];
   redirectHost: string;
+  // The origin the decision route redirects to after the form is submitted. Chromium applies
+  // the page's form-action directive to redirects that follow a form submission, so the client's
+  // callback origin has to be listed next to 'self' or the approval never reaches claude.ai.
+  redirectOrigin: string;
   // The signed request bundle (oauthProvider.ts) carried through as hidden inputs.
   hidden: AuthorizeField[];
   // Loopback issuers have no HTTPS; the browser must still be told what it is approving.
@@ -53,13 +57,13 @@ const STYLE = `
   code { font-size: 12px; background: #f3f4f6; padding: 1px 5px; border-radius: 4px; }
 `;
 
-function shell(title: string, body: string, nonce: string, script = ""): string {
+function shell(title: string, body: string, nonce: string, script = "", formAction = "'self'"): string {
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; connect-src 'self'; form-action ${formAction}; base-uri 'none'; frame-ancestors 'none'">
 <title>${esc(title)}</title>
 <style nonce="${nonce}">${STYLE}</style>
 </head>
@@ -76,6 +80,9 @@ function scopeList(scopes: string[]): string {
 }
 
 export function renderAuthorizePage(input: AuthorizePageInput, nonce: string): string {
+  // The origin of a URL the provider already parsed and matched against the client's registered
+  // redirect URIs; a CSP source list is space-separated, so it cannot smuggle a second source.
+  const formAction = `'self' ${esc(input.redirectOrigin)}`;
   const client = input.clientUri
     ? `<a href="${esc(input.clientUri)}" rel="noreferrer">${esc(input.clientName)}</a>`
     : `<strong>${esc(input.clientName)}</strong>`;
@@ -96,7 +103,7 @@ ${hiddenInputs(input.hidden)}
   <button type="submit" name="action" value="approve" class="primary">Approve</button>
 </div>
 </form>`;
-    return shell("Connect to AgentX", body, nonce);
+    return shell("Connect to AgentX", body, nonce, "", formAction);
   }
 
   if (!input.mode.signedIn) {
@@ -163,7 +170,7 @@ ${projectPicker}
   <button type="submit" name="action" value="approve" class="primary" ${projects.length === 0 ? "disabled" : ""}>Approve</button>
 </div>
 </form>`;
-  return shell("Connect to AgentX", body, nonce);
+  return shell("Connect to AgentX", body, nonce, "", formAction);
 }
 
 export function renderMessagePage(title: string, message: string, nonce: string): string {

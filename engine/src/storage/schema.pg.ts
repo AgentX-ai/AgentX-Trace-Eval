@@ -870,6 +870,7 @@ export const mcpOauthTokens = pgTable("mcp_oauth_tokens", {
   resource: text("resource"),
   expiresAt: timestamp("expires_at", { mode: "date" }).notNull(),
   revokedAt: timestamp("revoked_at", { mode: "date" }),
+  rotatedAt: timestamp("rotated_at", { mode: "date" }),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
   lastUsedAt: timestamp("last_used_at", { mode: "date" }),
 });

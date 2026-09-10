@@ -37,10 +37,12 @@ export function mcpResourceUrl(issuer: URL): URL {
 
 // OAuth endpoints only mount on an issuer the spec allows: HTTPS, or plain HTTP on loopback.
 // A plain-HTTP public URL would be refused by the SDK's router anyway; this makes the reason
-// visible in the boot log instead of a stack trace.
+// visible in the boot log instead of a stack trace. The loopback list mirrors the SDK's
+// checkIssuerUrl exactly (localhost and 127.0.0.1, not [::1]): anything accepted here and
+// refused there would crash the boot instead of degrading to key-only access.
 export function mcpOauthAvailable(issuer: URL): boolean {
   if (issuer.protocol === "https:") return true;
-  return issuer.hostname === "localhost" || issuer.hostname === "127.0.0.1" || issuer.hostname === "[::1]";
+  return issuer.hostname === "localhost" || issuer.hostname === "127.0.0.1";
 }
 
 // Audience check: a token (or an authorization request) names the resource it is for; it must
@@ -105,3 +107,9 @@ export const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const AUTHORIZATION_CODE_TTL_MS = 10 * 60 * 1000;
 // How long an unsubmitted consent page stays valid.
 export const AUTHORIZE_REQUEST_TTL_MS = 15 * 60 * 1000;
+// After a refresh token is rotated out, presenting it again inside this window is treated as a
+// retry (two tabs refreshing at once, a response lost to a timeout) and mints another pair under
+// the same grant; presenting it after the window is the reuse OAuth 2.1 says to punish by
+// revoking the whole grant. Env-tunable only so the integration suite can exercise the far side
+// of the window without waiting it out.
+export const REFRESH_ROTATION_GRACE_MS = Number(process.env.AGENTX_MCP_REFRESH_GRACE_MS || 60 * 1000);

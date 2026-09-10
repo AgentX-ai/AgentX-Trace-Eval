@@ -1318,6 +1318,10 @@ export const mcpOauthTokens = sqliteTable("mcp_oauth_tokens", {
   resource: text("resource"),
   expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
   revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
+  // Refresh tokens only: set when the token was rotated out by a successful refresh. Distinct
+  // from revoked_at so a retry inside the rotation grace window can be told apart from a token
+  // that was deliberately revoked.
+  rotatedAt: integer("rotated_at", { mode: "timestamp_ms" }),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   lastUsedAt: integer("last_used_at", { mode: "timestamp_ms" }),
 });

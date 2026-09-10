@@ -23,6 +23,7 @@ import { createMcpServer } from "../core/mcp/server.js";
 import type { McpPrincipal } from "../core/mcp/tools.js";
 import { listGrants, revokeGrant } from "../core/mcp/oauthStore.js";
 import { validateBody } from "./validateBody.js";
+import { rateLimitDisabled } from "../auth/rateLimit.js";
 
 // The consent form's fields: the signed request bundle (core/mcp/oauthProvider.ts verifies the
 // signature and expiry, which is the real gate) plus the user's decision and, per auth mode,
@@ -66,7 +67,6 @@ declare global {
 export type McpDeps = {
   credentialLimit: RequestHandler;
   dataPlaneLimit: RequestHandler;
-  apiKey: RequestHandler;
   port: number;
 };
 
@@ -167,11 +167,13 @@ export function registerMcp(app: Express, deps: McpDeps): void {
     // express-rate-limit directly (the same shape as apiV1.ts's projectMutationLimit) so the
     // guard is visible at the route, not hidden behind an injected handler. 60 decisions per 15
     // minutes per IP is far above any human consent flow and well below a key-guessing loop.
+    // Honours the same AGENTX_RATE_LIMIT=off switch as every other limiter.
     const consentLimit = rateLimit({
       windowMs: 15 * 60 * 1000,
       max: 60,
       standardHeaders: "draft-7",
       legacyHeaders: false,
+      skip: () => rateLimitDisabled(),
       handler: (_req, res) => {
         res.status(429).json({ statusCode: 429, message: "Too many requests" });
       },
