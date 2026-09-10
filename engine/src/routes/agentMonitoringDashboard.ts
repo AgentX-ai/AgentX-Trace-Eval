@@ -1,3 +1,4 @@
+import rateLimitMiddleware from "express-rate-limit";
 import type { Request, Response } from "express";
 import { asyncRouter } from "./asyncRouter.js";
 import { getDb, type Db } from "../storage/db.js";
@@ -1179,7 +1180,19 @@ agentMonitoringDashboardRouter.get(
   }
 );
 
-agentMonitoringDashboardRouter.post("/online-evaluators/:evaluatorId/tune", async (req: Request, res: Response) => {
+// Per-route ceiling for the judge-tuning trio, ON TOP of the data-plane limiter the whole
+// router sits behind (apiV1.ts mounts it; CodeQL cannot see cross-file parent limiters, and
+// these routes deserve a tighter bound anyway: tune/validate are real LLM spend per call,
+// publish verifies provenance and writes rubric versions). 20/min is far above any human or
+// SDK flow and far below a brute-force loop.
+const tuningRouteLimit = rateLimitMiddleware({
+  windowMs: 60_000,
+  limit: 20,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+});
+
+agentMonitoringDashboardRouter.post("/online-evaluators/:evaluatorId/tune", tuningRouteLimit, async (req: Request, res: Response) => {
   const body = req.body ?? {};
   try {
     const result = await proposeJudgeTuning(scopedDb(req), req.params.evaluatorId!, {
@@ -1204,6 +1217,7 @@ agentMonitoringDashboardRouter.post("/online-evaluators/:evaluatorId/tune", asyn
 
 agentMonitoringDashboardRouter.post(
   "/online-evaluators/:evaluatorId/tune/validate",
+  tuningRouteLimit,
   async (req: Request, res: Response) => {
     const body = req.body ?? {};
     for (const key of ["acceptanceCriteria", "rejectionCriteria", "evaluationCriteria"]) {
@@ -1260,6 +1274,7 @@ agentMonitoringDashboardRouter.post(
 
 agentMonitoringDashboardRouter.post(
   "/online-evaluators/:evaluatorId/tune/publish",
+  tuningRouteLimit,
   async (req: Request, res: Response) => {
     const body = req.body ?? {};
     for (const key of ["acceptanceCriteria", "rejectionCriteria", "evaluationCriteria"]) {
