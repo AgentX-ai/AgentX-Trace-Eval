@@ -1,6 +1,6 @@
 import { and, eq, gte } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
-import { listEventsSince, windowConfig, type MonitoringWindow, type EventRow } from "./events.js";
+import { listScoreEventsForEvaluatorSince, windowConfig, type MonitoringWindow, type EventRow } from "./events.js";
 import { getOnlineEvaluatorRow } from "./onlineEvaluators.js";
 import { krippendorffAlpha, alphaBand, MIN_ALPHA_ITEMS } from "./agreement.js";
 import { getEvaluationSettingsRow } from "../evaluate/evaluationSettings.js";
@@ -214,9 +214,10 @@ export async function getEvaluatorCalibration(
     const { days } = windowConfig(window);
     since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   }
-  const events = (await listEventsSince(db, since)).filter(
-    (e): e is EventRow & { rating: number; traceId: string } =>
-      e.onlineEvaluatorId === evaluatorId && e.rating !== null && e.traceId !== null
+  // Evaluator + rating filters run in SQL (listScoreEventsForEvaluatorSince); the filter here
+  // only narrows the type and drops the rare rating row with no trace to join on.
+  const events = (await listScoreEventsForEvaluatorSince(db, evaluatorId, since)).filter(
+    (e): e is EventRow & { rating: number; traceId: string } => e.rating !== null && e.traceId !== null
   );
 
   // Corrections keyed by the event the human was re-scoring; review labels and outcomes keyed
@@ -460,10 +461,19 @@ export type JudgeTuningProposal = {
 
 function describeCase(c: CalibrationCase, i: number): string {
   const truth = c.groundTruth;
+  const verdictWord = truth.isBad ? "BAD" : "FINE";
+  const detailSuffix = truth.detail ? ` ("${truth.detail}")` : "";
+  // Each source gets an honest label: a correction without a re-score is a verdict, not a number
+  // (never "re-scored it to null/10"), and review/confirmed labels come from a human reviewer,
+  // not a real-world outcome.
   const truthLabel =
     truth.source === "correction"
-      ? `a human re-scored it to ${truth.correctedScore}/10 with rationale: "${truth.detail ?? ""}"`
-      : `${truth.source === "feedback" ? "the end user" : "a real-world outcome"} said it was ${truth.isBad ? "BAD" : "FINE"}${truth.detail ? ` ("${truth.detail}")` : ""}`;
+      ? truth.correctedScore !== null
+        ? `a human re-scored it to ${truth.correctedScore}/10 with rationale: "${truth.detail ?? ""}"`
+        : `a human marked the judgement wrong (the response was actually ${verdictWord})${detailSuffix}`
+      : truth.source === "review" || truth.source === "confirmed"
+        ? `a human reviewer labeled it ${verdictWord}${detailSuffix}`
+        : `${truth.source === "feedback" ? "the end user" : "a real-world outcome"} said it was ${verdictWord}${detailSuffix}`;
   return `Case ${i + 1}: the judge rated ${c.rating}/10 (${c.judgedBad ? "flagged as bad" : "passed as fine"}) saying "${(c.justification ?? "").slice(0, 300)}", but ${truthLabel}.
   User input: ${c.input.slice(0, 600)}
   Agent output: ${c.output.slice(0, 600)}`;
@@ -630,7 +640,13 @@ export async function validateJudgeTuning(
   for (const [kind, list] of [["disagreement", disagreements], ["control", controls]] as const) {
     for (const c of list) {
       try {
-        const scored = await scoreAgainstCriteria(criteria, { input: c.input, output: c.output });
+        // Calibration cases store input/output truncated to 1500 chars for display; exact
+        // re-judging needs what the production judge actually saw, so re-fetch the full trace
+        // text and fall back to the stored slices only when the trace is gone (pruned).
+        const trace = await getTraceRow(db, c.traceId);
+        const input = trace ? extractText(trace.input) : c.input;
+        const output = trace ? extractText(trace.output) : c.output;
+        const scored = await scoreAgainstCriteria(criteria, { input, output });
         const candidateBad = scored.rating < threshold;
         cases.push({
           eventId: c.eventId,

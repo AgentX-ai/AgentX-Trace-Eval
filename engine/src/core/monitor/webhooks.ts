@@ -1,30 +1,21 @@
 import { logger } from "../../log.js";
+import { outboundUrlProblem } from "../shared/urlGuard.js";
 // LangSmith-style "webhook automation" equivalent: monitor_profiles.channels was persisted from
 // the start (dashboard's per-agent settings dialog) but self-host never had any notification
 // delivery - nothing interpreted it. No new schema: a channel entry of the form `webhook:<url>`
 // is treated as a delivery target, everything else in `channels` (there's no other kind on
 // self-host yet) is left alone.
+//
+// Runtime egress guard (channels are stored free-form, so write-time validation alone can't
+// cover them): the shared outboundUrlProblem check - http(s) only, never a cloud metadata
+// endpoint, private targets gated only on multi-tenant. See core/shared/urlGuard.ts for the
+// full posture.
 
 export function extractWebhookUrls(channels: string[] | null | undefined): string[] {
   return (channels ?? [])
     .filter((c): c is string => typeof c === "string" && c.startsWith("webhook:"))
     .map(c => c.slice("webhook:".length).trim())
-    .filter(url => url.length > 0 && isSafeWebhookUrl(url));
-}
-
-// Runtime egress guard (channels are stored free-form, so write-time validation alone can't
-// cover them): http(s) only, and never a cloud metadata endpoint - a webhook pointed at
-// 169.254.169.254 is a server-side credential grab, not an alert channel. Loopback/private
-// targets stay allowed on purpose: self-host operators page their own local services.
-function isSafeWebhookUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-    const host = url.hostname.toLowerCase();
-    return !(host === "metadata.google.internal" || host === "metadata.goog" || /^169\.254\./.test(host) || host === "fd00:ec2::254");
-  } catch {
-    return false;
-  }
+    .filter(url => url.length > 0 && outboundUrlProblem(url) === null);
 }
 
 export type WebhookSignal = {
@@ -70,6 +61,9 @@ export function postWebhooks(urls: string[], payload: Record<string, unknown>): 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
+      // The URL was vetted, a redirect target was not - never follow one (it could bounce the
+      // POST to a metadata endpoint the guard just refused).
+      redirect: "manual",
     })
       .then(res => {
         // fetch only rejects on transport failure, so a 404 from a mistyped Slack URL was

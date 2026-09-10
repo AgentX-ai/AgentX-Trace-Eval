@@ -45,8 +45,9 @@ export type SpanKind = (typeof SPAN_KINDS)[number];
 // (mlflow.spanType), LangSmith (run_type) and Langfuse (observation type) - so a span that was
 // instrumented for any of them classifies correctly here without the producer changing anything.
 const ALIASES: Record<string, SpanKind> = {
-  // ours / OpenInference
+  // ours / OpenInference; OTel gen_ai.operation.name's newer "retrieve" spelling folds in too.
   retriever: "retrieval",
+  retrieve: "retrieval",
   // Langfuse calls an LLM call with prompt+usage a "generation"; OTel calls the operation "chat"
   // or "text_completion"; LangSmith calls the run type "llm".
   generation: "llm",
@@ -71,6 +72,11 @@ const ALIASES: Record<string, SpanKind> = {
   memory_store: "memory",
   memory_update: "memory",
   memory_retrieval: "memory",
+  memory_recall: "memory",
+  memory_add: "memory",
+  memory_delete: "memory",
+  add_memory: "memory",
+  get_memory: "memory",
   recall: "memory",
   // MLflow's own vocabulary for the rest.
   llm: "llm",

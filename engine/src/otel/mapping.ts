@@ -21,7 +21,14 @@ function strAttr(v: unknown): string | undefined {
 }
 
 function numAttr(v: unknown): number | undefined {
-  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  if (typeof v === "number" && Number.isFinite(v)) {
+    return v;
+  }
+  // Some exporters send counts as stringValue attributes - a string of digits is still a number.
+  if (typeof v === "string" && /^\d+$/.test(v)) {
+    return Number(v);
+  }
+  return undefined;
 }
 
 function coerceToArray(value: unknown): unknown[] | undefined {
@@ -204,15 +211,24 @@ function extractToolCalls(span: NormalizedSpan) {
 export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
   const attrs = span.attributes;
 
-  const model = strAttr(attrs["gen_ai.response.model"]) ?? strAttr(attrs["gen_ai.request.model"]);
+  // OpenInference (llm.model_name / llm.token_count.*) rides at the end of each chain - Arize
+  // instrumentations send those instead of the gen_ai.* semconv names.
+  const model =
+    strAttr(attrs["gen_ai.response.model"]) ?? strAttr(attrs["gen_ai.request.model"]) ?? strAttr(attrs["llm.model_name"]);
   const framework =
     strAttr(attrs["gen_ai.provider.name"]) ??
     strAttr(attrs["gen_ai.system"]) ??
     span.scopeName ??
     strAttr(span.resourceAttributes["service.name"]) ??
     "otel";
-  const inputTokens = numAttr(attrs["gen_ai.usage.input_tokens"]) ?? numAttr(attrs["gen_ai.usage.prompt_tokens"]);
-  const outputTokens = numAttr(attrs["gen_ai.usage.output_tokens"]) ?? numAttr(attrs["gen_ai.usage.completion_tokens"]);
+  const inputTokens =
+    numAttr(attrs["gen_ai.usage.input_tokens"]) ??
+    numAttr(attrs["gen_ai.usage.prompt_tokens"]) ??
+    numAttr(attrs["llm.token_count.prompt"]);
+  const outputTokens =
+    numAttr(attrs["gen_ai.usage.output_tokens"]) ??
+    numAttr(attrs["gen_ai.usage.completion_tokens"]) ??
+    numAttr(attrs["llm.token_count.completion"]);
   // Semconv names for prompt-caching usage - subsets of inputTokens above, same posture as the
   // Python SDK's own per-integration extraction (see core/trace/ingest.ts's ingestTraceSchema).
   const cacheReadTokens = numAttr(attrs["gen_ai.usage.cache_read_input_tokens"]);
@@ -287,6 +303,8 @@ export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
     },
     input_tokens: inputTokens,
     output_tokens: outputTokens,
+    cache_read_tokens: cacheReadTokens,
+    cache_write_tokens: cacheWriteTokens,
   };
 }
 

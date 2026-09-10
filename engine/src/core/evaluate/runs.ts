@@ -350,7 +350,10 @@ async function scoreOneResult(
   // actually run - lets a code scorer assert on tool behavior (see codeScorer.ts's ScorerArgs).
   // One cheap local row read, skipped entirely for the common no-scorers case.
   let toolCalls: unknown;
-  if (item.traceId && config.codeScorers.length > 0) {
+  // Group pattern/custom members read toolCalls too - fetching only for the dataset's own
+  // code scorers left a group's tool-call conditions evaluating against nothing (a gated
+  // "must call escalate_to_human" pattern silently passed on every case).
+  if (item.traceId && (config.codeScorers.length > 0 || scorerGroup)) {
     const trace = await getTraceRowForScoring(db, item.traceId);
     if (trace && Array.isArray(trace.toolCalls) && trace.toolCalls.length > 0) {
       toolCalls = trace.toolCalls;
@@ -576,7 +579,9 @@ export async function appendResults(
     return null;
   }
   if (run.status === "completed" || run.status === "failed") {
-    throw new Error("Run is already in a terminal state");
+    const terminalErr = new Error("Run is already in a terminal state") as Error & { code?: string };
+    terminalErr.code = "conflict";
+    throw terminalErr;
   }
 
   const config = await resolveRunConfig(db, run.datasetId, run.evaluationSettingsId);
@@ -590,7 +595,9 @@ export async function appendResults(
   if (runGroupId && !scorerGroup) {
     // Falling through to the dataset's own config would grade half the run on a different
     // rubric than the half scored before the deletion - refuse loudly instead.
-    throw new Error("The scorer group grading this run no longer exists");
+    const err = new Error("The scorer group grading this run no longer exists") as Error & { code?: string };
+    err.code = "conflict";
+    throw err;
   }
 
   let accepted = 0;

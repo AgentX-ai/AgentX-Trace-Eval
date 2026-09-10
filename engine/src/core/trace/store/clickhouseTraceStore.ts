@@ -245,6 +245,35 @@ export class ClickHouseTraceStore implements TraceStore {
     return rows.map(fromStored);
   }
 
+  async listForExport(args: { since?: Date | null; cursor?: string | null; limit: number }): Promise<TraceRow[]> {
+    const conds = [this.scope()];
+    const params: Record<string, unknown> = {};
+    if (args.since) {
+      conds.push("created_at >= {since:DateTime64(3)}");
+      params.since = args.since.toISOString().replace("T", " ").replace("Z", "");
+    }
+    if (args.cursor) {
+      conds.push("id > {cursor:String}");
+      params.cursor = args.cursor;
+    }
+    const rows = await this.rows(
+      `SELECT * FROM ${TABLE} WHERE ${conds.join(" AND ")} ORDER BY id ASC LIMIT ${Math.floor(args.limit)}`,
+      params
+    );
+    return rows.map(fromStored);
+  }
+
+  async countAll(since?: Date | null): Promise<number> {
+    const conds = [this.scope()];
+    const params: Record<string, unknown> = {};
+    if (since) {
+      conds.push("created_at >= {since:DateTime64(3)}");
+      params.since = since.toISOString().replace("T", " ").replace("Z", "");
+    }
+    const rows = await this.rows(`SELECT count(*) AS n FROM ${TABLE} WHERE ${conds.join(" AND ")}`, params);
+    return Number((rows[0] as { n?: unknown })?.n ?? 0);
+  }
+
   async listRecent(limit: number): Promise<TraceRow[]> {
     const rows = await this.rows(`SELECT * FROM ${TABLE} WHERE ${this.scope()} LIMIT ${Math.floor(limit)}`);
     return rows.map(fromStored);

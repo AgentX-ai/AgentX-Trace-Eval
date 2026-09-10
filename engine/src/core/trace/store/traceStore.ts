@@ -85,6 +85,14 @@ export interface TraceStore {
    *  list's "X of N" pagination total. */
   countRootsPage(query: Omit<RootsPageQuery, "cursor" | "pageSize">): Promise<number>;
   queryWindow(filter: SpanWindowFilter): Promise<TraceRow[]>;
+  /** Export paging: every span (roots and children), id-keyset ordered, optional since on
+   *  createdAt. The backup surface reads spans through THIS, never the relational table -
+   *  on the ClickHouse tier the relational traces table is empty and a schema-driven export
+   *  streamed zero-byte files while reporting success. */
+  listForExport(args: { since?: Date | null; cursor?: string | null; limit: number }): Promise<TraceRow[]>;
+  /** Every span in the project (roots and children), optionally since createdAt - the export
+   *  manifest's honest count for the traces entity. */
+  countAll(since?: Date | null): Promise<number>;
   /** Root-span count in the project, optionally windowed (rate limits, volume estimates). */
   countRoots(since?: Date): Promise<number>;
   /**

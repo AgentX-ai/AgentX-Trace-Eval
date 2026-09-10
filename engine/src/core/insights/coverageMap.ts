@@ -92,7 +92,11 @@ export async function getCoverageMap(
   // The window converges anyway - each request backfills up to 100, so the considered slice
   // drains front-to-back across requests.
   const MAX_UNEMBEDDED_CONSIDERED = 500;
-  const unembedded = withTrace.filter(r => !hasVector(r)).slice(0, MAX_UNEMBEDDED_CONSIDERED);
+  const unembeddedAll = withTrace.filter(r => !hasVector(r));
+  const unembedded = unembeddedAll.slice(0, MAX_UNEMBEDDED_CONSIDERED);
+  // Rows beyond the window are pending-unknown (their traces were not fetched to check) - they
+  // count toward the "still indexing" number rather than silently vanishing from it.
+  const pendingBeyondWindow = unembeddedAll.length - unembedded.length;
 
   // Texts for point labels (and the backfill) - fetched only for rows that might be plotted
   // or backfilled this request.
@@ -143,7 +147,7 @@ export async function getCoverageMap(
     .filter((r): r is ClassificationRow & { inputEmbedding: number[] } => hasVector(r))
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
     .slice(0, MAX_POINTS_PER_SOURCE);
-  const tracePending = backfillable.filter(r => !hasVector(r)).length;
+  const tracePending = backfillable.filter(r => !hasVector(r)).length + pendingBeyondWindow;
 
   const datasetRows = await listDatasetRows(db);
   const cases = await listDatasetCases(db, options.datasetIds, datasetRows);
@@ -183,6 +187,14 @@ export async function getCoverageMap(
   // allGroups check keeps it out of off-map.
   const allGroups: TopicGroup[] = groupByIntent(allRows);
   const groups: TopicGroup[] = allGroups.filter(g => g.rows.length >= MIN_TRACES_PER_TOPIC);
+  // Raw classification label -> the group's canonical topic (groupByIntent normalizes AND
+  // merges synonymous topics). Production points must use the same canonical strings the
+  // dataset side's topicOf returns, or one merged topic renders as two - half of it a
+  // phantom uncovered gap.
+  const canonicalTopic = new Map<string, string>();
+  for (const group of allGroups) {
+    for (const row of group.rows) canonicalTopic.set(row.intent, group.topic);
+  }
   const sim = embeddingSimilarity();
   const bestIn = (item: DatasetCase, pool: TopicGroup[]): { topic: string | null; matched: boolean } => {
     let bestTopic: string | null = null;
@@ -217,7 +229,7 @@ export async function getCoverageMap(
       x: projected[i]![0]!,
       y: projected[i]![1]!,
       source: "production" as const,
-      topic: row.intent,
+      topic: canonicalTopic.get(row.intent) ?? row.intent,
       query: inputTextOf(row).slice(0, 140),
       traceId: row.traceId,
     })),
@@ -226,7 +238,7 @@ export async function getCoverageMap(
       y: projected[traceRows.length + i]![1]!,
       source: "dataset" as const,
       topic: topicOf(item),
-      query: item.query,
+      query: item.query.slice(0, 140),
       datasetId: item.datasetId,
       caseIndex: item.index,
     })),
