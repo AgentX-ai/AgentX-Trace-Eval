@@ -1,3 +1,4 @@
+import { outboundUrlProblem } from "../shared/urlGuard.js";
 import type { Db } from "../../storage/db.js";
 import { callModelWithTools, scoreAgainstCriteria, DEFAULT_JUDGE_MODEL, DEFAULT_JUDGE_PROMPT, type ToolCallTrace } from "./judge.js";
 import { getPortabilityModel, estimateCostUSD } from "./models.js";
@@ -43,7 +44,13 @@ export function extractPlaygroundTools(body: Record<string, unknown>): Playgroun
       name: typeof t.name === "string" ? t.name.trim() : "",
       description: typeof t.description === "string" ? t.description : undefined,
       parameters: t.parameters && typeof t.parameters === "object" ? (t.parameters as Record<string, unknown>) : {},
-      endpointUrl: typeof t.endpointUrl === "string" ? t.endpointUrl.trim() : "",
+      // Guarded here at extraction so BOTH downstream branches (plain POST and MCP) inherit
+      // it - an endpoint that fails the outbound guard is dropped to "" and the tool call
+      // reports a config error instead of the engine fetching it.
+      endpointUrl:
+        typeof t.endpointUrl === "string" && !outboundUrlProblem(t.endpointUrl)
+          ? t.endpointUrl.trim()
+          : "",
       mcpServer: typeof t.mcpServer === "string" && t.mcpServer.trim() ? t.mcpServer.trim() : undefined,
       mcpSessionId: typeof t.mcpSessionId === "string" && t.mcpSessionId.trim() ? t.mcpSessionId.trim() : undefined,
     }))

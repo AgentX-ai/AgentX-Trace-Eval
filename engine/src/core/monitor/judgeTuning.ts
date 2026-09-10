@@ -15,6 +15,82 @@ import {
   DEFAULT_REFERENCE_FREE_JUDGE_PROMPT,
 } from "../evaluate/judge.js";
 
+// ---------------------------------------------------------------------------------------------
+// Signed validation provenance. The publish route stamps "[judge tuning: validated ...]" into
+// the permanent version history - a stamp that used to be entirely client-asserted (any caller
+// could invent a verdict, or validate criteria X and publish criteria Y under X's verdict).
+// validate now mints an HMAC token binding (evaluatorId, sha256 of the exact candidate
+// package, verdict, gain); publish verifies it against what is actually being published.
+// Per-boot key on purpose: a token is a freshness claim about a validation run, not a
+// long-lived credential - after a restart, re-validate.
+// ---------------------------------------------------------------------------------------------
+import { createHmac, createHash, randomBytes } from "node:crypto";
+
+const VALIDATION_SIGNING_KEY = randomBytes(32);
+
+export type TuningCriteriaPackage = {
+  acceptanceCriteria: string;
+  rejectionCriteria: string;
+  evaluationCriteria: string;
+  judgePrompt?: string;
+};
+
+function criteriaHash(evaluatorId: string, criteria: TuningCriteriaPackage): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        evaluatorId,
+        criteria.acceptanceCriteria,
+        criteria.rejectionCriteria,
+        criteria.evaluationCriteria,
+        criteria.judgePrompt ?? null,
+      ])
+    )
+    .digest("hex");
+}
+
+export function signTuningValidation(
+  evaluatorId: string,
+  criteria: TuningCriteriaPackage,
+  verdict: string,
+  netAgreementGain: number | null
+): string {
+  const payload = Buffer.from(
+    JSON.stringify({ h: criteriaHash(evaluatorId, criteria), v: verdict, g: netAgreementGain })
+  ).toString("base64url");
+  const mac = createHmac("sha256", VALIDATION_SIGNING_KEY).update(payload).digest("base64url");
+  return `${payload}.${mac}`;
+}
+
+export function verifyTuningValidation(
+  token: string,
+  evaluatorId: string,
+  criteria: TuningCriteriaPackage
+): { verdict: string; netAgreementGain: number | null } | null {
+  const [payload, mac] = token.split(".");
+  if (!payload || !mac) return null;
+  const expected = createHmac("sha256", VALIDATION_SIGNING_KEY).update(payload).digest("base64url");
+  if (mac.length !== expected.length || !timingSafeEqualStr(mac, expected)) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString()) as {
+      h?: string;
+      v?: string;
+      g?: number | null;
+    };
+    if (parsed.h !== criteriaHash(evaluatorId, criteria) || typeof parsed.v !== "string") return null;
+    return { verdict: parsed.v, netAgreementGain: typeof parsed.g === "number" ? parsed.g : null };
+  } catch {
+    return null;
+  }
+}
+
+function timingSafeEqualStr(a: string, b: string): boolean {
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+
 // Judge tuning: measure one online evaluator's verdicts against recorded reality, then improve
 // the JUDGE'S OWN CRITERIA from the disagreements - the same evidence -> propose -> validate ->
 // human-approved publish loop prompts and tool schemas already have, pointed at the evaluator.
@@ -164,6 +240,9 @@ export async function getEvaluatorCalibration(
   );
   const correctionByEvent = new Map<string, FeedbackCorrectionRow>();
   const confirmationByEvent = new Map<string, FeedbackCorrectionRow>();
+  // Row order out of a bare SELECT is unspecified (Postgres after updates/vacuum especially) -
+  // "latest wins" must be decided by the timestamp, not by whatever order rows came back in.
+  corrections.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   for (const c of corrections) {
     if (!c.eventId) continue;
     // Confirms ("the flag was right", written by the Review queue's Confirm - signals.ts) are the

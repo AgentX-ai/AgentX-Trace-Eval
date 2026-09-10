@@ -102,7 +102,19 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   // spans folded into their parent interaction's tool_calls - see mapping.ts), THEN per-span
   // validation/ingest: reconstruction has to see sibling spans together, which a map-and-ingest
   // single pass never could.
-  const candidates = spans.map(otelSpanToIngestInput);
+  // Per-span isolation: one malformed span (an attribute shape the mapper chokes on) must
+  // reject THAT span into partialSuccess, not 500 the batch into an exporter retry loop that
+  // redelivers the same poison forever.
+  const candidates: ReturnType<typeof otelSpanToIngestInput>[] = [];
+  let mappingRejected = 0;
+  for (const span of spans) {
+    try {
+      candidates.push(otelSpanToIngestInput(span));
+    } catch (err) {
+      mappingRejected++;
+      logger.warn({ err }, "OTLP: span failed to map - rejected into partialSuccess");
+    }
+  }
   reconstructParentToolCalls(candidates);
 
   // Checked after the span durably lands (queued ingest, ADR-0005): a judge failure must
@@ -221,7 +233,11 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
     res.status(503).set("Retry-After", "2").json({ message: `trace storage unavailable - ${droppedCount} spans not stored, retry` });
     return;
   }
-  const partialSuccess = rejected > 0 ? { rejectedSpans: rejected, errorMessage: lastError } : undefined;
+  const totalRejected = rejected + mappingRejected;
+  const partialSuccess =
+    totalRejected > 0
+      ? { rejectedSpans: totalRejected, errorMessage: lastError || (mappingRejected > 0 ? "spans failed to map" : "") }
+      : undefined;
   if (isProtobuf) {
     res.status(200).type("application/x-protobuf").send(Buffer.from(encodeProtobufResponse(partialSuccess)));
   } else {

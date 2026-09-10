@@ -200,14 +200,22 @@ authOrgRouter.get("/invitations/:id", async (req: Request, res: Response) => {
       ? db.db.select().from(db.schema.authOrganizations).where(orgCond).all()[0]
       : (await db.db.select().from(db.schema.authOrganizations).where(orgCond))[0]
   ) as { name: string } | undefined;
+  const emailMatches = invitation.email === user.email.toLowerCase();
+  const status = new Date(invitation.expiresAt).getTime() < Date.now() ? "expired" : invitation.status;
+  if (!emailMatches) {
+    // Any signed-in user can hold a forwarded link, but only the invitee gets the details -
+    // org name and invited email are not for whoever happens to paste the id while logged in.
+    res.status(200).json({ invitation: { _id: invitation.id, status, emailMatches: false } });
+    return;
+  }
   res.status(200).json({
     invitation: {
       _id: invitation.id,
       organizationName: org?.name ?? "an organization",
       email: invitation.email,
       role: invitation.role ?? "member",
-      status: new Date(invitation.expiresAt).getTime() < Date.now() ? "expired" : invitation.status,
-      emailMatches: invitation.email === user.email.toLowerCase(),
+      status,
+      emailMatches,
     },
   });
 });
@@ -238,9 +246,11 @@ authOrgRouter.post("/invitations/:id/accept", async (req: Request, res: Response
       createdAt: new Date(),
     };
     if (db.kind === "sqlite") {
-      await db.db.insert(db.schema.authMembers).values(memberRow);
+      // onConflictDoNothing on the (org, user) unique index: two simultaneous accepts of the
+      // same link must produce one membership, not two rows that double-count everywhere.
+      await db.db.insert(db.schema.authMembers).values(memberRow).onConflictDoNothing();
     } else {
-      await db.db.insert(db.schema.authMembers).values(memberRow);
+      await db.db.insert(db.schema.authMembers).values(memberRow).onConflictDoNothing();
     }
   }
   const cond = eq(db.schema.authInvitations.id, invitation.id);

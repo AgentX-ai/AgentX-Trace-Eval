@@ -1,3 +1,4 @@
+import { outboundUrlProblem } from "../shared/urlGuard.js";
 import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -176,6 +177,10 @@ export async function loadMcpTools(input: {
   sweepSessions();
   let url: URL;
   try {
+    const urlProblem = outboundUrlProblem(input.serverUrl);
+    if (urlProblem) {
+      throw new Error(`MCP server URL refused: ${urlProblem}`);
+    }
     url = new URL(input.serverUrl.trim());
     if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("not http(s)");
   } catch {
@@ -252,6 +257,10 @@ export async function callMcpToolOnce(input: {
   sweepSessions();
   let url: URL;
   try {
+    const urlProblem = outboundUrlProblem(input.serverUrl);
+    if (urlProblem) {
+      throw new Error(`MCP server URL refused: ${urlProblem}`);
+    }
     url = new URL(input.serverUrl.trim());
   } catch {
     throw new Error(`MCP server URL "${input.serverUrl}" is not a valid URL`);

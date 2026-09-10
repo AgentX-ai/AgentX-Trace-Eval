@@ -9,7 +9,22 @@ export function extractWebhookUrls(channels: string[] | null | undefined): strin
   return (channels ?? [])
     .filter((c): c is string => typeof c === "string" && c.startsWith("webhook:"))
     .map(c => c.slice("webhook:".length).trim())
-    .filter(url => url.length > 0);
+    .filter(url => url.length > 0 && isSafeWebhookUrl(url));
+}
+
+// Runtime egress guard (channels are stored free-form, so write-time validation alone can't
+// cover them): http(s) only, and never a cloud metadata endpoint - a webhook pointed at
+// 169.254.169.254 is a server-side credential grab, not an alert channel. Loopback/private
+// targets stay allowed on purpose: self-host operators page their own local services.
+function isSafeWebhookUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    const host = url.hostname.toLowerCase();
+    return !(host === "metadata.google.internal" || host === "metadata.goog" || /^169\.254\./.test(host) || host === "fd00:ec2::254");
+  } catch {
+    return false;
+  }
 }
 
 export type WebhookSignal = {

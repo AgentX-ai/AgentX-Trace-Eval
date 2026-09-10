@@ -1028,6 +1028,13 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
       created_at INTEGER NOT NULL
     );
 
+    -- One membership per (org, user): dedupe any historical doubles first so the unique
+    -- index can build on upgraded installs; accept inserts use onConflictDoNothing.
+    DELETE FROM auth_member WHERE id NOT IN (
+      SELECT MIN(id) FROM auth_member GROUP BY organization_id, user_id
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS auth_member_org_user ON auth_member (organization_id, user_id);
+
     CREATE TABLE IF NOT EXISTS auth_invitation (
       id TEXT PRIMARY KEY,
       organization_id TEXT NOT NULL,
@@ -2387,6 +2394,13 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
       role TEXT NOT NULL DEFAULT 'member',
       created_at TIMESTAMP NOT NULL
     );
+
+    -- Mirrors the sqlite bootstrap: dedupe historical doubles, then enforce one membership
+    -- per (org, user); accept inserts use onConflictDoNothing.
+    DELETE FROM auth_member WHERE id NOT IN (
+      SELECT MIN(id) FROM auth_member GROUP BY organization_id, user_id
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS auth_member_org_user ON auth_member (organization_id, user_id);
 
     CREATE TABLE IF NOT EXISTS auth_invitation (
       id TEXT PRIMARY KEY,

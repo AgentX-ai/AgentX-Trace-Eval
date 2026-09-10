@@ -4,7 +4,7 @@ import type { Db } from "../../storage/db.js";
 import { traceStoreFor } from "./store/index.js";
 import { enqueueSpan } from "./ingestQueue.js";
 import { resolveAgentId } from "../monitor/agents.js";
-import { listPortabilityModels, estimateCostUSD } from "../evaluate/models.js";
+import { normalizeModelId, listPortabilityModels, estimateCostUSD } from "../evaluate/models.js";
 import { getClassificationForTrace } from "../monitor/topics.js";
 import { unixNanosToDate } from "../shared/unixNano.js";
 import { logger } from "../../log.js";
@@ -54,10 +54,10 @@ function foldCamelAliases(value: unknown): unknown {
 }
 
 export const ingestTraceSchema = z.preprocess(foldCamelAliases, z.object({
-  name: z.string().min(1),
+  name: z.string().min(1).max(2_000),
   input: z.unknown().optional(),
   output: z.unknown().optional(),
-  error: z.string().optional(),
+  error: z.string().max(20_000).optional(),
   latency_ms: z.number().optional(),
   framework: z.string().optional(),
   model: z.string().optional(),
@@ -172,7 +172,7 @@ async function prepareSpanRow(
     source: normalizeTraceSource(payload.source),
     metadata: capPayloadField(payload.metadata ?? null),
     sessionId: payload.session_id ?? null,
-    performanceSummary: payload.performance_summary ?? null,
+    performanceSummary: capPayloadField(payload.performance_summary ?? null),
     inputTokens: payload.input_tokens ?? null,
     outputTokens: payload.output_tokens ?? null,
     cacheReadTokens: payload.cache_read_tokens ?? null,
@@ -370,7 +370,12 @@ export async function toTraceDetailWireWithCost(db: Db, row: TraceRow) {
     return { ...wire, estimatedCostUSD: null, topic };
   }
   const pricingModels = await listPortabilityModels(db);
-  const pricing = pricingModels.find(m => m.id === row.model) ?? null;
+  // Same two-step resolution the Monitor cost chart uses (metrics.ts): exact id first, then
+  // the snapshot-suffix-stripped id - otherwise "gpt-4o-mini-2024-07-18" priced on the chart
+  // but showed "no cost data" in this very dialog.
+  const pricing =
+    pricingModels.find(m => m.id === row.model) ??
+    (row.model ? pricingModels.find(m => m.id === normalizeModelId(row.model!)) ?? null : null);
   return {
     ...wire,
     estimatedCostUSD: estimateCostUSD(pricing, row.inputTokens, row.outputTokens, row.cacheReadTokens, row.cacheWriteTokens),

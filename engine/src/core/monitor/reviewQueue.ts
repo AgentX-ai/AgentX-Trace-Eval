@@ -140,7 +140,27 @@ export type QueueForReviewResult =
   | { ok: true; item: ReturnType<typeof toWire> }
   | { ok: false; reason: "trace_not_found" | "already_queued" | "queue_full"; pending?: number };
 
+// Serialized per project: queueing is check-then-act (duplicate check + cap check before the
+// insert) and it is driven concurrently by fire-and-forget rules per trace - two traces
+// arriving together used to both pass the checks and both insert, exceeding the cap and
+// double-queueing one trace. Same promise-chain shape as curation's dataset writes.
+const queueChains = new Map<string, Promise<unknown>>();
+
 export async function queueTraceForReview(db: Db, input: QueueForReviewInput): Promise<QueueForReviewResult> {
+  const chainKey = db.projectId ?? "";
+  const previous = queueChains.get(chainKey) ?? Promise.resolve();
+  const run = previous.then(
+    () => queueTraceForReviewSerialized(db, input),
+    () => queueTraceForReviewSerialized(db, input)
+  );
+  queueChains.set(chainKey, run);
+  void run.finally(() => {
+    if (queueChains.get(chainKey) === run) queueChains.delete(chainKey);
+  });
+  return run;
+}
+
+async function queueTraceForReviewSerialized(db: Db, input: QueueForReviewInput): Promise<QueueForReviewResult> {
   const trace = (await traceStoreFor(db).getById(input.traceId)) as unknown as
     | (TraceSummary & { id: string; sessionId: string | null })
     | undefined;
@@ -245,7 +265,10 @@ export async function labelReviewItem(db: Db, id: string, input: LabelReviewInpu
     status,
     reviewedAt: status === "pending" ? null : new Date(),
   };
-  const cond = eq(db.schema.reviewQueueItems.id, id);
+  const cond = and(
+    eq(db.schema.reviewQueueItems.id, id),
+    or(eq(db.schema.reviewQueueItems.projectId, db.projectId), isNull(db.schema.reviewQueueItems.projectId))
+  );
   if (db.kind === "sqlite") {
     await db.db.update(db.schema.reviewQueueItems).set(updated).where(cond);
   } else {
@@ -258,7 +281,10 @@ export async function labelReviewItem(db: Db, id: string, input: LabelReviewInpu
 export async function deleteReviewItem(db: Db, id: string): Promise<boolean> {
   const existing = await getRow(db, id);
   if (!existing) return false;
-  const cond = eq(db.schema.reviewQueueItems.id, id);
+  const cond = and(
+    eq(db.schema.reviewQueueItems.id, id),
+    or(eq(db.schema.reviewQueueItems.projectId, db.projectId), isNull(db.schema.reviewQueueItems.projectId))
+  );
   if (db.kind === "sqlite") {
     await db.db.delete(db.schema.reviewQueueItems).where(cond);
   } else {

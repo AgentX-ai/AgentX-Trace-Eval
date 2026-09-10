@@ -134,7 +134,13 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
     }
   };
 
+  // One ground truth per trace: a trace with BOTH an outcome report and a review label used
+  // to contribute two rows to the same confusion matrix - inflating agreement on exactly the
+  // traces that got the most attention. Outcome reports outrank sampled labels (the ordering
+  // judgeTuning's evidence chain already uses).
+  const talliedTraces = new Set<string>();
   for (const report of reports) {
+    if (report.traceId) talliedTraces.add(report.traceId);
     tally(await resolveAgentxVerdict(db, report), report.isNegative);
   }
 
@@ -153,6 +159,7 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
   ) as { traceId: string; label: string | null }[];
   for (const item of reviewLabels) {
     if (item.label !== "good" && item.label !== "bad") continue;
+    if (talliedTraces.has(item.traceId)) continue;
     tally(await resolveAgentxVerdict(db, { traceId: item.traceId } as OutcomeReportRow), item.label === "bad");
   }
 
