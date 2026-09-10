@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { and, eq, gte, inArray, isNotNull, isNull, lt } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { traceStoreFor } from "../trace/store/index.js";
 import { getTraceRow } from "../trace/ingest.js";
@@ -221,15 +221,28 @@ export async function pruneRetentionData(db: Db, agentId: string | null, retenti
 // One row per detection is already recorded here (recordEvent, called from detect.ts on every
 // match) - this is the real per-occurrence history AgentX-web-front's SignalRow.tsx expects on
 // `signal.occurrences[]`, which core/monitor/signals.ts's toWire() never populated (only the
-// aggregate occurrenceCount). Newest-last (chronological), matching the frontend's own
-// `[...recorded].reverse()` to display newest-first.
-export async function listOccurrencesForSignal(db: Db, signalId: string): Promise<EventRow[]> {
+// aggregate occurrenceCount). The limit keeps the NEWEST rows (applied in SQL - a long-lived
+// signal can have thousands of occurrences and no caller renders more than a page); the returned
+// order stays newest-last (chronological), matching the frontend's own `[...recorded].reverse()`
+// to display newest-first and the callers that read the newest occurrence at the array's end.
+export async function listOccurrencesForSignal(db: Db, signalId: string, limit = 50): Promise<EventRow[]> {
   const cond = and(eq(db.schema.monitorEvents.signalId, signalId), eq(db.schema.monitorEvents.projectId, db.projectId));
   const rows =
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.monitorEvents).where(cond).orderBy(db.schema.monitorEvents.createdAt).all()
-      : await db.db.select().from(db.schema.monitorEvents).where(cond).orderBy(db.schema.monitorEvents.createdAt);
-  return rows as EventRow[];
+      ? db.db
+          .select()
+          .from(db.schema.monitorEvents)
+          .where(cond)
+          .orderBy(desc(db.schema.monitorEvents.createdAt))
+          .limit(limit)
+          .all()
+      : await db.db
+          .select()
+          .from(db.schema.monitorEvents)
+          .where(cond)
+          .orderBy(desc(db.schema.monitorEvents.createdAt))
+          .limit(limit);
+  return (rows as EventRow[]).reverse();
 }
 
 // Every detection check recorded against one trace - the join surface
@@ -246,9 +259,25 @@ export async function listEventsForTrace(db: Db, traceId: string): Promise<Event
   return rows as EventRow[];
 }
 
-// Exported for judgeTuning.ts, which joins an evaluator's rating events against ground truth.
 export async function listEventsSince(db: Db, since: Date): Promise<EventRow[]> {
   const cond = and(gte(db.schema.monitorEvents.createdAt, since), eq(db.schema.monitorEvents.projectId, db.projectId));
+  const rows =
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.monitorEvents).where(cond).all()
+      : await db.db.select().from(db.schema.monitorEvents).where(cond);
+  return rows as EventRow[];
+}
+
+// One evaluator's scored events in the window, filtered in SQL - judgeTuning.ts joins these
+// against ground truth per evaluator, and loading EVERY monitor event just to keep one
+// evaluator's ratings scaled with total traffic instead of with that evaluator's own volume.
+export async function listScoreEventsForEvaluatorSince(db: Db, evaluatorId: string, since: Date): Promise<EventRow[]> {
+  const cond = and(
+    gte(db.schema.monitorEvents.createdAt, since),
+    eq(db.schema.monitorEvents.projectId, db.projectId),
+    eq(db.schema.monitorEvents.onlineEvaluatorId, evaluatorId),
+    isNotNull(db.schema.monitorEvents.rating)
+  );
   const rows =
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.monitorEvents).where(cond).all()

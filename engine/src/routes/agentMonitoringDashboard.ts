@@ -51,6 +51,7 @@ import { signTuningValidation, verifyTuningValidation,
   type TuningWindow,
 } from "../core/monitor/judgeTuning.js";
 import { getModelComparison } from "../core/monitor/modelComparison.js";
+import { outboundUrlProblem } from "../core/shared/urlGuard.js";
 import { listSessionScores } from "../core/monitor/sessionScores.js";
 import { listSessions } from "../core/monitor/sessions.js";
 import {
@@ -626,12 +627,25 @@ agentMonitoringDashboardRouter.get("/model-comparison", async (req: Request, res
   res.status(200).json(await getModelComparison(scopedDb(req), parseWindow(req)));
 });
 
+// Per-route ceiling for the judge-tuning trio and the on-demand session judge routes (each is
+// one unbudgeted judge call per request), ON TOP of the data-plane limiter the whole router
+// sits behind (apiV1.ts mounts it; CodeQL cannot see cross-file parent limiters, and these
+// routes deserve a tighter bound anyway: tune/validate are real LLM spend per call, publish
+// verifies provenance and writes rubric versions). 20/min is far above any human or SDK flow
+// and far below a brute-force loop.
+const tuningRouteLimit = rateLimitMiddleware({
+  windowMs: 60_000,
+  limit: 20,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+});
+
 // On-demand Session Baseline Judge run (core/monitor/sessionSweep.ts's runSessionBaselineCheck):
 // one real judge call over the whole assembled session against the built-in evaluator's config
 // (rubric lives there, not in code). Route path kept from the old hardcoded coherence check for
 // wire compat. 502 for a judge failure (missing key, provider outage) with the underlying
 // message, same convention as the suggest-human-feedback route above.
-agentMonitoringDashboardRouter.post("/sessions/:sessionId/coherence-check", async (req: Request, res: Response) => {
+agentMonitoringDashboardRouter.post("/sessions/:sessionId/coherence-check", tuningRouteLimit, async (req: Request, res: Response) => {
   try {
     const score = await runSessionBaselineCheck(scopedDb(req), req.params.sessionId!);
     if (!score) {
@@ -651,6 +665,7 @@ agentMonitoringDashboardRouter.post("/sessions/:sessionId/coherence-check", asyn
 // also covers is never judged twice.
 agentMonitoringDashboardRouter.post(
   "/sessions/:sessionId/judge/:evaluatorId",
+  tuningRouteLimit,
   async (req: Request, res: Response) => {
     try {
       if (req.query.ifStale === "true" && (await isSessionScoreFresh(scopedDb(req), req.params.sessionId!, req.params.evaluatorId!))) {
@@ -683,7 +698,7 @@ agentMonitoringDashboardRouter.get("/sessions", async (req: Request, res: Respon
 
 // Manual trigger for the idle-session sweep (core/monitor/sessionSweep.ts) - the production path
 // is the 60s interval started at boot; this exists for tests and demos that shouldn't have to
-// wait a tick. Sweeps ALL projects (the sweep is instance-wide by design), auth still required.
+// wait a tick.
 agentMonitoringDashboardRouter.post("/session-sweep/run", async (req: Request, res: Response) => {
   // Scoped to the caller's project (a key must not spend other tenants' budgets) and
   // serialized - a concurrent sweep returns { judged: 0, skipped: true } instead of
@@ -1180,18 +1195,6 @@ agentMonitoringDashboardRouter.get(
   }
 );
 
-// Per-route ceiling for the judge-tuning trio, ON TOP of the data-plane limiter the whole
-// router sits behind (apiV1.ts mounts it; CodeQL cannot see cross-file parent limiters, and
-// these routes deserve a tighter bound anyway: tune/validate are real LLM spend per call,
-// publish verifies provenance and writes rubric versions). 20/min is far above any human or
-// SDK flow and far below a brute-force loop.
-const tuningRouteLimit = rateLimitMiddleware({
-  windowMs: 60_000,
-  limit: 20,
-  standardHeaders: "draft-7",
-  legacyHeaders: false,
-});
-
 agentMonitoringDashboardRouter.post("/online-evaluators/:evaluatorId/tune", tuningRouteLimit, async (req: Request, res: Response) => {
   const body = req.body ?? {};
   try {
@@ -1324,7 +1327,9 @@ agentMonitoringDashboardRouter.post(
         acceptanceCriteria: body.acceptanceCriteria,
         rejectionCriteria: body.rejectionCriteria,
         evaluationCriteria: body.evaluationCriteria,
-        judgePrompt: typeof body.judgePrompt === "string" && body.judgePrompt.trim() ? body.judgePrompt : undefined,
+        // Must match validate's sign-side predicate exactly (any string counts, blank included)
+        // or a validated blank judgePrompt fails token verification on publish.
+        judgePrompt: typeof body.judgePrompt === "string" ? body.judgePrompt : undefined,
       });
       if (!verified) {
         res.status(409).json({
@@ -1372,18 +1377,10 @@ function isValidHttpUrl(value: unknown): value is string {
   if (typeof value !== "string" || !value.trim()) {
     return false;
   }
-  try {
-    const url = new URL(value.trim());
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      return false;
-    }
-    // Same egress posture as connectors/webhooks: loopback/private allowed (self-host reality),
-    // cloud metadata endpoints never - an external scorer pointed there is a credential grab.
-    const host = url.hostname.toLowerCase();
-    return !(host === "metadata.google.internal" || host === "metadata.goog" || /^169\.254\./.test(host) || host === "fd00:ec2::254");
-  } catch {
-    return false;
-  }
+  // The shared egress guard (core/shared/urlGuard.ts): http(s) only, cloud metadata endpoints
+  // never (an external scorer pointed there is a credential grab), private targets gated only
+  // on multi-tenant.
+  return outboundUrlProblem(value) === null;
 }
 
 agentMonitoringDashboardRouter.get("/custom-evaluators", async (req: Request, res: Response) => {

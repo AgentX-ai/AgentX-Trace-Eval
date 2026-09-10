@@ -16,10 +16,12 @@ import {
 // /export/:entity streams the rows as NDJSON (one JSON object per line, exactly the stored
 // shape - timestamps serialize as ISO-8601). `?since=` takes any ISO date for incremental
 // pulls. Project-scoped like every data-plane route: the API key IS the project selection, so
-// an export can never cross a tenant boundary. Restore is documented in the self-host backup
-// runbook: replay (traces re-POST through /ingest) or database-level (pg_dump / SQLite file
-// copy) - there is deliberately no blind row-level import endpoint that could corrupt
-// engine-owned invariants (dedupe, id uniqueness, derived agent rows).
+// an export can never cross a tenant boundary. On restore: re-POSTing exported traces to
+// /ingest is LOSSY - rows get new ids and restore-time timestamps, and everything keyed on the
+// old trace ids (outcome reports, review labels, monitor events) ends up orphaned. Database-
+// level restore (pg_dump / SQLite file copy) is the fidelity path; this export exists for
+// portability and offline analysis. There is deliberately no blind row-level import endpoint
+// that could corrupt engine-owned invariants (dedupe, id uniqueness, derived agent rows).
 export const exportRouter = asyncRouter();
 
 exportRouter.get("/", async (req: Request, res: Response) => {
@@ -62,11 +64,21 @@ exportRouter.get("/:entity", async (req: Request, res: Response) => {
         // Respect socket backpressure so a huge table never balloons the response buffer.
         // Wait on drain OR close: a destroyed socket never drains, and waiting only on
         // drain leaked this handler (and its DB cursor loop) for the process lifetime on
-        // every aborted export.
+        // every aborted export. Whichever fires removes the other - once() only cleans up
+        // the listener that ran, and a long export pauses here thousands of times, so the
+        // losers otherwise pile up until the emitter warns (and leak per pause).
         if (!res.write(`${JSON.stringify(row)}\n`)) {
           await new Promise<void>(resolve => {
-            res.once("drain", resolve);
-            res.once("close", resolve);
+            const onDrain = () => {
+              res.off("close", onClose);
+              resolve();
+            };
+            const onClose = () => {
+              res.off("drain", onDrain);
+              resolve();
+            };
+            res.once("drain", onDrain);
+            res.once("close", onClose);
           });
           if (res.destroyed) {
             return;

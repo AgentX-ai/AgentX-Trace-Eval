@@ -253,6 +253,13 @@ export function toScorerGroupWire(row: ScorerGroupRow) {
 // failure pattern, a custom score under 0.5).
 const GATE_FLOOR = 0.5;
 
+// One doctrine for the online judge budget, both scopes: reserve LAZILY (one slot per call
+// actually made - up-front reservation burned slots for members that turned out unscoreable
+// and could starve every other evaluator for the day), and a panel cut short by the budget
+// produces NO score - renormalizing the survivors would report a confident blend computed
+// from a recipe the operator never configured.
+export const BUDGET_EXHAUSTED_ERROR = "Online judge budget exhausted";
+
 export function aggregateGroupScore(members: MemberScore[]): { score: number | null; gatedBy: string | null } {
   const gated = members.find(m => m.gate && m.goodness !== null && m.goodness < GATE_FLOOR);
   if (gated) return { score: 0, gatedBy: gated.name };
@@ -260,6 +267,8 @@ export function aggregateGroupScore(members: MemberScore[]): { score: number | n
   // 500) means the configured recipe was not evaluated - producing a blend without the gate
   // would report "passed" for a safety check that never ran. No score is the honest answer.
   if (members.some(m => m.gate && m.goodness === null)) return { score: null, gatedBy: null };
+  // Same honesty for a budget-truncated panel: see BUDGET_EXHAUSTED_ERROR's comment.
+  if (members.some(m => m.error === BUDGET_EXHAUSTED_ERROR)) return { score: null, gatedBy: null };
   let total = 0;
   let weightUsed = 0;
   for (const m of members) {
@@ -276,6 +285,9 @@ export function describeGroupScore(result: { score: number | null; gatedBy: stri
   const gateErrored = members.find(m => m.gate && m.goodness === null);
   if (gateErrored) {
     return `No score: must-pass member "${gateErrored.name}" could not score (${gateErrored.error ?? "scorer failed"}).`;
+  }
+  if (members.some(m => m.error === BUDGET_EXHAUSTED_ERROR)) {
+    return "No score: the online judge budget ran out mid-panel - a partial blend would misrepresent the configured recipe.";
   }
   const parts = members
     .filter(m => m.goodness !== null && m.weight > 0)
@@ -294,12 +306,17 @@ export type GroupScoringContent = {
 // Scores every member of a group against one piece of content (an eval-run result, or a live
 // trace) and aggregates. Failures isolate per member - one deleted scorer or judge outage
 // degrades that member to goodness null (renormalized away) rather than failing the group.
-export async function computeGroupScore(db: Db, group: ScorerGroupRow, content: GroupScoringContent): Promise<GroupScore> {
+export async function computeGroupScore(
+  db: Db,
+  group: ScorerGroupRow,
+  content: GroupScoringContent,
+  options: { reserveOnlineBudget?: boolean } = {}
+): Promise<GroupScore> {
   const members: MemberScore[] = [];
 
   for (const member of group.members) {
     if (member.kind === "judge") {
-      members.push(await scoreJudgeMember(db, member, content));
+      members.push(await scoreJudgeMember(db, member, content, options));
     } else if (member.kind === "pattern") {
       members.push(await scorePatternMember(db, member, content));
     } else {
@@ -311,13 +328,22 @@ export async function computeGroupScore(db: Db, group: ScorerGroupRow, content: 
   return { score, gatedBy, members };
 }
 
-async function scoreJudgeMember(db: Db, member: ScorerGroupMember, content: GroupScoringContent): Promise<MemberScore> {
+async function scoreJudgeMember(
+  db: Db,
+  member: ScorerGroupMember,
+  content: GroupScoringContent,
+  options: { reserveOnlineBudget?: boolean } = {}
+): Promise<MemberScore> {
   const base = { kind: member.kind, refId: member.refId, weight: member.weight, gate: member.gate };
   const settings = await getEvaluationSettingsRow(db, member.refId);
   if (!settings) {
     return { ...base, name: member.refId, goodness: null, detail: "-", error: "Scorer no longer exists" };
   }
   const name = settings.name ?? member.refId;
+  // Lazily, per call actually made - see BUDGET_EXHAUSTED_ERROR's comment.
+  if (options.reserveOnlineBudget && !(await reserveOnlineJudgeCall(db))) {
+    return { ...base, name, goodness: null, detail: "-", error: BUDGET_EXHAUSTED_ERROR };
+  }
   try {
     const { rating, justification } = await scoreAgainstCriteria(
       {
@@ -465,26 +491,20 @@ export async function runScorerGroupsOnline(
   for (const group of groups) {
     const online = group.online!;
     if (!passesSampleRate(online.sampleRate)) continue;
-    // Judge members are real LLM spend at the sample rate, so they draw from the SAME online
-    // judge budget evaluators reserve from (reserveOnlineJudgeCall) - one slot per judge member,
-    // taken up front. A refused reservation skips the whole group for this trace: a partial
-    // panel would score the group on a different recipe than the one configured.
-    const judgeMemberCount = group.members.filter(m => m.kind === "judge").length;
-    let budgetOk = true;
-    for (let i = 0; i < judgeMemberCount; i++) {
-      if (!(await reserveOnlineJudgeCall(db))) {
-        budgetOk = false;
-        break;
-      }
-    }
-    if (!budgetOk) continue;
     try {
-      const result = await computeGroupScore(db, group, {
-        input: inputText,
-        output: outputText,
-        traceId: ctx.traceId,
-        toolCalls: trace.toolCalls,
-      });
+      // Judge members draw from the shared online judge budget, reserved lazily per call
+      // inside scoreJudgeMember; a truncated panel aggregates to no score at all.
+      const result = await computeGroupScore(
+        db,
+        group,
+        {
+          input: inputText,
+          output: outputText,
+          traceId: ctx.traceId,
+          toolCalls: trace.toolCalls,
+        },
+        { reserveOnlineBudget: true }
+      );
       if (result.score === null) continue;
       const justification = describeGroupScore(result, result.members);
 

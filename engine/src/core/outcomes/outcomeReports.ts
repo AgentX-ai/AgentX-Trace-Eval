@@ -72,15 +72,6 @@ export async function createOutcomeReport(db: Db, input: CreateOutcomeReportInpu
   return toWire(row);
 }
 
-export async function listOutcomeReportRows(db: Db): Promise<OutcomeReportRow[]> {
-  const cond = eq(db.schema.outcomeReports.projectId, db.projectId);
-  const rows =
-    db.kind === "sqlite"
-      ? db.db.select().from(db.schema.outcomeReports).where(cond).all()
-      : await db.db.select().from(db.schema.outcomeReports).where(cond);
-  return rows as OutcomeReportRow[];
-}
-
 export async function listOutcomeReportsForTrace(db: Db, traceId: string): Promise<OutcomeReportRow[]> {
   const cond = and(eq(db.schema.outcomeReports.projectId, db.projectId), eq(db.schema.outcomeReports.traceId, traceId));
   const rows =

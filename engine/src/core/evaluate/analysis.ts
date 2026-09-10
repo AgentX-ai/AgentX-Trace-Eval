@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { getRunRowFull, getRunResults, type RunResultRow } from "./runs.js";
-import { resolvePlatformModel, callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
+import { resolvePlatformModel, callJudgeJson } from "./judge.js";
 import { analysisNarrativeSchemaProperties, type AnalysisNarrative } from "@agentx/judge-core";
 
 // Self-host's own "Analyze" (AI Analysis) feature - see the plan's Context section for why this
@@ -82,8 +82,10 @@ function computeStatistics(results: RunResultRow[]): EvaluationAnalysisStatistic
   return {
     numberOfRuns,
     averageRating,
-    minRating: numberOfRuns ? Math.min(...ratings) : 0,
-    maxRating: numberOfRuns ? Math.max(...ratings) : 0,
+    // reduce, not Math.min(...ratings): the spread puts every rating on the call stack, which
+    // overflows on large runs.
+    minRating: numberOfRuns ? ratings.reduce((min, r) => (r < min ? r : min)) : 0,
+    maxRating: numberOfRuns ? ratings.reduce((max, r) => (r > max ? r : max)) : 0,
     ratingVariance: variance,
   };
 }
@@ -306,14 +308,33 @@ export async function runEvaluationAnalysis(
     return { evaluationId, status: "failed", judgeModel };
   }
 
-  const judgeEvidence = await scoreSampleWithJudges(sample, judgeModels);
-
-  const judgeResult = await callJudgeJson({
-    model: judgeModel,
-    jsonSchema: ANALYSIS_JSON_SCHEMA,
-    userMessage: buildJudgePrompt(judgeEvidence, statistics, judgeModels.length),
-    maxTokens: 3000,
-  });
+  // Judge calls can throw outright (missing key, provider outage) - persist the failure on the
+  // existing failed-row path instead of letting the request 500 with nothing recorded.
+  let judgeEvidence: JudgeEvidenceSampleItem[] = [];
+  let judgeResult: Awaited<ReturnType<typeof callJudgeJson>>;
+  try {
+    judgeEvidence = await scoreSampleWithJudges(sample, judgeModels);
+    judgeResult = await callJudgeJson({
+      model: judgeModel,
+      jsonSchema: ANALYSIS_JSON_SCHEMA,
+      userMessage: buildJudgePrompt(judgeEvidence, statistics, judgeModels.length),
+      maxTokens: 3000,
+    });
+  } catch (err) {
+    const row: EvaluationAnalysisRow = {
+      evaluationId,
+      status: "failed",
+      judgeModel,
+      judgeModels,
+      analysis: null,
+      statistics,
+      judgeEvidence,
+      error: err instanceof Error ? err.message : String(err),
+      createdAt: now,
+    };
+    await upsertEvaluationAnalysisRow(db, row);
+    return { evaluationId, status: "failed", judgeModel };
+  }
   // judgeResult.payload's own type (judge-core's JudgeCallResult) is `unknown` - a parsed JSON
   // object on success, or null on failure - never actually guaranteed to be the right shape at
   // runtime (the judge model's raw response only *should* match jsonSchema, an LLM call can always

@@ -3,7 +3,7 @@ import { traceStoreFor } from "../trace/store/index.js";
 import { getTraceRow, type TraceRow } from "../trace/ingest.js";
 import { reconstructMessages } from "./portability.js";
 import { getDataset, updateDataset, extractSimilarityConfig, extractCodeScorers } from "./datasets.js";
-import { resolvePlatformModel, callJudgeJson, computeEmbedding, computeEmbeddings, DEFAULT_JUDGE_MODEL } from "./judge.js";
+import { resolvePlatformModel, callJudgeJson, computeEmbedding, computeEmbeddings } from "./judge.js";
 import { extractText } from "../monitor/events.js";
 import { cosine, normalizeText } from "../shared/vector.js";
 

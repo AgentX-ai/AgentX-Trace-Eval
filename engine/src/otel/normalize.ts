@@ -34,6 +34,11 @@ function idToHex(value: unknown): string | null {
   if ((value.length === 32 || value.length === 16) && /^[0-9a-fA-F]+$/.test(value)) {
     return value.toLowerCase();
   }
+  // Strict base64 charset check before decoding: Buffer.from silently skips invalid characters,
+  // so a garbage id would decode to garbage hex instead of being rejected as no id at all.
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+    return null;
+  }
   return Buffer.from(value, "base64").toString("hex");
 }
 

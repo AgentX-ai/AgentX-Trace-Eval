@@ -48,11 +48,16 @@ type EventRow = {
 };
 
 export async function getAttentionDigest(db: Db): Promise<AttentionDigest> {
-  const signals = (await listSignalRows(db)).filter(row => row.polarity === "failure" && row.status === "open");
+  // "open" plus "reopened": upsertSignal moves a resolved/archived signal to "reopened" when it
+  // recurs, and a recurring signal is exactly what needs attention (signalCountsByPatternKey
+  // already counts both as open).
+  const signals = (await listSignalRows(db)).filter(
+    row => row.polarity === "failure" && (row.status === "open" || row.status === "reopened")
+  );
   const openSignalCount = signals.length;
   const totalOccurrences = signals.reduce((sum, row) => sum + (row.occurrenceCount ?? 1), 0);
 
-  // Rank by recent volume first so the digest (capped) carries the busiest signals; the
+  // Rank by lifetime occurrence volume so the digest (capped) carries the busiest signals; the
   // dashboard re-sorts within these for its "Lowest score" view.
   const top = [...signals]
     .sort((a, b) => (b.occurrenceCount ?? 1) - (a.occurrenceCount ?? 1))

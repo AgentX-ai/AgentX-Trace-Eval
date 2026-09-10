@@ -1,4 +1,5 @@
 import { and, asc, count, eq, gt, gte, type SQL } from "drizzle-orm";
+import { traceStoreFor } from "../trace/store/index.js";
 import type { Db } from "../../storage/db.js";
 
 // Bulk data egress (P2.1 of the enterprise improvement plan): every project-scoped table an
@@ -114,6 +115,11 @@ function buildWhere(db: Db, entity: ExportEntity, since: Date | null, cursor: st
 }
 
 export async function countExportRows(db: Db, entity: ExportEntity, since: Date | null = null): Promise<number> {
+  if (entity === "traces") {
+    // Spans live behind the trace store - on the ClickHouse tier the relational table is
+    // empty, and counting it reported a "successful" backup of zero spans.
+    return traceStoreFor(db).countAll(since);
+  }
   const t = entityTable(db, entity);
   const q = (db.db as any).select({ n: count() }).from(t).where(buildWhere(db, entity, since, null));
   const rows: { n: number | string }[] = db.kind === "sqlite" ? q.all() : await q;
@@ -126,6 +132,12 @@ export async function fetchExportBatch(
   since: Date | null,
   cursor: string | null
 ): Promise<Record<string, unknown>[]> {
+  if (entity === "traces") {
+    return (await traceStoreFor(db).listForExport({ since, cursor, limit: EXPORT_BATCH })) as unknown as Record<
+      string,
+      unknown
+    >[];
+  }
   const t = entityTable(db, entity);
   const q = (db.db as any)
     .select()

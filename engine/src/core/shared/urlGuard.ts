@@ -1,5 +1,7 @@
-// Shared outbound-URL guard for every surface that fetches a caller-supplied URL server-side
-// (playground tool endpoints, MCP servers, connectors, webhooks, external scorers).
+// Shared outbound-URL guard for every surface that fetches a caller-supplied URL server-side.
+// Importers: playground tool endpoints (core/evaluate/playground.ts), MCP servers
+// (core/evaluate/mcp.ts), monitor webhooks (core/monitor/webhooks.ts), and custom/external
+// scorer URLs (routes/agentMonitoringDashboard.ts).
 //
 // The self-host posture is deliberate: loopback and RFC1918 targets are ALLOWED - operators
 // legitimately point tools at their own local vLLM/Ollama/webhook receivers, and blocking

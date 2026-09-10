@@ -277,11 +277,20 @@ export async function getMonitorMetrics(
     if (kind === "llm") {
       bucket.spansLlm++;
       if (row.model) facetModels.add(row.model);
-    } else if (kind === "tool" || (row.parentSpanId && toolNames.has(row.name))) {
+    } else if (kind === "tool") {
       bucket.spansTool++;
     } else if (kind === "retrieval") {
       bucket.spansRetrieval++;
+    } else if (kind === "chain" && row.parentSpanId && toolNames.has(row.name)) {
+      // The name set really is a LAST resort now (see its comment): only a span the classifier
+      // could say nothing about ("chain") falls back to name matching. It previously overrode
+      // stated retrieval/memory kinds AND disagreed with rollups.ts, so the same span counted
+      // as retrieval on the unfiltered dashboard and as tool the moment a filter was applied.
+      bucket.spansTool++;
     } else {
+      // "memory" (and every other minor kind) deliberately counts as other for now - the
+      // bucket columns are wire shape, and a dedicated memory metric belongs to the memory
+      // probe work (docs/memory-probe-benchmark-plan.md), not an ad hoc field.
       bucket.spansOther++;
     }
     if (!row.parentSpanId) {

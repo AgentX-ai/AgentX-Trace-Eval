@@ -39,3 +39,9 @@ Control plane: normal Postgres/SQLite backups, plus the NDJSON export surface (R
 ClickHouse: `clickhouse-backup` or filesystem snapshots of /var/lib/clickhouse; spans are
 append-only, so incremental strategies work well. Restore drill: boot the compose profile
 against restored volumes and check `/metrics` plus a trace list.
+
+Restoring from the NDJSON export by re-POSTing traces to `/ingest` is LOSSY: rows get new ids
+and restore-time timestamps, and everything keyed on the old trace ids (outcome reports, review
+labels, monitor events) ends up orphaned. Treat the export as portability/offline-analysis
+data; database-level restore (pg_dump / SQLite file copy / ClickHouse backup) is the fidelity
+path.
