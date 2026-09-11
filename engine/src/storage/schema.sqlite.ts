@@ -205,6 +205,11 @@ export const evaluationRuns = sqliteTable("evaluation_runs", {
   // judge.ts's generateSmokeTestVariants) for questions with main_question.smokeTest.enabled,
   // frozen for the lifetime of the run so a later call can't see it change mid-run.
   smokeTestVariants: text("smoke_test_variants", { mode: "json" }),
+  // The dataset's questions AS OF run creation. Scoring keys into questions by POSITION
+  // (questionIndex), so grading against the live dataset meant a case deleted mid-run silently
+  // re-pointed every later index at the wrong expected answer. Null on legacy runs = fall back
+  // to the live dataset, exactly the old behavior.
+  questionsSnapshot: text("questions_snapshot", { mode: "json" }),
   status: text("status").notNull().default("in_progress"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   projectId: text("project_id"),
@@ -1047,13 +1052,20 @@ export const authOrganizations = sqliteTable("auth_organization", {
   metadata: text("metadata"),
 });
 
-export const authMembers = sqliteTable("auth_member", {
-  id: text("id").primaryKey(),
-  organizationId: text("organization_id").notNull(),
-  userId: text("user_id").notNull(),
-  role: text("role").notNull().default("member"),
-  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
-});
+export const authMembers = sqliteTable(
+  "auth_member",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id").notNull(),
+    userId: text("user_id").notNull(),
+    role: text("role").notNull().default("member"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  // One membership per (org, user): concurrent invite-accepts race the memberIn check, and
+  // duplicate rows double-count in the admin member tally. The accept path inserts with
+  // onConflictDoNothing against this index.
+  table => ({ orgUserUnique: uniqueIndex("auth_member_org_user").on(table.organizationId, table.userId) })
+);
 
 export const authInvitations = sqliteTable("auth_invitation", {
   id: text("id").primaryKey(),
@@ -1067,38 +1079,6 @@ export const authInvitations = sqliteTable("auth_invitation", {
   createdAt: integer("created_at", { mode: "timestamp_ms" }),
   inviterId: text("inviter_id").notNull(),
 });
-
-export type SqliteSchema = {
-  projects: typeof projects;
-  traces: typeof traces;
-  agents: typeof agents;
-  datasets: typeof datasets;
-  evaluationSettings: typeof evaluationSettings;
-  evaluationRuns: typeof evaluationRuns;
-  evaluationRunResults: typeof evaluationRunResults;
-  datasetVersions: typeof datasetVersions;
-  evaluationSettingsVersions: typeof evaluationSettingsVersions;
-  playgroundRuns: typeof playgroundRuns;
-  monitorPatterns: typeof monitorPatterns;
-  monitorSignalFeedback: typeof monitorSignalFeedback;
-  monitorProfiles: typeof monitorProfiles;
-  monitorSignals: typeof monitorSignals;
-  monitorEvents: typeof monitorEvents;
-  monitorClassifications: typeof monitorClassifications;
-  insightCaseEmbeddings: typeof insightCaseEmbeddings;
-  monitorOnlineEvaluators: typeof monitorOnlineEvaluators;
-  customEvaluators: typeof customEvaluators;
-  agentConnectors: typeof agentConnectors;
-  outcomeReports: typeof outcomeReports;
-  sessionScores: typeof sessionScores;
-  toolSchemas: typeof toolSchemas;
-  toolSchemaVersions: typeof toolSchemaVersions;
-  prompts: typeof prompts;
-  promptVersions: typeof promptVersions;
-  portabilityModels: typeof portabilityModels;
-  evaluationAnalyses: typeof evaluationAnalyses;
-  appSettings: typeof appSettings;
-};
 
 // Human-review queue for traces that did NOT raise a signal - the "annotation queue" half of
 // review. Signals arrive here implicitly (Review's signal stream); rows in THIS table are traces

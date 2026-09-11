@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { and, eq, inArray } from "drizzle-orm";
 import { asyncRouter } from "./asyncRouter.js";
 import { nanoid } from "nanoid";
 import { handleCasePreview, handleSuggestExpected, handleAddCase } from "./curationHandlers.js";
@@ -58,6 +59,7 @@ import {
   getAgentConnectorRow,
   testAgentConnectorConnection,
 } from "../core/evaluate/agentConnectors.js";
+import { outboundUrlProblem } from "../core/shared/urlGuard.js";
 import { startConnectorRun } from "../core/evaluate/connectorRun.js";
 import {
   createToolSchema,
@@ -571,9 +573,14 @@ evaluateDashboardRouter.post("/agent-connectors", async (req: Request, res: Resp
     res.status(400).json({ error: "url must be an http(s) URL" });
     return;
   }
+  const headerProblem = connectorHeaderProblem(body.headers);
+  if (headerProblem) {
+    res.status(400).json({ error: headerProblem });
+    return;
+  }
   const connector = await createAgentConnector(scopedDb(req), {
     name: body.name,
-    url: body.url,
+    url: String(body.url).trim(),
     headers: body.headers && typeof body.headers === "object" ? body.headers : undefined,
     timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : undefined,
   });
@@ -584,6 +591,11 @@ evaluateDashboardRouter.put("/agent-connectors/:id", async (req: Request, res: R
   const body = req.body ?? {};
   if (body.url !== undefined && !isHttpUrl(body.url)) {
     res.status(400).json({ error: "url must be an http(s) URL" });
+    return;
+  }
+  const putHeaderProblem = connectorHeaderProblem(body.headers);
+  if (putHeaderProblem) {
+    res.status(400).json({ error: putHeaderProblem });
     return;
   }
   const connector = await updateAgentConnector(scopedDb(req), req.params.id!, {
@@ -683,9 +695,11 @@ evaluateDashboardRouter.post("/playground/run", async (req: Request, res: Respon
     const ids = value.filter((id): id is string => typeof id === "string" && id.trim().length > 0);
     return ids.length > 0 ? ids : undefined;
   };
-  let result;
-  try {
-    result = await runPlayground(scopedDb(req), {
+  // No try/catch: runPlayground catches its own body and reports provider failures as
+  // { output: null, error } in a 200, and getPortabilityModel returns null (not a throw) for
+  // unknown models - anything that escapes IS a genuine engine fault and belongs to the
+  // async error handler as the 500 it is, not a masqueraded 502/400.
+  const result = await runPlayground(scopedDb(req), {
     model: body.model,
     messages: body.messages,
     query: body.query,
@@ -698,15 +712,9 @@ evaluateDashboardRouter.post("/playground/run", async (req: Request, res: Respon
     onlineEvaluatorIds: extractIds(body.onlineEvaluatorIds),
     additionalScorerIds: extractIds(body.additionalScorerIds),
     scorerGroupId: typeof body.scorerGroupId === "string" && body.scorerGroupId ? body.scorerGroupId : undefined,
-      maxTokens: typeof body.maxTokens === "number" ? body.maxTokens : undefined,
-      temperature: typeof body.temperature === "number" ? body.temperature : undefined,
-    });
-  } catch (err) {
-    // Same class and shape as /synthesize-cases: the common real-world failure here is a
-    // missing/invalid provider key, and it must not read as an engine fault (500).
-    res.status(502).json({ error: err instanceof Error ? err.message : "Playground run failed" });
-    return;
-  }
+    maxTokens: typeof body.maxTokens === "number" ? body.maxTokens : undefined,
+    temperature: typeof body.temperature === "number" ? body.temperature : undefined,
+  });
   res.status(200).json(result);
 });
 
@@ -954,15 +962,28 @@ evaluateDashboardRouter.patch("/tool-schemas/:id/test-endpoint", async (req: Req
   res.status(200).json(updated);
 });
 
-function isHttpUrl(value: unknown): boolean {
-  if (typeof value !== "string" || !value.trim()) return false;
-  try {
-    const url = new URL(value.trim());
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
+
+// A nested/array header value 201s at write time and then TypeErrors inside undici on every
+// connector call - a 200-case run completing with 200 identical "connector_error" results and
+// nothing saying the CONFIG was malformed. Strings only; explicit null clears.
+function connectorHeaderProblem(headers: unknown): string | null {
+  if (headers === undefined || headers === null) return null;
+  if (typeof headers !== "object" || Array.isArray(headers)) return "headers must be an object of string values";
+  for (const value of Object.values(headers as Record<string, unknown>)) {
+    if (typeof value !== "string") return "headers must be an object of string values";
   }
+  return null;
 }
+
+function isHttpUrl(value: unknown): boolean {
+  // The shared egress guard (core/shared/urlGuard.ts): http(s)-only, metadata hosts always
+  // refused, private/loopback refused under AGENTX_MULTI_TENANT. The local two-rule copy this
+  // replaced silently skipped the multi-tenant private-range rule, making connectors the one
+  // caller-supplied-URL surface a tenant could point at the operator's internal network.
+  if (typeof value !== "string" || !value.trim()) return false;
+  return outboundUrlProblem(value.trim()) === null;
+}
+
 
 // Remote MCP introspection for Register Tool (core/evaluate/mcp.ts): connect, tools/list, hand
 // the shapes back for review. headers = the dialog's key-value pairs (sent as HTTP headers -
@@ -1534,11 +1555,47 @@ function toResultWire(r: RunResultRow, evaluationSettingsQuestions: unknown, dat
 // always computed from the real result rows regardless, since the table's rating column reads
 // liveStatistics.averageRating, not results.length, and a rating of exactly 0 (e.g. an errored
 // result) must not be treated as "no rating yet" (0 !== null).
-async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) {
+// Latest gate verdict per run - the CI PASS/FAIL badge's data. Batched for the list route so
+// 50 rows cost one query, not 50.
+async function latestGateResults(db: Db, runIds: string[]): Promise<Map<string, boolean>> {
+  if (runIds.length === 0) return new Map();
+  const cond = and(inArray(db.schema.gateResults.runId, runIds), eq(db.schema.gateResults.projectId, db.projectId));
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db
+          .select({
+            runId: db.schema.gateResults.runId,
+            passed: db.schema.gateResults.passed,
+            createdAt: db.schema.gateResults.createdAt,
+          })
+          .from(db.schema.gateResults)
+          .where(cond)
+          .all()
+      : await db.db
+          .select({
+            runId: db.schema.gateResults.runId,
+            passed: db.schema.gateResults.passed,
+            createdAt: db.schema.gateResults.createdAt,
+          })
+          .from(db.schema.gateResults)
+          .where(cond)
+  ) as { runId: string; passed: boolean; createdAt: Date }[];
+  rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  const latest = new Map<string, boolean>();
+  for (const row of rows) latest.set(row.runId, row.passed); // later rows overwrite: latest wins
+  return latest;
+}
+
+async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean, gateResult?: "pass" | "fail" | null) {
   const scorerGroupId = (run as { scorerGroupId?: string | null }).scorerGroupId ?? null;
   const [dataset, evaluationSettings, results, analysisRow, scorerGroup] = await Promise.all([
     getDataset(db, run.datasetId),
-    getMergedEvaluationSettings(db, run.evaluationSettingsId ?? run.datasetId),
+    // A group-graded run was NOT graded by any evaluationSettings row - presenting the dataset
+    // twin as its config would contradict scorerGroupName right next to it. The dataset's own
+    // questions still resolve through `dataset` above.
+    scorerGroupId
+      ? Promise.resolve(null)
+      : getMergedEvaluationSettings(db, run.evaluationSettingsId ?? run.datasetId),
     getRunResults(db, run.id),
     getEvaluationAnalysisRow(db, run.id),
     scorerGroupId ? getScorerGroup(db, scorerGroupId) : Promise.resolve(null),
@@ -1619,6 +1676,8 @@ async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) 
       : undefined,
     evaluationSubject: run.evaluationSubject ?? undefined,
     runSource: run.runSource ?? "sdk",
+    // Latest recorded CI gate verdict, when one exists - the runs table's PASS/FAIL badge.
+    gateResult: gateResult ?? null,
     createdAt: run.createdAt,
     updatedAt: run.createdAt,
   };
@@ -1628,7 +1687,12 @@ evaluateDashboardRouter.get("/list", async (req: Request, res: Response) => {
   const { page, limit } = parsePageLimit(req);
   const allRows = await listRunRows(scopedDb(req));
   const { page: rows, pagination } = paginate(allRows, page, limit);
-  const evaluations = await Promise.all(rows.map(run => toEvaluateWire(scopedDb(req), run, false)));
+  const gateByRun = await latestGateResults(scopedDb(req), rows.map(run => run.id));
+  const evaluations = await Promise.all(
+    rows.map(run =>
+      toEvaluateWire(scopedDb(req), run, false, gateByRun.has(run.id) ? (gateByRun.get(run.id) ? "pass" : "fail") : null)
+    )
+  );
   res.status(200).json({ evaluations, pagination: { ...pagination, limit } });
 });
 
@@ -1638,6 +1702,12 @@ evaluateDashboardRouter.get("/:id", async (req: Request, res: Response) => {
     res.status(404).json({ error: "Evaluation not found" });
     return;
   }
-  const evaluation = await toEvaluateWire(scopedDb(req), run, true);
+  const gateByRun = await latestGateResults(scopedDb(req), [run.id]);
+  const evaluation = await toEvaluateWire(
+    scopedDb(req),
+    run,
+    true,
+    gateByRun.has(run.id) ? (gateByRun.get(run.id) ? "pass" : "fail") : null
+  );
   res.status(200).json(evaluation);
 });

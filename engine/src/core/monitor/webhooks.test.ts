@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { extractWebhookUrls, notifyWebhooks } from "./webhooks.js";
+import { extractWebhookUrls, notifyWebhooks, postWebhooks } from "./webhooks.js";
 
 // POSTs to an operator-supplied URL on every raised signal. Two properties matter more than the
 // payload: it must not block the caller, and a target that never answers must not hold a socket
@@ -117,6 +117,15 @@ describe("notifyWebhooks", () => {
     const before = received.length;
     notifyWebhooks([], signal);
     expect(received.length).toBe(before);
+  });
+
+  it("skips guarded URLs at send time and still delivers to legitimate targets", async () => {
+    // rules.ts hands its webhook-action URL to postWebhooks without going through
+    // extractWebhookUrls, so the send loop itself must refuse a metadata target.
+    received.length = 0;
+    postWebhooks(["http://169.254.169.254/latest/meta-data/", `${base}/guarded-ok`], { text: "x" });
+    await waitFor(() => received.some(r => r.path === "/guarded-ok"));
+    expect(received.map(r => r.path)).toEqual(["/guarded-ok"]);
   });
 
   it("gives up on a target that never responds instead of holding the socket open", async () => {

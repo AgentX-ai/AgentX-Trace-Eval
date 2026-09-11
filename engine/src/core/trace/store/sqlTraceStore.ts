@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gt, gte, isNull, isNotNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
+import { asc, and, count, desc, eq, gt, gte, isNull, isNotNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "../../../storage/db.js";
 import { EVAL_RUN_SOURCE } from "../evalTraffic.js";
 import type { RootsPageQuery, SpanWindowFilter, TraceRow, TraceStore } from "./traceStore.js";
@@ -137,11 +137,55 @@ export class SqlTraceStore implements TraceStore {
     const cond = and(eq(db.schema.traces.sessionId, sessionId), eq(db.schema.traces.projectId, db.projectId));
     // Capped: a runaway agent session with tens of thousands of spans must not pull them all
     // into the heap on every dialog open. 5000 is far beyond any real conversation.
+    // Oldest-first so the cap truncates the TAIL of a runaway session, not a storage-order-
+    // arbitrary subset - callers sort again, but they can only sort what they received.
     const rows =
       db.kind === "sqlite"
-        ? db.db.select().from(db.schema.traces).where(cond).limit(5000).all()
-        : await db.db.select().from(db.schema.traces).where(cond).limit(5000);
+        ? db.db.select().from(db.schema.traces).where(cond).orderBy(asc(db.schema.traces.createdAt)).limit(5000).all()
+        : await db.db.select().from(db.schema.traces).where(cond).orderBy(asc(db.schema.traces.createdAt)).limit(5000);
     return rows as TraceRow[];
+  }
+
+  async listForExport(args: { since?: Date | null; cursor?: string | null; limit: number }): Promise<TraceRow[]> {
+    const db = this.db;
+    const conds: SQL[] = [eq(db.schema.traces.projectId, db.projectId)];
+    if (args.since) conds.push(gte(db.schema.traces.createdAt, args.since));
+    if (args.cursor) conds.push(gt(db.schema.traces.id, args.cursor));
+    const rows =
+      db.kind === "sqlite"
+        ? db.db
+            .select()
+            .from(db.schema.traces)
+            .where(and(...conds))
+            .orderBy(asc(db.schema.traces.id))
+            .limit(args.limit)
+            .all()
+        : await db.db
+            .select()
+            .from(db.schema.traces)
+            .where(and(...conds))
+            .orderBy(asc(db.schema.traces.id))
+            .limit(args.limit);
+    return rows as TraceRow[];
+  }
+
+  async countAll(since?: Date | null): Promise<number> {
+    const db = this.db;
+    const conds: SQL[] = [eq(db.schema.traces.projectId, db.projectId)];
+    if (since) conds.push(gte(db.schema.traces.createdAt, since));
+    const rows = (
+      db.kind === "sqlite"
+        ? db.db
+            .select({ n: count() })
+            .from(db.schema.traces)
+            .where(and(...conds))
+            .all()
+        : await db.db
+            .select({ n: count() })
+            .from(db.schema.traces)
+            .where(and(...conds))
+    ) as { n: number | string }[];
+    return Number(rows[0]?.n ?? 0);
   }
 
   async listRecent(limit: number): Promise<TraceRow[]> {
@@ -149,8 +193,8 @@ export class SqlTraceStore implements TraceStore {
     const cond = eq(db.schema.traces.projectId, db.projectId);
     const rows =
       db.kind === "sqlite"
-        ? db.db.select().from(db.schema.traces).where(cond).limit(limit).all()
-        : await db.db.select().from(db.schema.traces).where(cond).limit(limit);
+        ? db.db.select().from(db.schema.traces).where(cond).orderBy(desc(db.schema.traces.createdAt)).limit(limit).all()
+        : await db.db.select().from(db.schema.traces).where(cond).orderBy(desc(db.schema.traces.createdAt)).limit(limit);
     return rows as TraceRow[];
   }
 

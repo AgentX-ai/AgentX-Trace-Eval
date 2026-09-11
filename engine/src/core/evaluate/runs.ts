@@ -118,10 +118,16 @@ export async function resolveAdditionalScorerConfigs(
 export async function resolveRunConfig(
   db: Db,
   datasetId: string,
-  evaluationSettingsId: string | null
+  evaluationSettingsId: string | null,
+  // The run's frozen questions (see evaluation_runs.questions_snapshot). Scoring keys into
+  // this array by POSITION, so it must be the array the run was created against - the live
+  // dataset drifts under a long run (a deleted case re-points every later index). Null =
+  // legacy run, live questions as before.
+  questionsSnapshot?: ResolvedRunConfig["questions"] | null
 ): Promise<ResolvedRunConfig> {
   const datasetRow = await getDatasetRow(db, datasetId);
-  const questions = (datasetRow?.questions as ResolvedRunConfig["questions"] | undefined) ?? [];
+  const questions =
+    questionsSnapshot ?? (datasetRow?.questions as ResolvedRunConfig["questions"] | undefined) ?? [];
 
   let settings: EvaluationSettingsRow | null = null;
   if (evaluationSettingsId) {
@@ -231,6 +237,7 @@ export async function initRun(
     runSource: input.runSource ?? "sdk",
     sdkInfo: input.sdk ?? null,
     smokeTestVariants,
+    questionsSnapshot: dataset.questions ?? null,
     status: "in_progress",
     createdAt: new Date(),
   };
@@ -350,7 +357,10 @@ async function scoreOneResult(
   // actually run - lets a code scorer assert on tool behavior (see codeScorer.ts's ScorerArgs).
   // One cheap local row read, skipped entirely for the common no-scorers case.
   let toolCalls: unknown;
-  if (item.traceId && config.codeScorers.length > 0) {
+  // Group pattern/custom members read toolCalls too - fetching only for the dataset's own
+  // code scorers left a group's tool-call conditions evaluating against nothing (a gated
+  // "must call escalate_to_human" pattern silently passed on every case).
+  if (item.traceId && (config.codeScorers.length > 0 || scorerGroup)) {
     const trace = await getTraceRowForScoring(db, item.traceId);
     if (trace && Array.isArray(trace.toolCalls) && trace.toolCalls.length > 0) {
       toolCalls = trace.toolCalls;
@@ -474,6 +484,12 @@ async function scoreOneResult(
     });
     judged.rating = groupResult.score;
     judged.justification = describeGroupScore(groupResult, groupResult.members);
+    if (groupResult.score === null) {
+      // No member scored (or a must-pass member could not run) - surface it as a judge error
+      // so the row lands as "skipped" with the group's explanation, instead of a scored-null
+      // row that liveStatistics counts in no bucket at all.
+      judged.judgeError = new Error(judged.justification || "The scorer group produced no score");
+    }
     for (const member of groupResult.members) {
       if (member.kind === "judge") {
         judgeScorerResults.push({
@@ -570,18 +586,31 @@ export async function appendResults(
     return null;
   }
   if (run.status === "completed" || run.status === "failed") {
-    throw new Error("Run is already in a terminal state");
+    const terminalErr = new Error("Run is already in a terminal state") as Error & { code?: string };
+    terminalErr.code = "conflict";
+    throw terminalErr;
   }
 
-  const config = await resolveRunConfig(db, run.datasetId, run.evaluationSettingsId);
+  const config = await resolveRunConfig(
+    db,
+    run.datasetId,
+    run.evaluationSettingsId,
+    (run as { questionsSnapshot?: ResolvedRunConfig["questions"] | null }).questionsSnapshot ?? null
+  );
   const additionalConfigs = await resolveAdditionalScorerConfigs(
     db,
     run.datasetId,
     (run.additionalScorerIds as string[] | null) ?? []
   );
-  const scorerGroup = (run as { scorerGroupId?: string | null }).scorerGroupId
-    ? await getScorerGroup(db, (run as { scorerGroupId?: string | null }).scorerGroupId!)
-    : null;
+  const runGroupId = (run as { scorerGroupId?: string | null }).scorerGroupId ?? null;
+  const scorerGroup = runGroupId ? await getScorerGroup(db, runGroupId) : null;
+  if (runGroupId && !scorerGroup) {
+    // Falling through to the dataset's own config would grade half the run on a different
+    // rubric than the half scored before the deletion - refuse loudly instead.
+    const err = new Error("The scorer group grading this run no longer exists") as Error & { code?: string };
+    err.code = "conflict";
+    throw err;
+  }
 
   let accepted = 0;
   let duplicates = 0;
@@ -972,6 +1001,12 @@ export async function failRun(db: Db, runId: string) {
   if (!run) {
     return null;
   }
+  // Terminal states are terminal, mirroring finalizeRun: a run that COMPLETED with scored
+  // results must not be flipped to "failed" by a late error in the driver (the connector
+  // runner's catch used to do exactly that on a post-finalize conflict).
+  if (run.status === "completed") {
+    return { runId, status: "completed" };
+  }
   const updateCond = and(eq(db.schema.evaluationRuns.id, runId), eq(db.schema.evaluationRuns.projectId, db.projectId));
   if (db.kind === "sqlite") {
     await db.db.update(db.schema.evaluationRuns).set({ status: "failed" }).where(updateCond);
@@ -1071,7 +1106,9 @@ export async function getRun(db: Db, runId: string) {
     runId: run.id,
     datasetId: run.datasetId,
     evaluationSettingsId: run.evaluationSettingsId,
-    scorerGroupId: runScorerGroup?.id ?? null,
+    // The STORED id, not the resolved row's - a deleted group must not erase which grader
+    // produced this run's ratings.
+    scorerGroupId: (run as { scorerGroupId?: string | null }).scorerGroupId ?? null,
     scorerGroupName: runScorerGroup?.name ?? null,
     additionalScorerIds: (run.additionalScorerIds as string[] | null) ?? null,
     scorerBreakdown,

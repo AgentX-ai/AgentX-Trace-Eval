@@ -136,7 +136,10 @@ export async function runConversationSimulation(
   // to the dashboard as an SSE event, so the transcript renders turn by turn).
   onTurn?: (turn: SimulationTurn, index: number) => void
 ): Promise<SimulationResult> {
-  const maxTurns = Math.max(1, Math.min(MAX_TURNS_CAP, input.maxTurns ?? DEFAULT_MAX_TURNS));
+  // NaN slides through Math.min/max unchanged, and `i < NaN` is false - a non-finite maxTurns
+  // produced a zero-turn "finished" simulation instead of a conversation.
+  const requestedTurns = Number.isFinite(input.maxTurns) ? (input.maxTurns as number) : DEFAULT_MAX_TURNS;
+  const maxTurns = Math.max(1, Math.min(MAX_TURNS_CAP, requestedTurns));
   const userModel = input.userModel?.trim() || DEFAULT_JUDGE_MODEL;
   const record = input.record !== false;
   const sessionId = record ? `sim-${nanoid(12)}` : null;
@@ -202,7 +205,16 @@ export async function runConversationSimulation(
         { maxTokens: input.maxTokens, temperature: input.temperature }
       );
       turn.latencyMs = Date.now() - start;
-      turn.agentMessage = completion.text;
+      if (completion.truncated) {
+        // The round cap cut the trajectory. An empty agentMessage pushed into history would
+        // poison every later turn (the persona reacts to silence, the rest of the conversation
+        // becomes fiction) and an empty-output span would trip the empty-response detector on
+        // synthetic traffic - so the turn carries an explicit marker instead of "".
+        turn.error = "Tool loop exceeded the round cap without a final answer";
+      }
+      turn.agentMessage = completion.truncated
+        ? completion.text || "(no final answer - the tool loop exceeded the round cap)"
+        : completion.text;
       if (completion.toolCalls.length > 0) turn.toolCalls = completion.toolCalls;
 
       if (record && sessionId) {
@@ -219,7 +231,7 @@ export async function runConversationSimulation(
         await ingestTrace(db, {
           name: agentName,
           input: { query: userTurn.message },
-          output: completion.text,
+          output: turn.agentMessage,
           latency_ms: turn.latencyMs,
           model: input.model,
           session_id: sessionId,

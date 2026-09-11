@@ -149,7 +149,11 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
 
     // Scorer groups score live traffic the same fire-and-forget way - see
     // core/monitor/scorerGroups.ts's runScorerGroupsOnline.
-    runScorerGroupsOnline(db, { input: parsed.data.input, output: parsed.data.output }, { agentId, traceId }).catch(
+    runScorerGroupsOnline(
+      db,
+      { input: parsed.data.input, output: parsed.data.output, toolCalls: parsed.data.tool_calls },
+      { agentId, traceId }
+    ).catch(
       err => {
         logger.error({ err: err instanceof Error ? err.message : err }, "Scorer group scoring failed:");
       }

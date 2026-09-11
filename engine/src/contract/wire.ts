@@ -113,7 +113,7 @@ export const traceListItemSchema = z
     // Always present and always resolved (core/trace/spanKind.ts): the engine classifies each
     // span once so no reader has to re-derive it. Never optional - "chain" is the answer for a
     // span nothing could be said about, not an absent field.
-    spanKind: z.enum(["agent", "llm", "tool", "retrieval", "chain", "embedding", "reranker", "guardrail", "evaluator", "prompt"]),
+    spanKind: z.enum(["agent", "llm", "tool", "retrieval", "chain", "embedding", "reranker", "guardrail", "evaluator", "prompt", "memory"]),
     // "eval-run" for traffic produced inside an offline evaluation; absent for production.
     trafficSource: z.string().optional(),
     parentSpanId: z.string().optional(),
@@ -332,7 +332,8 @@ export const judgeScorerSchema = z
         sampleRate: z.number(),
         scopeMode: z.string(),
         agentIds: z.array(z.string()),
-        alertThreshold: z.number(),
+        // Null = chart-only, never raises a Signal - a first-class state, not an absence.
+        alertThreshold: z.number().nullable(),
         severity: z.string(),
         scope: z.string(),
         idleSeconds: z.number(),
@@ -407,10 +408,12 @@ export const insightsCoverageResponseSchema = z
 export const insightsProbeResponseSchema = z
   .object({
     query: z.string(),
-    verdict: z.enum(["covered", "adjacent", "gap", "untested-and-unasked"]),
+    verdict: z.enum(["covered", "adjacent", "gap", "untested-and-unasked", "warming"]),
     similarity: z.number(),
     bands: z.object({ covered: z.number(), related: z.number() }).strict(),
     degraded: z.boolean(),
+    // Cases still embedding - a negative verdict downgrades to "warming" while non-zero.
+    pendingCases: z.number(),
     nearestCases: z.array(
       z
         .object({
@@ -639,6 +642,121 @@ export const modelCatalogSchema = z
   })
   .strict();
 
+// ---- Scorer groups + session scores + coverage map (added with the features; the sibling
+// /insights/coverage being contracted while /coverage/map was not is exactly the drift this
+// file exists to prevent) ------------------------------------------------------------------
+
+export const scorerGroupWireSchema = z
+  .object({
+    _id: z.string(),
+    name: z.string(),
+    description: z.string().optional(),
+    members: z.array(
+      z
+        .object({
+          kind: z.enum(["judge", "pattern", "custom"]),
+          refId: z.string(),
+          weight: z.number(),
+          gate: z.boolean(),
+        })
+        .strict()
+    ),
+    online: z
+      .object({
+        enabled: z.boolean(),
+        sampleRate: z.number(),
+        alertThreshold: z.number().nullable(),
+        severity: z.string(),
+        scope: z.enum(["trace", "session"]).optional(),
+        idleSeconds: z.number().optional(),
+      })
+      .strict()
+      .nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
+
+export const scorerGroupsResponseSchema = z.object({ scorerGroups: z.array(scorerGroupWireSchema) }).strict();
+
+export const scorerGroupRatingsResponseSchema = z
+  .object({
+    window: z.string(),
+    points: z.array(
+      z
+        .object({ label: z.string(), ts: z.number(), averageRating: z.number().nullable(), count: z.number() })
+        .strict()
+    ),
+  })
+  .strict();
+
+// POST /agent-monitoring/session-sweep/run - the SDK's client.monitor.sessions.run_sweep().
+export const sessionSweepRunResponseSchema = z
+  .object({
+    judged: z.number(),
+    // Present (true) when a sweep was already in flight and this call did nothing.
+    skipped: z.boolean().optional(),
+  })
+  .strict();
+
+export const sessionScoresResponseSchema = z
+  .object({
+    scores: z.array(
+      z
+        .object({
+          _id: z.string(),
+          sessionId: z.string(),
+          kind: z.string(),
+          rating: z.number().nullable(),
+          justification: z.string().nullable(),
+          driftSpanId: z.string().nullable(),
+          findings: z.array(
+            z
+              .object({
+                spanId: z.string().nullable(),
+                spanIndex: z.number(),
+                text: z.string(),
+                tag: z.string(),
+              })
+              .strict()
+          ),
+          spanCount: z.number(),
+          judgeModel: z.string(),
+          createdAt: z.string(),
+        })
+        .strict()
+    ),
+  })
+  .strict();
+
+export const insightsCoverageMapResponseSchema = z
+  .object({
+    window: z.string(),
+    datasetIds: z.array(z.string()),
+    insufficientData: z.boolean(),
+    degradedReason: z.string().nullable(),
+    caseEmbeddingsPending: z.number(),
+    traceEmbeddingsPending: z.number(),
+    points: z.array(
+      z
+        .object({
+          x: z.number(),
+          y: z.number(),
+          source: z.enum(["production", "dataset"]),
+          topic: z.string(),
+          query: z.string(),
+          traceId: z.string().nullable().optional(),
+          datasetId: z.string().optional(),
+          caseIndex: z.number().optional(),
+        })
+        .strict()
+    ),
+    topics: z.array(
+      z.object({ topic: z.string(), productionCount: z.number(), datasetCount: z.number() }).strict()
+    ),
+  })
+  .strict();
+
 export const WIRE_CONTRACT = [
   {
     method: "get" as const,
@@ -773,6 +891,41 @@ export const WIRE_CONTRACT = [
     summary: "Dataset coverage of the topics production actually produces",
     response: insightsCoverageResponseSchema,
     name: "InsightsCoverageResponse",
+  },
+  {
+    method: "get" as const,
+    path: "/insights/coverage/map",
+    summary: "Production traffic and dataset cases in one joint question-space projection",
+    response: insightsCoverageMapResponseSchema,
+    name: "InsightsCoverageMap",
+  },
+  {
+    method: "get" as const,
+    path: "/agent-monitoring/scorer-groups",
+    summary: "Composed scorers - one weighted 0-10 score with must-pass gates",
+    response: scorerGroupsResponseSchema,
+    name: "ScorerGroupsList",
+  },
+  {
+    method: "get" as const,
+    path: "/agent-monitoring/scorer-groups/:id/ratings",
+    summary: "A scorer group's score history (trace and session verdicts)",
+    response: scorerGroupRatingsResponseSchema,
+    name: "ScorerGroupRatings",
+  },
+  {
+    method: "get" as const,
+    path: "/agent-monitoring/sessions/:sessionId/scores",
+    summary: "Session-level verdicts - evaluators, scorer groups, legacy coherence",
+    response: sessionScoresResponseSchema,
+    name: "SessionScores",
+  },
+  {
+    method: "post" as const,
+    path: "/agent-monitoring/session-sweep/run",
+    summary: "Run the idle-session sweep once, scoped to the caller's project",
+    response: sessionSweepRunResponseSchema,
+    name: "SessionSweepRun",
   },
   {
     method: "post" as const,

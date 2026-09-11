@@ -4,6 +4,7 @@ import { traceStoreFor } from "../trace/store/index.js";
 import { resolveRange, type MonitoringRange, type MonitoringWindow } from "./events.js";
 import { getAgentNamesById } from "./agents.js";
 import { listOnlineEvaluatorRows } from "./onlineEvaluators.js";
+import { listScorerGroups } from "./scorerGroups.js";
 import { SESSION_BASELINE_KEY } from "./builtinEvaluators.js";
 
 
@@ -131,6 +132,16 @@ export async function listSessions(db: Db, range: MonitoringRange): Promise<Sess
       evaluatorsById.set(evaluator.id, { name: evaluator.name, enabled: evaluator.enabled });
       if (evaluator.builtinKey === SESSION_BASELINE_KEY) baselineId = evaluator.id;
     }
+    // Session-scoped scorer GROUPS write verdicts to the same table under scorer-group:<id> -
+    // resolving them here keeps the Sessions table's judge column honest for a project that
+    // scores conversations with groups only. Keyed by the full kind so a group id can never
+    // collide with an evaluator id.
+    for (const group of await listScorerGroups(db)) {
+      evaluatorsById.set(`scorer-group:${group.id}`, {
+        name: `${group.name} (group)`,
+        enabled: !!group.online?.enabled,
+      });
+    }
     const scoreCond = and(
       inArray(db.schema.sessionScores.sessionId, sessionIds),
       eq(db.schema.sessionScores.projectId, db.projectId)
@@ -143,7 +154,13 @@ export async function listSessions(db: Db, range: MonitoringRange): Promise<Sess
     for (const score of scores) {
       // Legacy "coherence" rows (pre-baseline-judge) count as the baseline's own.
       const evaluatorId =
-        score.kind === "coherence" ? baselineId : score.kind.startsWith("online-eval:") ? score.kind.slice("online-eval:".length) : null;
+        score.kind === "coherence"
+          ? baselineId
+          : score.kind.startsWith("online-eval:")
+            ? score.kind.slice("online-eval:".length)
+            : score.kind.startsWith("scorer-group:")
+              ? score.kind
+              : null;
       if (!evaluatorId) continue;
       let perJudge = latestPerJudge.get(score.sessionId);
       if (!perJudge) {

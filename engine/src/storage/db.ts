@@ -456,6 +456,7 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
       run_source TEXT,
       sdk_info TEXT,
       smoke_test_variants TEXT,
+      questions_snapshot TEXT,
       status TEXT NOT NULL DEFAULT 'in_progress',
       created_at INTEGER NOT NULL,
       project_id TEXT
@@ -721,7 +722,6 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
       case_key TEXT NOT NULL,
       query TEXT NOT NULL,
       embedding TEXT,
-      input_embedding TEXT,
       embedding_full TEXT,
       model TEXT,
       created_at INTEGER NOT NULL
@@ -1029,6 +1029,13 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
       created_at INTEGER NOT NULL
     );
 
+    -- One membership per (org, user): dedupe any historical doubles first so the unique
+    -- index can build on upgraded installs; accept inserts use onConflictDoNothing.
+    DELETE FROM auth_member WHERE id NOT IN (
+      SELECT MIN(id) FROM auth_member GROUP BY organization_id, user_id
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS auth_member_org_user ON auth_member (organization_id, user_id);
+
     CREATE TABLE IF NOT EXISTS auth_invitation (
       id TEXT PRIMARY KEY,
       organization_id TEXT NOT NULL,
@@ -1099,6 +1106,7 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
     // pairwise_comparisons shipped before the both-orders pass existed; an install upgraded past
     // that point 500s on every new comparison without this (fresh DBs get it via CREATE TABLE).
     ["pairwise_comparisons", "ALTER TABLE pairwise_comparisons ADD COLUMN both_orders INTEGER NOT NULL DEFAULT 0"],
+    ["evaluation_runs", "ALTER TABLE evaluation_runs ADD COLUMN questions_snapshot TEXT"],
     ["monitor_classifications", "ALTER TABLE monitor_classifications ADD COLUMN input_embedding TEXT"],
     ["monitor_signal_feedback", "ALTER TABLE monitor_signal_feedback ADD COLUMN event_id TEXT"],
     ["monitor_profiles", "ALTER TABLE monitor_profiles ADD COLUMN topics_enabled INTEGER NOT NULL DEFAULT 0"],
@@ -1163,6 +1171,7 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
     ["outcome_reports", "ALTER TABLE outcome_reports ADD COLUMN is_negative INTEGER NOT NULL DEFAULT 0"],
     ["projects", "ALTER TABLE projects ADD COLUMN topics_enabled INTEGER NOT NULL DEFAULT 0"],
     ["projects", "ALTER TABLE projects ADD COLUMN coherence_sweep_enabled INTEGER NOT NULL DEFAULT 1"],
+    // dead column (kept in DDL, absent from drizzle by design - see the note below)
     ["projects", "ALTER TABLE projects ADD COLUMN disabled_builtin_patterns TEXT"],
     // Scorer opt-in flip: built-ins used to be on-by-default with a disabled list; now nothing
     // runs unless listed here. The old column is left in place (ignored) rather than migrated -
@@ -1819,6 +1828,7 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
       run_source TEXT,
       sdk_info JSONB,
       smoke_test_variants JSONB,
+      questions_snapshot JSONB,
       status TEXT NOT NULL DEFAULT 'in_progress',
       created_at TIMESTAMP NOT NULL,
       project_id TEXT
@@ -2084,7 +2094,6 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
       case_key TEXT NOT NULL,
       query TEXT NOT NULL,
       embedding JSONB,
-      input_embedding JSONB,
       embedding_full JSONB,
       model TEXT,
       created_at TIMESTAMP NOT NULL
@@ -2390,6 +2399,13 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
       created_at TIMESTAMP NOT NULL
     );
 
+    -- Mirrors the sqlite bootstrap: dedupe historical doubles, then enforce one membership
+    -- per (org, user); accept inserts use onConflictDoNothing.
+    DELETE FROM auth_member WHERE id NOT IN (
+      SELECT MIN(id) FROM auth_member GROUP BY organization_id, user_id
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS auth_member_org_user ON auth_member (organization_id, user_id);
+
     CREATE TABLE IF NOT EXISTS auth_invitation (
       id TEXT PRIMARY KEY,
       organization_id TEXT NOT NULL,
@@ -2408,6 +2424,7 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
     ALTER TABLE monitor_patterns ADD COLUMN IF NOT EXISTS scope_mode TEXT NOT NULL DEFAULT 'all';
     ALTER TABLE monitor_patterns ADD COLUMN IF NOT EXISTS agent_ids JSONB;
     ALTER TABLE pairwise_comparisons ADD COLUMN IF NOT EXISTS both_orders BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS questions_snapshot JSONB;
     ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS scorer_group_id TEXT;
     ALTER TABLE monitor_classifications ADD COLUMN IF NOT EXISTS input_embedding JSONB;
     ALTER TABLE monitor_profiles ADD COLUMN IF NOT EXISTS channels JSONB;
@@ -2454,6 +2471,12 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
     ALTER TABLE datasets ADD COLUMN IF NOT EXISTS code_scorers JSONB;
     ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS code_scorers JSONB;
     ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS code_scorer_results JSONB;
+    ALTER TABLE traces ADD COLUMN IF NOT EXISTS span_kind TEXT;
+    ALTER TABLE traces ADD COLUMN IF NOT EXISTS source TEXT;
+    ALTER TABLE auth_account ADD COLUMN IF NOT EXISTS issuer TEXT;
+    ALTER TABLE auth_invitation ADD COLUMN IF NOT EXISTS created_at TIMESTAMP;
+    UPDATE session_scores SET judge_model = 'unknown' WHERE judge_model IS NULL;
+    ALTER TABLE session_scores ALTER COLUMN judge_model SET NOT NULL;
     ALTER TABLE traces ADD COLUMN IF NOT EXISTS agent_id TEXT;
     ALTER TABLE traces ADD COLUMN IF NOT EXISTS project_id TEXT;
     ALTER TABLE agents ADD COLUMN IF NOT EXISTS project_id TEXT;

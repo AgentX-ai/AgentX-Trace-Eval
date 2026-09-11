@@ -1,8 +1,7 @@
-import { eq, gte, and } from "drizzle-orm";
+import { eq, gte, and, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import type { MonitoringWindow } from "./events.js";
-import { listEventsForTrace } from "./events.js";
-import { listOutcomeReportRows, type OutcomeReportRow } from "../outcomes/outcomeReports.js";
+import type { OutcomeReportRow } from "../outcomes/outcomeReports.js";
 import { krippendorffAlpha, alphaBand, MIN_ALPHA_ITEMS } from "./agreement.js";
 
 // Turns "trust the LLM judge" into a measured, falsifiable number: for every reported real-world
@@ -17,13 +16,49 @@ import { krippendorffAlpha, alphaBand, MIN_ALPHA_ITEMS } from "./agreement.js";
 // than inventing a second, different default.
 const LOW_RATING_THRESHOLD = 5;
 
+type VerdictEventRow = {
+  traceId: string | null;
+  signalId: string | null;
+  patternKey: string;
+  polarity: string;
+  onlineEvaluatorId: string | null;
+  customEvaluatorId: string | null;
+};
+
+// The same join surface as listEventsForTrace (events.ts), generalized to a batch: ONE inArray
+// query for every trace the calibration pass compares, grouped in JS, instead of a sequential
+// round trip per report.
+async function listEventsByTrace(db: Db, traceIds: string[]): Promise<Map<string, VerdictEventRow[]>> {
+  const byTrace = new Map<string, VerdictEventRow[]>();
+  if (traceIds.length === 0) {
+    return byTrace;
+  }
+  const cond = and(inArray(db.schema.monitorEvents.traceId, traceIds), eq(db.schema.monitorEvents.projectId, db.projectId));
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.monitorEvents).where(cond).all()
+      : await db.db.select().from(db.schema.monitorEvents).where(cond)
+  ) as VerdictEventRow[];
+  for (const row of rows) {
+    if (!row.traceId) continue;
+    const list = byTrace.get(row.traceId) ?? [];
+    list.push(row);
+    byTrace.set(row.traceId, list);
+  }
+  return byTrace;
+}
+
 // null = AgentX has no verdict to compare against at all (no monitor_events row for that trace,
 // or an unscored eval result) - excluded from agreement math entirely rather than silently
 // counted as "not flagged", which would inflate agreement with a report that isn't actually
 // falsifiable against anything AgentX did.
-async function resolveAgentxVerdict(db: Db, report: OutcomeReportRow): Promise<boolean | null> {
+async function resolveAgentxVerdict(
+  db: Db,
+  report: OutcomeReportRow,
+  eventsByTrace: Map<string, VerdictEventRow[]>
+): Promise<boolean | null> {
   if (report.traceId) {
-    const events = await listEventsForTrace(db, report.traceId);
+    const events = eventsByTrace.get(report.traceId) ?? [];
     if (events.length === 0) {
       return null;
     }
@@ -62,9 +97,10 @@ async function resolveAgentxVerdict(db: Db, report: OutcomeReportRow): Promise<b
 export type CalibrationResult = {
   window: MonitoringWindow;
   reportedCount: number;
-  // Labeled review-queue items inside the window (core/monitor/reviewQueue.ts). Structurally the
-  // same evidence as an outcome report - a human calling one trace good or bad - so they feed the
-  // same confusion matrix. Reported separately so the UI can say how much of the agreement number
+  // Labeled review-queue items (core/monitor/reviewQueue.ts) actually tallied in the window -
+  // good/bad labels on traces no outcome report already covered. Structurally the same evidence
+  // as an outcome report - a human calling one trace good or bad - so they feed the same
+  // confusion matrix. Reported separately so the UI can say how much of the agreement number
   // came from sampled human labels rather than production outcomes.
   reviewLabelCount: number;
   // Reports whose traceId/evaluationRunResultId has no corresponding AgentX verdict yet - not an
@@ -104,8 +140,8 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
   const cond = and(gte(db.schema.outcomeReports.reportedAt, since), eq(db.schema.outcomeReports.projectId, db.projectId));
   const reports = (
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.outcomeReports).where(cond).all()
-      : await db.db.select().from(db.schema.outcomeReports).where(cond)
+      ? db.db.select().from(db.schema.outcomeReports).where(cond).limit(50_000).all()
+      : await db.db.select().from(db.schema.outcomeReports).where(cond).limit(50_000)
   ) as OutcomeReportRow[];
 
   let noVerdict = 0;
@@ -134,10 +170,6 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
     }
   };
 
-  for (const report of reports) {
-    tally(await resolveAgentxVerdict(db, report), report.isNegative);
-  }
-
   // Sampled human labels: the same math, windowed on when the verdict was given. This is what
   // makes a review queue over ordinary traffic worth staffing - a judge quietly scoring bad
   // answers as good never produces an outcome report, but a sampled label catches it.
@@ -148,12 +180,43 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
   );
   const reviewLabels = (
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).all()
-      : await db.db.select().from(db.schema.reviewQueueItems).where(reviewCond)
+      ? db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).limit(50_000).all()
+      : await db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).limit(50_000)
   ) as { traceId: string; label: string | null }[];
+
+  const eventsByTrace = await listEventsByTrace(db, [
+    ...new Set([
+      ...reports.map(r => r.traceId).filter((id): id is string => id !== null),
+      ...reviewLabels.map(r => r.traceId),
+    ]),
+  ]);
+
+  // One ground truth per trace: a trace with several outcome reports (or a report AND a review
+  // label) used to contribute multiple rows to the same confusion matrix - inflating agreement
+  // on exactly the traces that got the most attention. First report per trace wins, and outcome
+  // reports outrank sampled labels (the ordering judgeTuning's evidence chain already uses).
+  // Deterministic: a bare SELECT's row order is unspecified (Postgres after vacuum
+  // especially) - sort by reportedAt so "first" means first in time, every request.
+  reports.sort((a, b) => a.reportedAt.getTime() - b.reportedAt.getTime());
+  const talliedTraces = new Set<string>();
+  for (const report of reports) {
+    // Run-result-keyed reports dedupe too: 5 retries of one ServiceNow POST against one eval
+    // result must contribute one matrix row, exactly like trace-keyed ground truth.
+    const dedupeKey = report.traceId ?? (report.evaluationRunResultId ? `rr:${report.evaluationRunResultId}` : null);
+    if (dedupeKey) {
+      if (talliedTraces.has(dedupeKey)) continue;
+      talliedTraces.add(dedupeKey);
+    }
+    tally(await resolveAgentxVerdict(db, report, eventsByTrace), report.isNegative);
+  }
+
+  let reviewLabelCount = 0;
   for (const item of reviewLabels) {
     if (item.label !== "good" && item.label !== "bad") continue;
-    tally(await resolveAgentxVerdict(db, { traceId: item.traceId } as OutcomeReportRow), item.label === "bad");
+    if (talliedTraces.has(item.traceId)) continue;
+    talliedTraces.add(item.traceId);
+    reviewLabelCount++;
+    tally(await resolveAgentxVerdict(db, { traceId: item.traceId } as OutcomeReportRow, eventsByTrace), item.label === "bad");
   }
 
   const comparedCount = truePositive + trueNegative + falsePositive + falseNegative;
@@ -169,7 +232,7 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
   return {
     window,
     reportedCount: reports.length,
-    reviewLabelCount: reviewLabels.length,
+    reviewLabelCount,
     noVerdictCount: noVerdict,
     comparedCount,
     agreementRate: comparedCount > 0 ? (truePositive + trueNegative) / comparedCount : null,

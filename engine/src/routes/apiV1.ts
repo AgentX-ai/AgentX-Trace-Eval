@@ -139,7 +139,21 @@ export function registerApiV1(app: Express, deps: ApiV1Deps): void {
         res.status(403).json({ error: "No organization membership" });
         return;
       }
-      organizationId = orgs[0] ?? null;
+      // A user in several orgs must SAY which one - orgs[0] out of an unordered membership
+      // query silently filed the project under an arbitrary organization.
+      const requestedOrg = (req.body ?? {}).organizationId;
+      if (typeof requestedOrg === "string" && requestedOrg) {
+        if (!orgs.includes(requestedOrg)) {
+          res.status(403).json({ error: "Not a member of that organization" });
+          return;
+        }
+        organizationId = requestedOrg;
+      } else if (orgs.length > 1) {
+        res.status(400).json({ error: "You belong to several organizations - pass organizationId to pick one." });
+        return;
+      } else {
+        organizationId = orgs[0] ?? null;
+      }
     }
     // Disabled mode deliberately allows keyless creation: /auth/config hands the default key to
     // anyone who asks, so requiring it here adds a step without adding protection - and every
@@ -204,6 +218,15 @@ export function registerApiV1(app: Express, deps: ApiV1Deps): void {
       const caller = provided ? await resolveProjectByApiKey(getDb(), provided) : null;
       if (!caller) {
         res.status(401).json({ error: "Provide a valid project API key (printed at engine startup)" });
+        return;
+      }
+      // A key deletes only ITS OWN project. Any-valid-key-deletes-anything meant one leaked
+      // staging key could irreversibly cascade-delete production; the dashboard already sends
+      // the target's own key (it adopts a project's key on switch), so nothing legitimate is
+      // lost. Callers holding another project's key genuinely have it - use it. 404, not 403:
+      // no cross-project existence oracle.
+      if (caller.id !== target.id) {
+        res.status(404).json({ error: "Project not found" });
         return;
       }
     }

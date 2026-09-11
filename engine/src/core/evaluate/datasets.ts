@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { and, desc, eq } from "drizzle-orm";
+import { sql, and, desc, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import type { CodeScorerConfig } from "./codeScorer.js";
 import { recordDatasetVersionIfChanged } from "./versions.js";
@@ -277,25 +277,27 @@ export async function listDatasetActivity(db: Db): Promise<Map<string, DatasetAc
     createdAt: Date;
   };
 
+  // Grouped in SQL: auto-versioned datasets accumulate thousands of version rows, and the
+  // list only ever needs the newest timestamp per dataset.
   const versionRows = (
     db.kind === "sqlite"
       ? db.db
           .select({
             datasetId: db.schema.datasetVersions.datasetId,
-            createdAt: db.schema.datasetVersions.createdAt,
+            createdAt: sql<Date>`max(${db.schema.datasetVersions.createdAt})`,
           })
           .from(db.schema.datasetVersions)
           .where(versionCond)
-          .orderBy(desc(db.schema.datasetVersions.createdAt))
+          .groupBy(db.schema.datasetVersions.datasetId)
           .all()
       : await db.db
           .select({
             datasetId: db.schema.datasetVersions.datasetId,
-            createdAt: db.schema.datasetVersions.createdAt,
+            createdAt: sql<Date>`max(${db.schema.datasetVersions.createdAt})`,
           })
           .from(db.schema.datasetVersions)
           .where(versionCond)
-          .orderBy(desc(db.schema.datasetVersions.createdAt))
+          .groupBy(db.schema.datasetVersions.datasetId)
   ) as VersionRow[];
 
   const runRows = (
@@ -312,6 +314,10 @@ export async function listDatasetActivity(db: Db): Promise<Map<string, DatasetAc
           .from(db.schema.evaluationRuns)
           .where(runCond)
           .orderBy(desc(db.schema.evaluationRuns.createdAt))
+          // Bounded: only the newest run per dataset is kept, and any dataset active in the
+          // last ~10k runs has it inside this window. A dataset idle for longer shows no
+          // last-run chip - honest degradation, not a full-table transfer per page load.
+          .limit(10_000)
           .all()
       : await db.db
           .select({
@@ -325,6 +331,7 @@ export async function listDatasetActivity(db: Db): Promise<Map<string, DatasetAc
           .from(db.schema.evaluationRuns)
           .where(runCond)
           .orderBy(desc(db.schema.evaluationRuns.createdAt))
+          .limit(10_000)
   ) as RunRow[];
 
   const activity = new Map<string, DatasetActivity>();

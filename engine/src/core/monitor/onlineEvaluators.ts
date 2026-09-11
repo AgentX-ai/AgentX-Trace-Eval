@@ -325,15 +325,26 @@ export async function reserveOnlineJudgeCall(db: Db): Promise<boolean> {
   if (!Number.isFinite(cap) || cap <= 0) return true;
   let granted = false;
   const reserve = async () => {
-    const day = new Date().toDateString();
+    // UTC day key and UTC midnight: stored createdAt is UTC, so a local-time window under- or
+    // over-seeded the count by the server's TZ offset and rolled the cap at local midnight.
+    const now = new Date();
+    const day = now.toISOString().slice(0, 10);
     const key = db.projectId ?? "";
     let entry = onlineJudgeSpend.get(key);
     if (!entry || entry.day !== day) {
-      const midnight = new Date();
-      midnight.setHours(0, 0, 0, 0);
+      const midnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
       const rows = await listEventsSince(db, midnight);
+      // Approximate judge calls made today: per-trace and per-session evaluator verdicts and
+      // failures, plus scorer-group JUDGE member verdicts (their patternKey embeds the member
+      // kind - pattern/custom members cost no judge call and are excluded). Restart-resistant:
+      // without the group terms, a mid-day restart re-seeded 0 and handed the cap out twice.
       const spent = rows.filter(
-        r => r.onlineEvaluatorId && (r.type === "online_eval_score" || r.type === "online_eval_judge_failure")
+        r =>
+          (r.onlineEvaluatorId &&
+            (r.type === "online_eval_score" ||
+              r.type === "online_eval_judge_failure" ||
+              r.type === "online_eval_session_score")) ||
+          (r.type === "scorer_group_member_score" && r.patternKey.includes(":judge:"))
       ).length;
       entry = { day, count: spent };
       onlineJudgeSpend.set(key, entry);

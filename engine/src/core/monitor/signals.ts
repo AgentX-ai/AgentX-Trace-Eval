@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { desc, and, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { listOccurrencesForSignal, extractText, type EventRow } from "./events.js";
 import { logger } from "../../log.js";
@@ -43,10 +43,16 @@ export type SignalRow = {
 // occurrenceEvidence (keyed by event id) is a separate, optional pass: upsertSignal overwrites the
 // signal's own summary/evidence on every repeat match (last-write-wins, see upsertSignal below), so
 // occurrence #1 and #2's captured text is otherwise gone the moment #3 arrives - only getSignal
-// (one signal, bounded cost) resolves it via resolveOccurrenceEvidence; listSignals (whole table,
-// unbounded) intentionally doesn't, to avoid an N-signals x M-occurrences trace-join on every table
-// load. rating/justification are cheap either way (already columns on the event row).
+// (one signal, at most OCCURRENCE_PAGE occurrences) resolves it via resolveOccurrenceEvidence;
+// listSignals (a page of signals, each capped at OCCURRENCE_PAGE occurrences in SQL) intentionally
+// doesn't, to avoid an N-signals x M-occurrences trace-join on every table load. rating/
+// justification are cheap either way (already columns on the event row).
 type OccurrenceEvidence = { query?: string; responsePreview?: string };
+
+// The per-signal occurrence bound both readers pass to listOccurrencesForSignal: the newest 50,
+// applied in SQL - more than any list/detail view renders, small enough that a long-lived signal
+// with thousands of events stays cheap to serve.
+const OCCURRENCE_PAGE = 50;
 
 function toWire(
   row: SignalRow,
@@ -110,6 +116,22 @@ export type DetectedSignal = {
 // Upsert deduped by (patternKey, agentId): a re-detected issue for the same pattern/agent
 // increments occurrenceCount and bumps lastSeenAt instead of creating a new row, mirroring the
 // hosted SaaS's upsertMonitoringSignal (agentMonitoringService.ts).
+
+// Evidence is a convenience excerpt for the Review queue, not an archive - the full payloads
+// live on the trace. Uncapped, one verbose agent put multi-hundred-KB blobs on signal rows the
+// signals table then fetched on every refresh.
+const EVIDENCE_FIELD_CHARS = 4000;
+function capEvidence(evidence: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!evidence) return evidence;
+  const capped: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(evidence)) {
+    const text = typeof value === "string" ? value : JSON.stringify(value) ?? "";
+    capped[key] =
+      text.length <= EVIDENCE_FIELD_CHARS ? value : `${text.slice(0, EVIDENCE_FIELD_CHARS)}\n[agentx.truncated]`;
+  }
+  return capped;
+}
+
 export async function upsertSignal(
   db: Db,
   detected: DetectedSignal,
@@ -148,7 +170,7 @@ export async function upsertSignal(
       rootCause: detected.rootCause ?? null,
       agentId,
       traceId: ctx.traceId ?? null,
-      evidence: ctx.evidence ?? null,
+      evidence: capEvidence(ctx.evidence) ?? null,
       occurrenceCount: 1,
       firstSeenAt: now,
       lastSeenAt: now,
@@ -157,8 +179,10 @@ export async function upsertSignal(
     // signal all arrive having seen no row; on Postgres one then violated
     // monitor_signals_pattern_key_agent_id and that detection was lost to a log line. Losing the
     // insert just means someone else created the row - fall through and count against theirs.
-    // Signals with no agentId still dedup through the SELECT alone (NULL never conflicts with
-    // NULL), unchanged; every signal raised for a real trace has an agent.
+    // Signals with no agentId have no such backstop: NULL never conflicts in the unique index,
+    // so two concurrent detections can each pass the SELECT and both insert - a rare duplicate
+    // signal row for agent-less patterns. Accepted; every signal raised for a real trace has an
+    // agent, so only trace-less detections can race here.
     const inserted = (
       db.kind === "sqlite"
         ? db.db.insert(db.schema.monitorSignals).values(row).onConflictDoNothing().returning({ id: db.schema.monitorSignals.id }).all()
@@ -176,7 +200,7 @@ export async function upsertSignal(
     summary: detected.summary,
     severity: detected.severity,
     ...(ctx.traceId ? { traceId: ctx.traceId } : {}),
-    ...(ctx.evidence ? { evidence: ctx.evidence } : {}),
+    ...(ctx.evidence ? { evidence: capEvidence(ctx.evidence) } : {}),
     // Incremented by the database, not read-modify-written here: two checks detecting the same
     // signal at once would otherwise both write the same count and lose one sighting.
     occurrenceCount: sql`${db.schema.monitorSignals.occurrenceCount} + 1`,
@@ -231,7 +255,7 @@ export async function upsertSignal(
     rootCause: detected.rootCause ?? existing?.rootCause ?? null,
     agentId,
     traceId: ctx.traceId ?? existing?.traceId ?? null,
-    evidence: ctx.evidence ?? existing?.evidence ?? null,
+    evidence: capEvidence(ctx.evidence) ?? existing?.evidence ?? null,
     occurrenceCount: (existing?.occurrenceCount ?? 0) + 1,
     firstSeenAt: existing?.firstSeenAt ?? now,
     lastSeenAt: now,
@@ -259,10 +283,13 @@ export async function signalCountsByPatternKey(db: Db): Promise<Map<string, { to
 
 export async function listSignalRows(db: Db): Promise<SignalRow[]> {
   const cond = eq(db.schema.monitorSignals.projectId, db.projectId);
+  // Bounded: interactive readers (the Overview digest polls this) keep at most a dozen rows,
+  // and a years-old install has no business materializing its whole signal history per poll.
+  // Newest-first so the cap keeps what those readers actually rank.
   const rows =
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.monitorSignals).where(cond).all()
-      : await db.db.select().from(db.schema.monitorSignals).where(cond);
+      ? db.db.select().from(db.schema.monitorSignals).where(cond).orderBy(desc(db.schema.monitorSignals.lastSeenAt)).limit(10000).all()
+      : await db.db.select().from(db.schema.monitorSignals).where(cond).orderBy(desc(db.schema.monitorSignals.lastSeenAt)).limit(10000);
   return rows as SignalRow[];
 }
 
@@ -285,7 +312,7 @@ export async function listSignals(
   if (effectivePolarity !== "all") filtered = filtered.filter(r => r.polarity === effectivePolarity);
   filtered.sort((a, b) => b.lastSeenAt.getTime() - a.lastSeenAt.getTime());
   const page = filtered.slice(0, limit);
-  const occurrencesByRow = await Promise.all(page.map(row => listOccurrencesForSignal(db, row.id)));
+  const occurrencesByRow = await Promise.all(page.map(row => listOccurrencesForSignal(db, row.id, OCCURRENCE_PAGE)));
   const agentNamesById = await getAgentNamesById(db, [
     ...page.map(row => row.agentId),
     ...occurrencesByRow.flatMap(occurrences => occurrences.map(e => e.agentId)),
@@ -325,7 +352,7 @@ export async function getSignal(db: Db, id: string) {
   if (!row) {
     return null;
   }
-  const occurrences = await listOccurrencesForSignal(db, row.id);
+  const occurrences = await listOccurrencesForSignal(db, row.id, OCCURRENCE_PAGE);
   const occurrenceEvidence = await resolveOccurrenceEvidence(db, occurrences);
   const agentNamesById = await getAgentNamesById(db, [row.agentId, ...occurrences.map(e => e.agentId)]);
   return toWire(row, occurrences, occurrenceEvidence, agentNamesById);
@@ -384,6 +411,9 @@ export async function updateSignal(db: Db, id: string, patch: UpdateSignalInput)
   } else {
     await db.db.update(db.schema.monitorSignals).set(setValues).where(updateCond);
   }
+  // Both return paths below serve the wire row back to the triage UI - resolve the agent name
+  // the same way listSignals/upsertSignal do, or the row loses its agent name after triage.
+  const agentNamesById = await getAgentNamesById(db, [updated.agentId]);
 
   // Human verdicts on judge-raised signals are calibration ground truth, and BOTH directions
   // are recorded here so no client can forget half the loop:
@@ -437,7 +467,7 @@ export async function updateSignal(db: Db, id: string, patch: UpdateSignalInput)
       // A wrong-judgement resolve that followed the correction dialog already has a richer
       // disagreement row on this event - the canned baseline must not overwrite it.
       if (!becameTriaged && (await hasCorrectionForEvent(db, id, newest.id).catch(() => false))) {
-        return toWire(updated);
+        return toWire(updated, [], undefined, agentNamesById);
       }
       await createFeedback(db, id, {
         metric: becameTriaged ? "confirmed" : "false-positive",
@@ -449,5 +479,5 @@ export async function updateSignal(db: Db, id: string, patch: UpdateSignalInput)
       }).catch(() => undefined);
     }
   }
-  return toWire(updated);
+  return toWire(updated, [], undefined, agentNamesById);
 }

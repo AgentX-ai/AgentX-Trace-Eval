@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, or } from "drizzle-orm";
+import { and, count, desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { Db } from "../../storage/db.js";
 import { traceStoreFor } from "../trace/store/index.js";
@@ -81,32 +81,24 @@ function toWire(row: ReviewRow, trace: TraceSummary | undefined) {
   };
 }
 
-async function listRows(db: Db): Promise<ReviewRow[]> {
-  const cond = or(eq(db.schema.reviewQueueItems.projectId, db.projectId), isNull(db.schema.reviewQueueItems.projectId));
-  if (db.kind === "sqlite") {
-    return db.db
-      .select()
-      .from(db.schema.reviewQueueItems)
-      .where(cond)
-      .orderBy(desc(db.schema.reviewQueueItems.createdAt))
-      .all() as ReviewRow[];
-  }
-  return (await db.db
-    .select()
-    .from(db.schema.reviewQueueItems)
-    .where(cond)
-    .orderBy(desc(db.schema.reviewQueueItems.createdAt))) as ReviewRow[];
-}
-
+// Project scoping is a plain eq, matching how calibration/tuning already read these rows: every
+// writer stamps db.projectId (queueTraceForReviewSerialized), so the old or(eq, isNull)
+// legacy-NULL tolerance matched rows no writer ever produces.
 async function getRow(db: Db, id: string): Promise<ReviewRow | undefined> {
-  const cond = and(
-    eq(db.schema.reviewQueueItems.id, id),
-    or(eq(db.schema.reviewQueueItems.projectId, db.projectId), isNull(db.schema.reviewQueueItems.projectId))
-  );
+  const cond = and(eq(db.schema.reviewQueueItems.id, id), eq(db.schema.reviewQueueItems.projectId, db.projectId));
   if (db.kind === "sqlite") {
     return db.db.select().from(db.schema.reviewQueueItems).where(cond).all()[0] as ReviewRow | undefined;
   }
   return (await db.db.select().from(db.schema.reviewQueueItems).where(cond))[0] as ReviewRow | undefined;
+}
+
+async function countPending(db: Db): Promise<number> {
+  const cond = and(eq(db.schema.reviewQueueItems.projectId, db.projectId), eq(db.schema.reviewQueueItems.status, "pending"));
+  const rows =
+    db.kind === "sqlite"
+      ? db.db.select({ pending: count() }).from(db.schema.reviewQueueItems).where(cond).all()
+      : await db.db.select({ pending: count() }).from(db.schema.reviewQueueItems).where(cond);
+  return Number(rows[0]?.pending ?? 0);
 }
 
 async function traceSummaries(db: Db, traceIds: string[]): Promise<Map<string, TraceSummary>> {
@@ -140,19 +132,48 @@ export type QueueForReviewResult =
   | { ok: true; item: ReturnType<typeof toWire> }
   | { ok: false; reason: "trace_not_found" | "already_queued" | "queue_full"; pending?: number };
 
+// Serialized per project: queueing is check-then-act (duplicate check + cap check before the
+// insert) and it is driven concurrently by fire-and-forget rules per trace - two traces
+// arriving together used to both pass the checks and both insert, exceeding the cap and
+// double-queueing one trace. Same promise-chain shape as curation's dataset writes.
+const queueChains = new Map<string, Promise<unknown>>();
+
 export async function queueTraceForReview(db: Db, input: QueueForReviewInput): Promise<QueueForReviewResult> {
+  const chainKey = db.projectId ?? "";
+  const previous = queueChains.get(chainKey) ?? Promise.resolve();
+  const run = previous.then(
+    () => queueTraceForReviewSerialized(db, input),
+    () => queueTraceForReviewSerialized(db, input)
+  );
+  queueChains.set(chainKey, run);
+  void run.finally(() => {
+    if (queueChains.get(chainKey) === run) queueChains.delete(chainKey);
+  });
+  return run;
+}
+
+async function queueTraceForReviewSerialized(db: Db, input: QueueForReviewInput): Promise<QueueForReviewResult> {
   const trace = (await traceStoreFor(db).getById(input.traceId)) as unknown as
     | (TraceSummary & { id: string; sessionId: string | null })
     | undefined;
   if (!trace) return { ok: false, reason: "trace_not_found" };
 
-  const existing = await listRows(db);
   // Re-queueing a trace already waiting for a verdict is a no-op, so a rule that re-fires on a
-  // replayed trace (or an impatient double click) can't create duplicate work.
-  if (existing.some(r => r.traceId === input.traceId && r.status === "pending")) {
+  // replayed trace (or an impatient double click) can't create duplicate work. Both checks are
+  // scoped SQL queries, not a full-table scan.
+  const dupCond = and(
+    eq(db.schema.reviewQueueItems.projectId, db.projectId),
+    eq(db.schema.reviewQueueItems.traceId, input.traceId),
+    eq(db.schema.reviewQueueItems.status, "pending")
+  );
+  const duplicate =
+    db.kind === "sqlite"
+      ? db.db.select({ id: db.schema.reviewQueueItems.id }).from(db.schema.reviewQueueItems).where(dupCond).limit(1).all()
+      : await db.db.select({ id: db.schema.reviewQueueItems.id }).from(db.schema.reviewQueueItems).where(dupCond).limit(1);
+  if (duplicate.length > 0) {
     return { ok: false, reason: "already_queued" };
   }
-  const pending = existing.filter(r => r.status === "pending").length;
+  const pending = await countPending(db);
   if (pending >= REVIEW_QUEUE_PENDING_CAP) {
     logger.warn(
       { pending, cap: REVIEW_QUEUE_PENDING_CAP, source: input.source },
@@ -208,14 +229,33 @@ export async function listReviewQueue(
   filter: { status?: string; source?: string } = {},
   limit = 100
 ) {
-  let rows = await listRows(db);
-  if (filter.status && filter.status !== "all") rows = rows.filter(r => r.status === filter.status);
-  if (filter.source && filter.source !== "all") rows = rows.filter(r => r.source === filter.source);
-  const page = await Promise.all(rows.slice(0, limit).map(row => backfillJudgeScore(db, row)));
+  // Filters and the page limit run in SQL; `pending` stays a queue-wide count (its own query)
+  // regardless of the filter, since it feeds the cap gauge, not the current page.
+  const conditions = [eq(db.schema.reviewQueueItems.projectId, db.projectId)];
+  if (filter.status && filter.status !== "all") conditions.push(eq(db.schema.reviewQueueItems.status, filter.status));
+  if (filter.source && filter.source !== "all") conditions.push(eq(db.schema.reviewQueueItems.source, filter.source));
+  const cond = and(...conditions);
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db
+          .select()
+          .from(db.schema.reviewQueueItems)
+          .where(cond)
+          .orderBy(desc(db.schema.reviewQueueItems.createdAt))
+          .limit(limit)
+          .all()
+      : await db.db
+          .select()
+          .from(db.schema.reviewQueueItems)
+          .where(cond)
+          .orderBy(desc(db.schema.reviewQueueItems.createdAt))
+          .limit(limit)
+  ) as ReviewRow[];
+  const page = await Promise.all(rows.map(row => backfillJudgeScore(db, row)));
   const traces = await traceSummaries(db, page.map(r => r.traceId));
   return {
     items: page.map(row => toWire(row, traces.get(row.traceId))),
-    pending: rows.filter(r => r.status === "pending").length,
+    pending: await countPending(db),
     cap: REVIEW_QUEUE_PENDING_CAP,
   };
 }
@@ -245,7 +285,7 @@ export async function labelReviewItem(db: Db, id: string, input: LabelReviewInpu
     status,
     reviewedAt: status === "pending" ? null : new Date(),
   };
-  const cond = eq(db.schema.reviewQueueItems.id, id);
+  const cond = and(eq(db.schema.reviewQueueItems.id, id), eq(db.schema.reviewQueueItems.projectId, db.projectId));
   if (db.kind === "sqlite") {
     await db.db.update(db.schema.reviewQueueItems).set(updated).where(cond);
   } else {
@@ -258,7 +298,7 @@ export async function labelReviewItem(db: Db, id: string, input: LabelReviewInpu
 export async function deleteReviewItem(db: Db, id: string): Promise<boolean> {
   const existing = await getRow(db, id);
   if (!existing) return false;
-  const cond = eq(db.schema.reviewQueueItems.id, id);
+  const cond = and(eq(db.schema.reviewQueueItems.id, id), eq(db.schema.reviewQueueItems.projectId, db.projectId));
   if (db.kind === "sqlite") {
     await db.db.delete(db.schema.reviewQueueItems).where(cond);
   } else {

@@ -36,10 +36,15 @@ export type SpanWire = {
   model?: string;
   toolCalls?: unknown;
   parentSpanId?: string;
+  // Engine-resolved kind (core/trace/spanKind.ts) - present on every wire span.
+  spanKind?: string;
 };
 
 function buildSpanLine(span: SpanWire, index: number, includeToolLines = true): string {
-  const parts = [`[${index}] ${span.name}${span.model ? ` (${span.model})` : ""}`];
+  // Memory and retrieval steps are labeled so a session judge reads them as what they are -
+  // "penalize unnecessary tool calls" criteria must not count a memory recall as a tool call.
+  const kindTag = span.spanKind === "memory" || span.spanKind === "retrieval" ? ` [${span.spanKind}]` : "";
+  const parts = [`[${index}] ${span.name}${kindTag}${span.model ? ` (${span.model})` : ""}`];
   const input = span.input !== undefined ? truncate(extractText(span.input), MAX_TEXT_PER_SPAN) : "";
   const output = span.output !== undefined ? truncate(extractText(span.output), MAX_TEXT_PER_SPAN) : "";
   if (input) parts.push(`  input: ${input}`);

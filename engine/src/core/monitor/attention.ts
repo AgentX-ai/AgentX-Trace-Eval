@@ -48,11 +48,16 @@ type EventRow = {
 };
 
 export async function getAttentionDigest(db: Db): Promise<AttentionDigest> {
-  const signals = (await listSignalRows(db)).filter(row => row.polarity === "failure" && row.status === "open");
+  // "open" plus "reopened": upsertSignal moves a resolved/archived signal to "reopened" when it
+  // recurs, and a recurring signal is exactly what needs attention (signalCountsByPatternKey
+  // already counts both as open).
+  const signals = (await listSignalRows(db)).filter(
+    row => row.polarity === "failure" && (row.status === "open" || row.status === "reopened")
+  );
   const openSignalCount = signals.length;
   const totalOccurrences = signals.reduce((sum, row) => sum + (row.occurrenceCount ?? 1), 0);
 
-  // Rank by recent volume first so the digest (capped) carries the busiest signals; the
+  // Rank by lifetime occurrence volume so the digest (capped) carries the busiest signals; the
   // dashboard re-sorts within these for its "Lowest score" view.
   const top = [...signals]
     .sort((a, b) => (b.occurrenceCount ?? 1) - (a.occurrenceCount ?? 1))
@@ -89,7 +94,10 @@ export async function getAttentionDigest(db: Db): Promise<AttentionDigest> {
 
     const spark = new Array<number>(SPARK_DAYS).fill(0);
     for (const event of own) {
-      const dayIndex = SPARK_DAYS - 1 - Math.floor((todayStart - new Date(event.createdAt).setHours(0, 0, 0, 0)) / dayMs);
+      // Math.round, not floor: two LOCAL midnights are 23h or 25h apart across a DST
+      // transition, and a fixed 24h divisor shifted the whole pre-transition sparkline one
+      // day - a phantom week-over-week spike on the triage digest.
+      const dayIndex = SPARK_DAYS - 1 - Math.round((todayStart - new Date(event.createdAt).setHours(0, 0, 0, 0)) / dayMs);
       if (dayIndex >= 0 && dayIndex < SPARK_DAYS) spark[dayIndex] = (spark[dayIndex] ?? 0) + 1;
     }
     const lastWeek = spark.slice(0, 7).reduce((a, b) => a + b, 0);

@@ -87,8 +87,10 @@ export async function callJudgeJson({
   jsonSchema,
   maxTokens = 1200,
   strictSchema = false,
+  useChatCompletions = false,
   openaiClient,
   anthropicClient,
+  provider,
 }: {
   userMessage: string;
   model: string;
@@ -104,8 +106,16 @@ export async function callJudgeJson({
   strictSchema?: boolean;
   openaiClient?: OpenAI | null;
   anthropicClient?: Anthropic | null;
+  // OpenAI-COMPAT endpoints (Gemini's compat layer, OpenRouter, vLLM/Ollama/LM Studio custom
+  // baseURLs) implement /chat/completions, NOT the Responses API - routing them to
+  // responses.create 404s on every call, which silently skipped every result they judged.
+  useChatCompletions?: boolean;
+  // The caller's RESOLVED provider. When set it is authoritative: a custom/OpenAI-compat
+  // model whose id happens to start with "claude-" must NOT be re-derived onto the Anthropic
+  // client by the name heuristic below - the caller already routed it (baseUrl and all).
+  provider?: LlmProvider;
 }): Promise<JudgeCallResult> {
-  const first = await callJudgeJsonOnce({ userMessage, model, jsonSchema, maxTokens, strictSchema, openaiClient, anthropicClient });
+  const first = await callJudgeJsonOnce({ userMessage, model, jsonSchema, maxTokens, strictSchema, useChatCompletions, openaiClient, anthropicClient, provider });
   // One automatic retry on a recoverable model failure (empty response or unparseable JSON),
   // with the failure spelled out - a single flaky generation should not permanently lose a
   // verdict. Client-missing returns (payload null, no failureReason) are not retried: the
@@ -123,8 +133,10 @@ export async function callJudgeJson({
     jsonSchema,
     maxTokens,
     strictSchema,
+    useChatCompletions,
     openaiClient,
     anthropicClient,
+    provider,
   });
   return { ...retry, usage: sumUsage(first.usage, retry.usage), retried: true };
 }
@@ -135,21 +147,33 @@ async function callJudgeJsonOnce({
   jsonSchema,
   maxTokens,
   strictSchema,
+  useChatCompletions,
   openaiClient,
   anthropicClient,
+  provider: statedProvider,
 }: {
   userMessage: string;
   model: string;
   jsonSchema: object;
   maxTokens: number;
   strictSchema: boolean;
+  useChatCompletions?: boolean;
   openaiClient?: OpenAI | null;
   anthropicClient?: Anthropic | null;
+  provider?: LlmProvider;
 }): Promise<JudgeCallResult> {
-  const provider = getProviderForModel(model);
+  const provider = statedProvider ?? getProviderForModel(model);
 
   if (provider === "openai") {
-    return callOpenAIJson({ userMessage, model, jsonSchema, maxTokens, strictSchema, client: openaiClient ?? null });
+    return callOpenAIJson({
+      userMessage,
+      model,
+      jsonSchema,
+      maxTokens,
+      strictSchema,
+      useChatCompletions: useChatCompletions ?? false,
+      client: openaiClient ?? null,
+    });
   }
 
   if (!anthropicClient) {
@@ -207,6 +231,7 @@ async function callOpenAIJson({
   jsonSchema,
   maxTokens,
   strictSchema,
+  useChatCompletions,
   client,
 }: {
   userMessage: string;
@@ -214,6 +239,7 @@ async function callOpenAIJson({
   jsonSchema: object;
   maxTokens: number;
   strictSchema: boolean;
+  useChatCompletions?: boolean;
   client: OpenAI | null;
 }): Promise<JudgeCallResult> {
   if (!client) {
@@ -226,6 +252,37 @@ async function callOpenAIJson({
   const enhancedUserMessage = strictSchema
     ? userMessage
     : `${userMessage}\n\nIMPORTANT: Your response must strictly conform to this JSON schema:\n${JSON.stringify(jsonSchema, null, 2)}`;
+
+  // OpenAI-compat endpoints (Gemini compat, OpenRouter, vLLM/Ollama/...) implement
+  // /chat/completions only - the Responses API below is real-OpenAI-specific, and sending it
+  // to a compat baseURL 404s every judge call.
+  if (useChatCompletions) {
+    const response = await client.chat.completions.create({
+      model,
+      temperature: isReasoningModel(model) ? undefined : 0,
+      max_tokens: isReasoningModel(model) ? Math.max(maxTokens, 8192) : maxTokens,
+      messages: [{ role: "user", content: enhancedUserMessage }],
+      // json_object is the widely-implemented subset; strict json_schema is not, which is why
+      // callers already force strictSchema=false for compat routes.
+      response_format: { type: "json_object" as const },
+    });
+    const usage: TokenUsage | null =
+      typeof response.usage?.prompt_tokens === "number" && typeof response.usage?.completion_tokens === "number"
+        ? { inputTokens: response.usage.prompt_tokens, outputTokens: response.usage.completion_tokens }
+        : null;
+    const rawContent = response.choices?.[0]?.message?.content?.trim() || null;
+    if (!rawContent) {
+      console.error("judge-core: OpenAI-compat endpoint returned an empty response");
+      return { payload: null, usage, failureReason: "emptyResponse" };
+    }
+    try {
+      // Local/compat models fence JSON in markdown constantly - same tolerance as Anthropic.
+      return { payload: JSON.parse(stripJsonFences(rawContent)), usage };
+    } catch (error) {
+      console.error("judge-core: error parsing OpenAI-compat response", error);
+      return { payload: null, usage, error, failureReason: "parseError" };
+    }
+  }
 
   const response = await client.responses.create({
     model,
@@ -254,7 +311,8 @@ async function callOpenAIJson({
   }
 
   try {
-    return { payload: JSON.parse(rawContent), usage };
+    // Even real OpenAI json_object mode occasionally fences; stripping is a no-op otherwise.
+    return { payload: JSON.parse(stripJsonFences(rawContent)), usage };
   } catch (error) {
     console.error("judge-core: error parsing OpenAI response", error);
     return { payload: null, usage, error, failureReason: "parseError" };
@@ -472,7 +530,7 @@ export function analysisNarrativeSchemaProperties({ requireRatings = false }: { 
         weaknesses: { type: "array", items: { type: "string" } },
         rating: { type: "string", enum: ["high", "medium", "low"] },
       },
-      required: ["strengths", "weaknesses", "rating"],
+      required: ["strengths", "weaknesses", ...ratingIfRequired],
     },
   };
 }
@@ -561,14 +619,26 @@ export function computeBleuScore(expected: string | null | undefined, actual: st
   return Math.max(0, Math.min(1, brevityPenalty * Math.exp(logSum)));
 }
 
-function longestCommonSubsequenceLength(a: string[], b: string[]): number {
-  const dp: number[][] = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+// Bounded: two pasted 15k-word documents used to allocate a ~225M-cell dense matrix here and
+// OOM the process mid-run. The cap trades exactness on pathological inputs for survival; the
+// rolling two-row DP keeps memory at O(min side) for everything under it.
+const LCS_MAX_TOKENS = 4000;
+
+function longestCommonSubsequenceLength(aFull: string[], bFull: string[]): number {
+  const a = aFull.length > LCS_MAX_TOKENS ? aFull.slice(0, LCS_MAX_TOKENS) : aFull;
+  const b = bFull.length > LCS_MAX_TOKENS ? bFull.slice(0, LCS_MAX_TOKENS) : bFull;
+  let prev = new Array<number>(b.length + 1).fill(0);
+  let curr = new Array<number>(b.length + 1).fill(0);
   for (let i = 1; i <= a.length; i++) {
     for (let j = 1; j <= b.length; j++) {
-      dp[i]![j] = a[i - 1] === b[j - 1] ? dp[i - 1]![j - 1]! + 1 : Math.max(dp[i - 1]![j]!, dp[i]![j - 1]!);
+      curr[j] = a[i - 1] === b[j - 1] ? prev[j - 1]! + 1 : Math.max(prev[j]!, curr[j - 1]!);
     }
+    const swap = prev;
+    prev = curr;
+    curr = swap;
+    curr.fill(0);
   }
-  return dp[a.length]![b.length]!;
+  return prev[b.length]!;
 }
 
 // ROUGE-L: F1 of precision/recall over the longest common (in-order) subsequence.
@@ -586,8 +656,10 @@ export function computeRougeScore(expected: string | null | undefined, actual: s
   if (lcsLength === 0) {
     return 0;
   }
-  const recall = lcsLength / reference.length;
-  const precision = lcsLength / candidate.length;
+  // Denominators use the same capped lengths the LCS saw, so a capped comparison stays a true
+  // F1 over the compared window instead of shrinking toward 0 as the full texts grow.
+  const recall = lcsLength / Math.min(reference.length, LCS_MAX_TOKENS);
+  const precision = lcsLength / Math.min(candidate.length, LCS_MAX_TOKENS);
   return Math.max(0, Math.min(1, (2 * precision * recall) / (precision + recall)));
 }
 

@@ -1,15 +1,31 @@
 import { logger } from "../../log.js";
+import { maskSecret } from "../shared/maskSecret.js";
+import { outboundUrlProblem } from "../shared/urlGuard.js";
 // LangSmith-style "webhook automation" equivalent: monitor_profiles.channels was persisted from
 // the start (dashboard's per-agent settings dialog) but self-host never had any notification
 // delivery - nothing interpreted it. No new schema: a channel entry of the form `webhook:<url>`
 // is treated as a delivery target, everything else in `channels` (there's no other kind on
 // self-host yet) is left alone.
+//
+// Runtime egress guard (channels are stored free-form, so write-time validation alone can't
+// cover them): the shared outboundUrlProblem check - http(s) only, never a cloud metadata
+// endpoint, private targets gated only on multi-tenant. See core/shared/urlGuard.ts for the
+// full posture.
+
+
+const safeHost = (url: string): string => {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "(invalid url)";
+  }
+};
 
 export function extractWebhookUrls(channels: string[] | null | undefined): string[] {
   return (channels ?? [])
     .filter((c): c is string => typeof c === "string" && c.startsWith("webhook:"))
     .map(c => c.slice("webhook:".length).trim())
-    .filter(url => url.length > 0);
+    .filter(url => url.length > 0 && outboundUrlProblem(url) === null);
 }
 
 export type WebhookSignal = {
@@ -43,6 +59,10 @@ export function notifyWebhooks(urls: string[], signal: WebhookSignal): void {
   });
 }
 
+// A stored bad target skips on every signal it would have received - warned once per URL per
+// process, not once per skip.
+const warnedBlockedUrls = new Set<string>();
+
 // The delivery primitive both callers share: signal notifications above, and automation rules'
 // webhook action (core/monitor/rules.ts), which sends its own rule-shaped payload.
 export function postWebhooks(urls: string[], payload: Record<string, unknown>): void {
@@ -50,21 +70,44 @@ export function postWebhooks(urls: string[], payload: Record<string, unknown>): 
     return;
   }
   for (const url of urls) {
+    // Re-vetted at send time: extractWebhookUrls guards profile channels, but rules.ts hands its
+    // webhook-action URL straight in, and a URL stored before a posture change (e.g. flipping a
+    // deployment to multi-tenant) outlives its write-time check.
+    const problem = outboundUrlProblem(url);
+    if (problem) {
+      if (!warnedBlockedUrls.has(url)) {
+        warnedBlockedUrls.add(url);
+        logger.warn(`Monitor webhook target skipped (${url}): ${problem}`);
+      }
+      continue;
+    }
     void fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
+      // The URL was vetted, a redirect target was not - never follow one (it could bounce the
+      // POST to a metadata endpoint the guard just refused).
+      redirect: "manual",
     })
       .then(res => {
         // fetch only rejects on transport failure, so a 404 from a mistyped Slack URL was
         // indistinguishable from a delivered notification.
         if (!res.ok) {
-          logger.error(`Monitor webhook delivery failed (${url}): responded ${res.status}`);
+          // The URL IS the credential for Slack/Teams-style incoming hooks - log the host
+          // and a masked tail, never the whole thing, or every failing delivery exfiltrates
+          // it into the log stream.
+          logger.error(
+            { host: safeHost(url), url: maskSecret(url), status: res.status },
+            "Monitor webhook delivery failed"
+          );
         }
       })
       .catch(err => {
-        logger.error({ err: err instanceof Error ? err.message : err }, `Monitor webhook delivery failed (${url}):`);
+        logger.error(
+          { err: err instanceof Error ? err.message : err, host: safeHost(url), url: maskSecret(url) },
+          "Monitor webhook delivery failed"
+        );
       });
   }
 }

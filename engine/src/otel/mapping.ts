@@ -21,7 +21,14 @@ function strAttr(v: unknown): string | undefined {
 }
 
 function numAttr(v: unknown): number | undefined {
-  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  if (typeof v === "number" && Number.isFinite(v)) {
+    return v;
+  }
+  // Some exporters send counts as stringValue attributes - a string of digits is still a number.
+  if (typeof v === "string" && /^\d+$/.test(v)) {
+    return Number(v);
+  }
+  return undefined;
 }
 
 function coerceToArray(value: unknown): unknown[] | undefined {
@@ -53,11 +60,17 @@ function renderMessages(messages: unknown[] | undefined): string | undefined {
   if (!messages || messages.length === 0) {
     return undefined;
   }
-  const lines = (messages as Message[]).map(m => {
+  const lines = (messages as (Message | null | undefined)[]).map(m => {
+    // A null/garbage element is trivially producible on the wire (gen_ai.input.messages as
+    // the JSON string "[null]", or an empty AnyValue branch) - it must render as noise, not
+    // throw and 500 the whole OTLP export batch into an exporter retry loop.
+    if (!m || typeof m !== "object") {
+      return String(m ?? "");
+    }
     const role = m.role ?? "unknown";
     if (Array.isArray(m.parts)) {
       const text = m.parts
-        .map(p => (typeof p.content === "string" ? p.content : JSON.stringify(p.content)))
+        .map(p => (p && typeof p === "object" && typeof p.content === "string" ? p.content : JSON.stringify(p?.content ?? null)))
         .join(" ");
       return `${role}: ${text}`;
     }
@@ -198,15 +211,24 @@ function extractToolCalls(span: NormalizedSpan) {
 export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
   const attrs = span.attributes;
 
-  const model = strAttr(attrs["gen_ai.response.model"]) ?? strAttr(attrs["gen_ai.request.model"]);
+  // OpenInference (llm.model_name / llm.token_count.*) rides at the end of each chain - Arize
+  // instrumentations send those instead of the gen_ai.* semconv names.
+  const model =
+    strAttr(attrs["gen_ai.response.model"]) ?? strAttr(attrs["gen_ai.request.model"]) ?? strAttr(attrs["llm.model_name"]);
   const framework =
     strAttr(attrs["gen_ai.provider.name"]) ??
     strAttr(attrs["gen_ai.system"]) ??
     span.scopeName ??
     strAttr(span.resourceAttributes["service.name"]) ??
     "otel";
-  const inputTokens = numAttr(attrs["gen_ai.usage.input_tokens"]) ?? numAttr(attrs["gen_ai.usage.prompt_tokens"]);
-  const outputTokens = numAttr(attrs["gen_ai.usage.output_tokens"]) ?? numAttr(attrs["gen_ai.usage.completion_tokens"]);
+  const inputTokens =
+    numAttr(attrs["gen_ai.usage.input_tokens"]) ??
+    numAttr(attrs["gen_ai.usage.prompt_tokens"]) ??
+    numAttr(attrs["llm.token_count.prompt"]);
+  const outputTokens =
+    numAttr(attrs["gen_ai.usage.output_tokens"]) ??
+    numAttr(attrs["gen_ai.usage.completion_tokens"]) ??
+    numAttr(attrs["llm.token_count.completion"]);
   // Semconv names for prompt-caching usage - subsets of inputTokens above, same posture as the
   // Python SDK's own per-integration extraction (see core/trace/ingest.ts's ingestTraceSchema).
   const cacheReadTokens = numAttr(attrs["gen_ai.usage.cache_read_input_tokens"]);
@@ -230,7 +252,9 @@ export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
     (model ? ("llm" as const) : null);
 
   const latencyNanos = span.endTimeUnixNano - span.startTimeUnixNano;
-  const latencyMs = latencyNanos > 0n ? Number(latencyNanos / 1_000_000n) : undefined;
+  // 0n means "no/unparseable timestamp" (normalize.ts) - an end time minus a missing start
+  // is ~55,000 years, which pinned the p95 histogram and fired latency alerts forever.
+  const latencyMs = span.startTimeUnixNano > 0n && latencyNanos > 0n ? Number(latencyNanos / 1_000_000n) : undefined;
 
   return {
     name: span.name,
@@ -279,6 +303,8 @@ export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
     },
     input_tokens: inputTokens,
     output_tokens: outputTokens,
+    cache_read_tokens: cacheReadTokens,
+    cache_write_tokens: cacheWriteTokens,
   };
 }
 

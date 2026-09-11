@@ -89,6 +89,33 @@ describe.skipIf(!CH_URL)("enterprise tier (ClickHouse telemetry)", () => {
     expect(names.sort()).toEqual(["ch-agent", "tool step"]);
   });
 
+  it("a stated span_kind survives the whole CH wire path, memory included", async () => {
+    // Ingest normalizes the kind, ClickHouse stores it (gen_ai_operation_name), the session
+    // wire resolves it back - a stated "memory" must come out exactly as it went in.
+    await api(
+      "/ingest/traces",
+      postJson({ name: "kind-root", input: "q", output: "a", span_id: "kind-root", session_id: "ch-kind-sess" })
+    );
+    await api(
+      "/ingest/traces",
+      postJson({
+        name: "user prefs",
+        input: "u-1",
+        output: "prefers aisle seats",
+        span_id: "kind-mem",
+        parent_span_id: "kind-root",
+        session_id: "ch-kind-sess",
+        span_kind: "memory",
+      })
+    );
+    const spans = await api("/ingest/sessions/ch-kind-sess/spans");
+    const rows = ((spans.body as { spans: { name: string; spanKind?: string }[] }).spans ?? []).map(s => [
+      s.name,
+      s.spanKind,
+    ]);
+    expect(rows).toContainEqual(["user prefs", "memory"]);
+  });
+
   it("trace search runs database-side in ClickHouse", async () => {
     const hit = await api("/ingest/traces?search=where is my order");
     expect((hit.body as { traces: unknown[] }).traces.length).toBe(1);

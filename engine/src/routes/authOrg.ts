@@ -143,7 +143,9 @@ authOrgRouter.post("/organizations/:orgId/invitations", async (req: Request, res
   }
   // The path the dashboard's accept page mounts at; PUBLIC_URL makes the link shareable
   // beyond localhost when configured (the cloud deployment always sets it).
-  const base = (process.env.AGENTX_PUBLIC_URL || "").replace(/\/$/, "");
+  // Fall back to the request origin: with no AGENTX_PUBLIC_URL the invite email otherwise
+  // carried a bare relative path - an unclickable link in every mail client.
+  const base = (process.env.AGENTX_PUBLIC_URL?.trim() || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
   const url = `${base}/accept-invite?token=${row.id}`;
   // With a mailer configured the invitee gets the link directly; the response still carries it
   // either way so the inviter can always hand it over out-of-band.
@@ -200,14 +202,22 @@ authOrgRouter.get("/invitations/:id", async (req: Request, res: Response) => {
       ? db.db.select().from(db.schema.authOrganizations).where(orgCond).all()[0]
       : (await db.db.select().from(db.schema.authOrganizations).where(orgCond))[0]
   ) as { name: string } | undefined;
+  const emailMatches = invitation.email === user.email.toLowerCase();
+  const status = new Date(invitation.expiresAt).getTime() < Date.now() ? "expired" : invitation.status;
+  if (!emailMatches) {
+    // Any signed-in user can hold a forwarded link, but only the invitee gets the details -
+    // org name and invited email are not for whoever happens to paste the id while logged in.
+    res.status(200).json({ invitation: { _id: invitation.id, status, emailMatches: false } });
+    return;
+  }
   res.status(200).json({
     invitation: {
       _id: invitation.id,
       organizationName: org?.name ?? "an organization",
       email: invitation.email,
       role: invitation.role ?? "member",
-      status: new Date(invitation.expiresAt).getTime() < Date.now() ? "expired" : invitation.status,
-      emailMatches: invitation.email === user.email.toLowerCase(),
+      status,
+      emailMatches,
     },
   });
 });
@@ -229,6 +239,26 @@ authOrgRouter.post("/invitations/:id/accept", async (req: Request, res: Response
     res.status(403).json({ error: `This invitation was issued to ${invitation.email} - sign in with that account` });
     return;
   }
+  // The org can be deleted between invite and accept - a member row pointing at nothing reads
+  // as a successful accept with no workspace, which is worse than saying what happened.
+  const orgRows = (
+    db.kind === "sqlite"
+      ? db.db
+          .select({ id: db.schema.authOrganizations.id })
+          .from(db.schema.authOrganizations)
+          .where(eq(db.schema.authOrganizations.id, invitation.organizationId))
+          .limit(1)
+          .all()
+      : await db.db
+          .select({ id: db.schema.authOrganizations.id })
+          .from(db.schema.authOrganizations)
+          .where(eq(db.schema.authOrganizations.id, invitation.organizationId))
+          .limit(1)
+  ) as { id: string }[];
+  if (orgRows.length === 0) {
+    res.status(410).json({ error: "The organization this invitation was for no longer exists" });
+    return;
+  }
   if (!(await memberIn(db, user.id, invitation.organizationId))) {
     const memberRow = {
       id: nanoid(),
@@ -238,9 +268,11 @@ authOrgRouter.post("/invitations/:id/accept", async (req: Request, res: Response
       createdAt: new Date(),
     };
     if (db.kind === "sqlite") {
-      await db.db.insert(db.schema.authMembers).values(memberRow);
+      // onConflictDoNothing on the (org, user) unique index: two simultaneous accepts of the
+      // same link must produce one membership, not two rows that double-count everywhere.
+      await db.db.insert(db.schema.authMembers).values(memberRow).onConflictDoNothing();
     } else {
-      await db.db.insert(db.schema.authMembers).values(memberRow);
+      await db.db.insert(db.schema.authMembers).values(memberRow).onConflictDoNothing();
     }
   }
   const cond = eq(db.schema.authInvitations.id, invitation.id);

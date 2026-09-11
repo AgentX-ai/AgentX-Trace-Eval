@@ -1,3 +1,4 @@
+import rateLimitMiddleware from "express-rate-limit";
 import type { Request, Response } from "express";
 import { asyncRouter } from "./asyncRouter.js";
 import { getDb, type Db } from "../storage/db.js";
@@ -43,17 +44,18 @@ import {
   getImprovementReport,
   listImprovementReports,
 } from "../core/monitor/improvementGroups.js";
-import {
+import { signTuningValidation, verifyTuningValidation,
   getEvaluatorCalibration,
   proposeJudgeTuning,
   validateJudgeTuning,
   type TuningWindow,
 } from "../core/monitor/judgeTuning.js";
 import { getModelComparison } from "../core/monitor/modelComparison.js";
+import { outboundUrlProblem } from "../core/shared/urlGuard.js";
 import { listSessionScores } from "../core/monitor/sessionScores.js";
 import { listSessions } from "../core/monitor/sessions.js";
 import {
-  sweepSessionsOnce,
+  runManualSweep,
   runSessionBaselineCheck,
   runSessionEvaluatorCheck,
   isSessionScoreFresh,
@@ -81,7 +83,7 @@ import {
   type JudgeScorerOnlineInput,
 } from "../core/monitor/judgeScorers.js";
 import { patchEvaluationSettings } from "../core/evaluate/evaluationSettings.js";
-import {
+import { getCustomEvaluatorRow,
   createCustomEvaluator,
   updateCustomEvaluator,
   deleteCustomEvaluator,
@@ -129,6 +131,8 @@ import {
   deleteScorerGroup,
   toScorerGroupWire,
   type ScorerGroupOnline,
+  type ScorerGroupMember,
+  validateGroupMembers,
 } from "../core/monitor/scorerGroups.js";
 
 // Mounted at /api/v1/agent-monitoring - the paths AgentX-web-front's dashboard actually calls
@@ -564,9 +568,13 @@ function parseWindow(req: Request): MonitoringWindow {
 // date ranges and non-enum presets (6h, 14d, ...) arrive as from/to. Span clamped to a year so a
 // typo'd bound can't turn one request into a full-table sweep.
 function parseRange(req: Request): MonitoringRange {
-  const from = Number(req.query.from);
-  const to = Number(req.query.to);
-  if (Number.isFinite(from) && Number.isFinite(to) && to > from) {
+  // Number("") is 0 (finite!), so a blank ?from= must not silently become epoch 0 - only
+  // non-empty numeric strings qualify, both bounds must be positive, and to must exceed from.
+  const rawFrom = typeof req.query.from === "string" ? req.query.from.trim() : "";
+  const rawTo = typeof req.query.to === "string" ? req.query.to.trim() : "";
+  const from = rawFrom === "" ? Number.NaN : Number(rawFrom);
+  const to = rawTo === "" ? Number.NaN : Number(rawTo);
+  if (Number.isFinite(from) && Number.isFinite(to) && from > 0 && to > from) {
     const YEAR_MS = 366 * 24 * 60 * 60 * 1000;
     return { fromMs: Math.max(from, to - YEAR_MS), toMs: to };
   }
@@ -619,12 +627,25 @@ agentMonitoringDashboardRouter.get("/model-comparison", async (req: Request, res
   res.status(200).json(await getModelComparison(scopedDb(req), parseWindow(req)));
 });
 
+// Per-route ceiling for the judge-tuning trio and the on-demand session judge routes (each is
+// one unbudgeted judge call per request), ON TOP of the data-plane limiter the whole router
+// sits behind (apiV1.ts mounts it; CodeQL cannot see cross-file parent limiters, and these
+// routes deserve a tighter bound anyway: tune/validate are real LLM spend per call, publish
+// verifies provenance and writes rubric versions). 20/min is far above any human or SDK flow
+// and far below a brute-force loop.
+const tuningRouteLimit = rateLimitMiddleware({
+  windowMs: 60_000,
+  limit: 20,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+});
+
 // On-demand Session Baseline Judge run (core/monitor/sessionSweep.ts's runSessionBaselineCheck):
 // one real judge call over the whole assembled session against the built-in evaluator's config
 // (rubric lives there, not in code). Route path kept from the old hardcoded coherence check for
 // wire compat. 502 for a judge failure (missing key, provider outage) with the underlying
 // message, same convention as the suggest-human-feedback route above.
-agentMonitoringDashboardRouter.post("/sessions/:sessionId/coherence-check", async (req: Request, res: Response) => {
+agentMonitoringDashboardRouter.post("/sessions/:sessionId/coherence-check", tuningRouteLimit, async (req: Request, res: Response) => {
   try {
     const score = await runSessionBaselineCheck(scopedDb(req), req.params.sessionId!);
     if (!score) {
@@ -644,6 +665,7 @@ agentMonitoringDashboardRouter.post("/sessions/:sessionId/coherence-check", asyn
 // also covers is never judged twice.
 agentMonitoringDashboardRouter.post(
   "/sessions/:sessionId/judge/:evaluatorId",
+  tuningRouteLimit,
   async (req: Request, res: Response) => {
     try {
       if (req.query.ifStale === "true" && (await isSessionScoreFresh(scopedDb(req), req.params.sessionId!, req.params.evaluatorId!))) {
@@ -676,9 +698,12 @@ agentMonitoringDashboardRouter.get("/sessions", async (req: Request, res: Respon
 
 // Manual trigger for the idle-session sweep (core/monitor/sessionSweep.ts) - the production path
 // is the 60s interval started at boot; this exists for tests and demos that shouldn't have to
-// wait a tick. Sweeps ALL projects (the sweep is instance-wide by design), auth still required.
-agentMonitoringDashboardRouter.post("/session-sweep/run", async (_req: Request, res: Response) => {
-  res.status(200).json(await sweepSessionsOnce());
+// wait a tick.
+agentMonitoringDashboardRouter.post("/session-sweep/run", async (req: Request, res: Response) => {
+  // Scoped to the caller's project (a key must not spend other tenants' budgets) and
+  // serialized - a concurrent sweep returns { judged: 0, skipped: true } instead of
+  // double-judging the sessions the in-flight one is still scoring.
+  res.status(200).json(await runManualSweep(scopedDb(req).projectId));
 });
 
 // Overview's "Total LLM cost" chart (core/monitor/cost.ts) - stacked by model, priced from Model
@@ -843,7 +868,7 @@ const createScorerGroupSchema = z
   .object({
     name: z.string().min(1).max(200),
     description: z.string().max(2000).optional(),
-    members: z.array(scorerGroupMemberSchema).max(20),
+    members: z.array(scorerGroupMemberSchema).min(1).max(20),
     online: scorerGroupOnlineSchema.nullable().optional(),
   })
   .strip();
@@ -857,6 +882,13 @@ agentMonitoringDashboardRouter.post(
   "/scorer-groups",
   validateBody(createScorerGroupSchema),
   async (req: Request, res: Response) => {
+    const memberProblems = await validateGroupMembers(scopedDb(req), req.body.members, {
+      onlineEnabled: !!(req.body.online as ScorerGroupOnline | null)?.enabled,
+    });
+    if (memberProblems.length > 0) {
+      res.status(400).json({ error: memberProblems.join("; ") });
+      return;
+    }
     const group = await createScorerGroup(scopedDb(req), {
       name: req.body.name,
       description: req.body.description,
@@ -880,6 +912,29 @@ agentMonitoringDashboardRouter.put(
   "/scorer-groups/:id",
   validateBody(updateScorerGroupSchema),
   async (req: Request, res: Response) => {
+    // Validate what the group WILL be, not just what the request carries: new members must
+    // hold up against the stored online profile (a members-only PUT on a live group), and a
+    // newly-enabled profile must hold up against the stored members (an online-only PUT that
+    // would take a reference-centric judge live).
+    const existing = await getScorerGroup(scopedDb(req), req.params.id!);
+    if (!existing) {
+      res.status(404).json({ error: "Scorer group not found" });
+      return;
+    }
+    const effectiveMembers = (req.body.members as ScorerGroupMember[] | undefined) ?? existing.members;
+    const bodyOnline = req.body.online as ScorerGroupOnline | null | undefined;
+    const effectiveOnlineEnabled =
+      bodyOnline === null ? false : bodyOnline !== undefined ? !!bodyOnline.enabled : !!existing.online?.enabled;
+    if (req.body.members !== undefined || (bodyOnline !== undefined && bodyOnline !== null)) {
+      const memberProblems = await validateGroupMembers(scopedDb(req), effectiveMembers, {
+        onlineEnabled: effectiveOnlineEnabled,
+        grandfathered: new Set(existing.members.map(m => `${m.kind}:${m.refId}`)),
+      });
+      if (memberProblems.length > 0) {
+        res.status(400).json({ error: memberProblems.join("; ") });
+        return;
+      }
+    }
     const group = await updateScorerGroup(scopedDb(req), req.params.id!, {
       name: req.body.name,
       description: req.body.description,
@@ -1140,7 +1195,7 @@ agentMonitoringDashboardRouter.get(
   }
 );
 
-agentMonitoringDashboardRouter.post("/online-evaluators/:evaluatorId/tune", async (req: Request, res: Response) => {
+agentMonitoringDashboardRouter.post("/online-evaluators/:evaluatorId/tune", tuningRouteLimit, async (req: Request, res: Response) => {
   const body = req.body ?? {};
   try {
     const result = await proposeJudgeTuning(scopedDb(req), req.params.evaluatorId!, {
@@ -1165,6 +1220,7 @@ agentMonitoringDashboardRouter.post("/online-evaluators/:evaluatorId/tune", asyn
 
 agentMonitoringDashboardRouter.post(
   "/online-evaluators/:evaluatorId/tune/validate",
+  tuningRouteLimit,
   async (req: Request, res: Response) => {
     const body = req.body ?? {};
     for (const key of ["acceptanceCriteria", "rejectionCriteria", "evaluationCriteria"]) {
@@ -1193,7 +1249,26 @@ agentMonitoringDashboardRouter.post(
         res.status(422).json(result);
         return;
       }
-      res.status(200).json(result);
+      // Signed provenance: binds THIS evaluator + THIS exact candidate package to the
+      // measured verdict, so publish can verify the stamp instead of trusting the client.
+      const verdictForToken = (result as { verdict?: string; netAgreementGain?: number }).verdict;
+      const validationToken =
+        typeof verdictForToken === "string"
+          ? signTuningValidation(
+              req.params.evaluatorId!,
+              {
+                acceptanceCriteria: body.acceptanceCriteria,
+                rejectionCriteria: body.rejectionCriteria,
+                evaluationCriteria: body.evaluationCriteria,
+                judgePrompt: typeof body.judgePrompt === "string" ? body.judgePrompt : undefined,
+              },
+              verdictForToken,
+              typeof (result as { netAgreementGain?: number }).netAgreementGain === "number"
+                ? (result as { netAgreementGain: number }).netAgreementGain
+                : null
+            )
+          : undefined;
+      res.status(200).json({ ...result, ...(validationToken ? { validationToken } : {}) });
     } catch (err) {
       res.status(502).json({ error: err instanceof Error ? err.message : "Validation failed" });
     }
@@ -1202,6 +1277,7 @@ agentMonitoringDashboardRouter.post(
 
 agentMonitoringDashboardRouter.post(
   "/online-evaluators/:evaluatorId/tune/publish",
+  tuningRouteLimit,
   async (req: Request, res: Response) => {
     const body = req.body ?? {};
     for (const key of ["acceptanceCriteria", "rejectionCriteria", "evaluationCriteria"]) {
@@ -1223,15 +1299,41 @@ agentMonitoringDashboardRouter.post(
       | { verdict?: string; netAgreementGain?: number; fixed?: number; brokenControls?: number }
       | undefined;
     const force = body.force === true;
-    if (!force) {
-      if (!validation || typeof validation.verdict !== "string") {
+    // Provenance honesty: a token minted by /tune/validate proves the verdict was measured
+    // for EXACTLY this candidate package on this evaluator. A token that fails verification
+    // (criteria edited after validating, or another evaluator's token) is a hard 409, not a
+    // downgrade.
+    const token = (validation as { token?: string } | undefined)?.token;
+    let verified: { verdict: string; netAgreementGain: number | null } | null = null;
+    if (typeof token === "string" && token) {
+      verified = verifyTuningValidation(token, req.params.evaluatorId!, {
+        acceptanceCriteria: body.acceptanceCriteria,
+        rejectionCriteria: body.rejectionCriteria,
+        evaluationCriteria: body.evaluationCriteria,
+        // Must match validate's sign-side predicate exactly (any string counts, blank included)
+        // or a validated blank judgePrompt fails token verification on publish.
+        judgePrompt: typeof body.judgePrompt === "string" ? body.judgePrompt : undefined,
+      });
+      if (!verified) {
         res.status(409).json({
           error:
-            "Publishing tuned criteria requires the validation result (run POST .../tune/validate and pass its verdict as `validation`), or force: true to publish unvalidated.",
+            "The validation token does not match what is being published - the criteria changed after validation (or the token belongs to another scorer). Re-run POST .../tune/validate on this exact package.",
         });
         return;
       }
-      if (validation.verdict === "regressed") {
+    }
+    if (!force) {
+      // The gate runs on the VERIFIED verdict, never the client's assertion - otherwise
+      // omitting the token skipped the regression check entirely (a caller could publish a
+      // measured regression by simply claiming "improved" with no proof, no force needed).
+      if (!verified) {
+        res.status(409).json({
+          error:
+            "Publishing tuned criteria requires the verified validation from POST .../tune/validate (pass its result - including validationToken - as `validation`), or force: true to publish unvalidated.",
+        });
+        return;
+      }
+      if (verified.verdict === "regressed") {
         res.status(409).json({
           error:
             "Validation measured a net regression on this judge's own cases - not published. Re-generate the proposal, or pass force: true to publish anyway.",
@@ -1239,10 +1341,12 @@ agentMonitoringDashboardRouter.post(
         return;
       }
     }
-    const provenance = validation?.verdict
-      ? `[judge tuning: validated ${validation.verdict}${
-          typeof validation.netAgreementGain === "number" ? `, net agreement ${validation.netAgreementGain >= 0 ? "+" : ""}${validation.netAgreementGain}` : ""
-        }]`
+    const stampVerdict = verified?.verdict ?? validation?.verdict;
+    const stampGain = verified ? verified.netAgreementGain : (validation?.netAgreementGain ?? null);
+    const provenance = stampVerdict
+      ? `[judge tuning: validated ${stampVerdict}${
+          typeof stampGain === "number" ? `, net agreement ${stampGain >= 0 ? "+" : ""}${stampGain}` : ""
+        }${verified ? "" : " (client-asserted)"}]`
       : "[judge tuning: published without validation]";
     const updated = await patchEvaluationSettings(
       scopedDb(req),
@@ -1251,9 +1355,11 @@ agentMonitoringDashboardRouter.post(
         acceptanceCriteria: body.acceptanceCriteria,
         rejectionCriteria: body.rejectionCriteria,
         evaluationCriteria: body.evaluationCriteria,
-        // Only when the tuning proposal actually revised the prompt - an absent field leaves the
-        // config's prompt untouched, so criteria-only tunes keep their old publish behavior.
-        ...(typeof body.judgePrompt === "string" && body.judgePrompt.trim() ? { judgePrompt: body.judgePrompt } : {}),
+        // Matches validate's semantics exactly: any STRING judgePrompt (blank included, a
+        // legitimate "prompt removed" proposal) ships; only an absent field leaves the
+        // config's prompt untouched. Publish silently no-oping on blank meant "validated
+        // improved" could describe a package the publish didn't actually ship.
+        ...(typeof body.judgePrompt === "string" ? { judgePrompt: body.judgePrompt } : {}),
       },
       { versionProvenance: provenance }
     );
@@ -1273,12 +1379,10 @@ function isValidHttpUrl(value: unknown): value is string {
   if (typeof value !== "string" || !value.trim()) {
     return false;
   }
-  try {
-    const url = new URL(value.trim());
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
+  // The shared egress guard (core/shared/urlGuard.ts): http(s) only, cloud metadata endpoints
+  // never (an external scorer pointed there is a credential grab), private targets gated only
+  // on multi-tenant.
+  return outboundUrlProblem(value) === null;
 }
 
 agentMonitoringDashboardRouter.get("/custom-evaluators", async (req: Request, res: Response) => {
@@ -1325,9 +1429,21 @@ agentMonitoringDashboardRouter.post("/custom-evaluators", async (req: Request, r
 
 agentMonitoringDashboardRouter.put("/custom-evaluators/:evaluatorId", async (req: Request, res: Response) => {
   const body = req.body ?? {};
-  if (body.url !== undefined && !isValidHttpUrl(body.url)) {
+  // CODE scorers store url as "" and the dashboard round-trips the whole draft on save -
+  // validating that empty string made every edit of an existing code scorer a 400. The URL
+  // requirement is the EXTERNAL kind's; look the row up before enforcing it.
+  const existing = await getCustomEvaluatorRow(scopedDb(req), req.params.evaluatorId!);
+  if (!existing) {
+    res.status(404).json({ error: "Scorer not found" });
+    return;
+  }
+  const isCode = (existing as { kind?: string }).kind === "code";
+  if (!isCode && body.url !== undefined && !isValidHttpUrl(body.url)) {
     res.status(400).json({ error: "A valid http:// or https:// url is required" });
     return;
+  }
+  if (isCode && body.url !== undefined) {
+    delete body.url;
   }
   const evaluator = await updateCustomEvaluator(scopedDb(req), req.params.evaluatorId!, {
     name: body.name,

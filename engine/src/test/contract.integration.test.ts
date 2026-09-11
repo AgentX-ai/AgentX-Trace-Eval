@@ -173,13 +173,47 @@ describe("wire contract", () => {
     expect(parsed.entities.map(e => e.entity)).toContain("traces");
   });
 
-  it("GET /openapi.json publishes every contract entry", async () => {
+  it("GET /openapi.json publishes every contract entry in OpenAPI path templating", async () => {
     const res = await engine.json("/api/v1/openapi.json", { apiKey: null });
     expect(res.status).toBe(200);
-    const doc = res.body as { paths: Record<string, unknown>; components: { schemas: Record<string, unknown> } };
+    const doc = res.body as {
+      paths: Record<string, Record<string, { parameters?: { name: string; in: string }[] }>>;
+      components: { schemas: Record<string, unknown> };
+    };
     for (const entry of WIRE_CONTRACT) {
-      expect(doc.paths[`/api/v1${entry.path}`], entry.path).toBeDefined();
+      // {id}, never :id - generators treat Express syntax as a literal segment (guaranteed 404
+      // clients), and each templated segment must be declared as a required path parameter.
+      const oasPath = `/api/v1${entry.path.replace(/:([A-Za-z0-9_]+)/g, "{$1}")}`;
+      expect(doc.paths[oasPath], entry.path).toBeDefined();
       expect(doc.components.schemas[entry.name], entry.name).toBeDefined();
+      const wantedParams = [...entry.path.matchAll(/:([A-Za-z0-9_]+)/g)].map(m => m[1]);
+      if (wantedParams.length > 0) {
+        const op = doc.paths[oasPath]![entry.method]!;
+        expect((op.parameters ?? []).map(param => param.name).sort(), entry.path).toEqual([...wantedParams].sort());
+      }
+    }
+  });
+
+  it("every contracted route is actually mounted (no tautological coverage)", async () => {
+    // The document is derived from WIRE_CONTRACT, so asserting the document alone proves
+    // nothing. This drives each path live with placeholder ids: any status is fine EXCEPT
+    // Express's route-less 404 shape - a renamed handler must fail here, not in a consumer.
+    for (const entry of WIRE_CONTRACT) {
+      const livePath = `/api/v1${entry.path.replace(/:([A-Za-z0-9_]+)/g, "probe-missing")}`;
+      const init =
+        entry.method === "post"
+          ? { method: "POST", body: JSON.stringify({}), headers: { "content-type": "application/json" } }
+          : entry.method === "put"
+            ? { method: "PUT", body: JSON.stringify({}), headers: { "content-type": "application/json" } }
+            : undefined;
+      const res = await engine.json(livePath, { apiKey: key, ...(init ?? {}) });
+      const body = res.body as { message?: string; error?: string } | null;
+      // A resource-level 404 ({error: "... not found"}) proves the route IS mounted; only the
+      // global handler's route-less shape ({statusCode, message}) means the path went nowhere.
+      const routeMissing = Boolean(
+        res.status === 404 && !body?.error && (body?.message === "Not found" || body?.message?.startsWith("Cannot "))
+      );
+      expect(routeMissing, `${entry.method.toUpperCase()} ${entry.path} -> ${res.status} ${JSON.stringify(body).slice(0, 120)}`).toBe(false);
     }
   });
 });

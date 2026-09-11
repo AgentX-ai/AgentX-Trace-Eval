@@ -73,6 +73,11 @@ monitorRouter.post("/patterns", async (req: Request, res: Response) => {
     severity: body.severity,
     polarity: body.polarity,
     enabled: body.enabled,
+    // Cost controls the SDK sends and this route silently dropped: a semantic pattern is an
+    // LLM call per trace, and "sample 5% of one agent" must not become 100% of every agent.
+    sampleRate: typeof body.sampleRate === "number" ? body.sampleRate : undefined,
+    scopeMode: body.scopeMode === "selected" ? "selected" : body.scopeMode === "all" ? "all" : undefined,
+    agentIds: Array.isArray(body.agentIds) ? await resolveAgentIds(scopedDb(req), body.agentIds) : undefined,
   });
   res.status(201).json({ pattern });
 });

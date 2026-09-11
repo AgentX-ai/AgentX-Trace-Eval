@@ -1,5 +1,5 @@
 import type { Db } from "../../storage/db.js";
-import { resolvePlatformModel, callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
+import { resolvePlatformModel, callJudgeJson } from "./judge.js";
 import { getDataset } from "./datasets.js";
 
 // Synthetic golden-case generation: paste a source document (policy text, API docs, FAQ, spec)
@@ -9,6 +9,10 @@ import { getDataset } from "./datasets.js";
 // normal dataset-update path. Nothing lands in a dataset unreviewed.
 
 const MAX_CASES = 20;
+
+// The whole source lands verbatim in one judge prompt: past this it exceeds context windows and
+// burns tokens on a call that was going to fail anyway, so oversized input is refused up front.
+const MAX_SOURCE_CHARS = 100_000;
 
 const SYNTHESIS_SCHEMA = {
   type: "object",
@@ -41,6 +45,11 @@ export async function generateSyntheticCases(
   if (!sourceText) {
     return { error: "sourceText is required - paste the document the cases should be grounded in" };
   }
+  if (sourceText.length > MAX_SOURCE_CHARS) {
+    return {
+      error: `sourceText is too long (${sourceText.length} characters, cap ${MAX_SOURCE_CHARS}) - trim the document to the sections the cases should cover`,
+    };
+  }
   const count = Math.max(1, Math.min(MAX_CASES, Math.floor(input.count) || 5));
 
   // A couple of the dataset's existing cases as few-shot style anchors, so generated cases read
@@ -72,8 +81,11 @@ Rules:
 SOURCE:
 ${sourceText}`;
 
+  // Resolved once and reused in the return value, so the reported judgeModel is always the
+  // model that actually generated (a settings change mid-call can't desync the two).
+  const judgeModel = await resolvePlatformModel(db);
   const result = await callJudgeJson({
-    model: await resolvePlatformModel(db),
+    model: judgeModel,
     jsonSchema: SYNTHESIS_SCHEMA,
     userMessage,
     maxTokens: 4000,
@@ -91,5 +103,5 @@ ${sourceText}`;
   if (cases.length === 0) {
     return { error: "The generator returned no usable cases - try a longer or more specific source" };
   }
-  return { cases, judgeModel: await resolvePlatformModel(db) };
+  return { cases, judgeModel };
 }

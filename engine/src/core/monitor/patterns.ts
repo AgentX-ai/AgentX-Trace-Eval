@@ -125,10 +125,27 @@ function toWire(row: PatternRow) {
 }
 
 export async function createPattern(db: Db, input: CreatePatternInput) {
+  // Signals dedupe on (patternKey, agentId): two patterns named the same must not share a key,
+  // or their detections merge into one signal row that survives either's deletion. Suffix on
+  // collision only, so the common single-pattern case keeps its readable slug.
+  const baseKey = `custom:${slugify(input.name) || nanoid(6)}`;
+  const existingRows = (
+    db.kind === "sqlite"
+      ? db.db
+          .select({ key: db.schema.monitorPatterns.key })
+          .from(db.schema.monitorPatterns)
+          .where(and(eq(db.schema.monitorPatterns.projectId, db.projectId), eq(db.schema.monitorPatterns.key, baseKey)))
+          .all()
+      : await db.db
+          .select({ key: db.schema.monitorPatterns.key })
+          .from(db.schema.monitorPatterns)
+          .where(and(eq(db.schema.monitorPatterns.projectId, db.projectId), eq(db.schema.monitorPatterns.key, baseKey)))
+  ) as { key: string }[];
+  const key = existingRows.length > 0 ? `${baseKey}-${nanoid(6)}` : baseKey;
   const row: PatternRow = {
     id: nanoid(),
     projectId: db.projectId,
-    key: `custom:${slugify(input.name) || nanoid(6)}`,
+    key,
     name: input.name,
     description: input.description ?? null,
     category: input.category ?? null,

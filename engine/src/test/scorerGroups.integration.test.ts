@@ -23,13 +23,21 @@ beforeAll(async () => {
     req.on("end", () => {
       const rating = raw.includes("HARSHMARK") ? 2 : 8;
       res.setHeader("content-type", "application/json");
-      // Judges arrive via the Responses API (judge-core); the Playground's model completion
-      // uses chat completions - serve whichever shape the path asks for.
+      // Custom (OpenAI-compat) models route judge calls AND playground completions to
+      // /chat/completions - json_object marks a judge call, anything else is a completion.
       if ((req.url ?? "").includes("/chat/completions")) {
+        const isJudgeCall = raw.includes("json_object");
         res.end(
           JSON.stringify({
             id: "chat_stub",
-            choices: [{ message: { role: "assistant", content: "stub answer" } }],
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: isJudgeCall ? JSON.stringify({ rating, justification: `stub rated ${rating}` }) : "stub answer",
+                },
+              },
+            ],
             usage: { prompt_tokens: 5, completion_tokens: 5 },
           })
         );
@@ -95,12 +103,22 @@ async function makePattern(name: string, phrase: string): Promise<string> {
 }
 
 describe("scorer groups", () => {
-  it("CRUD round-trips members and the online profile", async () => {
+  it("CRUD round-trips members and the online profile; unknown member refs are a 400", async () => {
+    // Members are validated at write time: a typo'd refId used to 201 into a group that
+    // permanently scored null, one "Scorer no longer exists" member at a time.
+    const bogus = await api(
+      "/agent-monitoring/scorer-groups",
+      postJson({ name: "Bogus", members: [{ kind: "judge", refId: "nope", weight: 1 }] })
+    );
+    expect(bogus.status).toBe(400);
+    expect((bogus.body as { error: string }).error).toContain("Unknown judge scorer id");
+
+    const judgeId = await makeJudge("CRUD judge", "NICE");
     const created = await api(
       "/agent-monitoring/scorer-groups",
       postJson({
         name: "Quality bar",
-        members: [{ kind: "judge", refId: "j1", weight: 2, gate: false }],
+        members: [{ kind: "judge", refId: judgeId, weight: 2, gate: false }],
         online: { enabled: false, sampleRate: 0.5, alertThreshold: 6, severity: "high" },
       })
     );
@@ -109,7 +127,7 @@ describe("scorer groups", () => {
 
     const fetched = await api(`/agent-monitoring/scorer-groups/${id}`);
     const wire = (fetched.body as { scorerGroup: Record<string, unknown> }).scorerGroup;
-    expect(wire.members).toEqual([{ kind: "judge", refId: "j1", weight: 2, gate: false }]);
+    expect(wire.members).toEqual([{ kind: "judge", refId: judgeId, weight: 2, gate: false }]);
     expect(wire.online).toEqual({ enabled: false, sampleRate: 0.5, alertThreshold: 6, severity: "high" });
 
     const updated = await api(`/agent-monitoring/scorer-groups/${id}`, {
@@ -118,8 +136,114 @@ describe("scorer groups", () => {
     });
     expect((updated.body as { scorerGroup: { name: string } }).scorerGroup.name).toBe("Quality bar v2");
 
+    // A scope-unaware PUT (no scope/idleSeconds in the online object) must not flip a session
+    // group back to per-trace scoring - the engine merges instead of replacing.
+    const sessionized = await api(`/agent-monitoring/scorer-groups/${id}`, {
+      ...postJson({ online: { enabled: true, sampleRate: 1, alertThreshold: 5, severity: "high", scope: "session", idleSeconds: 300 } }),
+      method: "PUT",
+    });
+    expect((sessionized.body as { scorerGroup: { online: { scope?: string } } }).scorerGroup.online.scope).toBe("session");
+    const legacyPut = await api(`/agent-monitoring/scorer-groups/${id}`, {
+      ...postJson({ online: { enabled: true, sampleRate: 0.4, alertThreshold: 4, severity: "medium" } }),
+      method: "PUT",
+    });
+    const mergedOnline = (legacyPut.body as { scorerGroup: { online: Record<string, unknown> } }).scorerGroup.online;
+    expect(mergedOnline.scope).toBe("session");
+    expect(mergedOnline.idleSeconds).toBe(300);
+    expect(mergedOnline.sampleRate).toBe(0.4);
+
     expect((await api(`/agent-monitoring/scorer-groups/${id}`, { method: "DELETE" })).status).toBe(200);
     expect((await api(`/agent-monitoring/scorer-groups/${id}`)).status).toBe(404);
+  });
+
+  it("a run cannot start against a nonexistent group, and a gate that cannot score fails closed", async () => {
+    // Typo'd/deleted group id on POST /runs is a 404, not a silent downgrade to dataset grading.
+    const ds = await api(
+      "/custom-agent-evaluations/datasets",
+      postJson({ name: "gate-ds", questions: [{ main_question: { query: "q1" }, follow_up_questions: [] }] })
+    );
+    const datasetId = ((ds.body as { dataset?: { _id: string } }).dataset?._id ??
+      (ds.body as { _id?: string })._id) as string;
+    const bogusRun = await api(
+      "/custom-agent-evaluations/runs",
+      postJson({ datasetId, scorerGroupId: "not-a-group" })
+    );
+    expect(bogusRun.status).toBe(404);
+
+    // A must-pass member that CANNOT score (custom scorer deleted after group creation) fails
+    // closed: the row lands skipped with the gate named, never a blend that ignores the gate.
+    const niceId = await makeJudge("Gate nice", "NICE"); // rates 8
+    const ext = await api(
+      "/agent-monitoring/custom-evaluators",
+      postJson({ name: "Doomed gate", kind: "code", language: "javascript", script: "return { score: 1 };" })
+    );
+    expect(ext.status).toBe(201);
+    const extId = (ext.body as { evaluator: { _id: string } }).evaluator._id;
+    const group = await api(
+      "/agent-monitoring/scorer-groups",
+      postJson({
+        name: "Gated bar hard",
+        members: [
+          { kind: "judge", refId: niceId, weight: 1, gate: false },
+          { kind: "custom", refId: extId, weight: 0, gate: true },
+        ],
+      })
+    );
+    const groupId = (group.body as { scorerGroup: { _id: string } }).scorerGroup._id;
+    await api(`/agent-monitoring/custom-evaluators/${extId}`, { method: "DELETE" });
+
+    const run = await api("/custom-agent-evaluations/runs", postJson({ datasetId, scorerGroupId: groupId }));
+    expect(run.status).toBe(201);
+    const runId = (run.body as { runId: string }).runId;
+    const submitted = await api(
+      `/custom-agent-evaluations/runs/${runId}/results`,
+      postJson({
+        batchId: "b1",
+        results: [{ idempotencyKey: "k1", questionIndex: 0, runNumber: 1, input: { query: "q1" }, output: { text: "an answer" } }],
+      })
+    );
+    expect(submitted.status).toBe(200);
+    const detail = (await api(`/custom-agent-evaluations/runs/${runId}`)).body as {
+      results: Array<{ status: string; rating: number | null; justification: string | null }>;
+      liveStatistics: { skippedCount: number; ratedCount: number };
+    };
+    expect(detail.results[0]!.status).toBe("skipped");
+    expect(detail.results[0]!.rating).toBeNull();
+    expect(detail.results[0]!.justification).toContain("must-pass");
+    expect(detail.liveStatistics.skippedCount).toBe(1);
+    expect(detail.liveStatistics.ratedCount).toBe(0);
+
+    // A group whose member's referent was deleted stays EDITABLE: the dashboard round-trips
+    // the full member list on save, and stored (grandfathered) refs must not 400 - only new
+    // unknown refs do.
+    const rename = await api(`/agent-monitoring/scorer-groups/${groupId}`, {
+      ...postJson({
+        name: "Gated bar hard v2",
+        members: [
+          { kind: "judge", refId: niceId, weight: 1, gate: false },
+          { kind: "custom", refId: extId, weight: 0, gate: true },
+        ],
+      }),
+      method: "PUT",
+    });
+    expect(rename.status).toBe(200);
+    const addBogus = await api(`/agent-monitoring/scorer-groups/${groupId}`, {
+      ...postJson({ members: [{ kind: "custom", refId: "brand-new-bogus", weight: 1 }] }),
+      method: "PUT",
+    });
+    expect(addBogus.status).toBe(400);
+
+    // Deleting the group mid-run makes further submissions a hard 409, not a silent regrade.
+    await api(`/agent-monitoring/scorer-groups/${groupId}`, { method: "DELETE" });
+    const after = await api(
+      `/custom-agent-evaluations/runs/${runId}/results`,
+      postJson({
+        batchId: "b2",
+        results: [{ idempotencyKey: "k2", questionIndex: 0, runNumber: 2, input: { query: "q1" }, output: { text: "another" } }],
+      })
+    );
+    expect(after.status).toBe(409);
+    expect((after.body as { error: string }).error).toContain("scorer group");
   });
 
   it("grades a dataset run: weighted blend in the rating column, member verdicts per row", async () => {

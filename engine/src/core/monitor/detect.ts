@@ -110,7 +110,7 @@ function classifyOperational(trace: TraceLike & { latencyMs?: number | null }): 
   // Checked BEFORE the generic trace-error case: when a tool call fails and its exception
   // escapes the agent loop, the SDK records both (success:false on the call AND the span's own
   // error), and "which tool failed" is the more specific, actionable classification.
-  const failedCall = (trace.toolCalls ?? []).find(call => call.success === false);
+  const failedCall = (Array.isArray(trace.toolCalls) ? trace.toolCalls : []).find(call => call.success === false);
   if (failedCall) {
     return {
       type: "agent_tool_failure",

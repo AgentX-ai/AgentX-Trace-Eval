@@ -3,7 +3,7 @@ import { traceStoreFor } from "../trace/store/index.js";
 import { getTraceRow, type TraceRow } from "../trace/ingest.js";
 import { reconstructMessages } from "./portability.js";
 import { getDataset, updateDataset, extractSimilarityConfig, extractCodeScorers } from "./datasets.js";
-import { resolvePlatformModel, callJudgeJson, computeEmbedding, DEFAULT_JUDGE_MODEL } from "./judge.js";
+import { resolvePlatformModel, callJudgeJson, computeEmbedding, computeEmbeddings } from "./judge.js";
 import { extractText } from "../monitor/events.js";
 import { cosine, normalizeText } from "../shared/vector.js";
 
@@ -14,6 +14,8 @@ import { cosine, normalizeText } from "../shared/vector.js";
 // never sees a case nobody looked at. The `source` provenance field is opaque to runs.ts (which
 // only reads main_question/follow_up_questions) but lets the dashboard badge production-born
 // cases and lets addCaseToDataset refuse to add the same trace twice.
+
+export const MAX_CURATED_FOLLOW_UPS = 50;
 
 export type CuratedTestCase = { query: string; expectedResults: string | null };
 
@@ -85,7 +87,10 @@ export async function previewCaseFromSession(db: Db, sessionId: string): Promise
   return {
     case: {
       main_question: { query: first.query, expectedResults: null },
-      follow_up_questions: turns.slice(1).map(t => ({ query: t.query, expectedResults: null })),
+      // Capped: one case's follow-ups become sequential agent turns on EVERY future run of the
+      // dataset, and its JSON is copied into every later version snapshot - a 4,000-turn
+      // runaway session must not become a 4,000-turn test case.
+      follow_up_questions: turns.slice(1, 1 + MAX_CURATED_FOLLOW_UPS).map(t => ({ query: t.query, expectedResults: null })),
       source: { sessionId, addedAt: new Date().toISOString() },
     },
     turns,
@@ -177,11 +182,16 @@ async function findDuplicate(existing: ExistingQuestion[], candidate: CuratedCas
   }
   const candidateEmb = await computeEmbedding(candidate.main_question.query);
   if (!candidateEmb) return null;
-  for (const q of existing.slice(0, DEDUPE_EMBEDDING_CAP)) {
-    const query = typeof q.main_question?.query === "string" ? q.main_question.query : "";
-    if (!query) continue;
-    const emb = await computeEmbedding(query);
-    if (!emb) continue;
+  // slice from the END: the newest cases are the likeliest near-duplicates (curation appends),
+  // and the old head-slice never compared against anything added after case #100. Batched in
+  // one embeddings call instead of N sequential round trips on the ingest-driven path.
+  const window = existing.slice(-DEDUPE_EMBEDDING_CAP);
+  const queries = window.map(q => (typeof q.main_question?.query === "string" ? q.main_question.query : ""));
+  const embeddings = await computeEmbeddings(queries.map(q => q || " "));
+  for (let i = 0; i < window.length; i++) {
+    const query = queries[i];
+    const emb = embeddings[i];
+    if (!query || !emb) continue;
     const similarity = cosine(candidateEmb, emb);
     if (similarity >= DEDUPE_SIMILARITY_THRESHOLD) {
       return { reason: "similar-query", existingQuery: query, similarity: Math.round(similarity * 1000) / 1000 };
@@ -195,7 +205,34 @@ export type AddCaseResult =
   | { ok: false; duplicate: DuplicateInfo }
   | { ok: false; error: "not-found" };
 
+// Per-dataset write serialization: addCaseToDataset is a read-modify-write driven
+// CONCURRENTLY by fire-and-forget ingest rules - two traces arriving inside the (multi-second)
+// embedding window both read N questions and both write N+1, silently losing one curated case.
+// A promise chain per (project, dataset) serializes the whole read-dedupe-write critical
+// section in-process; the fresh re-read inside the section closes the remaining stale-array
+// hazard against writes from other paths.
+const datasetWriteChains = new Map<string, Promise<unknown>>();
+
 export async function addCaseToDataset(
+  db: Db,
+  datasetId: string,
+  curatedCase: CuratedCase,
+  opts: { dedupe?: boolean } = {}
+): Promise<AddCaseResult> {
+  const chainKey = `${db.projectId ?? ""}|${datasetId}`;
+  const previous = datasetWriteChains.get(chainKey) ?? Promise.resolve();
+  const run = previous.then(
+    () => addCaseToDatasetSerialized(db, datasetId, curatedCase, opts),
+    () => addCaseToDatasetSerialized(db, datasetId, curatedCase, opts)
+  );
+  datasetWriteChains.set(chainKey, run);
+  void run.finally(() => {
+    if (datasetWriteChains.get(chainKey) === run) datasetWriteChains.delete(chainKey);
+  });
+  return run;
+}
+
+async function addCaseToDatasetSerialized(
   db: Db,
   datasetId: string,
   curatedCase: CuratedCase,
@@ -213,18 +250,28 @@ export async function addCaseToDataset(
     if (duplicate) return { ok: false, duplicate };
   }
 
+  // Fresh re-read directly before the write: the dedupe pass above awaited embeddings, and a
+  // write that raced in through another path (bulk coverage add, a dashboard edit) must be
+  // appended TO, not clobbered with our stale copy. The WHOLE update body comes from the fresh
+  // row, not just questions - a name/criteria edit that raced in must survive this write too.
+  const fresh = (await getDataset(db, datasetId)) as
+    | (Record<string, unknown> & { name: string; questions: unknown })
+    | null;
+  const snapshot = fresh ?? dataset;
+  const freshQuestions = (Array.isArray(snapshot.questions) ? snapshot.questions : questions) as ExistingQuestion[];
+
   // updateDataset (not a raw column write) so the append lands in version history like any other
   // dataset edit. The wire shape spreads similarityConfig flat, so extract helpers map it back.
   await updateDataset(db, datasetId, {
-    name: dataset.name,
-    description: (dataset.description as string | undefined) ?? undefined,
-    numberOfRequests: (dataset.numberOfRequests as number | undefined) ?? undefined,
-    similarityConfig: extractSimilarityConfig(dataset),
-    codeScorers: extractCodeScorers(dataset),
-    acceptanceCriteria: (dataset.acceptanceCriteria as string | undefined) ?? undefined,
-    rejectionCriteria: (dataset.rejectionCriteria as string | undefined) ?? undefined,
-    evaluationCriteria: (dataset.evaluationCriteria as string | undefined) ?? undefined,
-    questions: [...questions, curatedCase],
+    name: snapshot.name,
+    description: (snapshot.description as string | undefined) ?? undefined,
+    numberOfRequests: (snapshot.numberOfRequests as number | undefined) ?? undefined,
+    similarityConfig: extractSimilarityConfig(snapshot),
+    codeScorers: extractCodeScorers(snapshot),
+    acceptanceCriteria: (snapshot.acceptanceCriteria as string | undefined) ?? undefined,
+    rejectionCriteria: (snapshot.rejectionCriteria as string | undefined) ?? undefined,
+    evaluationCriteria: (snapshot.evaluationCriteria as string | undefined) ?? undefined,
+    questions: [...freshQuestions, curatedCase],
   });
-  return { ok: true, caseCount: questions.length + 1 };
+  return { ok: true, caseCount: freshQuestions.length + 1 };
 }

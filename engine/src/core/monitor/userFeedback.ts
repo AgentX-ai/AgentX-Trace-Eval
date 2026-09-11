@@ -45,16 +45,51 @@ export type RecordFeedbackInput = {
   endUserId?: string;
 };
 
+const MAX_FEEDBACK_COMMENT_CHARS = 4_000;
+
 export async function recordUserFeedback(db: Db, input: RecordFeedbackInput) {
   const trace = await getTraceRow(db, input.traceId);
   if (!trace) return null;
+
+  // Idempotent per (trace, end user): a retrying HTTP client re-sending the same thumbs-down
+  // must not inflate the signal's occurrence count (which ranks the Attention digest) or pile
+  // up duplicate outcome reports. Same rating + same voter = update-in-place; a CHANGED rating
+  // replaces the old vote rather than coexisting with it.
+  const voter = input.endUserId?.trim() || null;
+  if (voter) {
+    const dupCond = and(
+      eq(db.schema.userFeedback.projectId, db.projectId),
+      eq(db.schema.userFeedback.traceId, input.traceId),
+      eq(db.schema.userFeedback.endUserId, voter)
+    );
+    const existing = (
+      db.kind === "sqlite"
+        ? db.db.select().from(db.schema.userFeedback).where(dupCond).limit(1).all()
+        : await db.db.select().from(db.schema.userFeedback).where(dupCond).limit(1)
+    ) as UserFeedbackRow[];
+    const prior = existing[0];
+    if (prior) {
+      const patch = {
+        rating: input.rating,
+        comment: input.comment?.trim().slice(0, MAX_FEEDBACK_COMMENT_CHARS) || null,
+        createdAt: new Date(),
+      };
+      const idCond = and(eq(db.schema.userFeedback.id, prior.id), eq(db.schema.userFeedback.projectId, db.projectId));
+      if (db.kind === "sqlite") {
+        db.db.update(db.schema.userFeedback).set(patch).where(idCond).run();
+      } else {
+        await db.db.update(db.schema.userFeedback).set(patch).where(idCond);
+      }
+      return toWire({ ...prior, ...patch });
+    }
+  }
 
   const row: UserFeedbackRow = {
     id: nanoid(),
     traceId: input.traceId,
     rating: input.rating,
-    comment: input.comment?.trim() || null,
-    endUserId: input.endUserId?.trim() || null,
+    comment: input.comment?.trim().slice(0, MAX_FEEDBACK_COMMENT_CHARS) || null,
+    endUserId: voter,
     createdAt: new Date(),
     projectId: db.projectId,
   };
