@@ -206,11 +206,15 @@ export async function runConversationSimulation(
       );
       turn.latencyMs = Date.now() - start;
       if (completion.truncated) {
-        // The round cap cut the trajectory - an empty agentMessage pushed into history would
-        // poison every later turn and read as "the agent said nothing".
+        // The round cap cut the trajectory. An empty agentMessage pushed into history would
+        // poison every later turn (the persona reacts to silence, the rest of the conversation
+        // becomes fiction) and an empty-output span would trip the empty-response detector on
+        // synthetic traffic - so the turn carries an explicit marker instead of "".
         turn.error = "Tool loop exceeded the round cap without a final answer";
       }
-      turn.agentMessage = completion.text;
+      turn.agentMessage = completion.truncated
+        ? completion.text || "(no final answer - the tool loop exceeded the round cap)"
+        : completion.text;
       if (completion.toolCalls.length > 0) turn.toolCalls = completion.toolCalls;
 
       if (record && sessionId) {
@@ -227,7 +231,7 @@ export async function runConversationSimulation(
         await ingestTrace(db, {
           name: agentName,
           input: { query: userTurn.message },
-          output: completion.text,
+          output: turn.agentMessage,
           latency_ms: turn.latencyMs,
           model: input.model,
           session_id: sessionId,

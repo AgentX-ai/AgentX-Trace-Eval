@@ -179,6 +179,10 @@ export class ClickHouseTraceStore implements TraceStore {
   }
 
   private scope(): string {
+    // The "" sentinel from an unscoped Db must fail CLOSED here too: CH stores unscoped writes
+    // as project_id = '' (non-nullable String), which the sentinel would happily match -
+    // turning "forgot withProjectId" from empty-results into a shared hidden bucket.
+    if (this.projectId === "") return "1 = 0";
     return `project_id = {project:String}`;
   }
 
@@ -236,10 +240,12 @@ export class ClickHouseTraceStore implements TraceStore {
   }
 
   async listBySession(sessionId: string): Promise<TraceRow[]> {
-    // Same cap and ordering as the SQL store: oldest-first so a truncated runaway session
-    // keeps the conversation's beginning (the transcript's anchor), and 5000 bounds the heap.
+    // Same cap and ordering as the SQL store (created_at ASC): oldest-first so a truncated
+    // runaway session keeps the conversation's beginning, and 5000 bounds the heap. created_at
+    // primary - the SQL adapter orders by createdAt, and the truncation boundary of a mixed
+    // session must not differ between tiers.
     const rows = await this.rows(
-      `SELECT * FROM ${TABLE} WHERE ${this.scope()} AND session_id = {sessionId:String} ORDER BY started_at ASC, created_at ASC LIMIT 5000`,
+      `SELECT * FROM ${TABLE} WHERE ${this.scope()} AND session_id = {sessionId:String} ORDER BY created_at ASC, started_at ASC LIMIT 5000`,
       { sessionId }
     );
     return rows.map(fromStored);
@@ -249,8 +255,10 @@ export class ClickHouseTraceStore implements TraceStore {
     const conds = [this.scope()];
     const params: Record<string, unknown> = {};
     if (args.since) {
-      conds.push("created_at >= {since:DateTime64(3)}");
-      params.since = args.since.toISOString().replace("T", " ").replace("Z", "");
+      // Epoch-milli bound like every other time predicate here - a DateTime64 param without a
+      // timezone is parsed in the SERVER\'s tz, silently shifting incremental backups on non-UTC
+      // ClickHouse installs.
+      conds.push(`created_at >= fromUnixTimestamp64Milli(${args.since.getTime()})`);
     }
     if (args.cursor) {
       conds.push("id > {cursor:String}");
@@ -267,15 +275,18 @@ export class ClickHouseTraceStore implements TraceStore {
     const conds = [this.scope()];
     const params: Record<string, unknown> = {};
     if (since) {
-      conds.push("created_at >= {since:DateTime64(3)}");
-      params.since = since.toISOString().replace("T", " ").replace("Z", "");
+      // Epoch-milli, tz-safe - see listForExport.
+      conds.push(`created_at >= fromUnixTimestamp64Milli(${since.getTime()})`);
     }
     const rows = await this.rows(`SELECT count(*) AS n FROM ${TABLE} WHERE ${conds.join(" AND ")}`, params);
     return Number((rows[0] as { n?: unknown })?.n ?? 0);
   }
 
   async listRecent(limit: number): Promise<TraceRow[]> {
-    const rows = await this.rows(`SELECT * FROM ${TABLE} WHERE ${this.scope()} LIMIT ${Math.floor(limit)}`);
+    // Newest-first, like the SQL store - "recent" from an unordered SELECT was storage-order.
+    const rows = await this.rows(
+      `SELECT * FROM ${TABLE} WHERE ${this.scope()} ORDER BY created_at DESC LIMIT ${Math.floor(limit)}`
+    );
     return rows.map(fromStored);
   }
 

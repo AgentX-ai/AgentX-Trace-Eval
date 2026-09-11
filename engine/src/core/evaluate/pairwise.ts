@@ -377,14 +377,25 @@ async function rowsFor(db: Db, where: SQL | undefined, limit?: number): Promise<
       .select()
       .from(db.schema.pairwiseComparisons)
       .where(where)
-      .orderBy(desc(db.schema.pairwiseComparisons.createdAt), asc(db.schema.pairwiseComparisons.questionIndex));
+      // batchId between createdAt and questionIndex: rows of two batches created in the same
+      // millisecond must stay contiguous, or the cap-pop below drops a COMPLETE batch while a
+      // truncated one survives and summarizes as a clean sweep.
+      .orderBy(
+        desc(db.schema.pairwiseComparisons.createdAt),
+        asc(db.schema.pairwiseComparisons.batchId),
+        asc(db.schema.pairwiseComparisons.questionIndex)
+      );
     return (limit ? query.limit(limit).all() : query.all()) as Row[];
   }
   const query = db.db
     .select()
     .from(db.schema.pairwiseComparisons)
     .where(where)
-    .orderBy(desc(db.schema.pairwiseComparisons.createdAt), asc(db.schema.pairwiseComparisons.questionIndex));
+    .orderBy(
+      desc(db.schema.pairwiseComparisons.createdAt),
+      asc(db.schema.pairwiseComparisons.batchId),
+      asc(db.schema.pairwiseComparisons.questionIndex)
+    );
   return (await (limit ? query.limit(limit) : query)) as Row[];
 }
 

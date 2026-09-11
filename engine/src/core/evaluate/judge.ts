@@ -3,7 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { getDb } from "../../storage/db.js";
 import { getAppSettings } from "../settings/appSettings.js";
 import { isMultiTenant } from "../../auth/mode.js";
-import { checkAndRecordJudgeCall } from "../shared/usage.js";
+import { checkAndRecordJudgeCall, recordJudgeCall } from "../shared/usage.js";
 
 // Multi-tenant hard rule: provider keys come only from the org's own settings row - the
 // process env belongs to the operator, and letting a tenant's judge calls fall back to it
@@ -361,8 +361,10 @@ export async function callJudgeJson({
   });
   if (result.retried) {
     // judge-core's automatic empty/parse-failure retry is a second real provider call - the
-    // billing ledger under-counted by up to 2x on flaky generations without this.
-    await checkAndRecordJudgeCall(model);
+    // billing ledger under-counted by up to 2x on flaky generations without this. Record-only:
+    // the quota gate ran before the call, and throwing HERE would discard a successful,
+    // already-billed result at the exact boundary of the daily cap.
+    await recordJudgeCall(model);
   }
   return result;
 }
@@ -853,9 +855,17 @@ export async function scorePortabilityResponse(
 ): Promise<{ rating: number; justification: string }> {
   const prompt = applyJudgePromptTemplate(PORTABILITY_JUDGE_PROMPT, { input, output, expected: "" });
   const result = await callJudgeJson({ model: judgeModel, jsonSchema: SCORE_SCHEMA, userMessage: prompt });
-  const payload = result.payload as { rating: number; justification: string } | null;
+  const payload = result.payload as { rating?: unknown; justification?: unknown } | null;
   if (!payload) {
     throw new Error("Judge model returned no result");
   }
-  return { rating: payload.rating, justification: payload.justification };
+  // Same coercion + clamp scoreAgainstCriteria applies, for the same reason: this is exactly
+  // the surface judged by non-OpenAI/custom endpoints, which answer {"rating": "8"} or a
+  // percent-scale 85 often enough that an unvalidated pass-through corrupts the comparison.
+  const numeric = typeof payload.rating === "number" ? payload.rating : Number(payload.rating);
+  if (!Number.isFinite(numeric)) {
+    throw new Error("Judge model returned a non-numeric rating");
+  }
+  const rating = Math.max(0, Math.min(10, numeric));
+  return { rating, justification: typeof payload.justification === "string" ? payload.justification : "" };
 }

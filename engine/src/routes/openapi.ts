@@ -13,10 +13,20 @@ function buildDocument(): object {
   const schemas: Record<string, unknown> = {};
   for (const entry of WIRE_CONTRACT) {
     schemas[entry.name] = zodToJsonSchema(entry.response, { target: "openApi3" });
-    paths[`/api/v1${entry.path}`] = {
-      ...(paths[`/api/v1${entry.path}`] ?? {}),
+    // OpenAPI templating, not Express syntax: ":id" is a literal path segment to every
+    // generator, which turns the stated consumers' clients into guaranteed 404s.
+    const oasPath = entry.path.replace(/:([A-Za-z0-9_]+)/g, "{$1}");
+    const params = [...entry.path.matchAll(/:([A-Za-z0-9_]+)/g)].map(m => ({
+      name: m[1],
+      in: "path",
+      required: true,
+      schema: { type: "string" },
+    }));
+    paths[`/api/v1${oasPath}`] = {
+      ...(paths[`/api/v1${oasPath}`] ?? {}),
       [entry.method]: {
         summary: entry.summary,
+        ...(params.length > 0 ? { parameters: params } : {}),
         responses: {
           "200": {
             description: "OK",

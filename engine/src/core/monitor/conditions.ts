@@ -44,7 +44,7 @@ export function buildSourceTexts({ responseText, trace }: { responseText?: strin
     trace: [
       stringify(trace?.output),
       trace?.error ?? "",
-      ...((trace?.toolCalls ?? []) as NonNullable<TraceLike["toolCalls"]>).map(call =>
+      ...((Array.isArray(trace?.toolCalls) ? trace.toolCalls : []) as NonNullable<TraceLike["toolCalls"]>).map(call =>
         [call.name, stringify(call.output), stringify(call.input)].filter(Boolean).join(" ")
       ),
     ]

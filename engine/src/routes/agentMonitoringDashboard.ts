@@ -83,7 +83,7 @@ import {
   type JudgeScorerOnlineInput,
 } from "../core/monitor/judgeScorers.js";
 import { patchEvaluationSettings } from "../core/evaluate/evaluationSettings.js";
-import {
+import { getCustomEvaluatorRow,
   createCustomEvaluator,
   updateCustomEvaluator,
   deleteCustomEvaluator,
@@ -1429,9 +1429,21 @@ agentMonitoringDashboardRouter.post("/custom-evaluators", async (req: Request, r
 
 agentMonitoringDashboardRouter.put("/custom-evaluators/:evaluatorId", async (req: Request, res: Response) => {
   const body = req.body ?? {};
-  if (body.url !== undefined && !isValidHttpUrl(body.url)) {
+  // CODE scorers store url as "" and the dashboard round-trips the whole draft on save -
+  // validating that empty string made every edit of an existing code scorer a 400. The URL
+  // requirement is the EXTERNAL kind's; look the row up before enforcing it.
+  const existing = await getCustomEvaluatorRow(scopedDb(req), req.params.evaluatorId!);
+  if (!existing) {
+    res.status(404).json({ error: "Scorer not found" });
+    return;
+  }
+  const isCode = (existing as { kind?: string }).kind === "code";
+  if (!isCode && body.url !== undefined && !isValidHttpUrl(body.url)) {
     res.status(400).json({ error: "A valid http:// or https:// url is required" });
     return;
+  }
+  if (isCode && body.url !== undefined) {
+    delete body.url;
   }
   const evaluator = await updateCustomEvaluator(scopedDb(req), req.params.evaluatorId!, {
     name: body.name,

@@ -1171,6 +1171,7 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
     ["outcome_reports", "ALTER TABLE outcome_reports ADD COLUMN is_negative INTEGER NOT NULL DEFAULT 0"],
     ["projects", "ALTER TABLE projects ADD COLUMN topics_enabled INTEGER NOT NULL DEFAULT 0"],
     ["projects", "ALTER TABLE projects ADD COLUMN coherence_sweep_enabled INTEGER NOT NULL DEFAULT 1"],
+    // dead column (kept in DDL, absent from drizzle by design - see the note below)
     ["projects", "ALTER TABLE projects ADD COLUMN disabled_builtin_patterns TEXT"],
     // Scorer opt-in flip: built-ins used to be on-by-default with a disabled list; now nothing
     // runs unless listed here. The old column is left in place (ignored) rather than migrated -
@@ -2470,6 +2471,12 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
     ALTER TABLE datasets ADD COLUMN IF NOT EXISTS code_scorers JSONB;
     ALTER TABLE evaluation_settings ADD COLUMN IF NOT EXISTS code_scorers JSONB;
     ALTER TABLE evaluation_run_results ADD COLUMN IF NOT EXISTS code_scorer_results JSONB;
+    ALTER TABLE traces ADD COLUMN IF NOT EXISTS span_kind TEXT;
+    ALTER TABLE traces ADD COLUMN IF NOT EXISTS source TEXT;
+    ALTER TABLE auth_account ADD COLUMN IF NOT EXISTS issuer TEXT;
+    ALTER TABLE auth_invitation ADD COLUMN IF NOT EXISTS created_at TIMESTAMP;
+    UPDATE session_scores SET judge_model = 'unknown' WHERE judge_model IS NULL;
+    ALTER TABLE session_scores ALTER COLUMN judge_model SET NOT NULL;
     ALTER TABLE traces ADD COLUMN IF NOT EXISTS agent_id TEXT;
     ALTER TABLE traces ADD COLUMN IF NOT EXISTS project_id TEXT;
     ALTER TABLE agents ADD COLUMN IF NOT EXISTS project_id TEXT;

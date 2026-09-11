@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { and, eq, inArray } from "drizzle-orm";
 import { asyncRouter } from "./asyncRouter.js";
 import { nanoid } from "nanoid";
 import { handleCasePreview, handleSuggestExpected, handleAddCase } from "./curationHandlers.js";
@@ -1554,7 +1555,38 @@ function toResultWire(r: RunResultRow, evaluationSettingsQuestions: unknown, dat
 // always computed from the real result rows regardless, since the table's rating column reads
 // liveStatistics.averageRating, not results.length, and a rating of exactly 0 (e.g. an errored
 // result) must not be treated as "no rating yet" (0 !== null).
-async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) {
+// Latest gate verdict per run - the CI PASS/FAIL badge's data. Batched for the list route so
+// 50 rows cost one query, not 50.
+async function latestGateResults(db: Db, runIds: string[]): Promise<Map<string, boolean>> {
+  if (runIds.length === 0) return new Map();
+  const cond = and(inArray(db.schema.gateResults.runId, runIds), eq(db.schema.gateResults.projectId, db.projectId));
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db
+          .select({
+            runId: db.schema.gateResults.runId,
+            passed: db.schema.gateResults.passed,
+            createdAt: db.schema.gateResults.createdAt,
+          })
+          .from(db.schema.gateResults)
+          .where(cond)
+          .all()
+      : await db.db
+          .select({
+            runId: db.schema.gateResults.runId,
+            passed: db.schema.gateResults.passed,
+            createdAt: db.schema.gateResults.createdAt,
+          })
+          .from(db.schema.gateResults)
+          .where(cond)
+  ) as { runId: string; passed: boolean; createdAt: Date }[];
+  rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  const latest = new Map<string, boolean>();
+  for (const row of rows) latest.set(row.runId, row.passed); // later rows overwrite: latest wins
+  return latest;
+}
+
+async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean, gateResult?: "pass" | "fail" | null) {
   const scorerGroupId = (run as { scorerGroupId?: string | null }).scorerGroupId ?? null;
   const [dataset, evaluationSettings, results, analysisRow, scorerGroup] = await Promise.all([
     getDataset(db, run.datasetId),
@@ -1644,6 +1676,8 @@ async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean) 
       : undefined,
     evaluationSubject: run.evaluationSubject ?? undefined,
     runSource: run.runSource ?? "sdk",
+    // Latest recorded CI gate verdict, when one exists - the runs table's PASS/FAIL badge.
+    gateResult: gateResult ?? null,
     createdAt: run.createdAt,
     updatedAt: run.createdAt,
   };
@@ -1653,7 +1687,12 @@ evaluateDashboardRouter.get("/list", async (req: Request, res: Response) => {
   const { page, limit } = parsePageLimit(req);
   const allRows = await listRunRows(scopedDb(req));
   const { page: rows, pagination } = paginate(allRows, page, limit);
-  const evaluations = await Promise.all(rows.map(run => toEvaluateWire(scopedDb(req), run, false)));
+  const gateByRun = await latestGateResults(scopedDb(req), rows.map(run => run.id));
+  const evaluations = await Promise.all(
+    rows.map(run =>
+      toEvaluateWire(scopedDb(req), run, false, gateByRun.has(run.id) ? (gateByRun.get(run.id) ? "pass" : "fail") : null)
+    )
+  );
   res.status(200).json({ evaluations, pagination: { ...pagination, limit } });
 });
 
@@ -1663,6 +1702,12 @@ evaluateDashboardRouter.get("/:id", async (req: Request, res: Response) => {
     res.status(404).json({ error: "Evaluation not found" });
     return;
   }
-  const evaluation = await toEvaluateWire(scopedDb(req), run, true);
+  const gateByRun = await latestGateResults(scopedDb(req), [run.id]);
+  const evaluation = await toEvaluateWire(
+    scopedDb(req),
+    run,
+    true,
+    gateByRun.has(run.id) ? (gateByRun.get(run.id) ? "pass" : "fail") : null
+  );
   res.status(200).json(evaluation);
 });

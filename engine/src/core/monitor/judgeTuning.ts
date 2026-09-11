@@ -233,8 +233,8 @@ export async function getEvaluatorCalibration(
   );
   const corrections = (
     (db.kind === "sqlite"
-      ? db.db.select().from(db.schema.monitorSignalFeedback).where(feedbackCond).all()
-      : await db.db.select().from(db.schema.monitorSignalFeedback).where(feedbackCond)) as FeedbackCorrectionRow[]
+      ? db.db.select().from(db.schema.monitorSignalFeedback).where(feedbackCond).limit(50_000).all()
+      : await db.db.select().from(db.schema.monitorSignalFeedback).where(feedbackCond).limit(50_000)) as FeedbackCorrectionRow[]
   ).filter(
     c =>
       c.correctedScore !== null || c.metric === "false-positive" || c.metric === "confirmed" || c.queuedForAutotune === true
@@ -258,15 +258,18 @@ export async function getEvaluatorCalibration(
 
   // Labeled human-review rows, windowed on reviewedAt: the calibration pair the review queue
   // exists to produce (this stream was previously collected and displayed but fed nothing).
+  // Windowed and bounded IN SQL: a year of labeled reviews must not be materialized per panel
+  // open just to keep the handful inside the window (the sibling event stream caps at 50k too).
   const reviewCond = and(
     eq(db.schema.reviewQueueItems.projectId, db.projectId),
-    eq(db.schema.reviewQueueItems.status, "labeled")
+    eq(db.schema.reviewQueueItems.status, "labeled"),
+    gte(db.schema.reviewQueueItems.reviewedAt, since)
   );
   const reviewRows = (
     (db.kind === "sqlite"
-      ? db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).all()
-      : await db.db.select().from(db.schema.reviewQueueItems).where(reviewCond)) as ReviewLabelRow[]
-  ).filter(r => r.label && r.traceId && r.reviewedAt && r.reviewedAt.getTime() >= since.getTime());
+      ? db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).limit(50_000).all()
+      : await db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).limit(50_000)) as ReviewLabelRow[]
+  ).filter(r => r.label && r.traceId && r.reviewedAt);
   const reviewByTrace = new Map<string, ReviewLabelRow>();
   for (const r of reviewRows) {
     const existing = reviewByTrace.get(r.traceId);
@@ -278,8 +281,8 @@ export async function getEvaluatorCalibration(
   const outcomesCond = and(eq(db.schema.outcomeReports.projectId, db.projectId), gte(db.schema.outcomeReports.reportedAt, since));
   const outcomes = (
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.outcomeReports).where(outcomesCond).all()
-      : await db.db.select().from(db.schema.outcomeReports).where(outcomesCond)
+      ? db.db.select().from(db.schema.outcomeReports).where(outcomesCond).limit(50_000).all()
+      : await db.db.select().from(db.schema.outcomeReports).where(outcomesCond).limit(50_000)
   ) as OutcomeRow[];
   const outcomeByTrace = new Map<string, OutcomeRow>();
   for (const o of outcomes) {

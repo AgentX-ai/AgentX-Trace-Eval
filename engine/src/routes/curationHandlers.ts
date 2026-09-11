@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
 import { scopedDb } from "../auth/apiKey.js";
-import {
+import { MAX_CURATED_FOLLOW_UPS,
   previewCaseFromTrace,
   previewCaseFromSession,
   suggestExpected,
@@ -65,7 +65,10 @@ export async function handleAddCase(req: Request, res: Response) {
         expectedResults:
           typeof curated.main_question.expectedResults === "string" ? curated.main_question.expectedResults : null,
       },
+      // Same bound the preview applies - the client's array is re-accepted here and must not
+      // smuggle an unbounded case past it.
       follow_up_questions: (Array.isArray(curated.follow_up_questions) ? curated.follow_up_questions : [])
+        .slice(0, MAX_CURATED_FOLLOW_UPS)
         .filter(f => typeof f?.query === "string" && f.query.trim())
         .map(f => ({
           query: f.query,

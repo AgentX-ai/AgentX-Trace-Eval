@@ -239,6 +239,26 @@ authOrgRouter.post("/invitations/:id/accept", async (req: Request, res: Response
     res.status(403).json({ error: `This invitation was issued to ${invitation.email} - sign in with that account` });
     return;
   }
+  // The org can be deleted between invite and accept - a member row pointing at nothing reads
+  // as a successful accept with no workspace, which is worse than saying what happened.
+  const orgRows = (
+    db.kind === "sqlite"
+      ? db.db
+          .select({ id: db.schema.authOrganizations.id })
+          .from(db.schema.authOrganizations)
+          .where(eq(db.schema.authOrganizations.id, invitation.organizationId))
+          .limit(1)
+          .all()
+      : await db.db
+          .select({ id: db.schema.authOrganizations.id })
+          .from(db.schema.authOrganizations)
+          .where(eq(db.schema.authOrganizations.id, invitation.organizationId))
+          .limit(1)
+  ) as { id: string }[];
+  if (orgRows.length === 0) {
+    res.status(410).json({ error: "The organization this invitation was for no longer exists" });
+    return;
+  }
   if (!(await memberIn(db, user.id, invitation.organizationId))) {
     const memberRow = {
       id: nanoid(),

@@ -193,8 +193,8 @@ export class SqlTraceStore implements TraceStore {
     const cond = eq(db.schema.traces.projectId, db.projectId);
     const rows =
       db.kind === "sqlite"
-        ? db.db.select().from(db.schema.traces).where(cond).limit(limit).all()
-        : await db.db.select().from(db.schema.traces).where(cond).limit(limit);
+        ? db.db.select().from(db.schema.traces).where(cond).orderBy(desc(db.schema.traces.createdAt)).limit(limit).all()
+        : await db.db.select().from(db.schema.traces).where(cond).orderBy(desc(db.schema.traces.createdAt)).limit(limit);
     return rows as TraceRow[];
   }
 

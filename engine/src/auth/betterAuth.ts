@@ -7,6 +7,8 @@ import { genericOAuth, organization } from "better-auth/plugins";
 import { mailerConfigured, sendMailInBackground } from "./mailer.js";
 
 // Verification is an explicit opt-in on top of a working mailer.
+let firstSignupChain: Promise<void> = Promise.resolve();
+
 export function verificationRequired(): boolean {
   return mailerConfigured() && process.env.AGENTX_REQUIRE_EMAIL_VERIFICATION === "true";
 }
@@ -142,6 +144,10 @@ async function onUserCreated(db: Db, userId: string, userName?: string | null): 
     await ensureMetricPackConfigs(scoped).catch(() => undefined);
     return;
   }
+  // Serialized: two simultaneous first signups both passing the anyMember check would each
+  // mint a "first" org, with one silently owning every unclaimed project and the other an
+  // empty shell. In-process is the realistic boundary - first boot is one instance.
+  const run = async () => {
   const anyMember =
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.authMembers).limit(1).all()[0]
@@ -183,6 +189,18 @@ async function onUserCreated(db: Db, userId: string, userName?: string | null): 
     await db.db.insert(db.schema.authMembers).values(memberRow);
   } else {
     await db.db.insert(db.schema.authMembers).values(memberRow);
+  }
+  };
+  // Chain stays alive across failures (then(run, run) posture) - but THIS caller still sees
+  // its own error: a failed first-signup bootstrap must not silently produce an org-less user.
+  const prior = firstSignupChain;
+  let settle!: () => void;
+  firstSignupChain = new Promise<void>(resolve => (settle = resolve));
+  await prior.catch(() => undefined);
+  try {
+    await run();
+  } finally {
+    settle();
   }
 }
 
