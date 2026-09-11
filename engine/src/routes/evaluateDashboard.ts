@@ -58,6 +58,7 @@ import {
   getAgentConnectorRow,
   testAgentConnectorConnection,
 } from "../core/evaluate/agentConnectors.js";
+import { outboundUrlProblem } from "../core/shared/urlGuard.js";
 import { startConnectorRun } from "../core/evaluate/connectorRun.js";
 import {
   createToolSchema,
@@ -571,6 +572,11 @@ evaluateDashboardRouter.post("/agent-connectors", async (req: Request, res: Resp
     res.status(400).json({ error: "url must be an http(s) URL" });
     return;
   }
+  const headerProblem = connectorHeaderProblem(body.headers);
+  if (headerProblem) {
+    res.status(400).json({ error: headerProblem });
+    return;
+  }
   const connector = await createAgentConnector(scopedDb(req), {
     name: body.name,
     url: String(body.url).trim(),
@@ -584,6 +590,11 @@ evaluateDashboardRouter.put("/agent-connectors/:id", async (req: Request, res: R
   const body = req.body ?? {};
   if (body.url !== undefined && !isHttpUrl(body.url)) {
     res.status(400).json({ error: "url must be an http(s) URL" });
+    return;
+  }
+  const putHeaderProblem = connectorHeaderProblem(body.headers);
+  if (putHeaderProblem) {
+    res.status(400).json({ error: putHeaderProblem });
     return;
   }
   const connector = await updateAgentConnector(scopedDb(req), req.params.id!, {
@@ -950,25 +961,28 @@ evaluateDashboardRouter.patch("/tool-schemas/:id/test-endpoint", async (req: Req
   res.status(200).json(updated);
 });
 
-function isHttpUrl(value: unknown): boolean {
-  if (typeof value !== "string" || !value.trim()) return false;
-  try {
-    const url = new URL(value.trim());
-    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-    // Self-host deliberately allows loopback/private targets (operators point connectors and
-    // webhooks at their own services) - but cloud metadata endpoints are never a legitimate
-    // connector, and a stored URL reaching one is a server-side credential grab. Blocked at
-    // write time; DNS-rebinding-grade defenses are out of scope for a trusted-operator tier.
-    return !isMetadataTarget(url.hostname);
-  } catch {
-    return false;
+
+// A nested/array header value 201s at write time and then TypeErrors inside undici on every
+// connector call - a 200-case run completing with 200 identical "connector_error" results and
+// nothing saying the CONFIG was malformed. Strings only; explicit null clears.
+function connectorHeaderProblem(headers: unknown): string | null {
+  if (headers === undefined || headers === null) return null;
+  if (typeof headers !== "object" || Array.isArray(headers)) return "headers must be an object of string values";
+  for (const value of Object.values(headers as Record<string, unknown>)) {
+    if (typeof value !== "string") return "headers must be an object of string values";
   }
+  return null;
 }
 
-function isMetadataTarget(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-  return host === "metadata.google.internal" || host === "metadata.goog" || /^169\.254\./.test(host) || host === "[fd00:ec2::254]" || host === "fd00:ec2::254";
+function isHttpUrl(value: unknown): boolean {
+  // The shared egress guard (core/shared/urlGuard.ts): http(s)-only, metadata hosts always
+  // refused, private/loopback refused under AGENTX_MULTI_TENANT. The local two-rule copy this
+  // replaced silently skipped the multi-tenant private-range rule, making connectors the one
+  // caller-supplied-URL surface a tenant could point at the operator's internal network.
+  if (typeof value !== "string" || !value.trim()) return false;
+  return outboundUrlProblem(value.trim()) === null;
 }
+
 
 // Remote MCP introspection for Register Tool (core/evaluate/mcp.ts): connect, tools/list, hand
 // the shapes back for review. headers = the dialog's key-value pairs (sent as HTTP headers -

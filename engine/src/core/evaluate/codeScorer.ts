@@ -59,7 +59,10 @@ type ScorerArgs = { input: string; output: string; expected?: string; toolCalls?
 // realm, so `this.constructor.constructor("return process")()` hands a scorer the real `process`
 // (checked, not assumed). Treat scorer code as code the operator chose to run on their own machine
 // and do not expose dataset creation to anyone who should not have that. Real sandboxing needs an
-// isolate or a subprocess, neither of which survives `bun build --compile`.
+// isolate or a subprocess, neither of which survives `bun build --compile`. The same constraint
+// means there is NO heap cap: a scorer that allocates unboundedly (`while(1) a.push(...)`) can
+// OOM the engine process before the sync timeout fires - accepted under the same trust posture,
+// stated here so nobody mistakes the timeout for a resource boundary.
 //
 // Every failure (syntax error, thrown error, timeout, bad return shape) is caught here and folded
 // into { score: null, error } rather than propagated - one broken/timed-out scorer must not take
@@ -79,13 +82,17 @@ function executeInSandbox(code: string, args: ScorerArgs): unknown {
   // The function call happens inside the same runInContext call as the compile, not as a
   // separately-invoked reference afterward - the latter would run outside the timeout window
   // entirely, since vm only bounds synchronous execution during the call it wraps.
+  // Cloned per scorer: runs.ts hands EVERY scorer in a result the same scores/toolCalls
+  // objects, so without the clone one scorer's `scores.rating = 10` mutated what its siblings
+  // (and the stored trace row's live array) read. structuredClone also severs the prototype
+  // chain hop into the outer realm for these payloads specifically.
   const context = vm.createContext({
     __args: {
       input: args.input,
       output: args.output,
       expected: args.expected,
-      toolCalls: args.toolCalls,
-      scores: args.scores,
+      toolCalls: args.toolCalls === undefined ? undefined : structuredClone(args.toolCalls),
+      scores: args.scores === undefined ? undefined : structuredClone(args.scores),
     },
   });
   const wrapped = `(function({ input, output, expected, toolCalls, scores }) {\n${code}\n})(__args);`;

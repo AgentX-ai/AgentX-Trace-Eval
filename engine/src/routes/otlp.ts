@@ -51,6 +51,13 @@ const MONITOR_OTEL_TRACES = process.env.AGENTX_OTEL_MONITOR !== "false";
 // per-span behavior for an operator who deliberately wants it.
 const MONITOR_CHILD_SPANS = process.env.AGENTX_MONITOR_CHILD_SPANS === "true";
 
+// Per-request span cap: everything past normalization is per-span work (mapping, validation,
+// queued ingest, up to six background checks each) with the whole batch held in memory, so an
+// unbounded export is a one-request amplification vector. 5000 is an order of magnitude above
+// any sane exporter batch (the OTel SDK default is 512); the whole request is refused with 413
+// before any span is processed, so a conforming exporter can split and resend without dupes.
+const MAX_SPANS_PER_EXPORT = 5000;
+
 otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   const isProtobuf = Boolean(req.is("application/x-protobuf"));
   // Any other content type leaves req.body an empty object, which reads here as a valid export of
@@ -88,6 +95,12 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   }
 
   const spans = normalizeExportRequest(parsed);
+  if (spans.length > MAX_SPANS_PER_EXPORT) {
+    res.status(413).json({
+      error: `too many spans in one export (${spans.length} > ${MAX_SPANS_PER_EXPORT}) - nothing was ingested, split the batch and resend`,
+    });
+    return;
+  }
   const db = scopedDb(req);
   let rejected = 0;
   let lastError = "";
@@ -109,7 +122,16 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   let mappingRejected = 0;
   for (const span of spans) {
     try {
-      candidates.push(otelSpanToIngestInput(span));
+      const mapped = otelSpanToIngestInput(span);
+      // A span whose id the normalizer rejected has NO dedupe key - storing it makes the 429
+      // "safe to retry, span ids make the stored part idempotent" answer a lie (each retry
+      // re-inserts it). Rejected into partialSuccess like any other unmappable span.
+      if (!mapped.span_id) {
+        mappingRejected++;
+        logger.warn("OTLP: span carried no decodable span id - rejected into partialSuccess (undedupable)");
+        continue;
+      }
+      candidates.push(mapped);
     } catch (err) {
       mappingRejected++;
       logger.warn({ err }, "OTLP: span failed to map - rejected into partialSuccess");

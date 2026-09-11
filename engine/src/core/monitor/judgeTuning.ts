@@ -567,11 +567,21 @@ Rewrite so the judge would agree with the recorded ground truth on these cases. 
     });
   }
 
+  // A prompt the model did NOT rewrite must go back as the caller's sentinel, not the resolved
+  // default text. The evaluator's settings row is SHARED with offline dataset runs: an empty
+  // judgePrompt there means "engine default", which for a dataset run is the REFERENCE-BASED
+  // prompt ({expected} comparison). Materializing the reference-free live-scoring default into
+  // the column on a no-op tuning silently and permanently dropped the expected-answer
+  // comparison from every later dataset run graded by this scorer.
+  const settingsPromptWasEmpty = !(settings.judgePrompt ?? "").trim();
+  const judgePromptOut =
+    settingsPromptWasEmpty && proposedJudgePrompt === currentJudgePrompt ? "" : proposedJudgePrompt;
+
   return {
     acceptanceCriteria: payload.acceptanceCriteria,
     rejectionCriteria: typeof payload.rejectionCriteria === "string" ? payload.rejectionCriteria : current.rejectionCriteria,
     evaluationCriteria: typeof payload.evaluationCriteria === "string" ? payload.evaluationCriteria : current.evaluationCriteria,
-    judgePrompt: proposedJudgePrompt,
+    judgePrompt: judgePromptOut,
     reasoning: typeof payload.reasoning === "string" ? payload.reasoning : "",
     changes,
     judgeModel,

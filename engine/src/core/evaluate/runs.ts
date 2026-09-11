@@ -118,10 +118,16 @@ export async function resolveAdditionalScorerConfigs(
 export async function resolveRunConfig(
   db: Db,
   datasetId: string,
-  evaluationSettingsId: string | null
+  evaluationSettingsId: string | null,
+  // The run's frozen questions (see evaluation_runs.questions_snapshot). Scoring keys into
+  // this array by POSITION, so it must be the array the run was created against - the live
+  // dataset drifts under a long run (a deleted case re-points every later index). Null =
+  // legacy run, live questions as before.
+  questionsSnapshot?: ResolvedRunConfig["questions"] | null
 ): Promise<ResolvedRunConfig> {
   const datasetRow = await getDatasetRow(db, datasetId);
-  const questions = (datasetRow?.questions as ResolvedRunConfig["questions"] | undefined) ?? [];
+  const questions =
+    questionsSnapshot ?? (datasetRow?.questions as ResolvedRunConfig["questions"] | undefined) ?? [];
 
   let settings: EvaluationSettingsRow | null = null;
   if (evaluationSettingsId) {
@@ -231,6 +237,7 @@ export async function initRun(
     runSource: input.runSource ?? "sdk",
     sdkInfo: input.sdk ?? null,
     smokeTestVariants,
+    questionsSnapshot: dataset.questions ?? null,
     status: "in_progress",
     createdAt: new Date(),
   };
@@ -584,7 +591,12 @@ export async function appendResults(
     throw terminalErr;
   }
 
-  const config = await resolveRunConfig(db, run.datasetId, run.evaluationSettingsId);
+  const config = await resolveRunConfig(
+    db,
+    run.datasetId,
+    run.evaluationSettingsId,
+    (run as { questionsSnapshot?: ResolvedRunConfig["questions"] | null }).questionsSnapshot ?? null
+  );
   const additionalConfigs = await resolveAdditionalScorerConfigs(
     db,
     run.datasetId,
@@ -988,6 +1000,12 @@ export async function failRun(db: Db, runId: string) {
   const run = await getRunRow(db, runId);
   if (!run) {
     return null;
+  }
+  // Terminal states are terminal, mirroring finalizeRun: a run that COMPLETED with scored
+  // results must not be flipped to "failed" by a late error in the driver (the connector
+  // runner's catch used to do exactly that on a post-finalize conflict).
+  if (run.status === "completed") {
+    return { runId, status: "completed" };
   }
   const updateCond = and(eq(db.schema.evaluationRuns.id, runId), eq(db.schema.evaluationRuns.projectId, db.projectId));
   if (db.kind === "sqlite") {

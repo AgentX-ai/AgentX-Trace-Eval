@@ -408,10 +408,12 @@ export const insightsCoverageResponseSchema = z
 export const insightsProbeResponseSchema = z
   .object({
     query: z.string(),
-    verdict: z.enum(["covered", "adjacent", "gap", "untested-and-unasked"]),
+    verdict: z.enum(["covered", "adjacent", "gap", "untested-and-unasked", "warming"]),
     similarity: z.number(),
     bands: z.object({ covered: z.number(), related: z.number() }).strict(),
     degraded: z.boolean(),
+    // Cases still embedding - a negative verdict downgrades to "warming" while non-zero.
+    pendingCases: z.number(),
     nearestCases: z.array(
       z
         .object({

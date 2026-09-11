@@ -14,6 +14,7 @@ import { getDefaultProject, listProjectRows } from "./core/project/projects.js";
 import { ensureSessionBaselineJudge } from "./core/monitor/builtinEvaluators.js";
 import { ensureMetricPackConfigs, metricPackBackfillDone, markMetricPackBackfillDone } from "./core/evaluate/metricPack.js";
 import { authMode, initAuth, resolveAuthSecret } from "./auth/betterAuth.js";
+import { consolidateAppSettingsSingleton } from "./core/settings/appSettings.js";
 import { mailerConfigured } from "./auth/mailer.js";
 import { registerAuthRoutes, registerApiV1 } from "./routes/apiV1.js";
 import { findWebIndexHtml, downloadWebBundle, webBundleCandidates, describeWebBundle } from "./web.js";
@@ -89,6 +90,9 @@ async function main() {
   await initDb();
   // One-time: fold pre-existing trace framework labels to lowercase so old traffic groups and
   // filters with new traffic (ingest folds on write since the Platforms chart landed).
+  // Before any singleton reader runs: adopt legacy pretender app_settings rows onto the
+  // "default" id (see appSettings.ts) so the keyed readers below see the stored history.
+  await consolidateAppSettingsSingleton(getDb());
   await backfillFrameworkCasefold(getDb());
   // Partitioned-Postgres maintenance (ADR-0007): pre-create upcoming partitions, drop expired
   // ones. Daily cadence; the DEFAULT partition keeps correctness independent of this timer.

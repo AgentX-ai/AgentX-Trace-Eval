@@ -143,7 +143,9 @@ authOrgRouter.post("/organizations/:orgId/invitations", async (req: Request, res
   }
   // The path the dashboard's accept page mounts at; PUBLIC_URL makes the link shareable
   // beyond localhost when configured (the cloud deployment always sets it).
-  const base = (process.env.AGENTX_PUBLIC_URL || "").replace(/\/$/, "");
+  // Fall back to the request origin: with no AGENTX_PUBLIC_URL the invite email otherwise
+  // carried a bare relative path - an unclickable link in every mail client.
+  const base = (process.env.AGENTX_PUBLIC_URL?.trim() || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
   const url = `${base}/accept-invite?token=${row.id}`;
   // With a mailer configured the invitee gets the link directly; the response still carries it
   // either way so the inviter can always hand it over out-of-band.

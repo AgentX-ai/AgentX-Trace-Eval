@@ -164,6 +164,25 @@ describe("POST /api/v1/otel/v1/traces", () => {
     expect(res.status).toBe(200);
   });
 
+  it("refuses an oversized batch with 413 before processing any span", async () => {
+    // 5001 spans, each with a unique spanId so nothing would dedupe if they were processed.
+    const spans = Array.from({ length: 5001 }, (_, i) =>
+      goodSpan({ spanId: b64(i.toString(16).padStart(16, "0")), name: `cap-check-${i}` })
+    );
+    const res = await engine.json("/api/v1/otel/v1/traces", {
+      method: "POST",
+      body: JSON.stringify({
+        resourceSpans: [{ resource: { attributes: [] }, scopeSpans: [{ scope: { name: "cap" }, spans }] }],
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    expect(res.status).toBe(413);
+    expect(JSON.stringify(res.body)).toContain("too many spans");
+
+    const listed = await engine.json("/api/v1/ingest/traces?limit=100");
+    expect(JSON.stringify(listed.body)).not.toContain("cap-check-");
+  });
+
   it("requires an API key", async () => {
     const res = await postOtlp(exportRequest(goodSpan()));
     expect(res.status).toBe(200);

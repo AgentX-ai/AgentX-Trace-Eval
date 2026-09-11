@@ -205,6 +205,11 @@ export const evaluationRuns = sqliteTable("evaluation_runs", {
   // judge.ts's generateSmokeTestVariants) for questions with main_question.smokeTest.enabled,
   // frozen for the lifetime of the run so a later call can't see it change mid-run.
   smokeTestVariants: text("smoke_test_variants", { mode: "json" }),
+  // The dataset's questions AS OF run creation. Scoring keys into questions by POSITION
+  // (questionIndex), so grading against the live dataset meant a case deleted mid-run silently
+  // re-pointed every later index at the wrong expected answer. Null on legacy runs = fall back
+  // to the live dataset, exactly the old behavior.
+  questionsSnapshot: text("questions_snapshot", { mode: "json" }),
   status: text("status").notNull().default("in_progress"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   projectId: text("project_id"),

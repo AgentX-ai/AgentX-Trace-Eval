@@ -7,7 +7,9 @@ import { embedBatched, type EmbeddingClient } from "../core/evaluate/judge.js";
 // next time - so a batch that fails as a unit does not lose one case, it blocks every case behind it
 // forever. These pin that it splits instead.
 
-/** A client that rejects any request containing `poison`, the way an over-long input does. */
+/** A client that rejects any request containing `poison`, the way an over-long input does.
+ * The thrown error carries `.status` like the real SDK's APIError - splitting keys on it:
+ * only payload-shaped failures (400/413) are worth halving; transient ones are not. */
 const clientRejecting = (poison: string) => {
   const calls: string[][] = [];
   const client: EmbeddingClient = {
@@ -15,7 +17,7 @@ const clientRejecting = (poison: string) => {
       create: async ({ input }) => {
         calls.push(input);
         if (input.includes(poison)) {
-          throw new Error("400 - requested too many tokens");
+          throw Object.assign(new Error("400 - requested too many tokens"), { status: 400 });
         }
         return { data: input.map((text, index) => ({ index, embedding: [text.length, 0] })) };
       },
@@ -78,15 +80,20 @@ describe("embedBatched", () => {
     expect(await embedBatched(client, ["x", "y", "z"])).toEqual([[0], [1], [2]]);
   });
 
-  it("nulls only the input that cannot be embedded at all", async () => {
+  it("a transient provider failure leaves the batch pending WITHOUT splitting", async () => {
+    // A 429/5xx means the PROVIDER is failing - halving would fire 2^k requests at an
+    // endpoint that just said stop. One request, whole batch null (pending for next time).
+    let calls = 0;
     const client: EmbeddingClient = {
       embeddings: {
         create: async () => {
-          throw new Error("500");
+          calls++;
+          throw Object.assign(new Error("500"), { status: 500 });
         },
       },
     };
 
     expect(await embedBatched(client, ["a", "b"])).toEqual([null, null]);
+    expect(calls).toBe(1);
   });
 });

@@ -94,7 +94,10 @@ export async function getAttentionDigest(db: Db): Promise<AttentionDigest> {
 
     const spark = new Array<number>(SPARK_DAYS).fill(0);
     for (const event of own) {
-      const dayIndex = SPARK_DAYS - 1 - Math.floor((todayStart - new Date(event.createdAt).setHours(0, 0, 0, 0)) / dayMs);
+      // Math.round, not floor: two LOCAL midnights are 23h or 25h apart across a DST
+      // transition, and a fixed 24h divisor shifted the whole pre-transition sparkline one
+      // day - a phantom week-over-week spike on the triage digest.
+      const dayIndex = SPARK_DAYS - 1 - Math.round((todayStart - new Date(event.createdAt).setHours(0, 0, 0, 0)) / dayMs);
       if (dayIndex >= 0 && dayIndex < SPARK_DAYS) spark[dayIndex] = (spark[dayIndex] ?? 0) + 1;
     }
     const lastWeek = spark.slice(0, 7).reduce((a, b) => a + b, 0);

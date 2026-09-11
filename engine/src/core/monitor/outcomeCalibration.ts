@@ -195,6 +195,9 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
   // label) used to contribute multiple rows to the same confusion matrix - inflating agreement
   // on exactly the traces that got the most attention. First report per trace wins, and outcome
   // reports outrank sampled labels (the ordering judgeTuning's evidence chain already uses).
+  // Deterministic: a bare SELECT's row order is unspecified (Postgres after vacuum
+  // especially) - sort by reportedAt so "first" means first in time, every request.
+  reports.sort((a, b) => a.reportedAt.getTime() - b.reportedAt.getTime());
   const talliedTraces = new Set<string>();
   for (const report of reports) {
     if (report.traceId) {

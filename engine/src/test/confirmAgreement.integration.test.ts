@@ -23,6 +23,18 @@ beforeAll(async () => {
     req.resume();
     req.on("end", () => {
       res.setHeader("content-type", "application/json");
+      // Custom (OpenAI-compat) models are now correctly routed to /chat/completions -
+      // serve the same verdict in that shape.
+      if ((req.url ?? "").includes("/chat/completions")) {
+        res.end(
+          JSON.stringify({
+            id: "chat_stub",
+            choices: [{ message: { role: "assistant", content: JSON.stringify({ rating: 2, justification: "stub says bad" }) } }],
+            usage: { prompt_tokens: 5, completion_tokens: 5 },
+          })
+        );
+        return;
+      }
       res.end(
         JSON.stringify({
           id: "resp_stub",

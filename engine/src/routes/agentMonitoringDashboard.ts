@@ -1299,27 +1299,10 @@ agentMonitoringDashboardRouter.post(
       | { verdict?: string; netAgreementGain?: number; fixed?: number; brokenControls?: number }
       | undefined;
     const force = body.force === true;
-    if (!force) {
-      if (!validation || typeof validation.verdict !== "string") {
-        res.status(409).json({
-          error:
-            "Publishing tuned criteria requires the validation result (run POST .../tune/validate and pass its verdict as `validation`), or force: true to publish unvalidated.",
-        });
-        return;
-      }
-      if (validation.verdict === "regressed") {
-        res.status(409).json({
-          error:
-            "Validation measured a net regression on this judge's own cases - not published. Re-generate the proposal, or pass force: true to publish anyway.",
-        });
-        return;
-      }
-    }
     // Provenance honesty: a token minted by /tune/validate proves the verdict was measured
-    // for EXACTLY this candidate package on this evaluator. Without one (older clients), the
-    // stamp says client-asserted - the version history must never present an unverified
-    // claim as a measurement. A token that fails verification (criteria edited after
-    // validating, or another evaluator's token) is a hard 409, not a downgrade.
+    // for EXACTLY this candidate package on this evaluator. A token that fails verification
+    // (criteria edited after validating, or another evaluator's token) is a hard 409, not a
+    // downgrade.
     const token = (validation as { token?: string } | undefined)?.token;
     let verified: { verdict: string; netAgreementGain: number | null } | null = null;
     if (typeof token === "string" && token) {
@@ -1335,6 +1318,25 @@ agentMonitoringDashboardRouter.post(
         res.status(409).json({
           error:
             "The validation token does not match what is being published - the criteria changed after validation (or the token belongs to another scorer). Re-run POST .../tune/validate on this exact package.",
+        });
+        return;
+      }
+    }
+    if (!force) {
+      // The gate runs on the VERIFIED verdict, never the client's assertion - otherwise
+      // omitting the token skipped the regression check entirely (a caller could publish a
+      // measured regression by simply claiming "improved" with no proof, no force needed).
+      if (!verified) {
+        res.status(409).json({
+          error:
+            "Publishing tuned criteria requires the verified validation from POST .../tune/validate (pass its result - including validationToken - as `validation`), or force: true to publish unvalidated.",
+        });
+        return;
+      }
+      if (verified.verdict === "regressed") {
+        res.status(409).json({
+          error:
+            "Validation measured a net regression on this judge's own cases - not published. Re-generate the proposal, or pass force: true to publish anyway.",
         });
         return;
       }

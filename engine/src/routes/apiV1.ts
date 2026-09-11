@@ -220,6 +220,15 @@ export function registerApiV1(app: Express, deps: ApiV1Deps): void {
         res.status(401).json({ error: "Provide a valid project API key (printed at engine startup)" });
         return;
       }
+      // A key deletes only ITS OWN project. Any-valid-key-deletes-anything meant one leaked
+      // staging key could irreversibly cascade-delete production; the dashboard already sends
+      // the target's own key (it adopts a project's key on switch), so nothing legitimate is
+      // lost. Callers holding another project's key genuinely have it - use it. 404, not 403:
+      // no cross-project existence oracle.
+      if (caller.id !== target.id) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
     }
     if (target.isDefault) {
       res.status(400).json({ error: "The default project cannot be deleted" });
