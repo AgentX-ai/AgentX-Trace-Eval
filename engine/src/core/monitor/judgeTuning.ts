@@ -1,6 +1,6 @@
 import { and, eq, gte } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
-import { listEventsSince, windowConfig, type MonitoringWindow, type EventRow } from "./events.js";
+import { listScoreEventsForEvaluatorSince, windowConfig, type MonitoringWindow, type EventRow } from "./events.js";
 import { getOnlineEvaluatorRow } from "./onlineEvaluators.js";
 import { krippendorffAlpha, alphaBand, MIN_ALPHA_ITEMS } from "./agreement.js";
 import { getEvaluationSettingsRow } from "../evaluate/evaluationSettings.js";
@@ -14,6 +14,82 @@ import {
   DEFAULT_JUDGE_PROMPT,
   DEFAULT_REFERENCE_FREE_JUDGE_PROMPT,
 } from "../evaluate/judge.js";
+
+// ---------------------------------------------------------------------------------------------
+// Signed validation provenance. The publish route stamps "[judge tuning: validated ...]" into
+// the permanent version history - a stamp that used to be entirely client-asserted (any caller
+// could invent a verdict, or validate criteria X and publish criteria Y under X's verdict).
+// validate now mints an HMAC token binding (evaluatorId, sha256 of the exact candidate
+// package, verdict, gain); publish verifies it against what is actually being published.
+// Per-boot key on purpose: a token is a freshness claim about a validation run, not a
+// long-lived credential - after a restart, re-validate.
+// ---------------------------------------------------------------------------------------------
+import { createHmac, createHash, randomBytes } from "node:crypto";
+
+const VALIDATION_SIGNING_KEY = randomBytes(32);
+
+export type TuningCriteriaPackage = {
+  acceptanceCriteria: string;
+  rejectionCriteria: string;
+  evaluationCriteria: string;
+  judgePrompt?: string;
+};
+
+function criteriaHash(evaluatorId: string, criteria: TuningCriteriaPackage): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        evaluatorId,
+        criteria.acceptanceCriteria,
+        criteria.rejectionCriteria,
+        criteria.evaluationCriteria,
+        criteria.judgePrompt ?? null,
+      ])
+    )
+    .digest("hex");
+}
+
+export function signTuningValidation(
+  evaluatorId: string,
+  criteria: TuningCriteriaPackage,
+  verdict: string,
+  netAgreementGain: number | null
+): string {
+  const payload = Buffer.from(
+    JSON.stringify({ h: criteriaHash(evaluatorId, criteria), v: verdict, g: netAgreementGain })
+  ).toString("base64url");
+  const mac = createHmac("sha256", VALIDATION_SIGNING_KEY).update(payload).digest("base64url");
+  return `${payload}.${mac}`;
+}
+
+export function verifyTuningValidation(
+  token: string,
+  evaluatorId: string,
+  criteria: TuningCriteriaPackage
+): { verdict: string; netAgreementGain: number | null } | null {
+  const [payload, mac] = token.split(".");
+  if (!payload || !mac) return null;
+  const expected = createHmac("sha256", VALIDATION_SIGNING_KEY).update(payload).digest("base64url");
+  if (mac.length !== expected.length || !timingSafeEqualStr(mac, expected)) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString()) as {
+      h?: string;
+      v?: string;
+      g?: number | null;
+    };
+    if (parsed.h !== criteriaHash(evaluatorId, criteria) || typeof parsed.v !== "string") return null;
+    return { verdict: parsed.v, netAgreementGain: typeof parsed.g === "number" ? parsed.g : null };
+  } catch {
+    return null;
+  }
+}
+
+function timingSafeEqualStr(a: string, b: string): boolean {
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 
 // Judge tuning: measure one online evaluator's verdicts against recorded reality, then improve
 // the JUDGE'S OWN CRITERIA from the disagreements - the same evidence -> propose -> validate ->
@@ -138,9 +214,10 @@ export async function getEvaluatorCalibration(
     const { days } = windowConfig(window);
     since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   }
-  const events = (await listEventsSince(db, since)).filter(
-    (e): e is EventRow & { rating: number; traceId: string } =>
-      e.onlineEvaluatorId === evaluatorId && e.rating !== null && e.traceId !== null
+  // Evaluator + rating filters run in SQL (listScoreEventsForEvaluatorSince); the filter here
+  // only narrows the type and drops the rare rating row with no trace to join on.
+  const events = (await listScoreEventsForEvaluatorSince(db, evaluatorId, since)).filter(
+    (e): e is EventRow & { rating: number; traceId: string } => e.rating !== null && e.traceId !== null
   );
 
   // Corrections keyed by the event the human was re-scoring; review labels and outcomes keyed
@@ -156,14 +233,17 @@ export async function getEvaluatorCalibration(
   );
   const corrections = (
     (db.kind === "sqlite"
-      ? db.db.select().from(db.schema.monitorSignalFeedback).where(feedbackCond).all()
-      : await db.db.select().from(db.schema.monitorSignalFeedback).where(feedbackCond)) as FeedbackCorrectionRow[]
+      ? db.db.select().from(db.schema.monitorSignalFeedback).where(feedbackCond).limit(50_000).all()
+      : await db.db.select().from(db.schema.monitorSignalFeedback).where(feedbackCond).limit(50_000)) as FeedbackCorrectionRow[]
   ).filter(
     c =>
       c.correctedScore !== null || c.metric === "false-positive" || c.metric === "confirmed" || c.queuedForAutotune === true
   );
   const correctionByEvent = new Map<string, FeedbackCorrectionRow>();
   const confirmationByEvent = new Map<string, FeedbackCorrectionRow>();
+  // Row order out of a bare SELECT is unspecified (Postgres after updates/vacuum especially) -
+  // "latest wins" must be decided by the timestamp, not by whatever order rows came back in.
+  corrections.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   for (const c of corrections) {
     if (!c.eventId) continue;
     // Confirms ("the flag was right", written by the Review queue's Confirm - signals.ts) are the
@@ -178,15 +258,18 @@ export async function getEvaluatorCalibration(
 
   // Labeled human-review rows, windowed on reviewedAt: the calibration pair the review queue
   // exists to produce (this stream was previously collected and displayed but fed nothing).
+  // Windowed and bounded IN SQL: a year of labeled reviews must not be materialized per panel
+  // open just to keep the handful inside the window (the sibling event stream caps at 50k too).
   const reviewCond = and(
     eq(db.schema.reviewQueueItems.projectId, db.projectId),
-    eq(db.schema.reviewQueueItems.status, "labeled")
+    eq(db.schema.reviewQueueItems.status, "labeled"),
+    gte(db.schema.reviewQueueItems.reviewedAt, since)
   );
   const reviewRows = (
     (db.kind === "sqlite"
-      ? db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).all()
-      : await db.db.select().from(db.schema.reviewQueueItems).where(reviewCond)) as ReviewLabelRow[]
-  ).filter(r => r.label && r.traceId && r.reviewedAt && r.reviewedAt.getTime() >= since.getTime());
+      ? db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).limit(50_000).all()
+      : await db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).limit(50_000)) as ReviewLabelRow[]
+  ).filter(r => r.label && r.traceId && r.reviewedAt);
   const reviewByTrace = new Map<string, ReviewLabelRow>();
   for (const r of reviewRows) {
     const existing = reviewByTrace.get(r.traceId);
@@ -198,8 +281,8 @@ export async function getEvaluatorCalibration(
   const outcomesCond = and(eq(db.schema.outcomeReports.projectId, db.projectId), gte(db.schema.outcomeReports.reportedAt, since));
   const outcomes = (
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.outcomeReports).where(outcomesCond).all()
-      : await db.db.select().from(db.schema.outcomeReports).where(outcomesCond)
+      ? db.db.select().from(db.schema.outcomeReports).where(outcomesCond).limit(50_000).all()
+      : await db.db.select().from(db.schema.outcomeReports).where(outcomesCond).limit(50_000)
   ) as OutcomeRow[];
   const outcomeByTrace = new Map<string, OutcomeRow>();
   for (const o of outcomes) {
@@ -381,10 +464,19 @@ export type JudgeTuningProposal = {
 
 function describeCase(c: CalibrationCase, i: number): string {
   const truth = c.groundTruth;
+  const verdictWord = truth.isBad ? "BAD" : "FINE";
+  const detailSuffix = truth.detail ? ` ("${truth.detail}")` : "";
+  // Each source gets an honest label: a correction without a re-score is a verdict, not a number
+  // (never "re-scored it to null/10"), and review/confirmed labels come from a human reviewer,
+  // not a real-world outcome.
   const truthLabel =
     truth.source === "correction"
-      ? `a human re-scored it to ${truth.correctedScore}/10 with rationale: "${truth.detail ?? ""}"`
-      : `${truth.source === "feedback" ? "the end user" : "a real-world outcome"} said it was ${truth.isBad ? "BAD" : "FINE"}${truth.detail ? ` ("${truth.detail}")` : ""}`;
+      ? truth.correctedScore !== null
+        ? `a human re-scored it to ${truth.correctedScore}/10 with rationale: "${truth.detail ?? ""}"`
+        : `a human marked the judgement wrong (the response was actually ${verdictWord})${detailSuffix}`
+      : truth.source === "review" || truth.source === "confirmed"
+        ? `a human reviewer labeled it ${verdictWord}${detailSuffix}`
+        : `${truth.source === "feedback" ? "the end user" : "a real-world outcome"} said it was ${verdictWord}${detailSuffix}`;
   return `Case ${i + 1}: the judge rated ${c.rating}/10 (${c.judgedBad ? "flagged as bad" : "passed as fine"}) saying "${(c.justification ?? "").slice(0, 300)}", but ${truthLabel}.
   User input: ${c.input.slice(0, 600)}
   Agent output: ${c.output.slice(0, 600)}`;
@@ -478,11 +570,21 @@ Rewrite so the judge would agree with the recorded ground truth on these cases. 
     });
   }
 
+  // A prompt the model did NOT rewrite must go back as the caller's sentinel, not the resolved
+  // default text. The evaluator's settings row is SHARED with offline dataset runs: an empty
+  // judgePrompt there means "engine default", which for a dataset run is the REFERENCE-BASED
+  // prompt ({expected} comparison). Materializing the reference-free live-scoring default into
+  // the column on a no-op tuning silently and permanently dropped the expected-answer
+  // comparison from every later dataset run graded by this scorer.
+  const settingsPromptWasEmpty = !(settings.judgePrompt ?? "").trim();
+  const judgePromptOut =
+    settingsPromptWasEmpty && proposedJudgePrompt === currentJudgePrompt ? "" : proposedJudgePrompt;
+
   return {
     acceptanceCriteria: payload.acceptanceCriteria,
     rejectionCriteria: typeof payload.rejectionCriteria === "string" ? payload.rejectionCriteria : current.rejectionCriteria,
     evaluationCriteria: typeof payload.evaluationCriteria === "string" ? payload.evaluationCriteria : current.evaluationCriteria,
-    judgePrompt: proposedJudgePrompt,
+    judgePrompt: judgePromptOut,
     reasoning: typeof payload.reasoning === "string" ? payload.reasoning : "",
     changes,
     judgeModel,
@@ -551,7 +653,13 @@ export async function validateJudgeTuning(
   for (const [kind, list] of [["disagreement", disagreements], ["control", controls]] as const) {
     for (const c of list) {
       try {
-        const scored = await scoreAgainstCriteria(criteria, { input: c.input, output: c.output });
+        // Calibration cases store input/output truncated to 1500 chars for display; exact
+        // re-judging needs what the production judge actually saw, so re-fetch the full trace
+        // text and fall back to the stored slices only when the trace is gone (pruned).
+        const trace = await getTraceRow(db, c.traceId);
+        const input = trace ? extractText(trace.input) : c.input;
+        const output = trace ? extractText(trace.output) : c.output;
+        const scored = await scoreAgainstCriteria(criteria, { input, output });
         const candidateBad = scored.rating < threshold;
         cases.push({
           eventId: c.eventId,

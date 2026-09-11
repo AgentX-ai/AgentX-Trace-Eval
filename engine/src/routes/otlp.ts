@@ -51,6 +51,13 @@ const MONITOR_OTEL_TRACES = process.env.AGENTX_OTEL_MONITOR !== "false";
 // per-span behavior for an operator who deliberately wants it.
 const MONITOR_CHILD_SPANS = process.env.AGENTX_MONITOR_CHILD_SPANS === "true";
 
+// Per-request span cap: everything past normalization is per-span work (mapping, validation,
+// queued ingest, up to six background checks each) with the whole batch held in memory, so an
+// unbounded export is a one-request amplification vector. 5000 is an order of magnitude above
+// any sane exporter batch (the OTel SDK default is 512); the whole request is refused with 413
+// before any span is processed, so a conforming exporter can split and resend without dupes.
+const MAX_SPANS_PER_EXPORT = 5000;
+
 otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   const isProtobuf = Boolean(req.is("application/x-protobuf"));
   // Any other content type leaves req.body an empty object, which reads here as a valid export of
@@ -87,7 +94,26 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
     return;
   }
 
+  // A body with NO resourceSpans key at all is not an ExportTraceServiceRequest - a proxy
+  // that unwrapped the envelope, or a hand-rolled client posting {"spans": [...]}. Answering
+  // the OTLP "everything accepted" 200 would drop every span while the exporter reads green -
+  // the same silent-drop failure the content-type gate above already closes for its dimension.
+  // A genuinely empty {"resourceSpans": []} stays a 200: that IS a valid empty export.
+  const hasEnvelope =
+    parsed !== null &&
+    typeof parsed === "object" &&
+    ("resourceSpans" in (parsed as object) || "resource_spans" in (parsed as object));
+  if (!hasEnvelope) {
+    res.status(400).json({ error: "body carried no resourceSpans - not an ExportTraceServiceRequest" });
+    return;
+  }
   const spans = normalizeExportRequest(parsed);
+  if (spans.length > MAX_SPANS_PER_EXPORT) {
+    res.status(413).json({
+      error: `too many spans in one export (${spans.length} > ${MAX_SPANS_PER_EXPORT}) - nothing was ingested, split the batch and resend`,
+    });
+    return;
+  }
   const db = scopedDb(req);
   let rejected = 0;
   let lastError = "";
@@ -102,7 +128,28 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   // spans folded into their parent interaction's tool_calls - see mapping.ts), THEN per-span
   // validation/ingest: reconstruction has to see sibling spans together, which a map-and-ingest
   // single pass never could.
-  const candidates = spans.map(otelSpanToIngestInput);
+  // Per-span isolation: one malformed span (an attribute shape the mapper chokes on) must
+  // reject THAT span into partialSuccess, not 500 the batch into an exporter retry loop that
+  // redelivers the same poison forever.
+  const candidates: ReturnType<typeof otelSpanToIngestInput>[] = [];
+  let mappingRejected = 0;
+  for (const span of spans) {
+    try {
+      const mapped = otelSpanToIngestInput(span);
+      // A span whose id the normalizer rejected has NO dedupe key - storing it makes the 429
+      // "safe to retry, span ids make the stored part idempotent" answer a lie (each retry
+      // re-inserts it). Rejected into partialSuccess like any other unmappable span.
+      if (!mapped.span_id) {
+        mappingRejected++;
+        logger.warn("OTLP: span carried no decodable span id - rejected into partialSuccess (undedupable)");
+        continue;
+      }
+      candidates.push(mapped);
+    } catch (err) {
+      mappingRejected++;
+      logger.warn({ err }, "OTLP: span failed to map - rejected into partialSuccess");
+    }
+  }
   reconstructParentToolCalls(candidates);
 
   // Checked after the span durably lands (queued ingest, ADR-0005): a judge failure must
@@ -221,7 +268,11 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
     res.status(503).set("Retry-After", "2").json({ message: `trace storage unavailable - ${droppedCount} spans not stored, retry` });
     return;
   }
-  const partialSuccess = rejected > 0 ? { rejectedSpans: rejected, errorMessage: lastError } : undefined;
+  const totalRejected = rejected + mappingRejected;
+  const partialSuccess =
+    totalRejected > 0
+      ? { rejectedSpans: totalRejected, errorMessage: lastError || (mappingRejected > 0 ? "spans failed to map" : "") }
+      : undefined;
   if (isProtobuf) {
     res.status(200).type("application/x-protobuf").send(Buffer.from(encodeProtobufResponse(partialSuccess)));
   } else {

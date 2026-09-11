@@ -66,7 +66,8 @@ export type ScorerSpan = {
 // One classifier for the whole engine (core/trace/spanKind.ts). This used to be its own rule and
 // disagreed with the timeline's: a plain child span arrived here as "span" while the UI drew it
 // as a tool. Note the vocabulary shift that came with unifying - an unclassifiable child span is
-// now "chain" rather than "span", and a root span is "agent" rather than falling through.
+// now "chain" rather than "span", and a root span classifies by the same ladder as any other -
+// only a producer-stated kind makes it "agent".
 function classifySpan(row: TraceRow): string {
   return resolveSpanKind({
     spanKind: (row as { spanKind?: unknown }).spanKind,

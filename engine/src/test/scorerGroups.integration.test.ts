@@ -23,13 +23,21 @@ beforeAll(async () => {
     req.on("end", () => {
       const rating = raw.includes("HARSHMARK") ? 2 : 8;
       res.setHeader("content-type", "application/json");
-      // Judges arrive via the Responses API (judge-core); the Playground's model completion
-      // uses chat completions - serve whichever shape the path asks for.
+      // Custom (OpenAI-compat) models route judge calls AND playground completions to
+      // /chat/completions - json_object marks a judge call, anything else is a completion.
       if ((req.url ?? "").includes("/chat/completions")) {
+        const isJudgeCall = raw.includes("json_object");
         res.end(
           JSON.stringify({
             id: "chat_stub",
-            choices: [{ message: { role: "assistant", content: "stub answer" } }],
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: isJudgeCall ? JSON.stringify({ rating, justification: `stub rated ${rating}` }) : "stub answer",
+                },
+              },
+            ],
             usage: { prompt_tokens: 5, completion_tokens: 5 },
           })
         );

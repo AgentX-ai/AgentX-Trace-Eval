@@ -1,6 +1,5 @@
 import { secretEquals } from "../auth/secretEquals.js";
 import type { NextFunction, Request, Response } from "express";
-import { and, eq, gte, isNull, sql } from "drizzle-orm";
 import { asyncRouter } from "./asyncRouter.js";
 import { traceStoreFor } from "../core/trace/store/index.js";
 import { getDb } from "../storage/db.js";

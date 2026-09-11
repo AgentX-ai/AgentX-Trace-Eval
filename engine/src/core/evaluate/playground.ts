@@ -1,3 +1,4 @@
+import { outboundUrlProblem } from "../shared/urlGuard.js";
 import type { Db } from "../../storage/db.js";
 import { callModelWithTools, scoreAgainstCriteria, DEFAULT_JUDGE_MODEL, DEFAULT_JUDGE_PROMPT, type ToolCallTrace } from "./judge.js";
 import { getPortabilityModel, estimateCostUSD } from "./models.js";
@@ -21,6 +22,9 @@ export type PlaygroundTool = {
   description?: string;
   parameters: Record<string, unknown>;
   endpointUrl: string;
+  // Set when the caller supplied an endpoint the outbound guard refused - the tool call then
+  // errors instead of pretending to be a schema-only simulation.
+  endpointBlocked?: string;
   mcpServer?: string;
   // Handle of an authorized MCP OAuth session (the Playground's Connect flow) - lets the engine
   // execute an OAuth-protected server's tools with the session's stored tokens.
@@ -43,7 +47,18 @@ export function extractPlaygroundTools(body: Record<string, unknown>): Playgroun
       name: typeof t.name === "string" ? t.name.trim() : "",
       description: typeof t.description === "string" ? t.description : undefined,
       parameters: t.parameters && typeof t.parameters === "object" ? (t.parameters as Record<string, unknown>) : {},
-      endpointUrl: typeof t.endpointUrl === "string" ? t.endpointUrl.trim() : "",
+      // Guarded here at extraction so BOTH downstream branches (plain POST and MCP) inherit
+      // it. A rejected endpoint must stay DISTINGUISHABLE from a deliberately schema-only
+      // tool: collapsing it to "" made the guard report a *successful simulated call* to the
+      // model, which then answered confidently off a fabricated result.
+      endpointUrl:
+        typeof t.endpointUrl === "string" && !outboundUrlProblem(t.endpointUrl)
+          ? t.endpointUrl.trim()
+          : "",
+      endpointBlocked:
+        typeof t.endpointUrl === "string" && t.endpointUrl.trim()
+          ? outboundUrlProblem(t.endpointUrl) ?? undefined
+          : undefined,
       mcpServer: typeof t.mcpServer === "string" && t.mcpServer.trim() ? t.mcpServer.trim() : undefined,
       mcpSessionId: typeof t.mcpSessionId === "string" && t.mcpSessionId.trim() ? t.mcpSessionId.trim() : undefined,
     }))
@@ -64,6 +79,11 @@ export async function callPlaygroundTool(tools: PlaygroundTool[], name: string, 
   // validation's runToolCaseVariant - what a Playground run of a schema-only tool tests is
   // whether the prompt/model CHOOSE the tool and form valid arguments, and the simulated result
   // is visible in the cell's tool-call trace so nobody mistakes it for a real lookup.
+  if (tool.endpointBlocked) {
+    // A guard-rejected endpoint is a CONFIG ERROR, never a simulation - the model must not be
+    // handed a fabricated success to build an answer on.
+    throw new Error(`Tool "${name}" endpoint rejected: ${tool.endpointBlocked}`);
+  }
   if (!tool.endpointUrl) {
     // Deliberately terse: this object is fed back to the MODEL as the tool result, and a verbose
     // explanation leaks into the final answer ("due to a simulated environment..."). The cell's
@@ -358,6 +378,21 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
       { maxTokens: input.maxTokens, temperature: input.temperature }
     );
     const latencyMs = Date.now() - start;
+    if (completion.truncated) {
+      // The empty text is OUR round cap cutting the trajectory off, not the model's answer -
+      // judging it would score the agent ~0 for a limit the harness imposed.
+      return {
+        output: null,
+        latencyMs,
+        inputTokens: completion.usage?.inputTokens ?? null,
+        outputTokens: completion.usage?.outputTokens ?? null,
+        estimatedCostUSD: estimateCostUSD(model, completion.usage?.inputTokens ?? null, completion.usage?.outputTokens ?? null),
+        rating: null,
+        justification: null,
+        toolCalls: completion.toolCalls,
+        error: "Tool loop exceeded the round cap without a final answer - simplify the tools or the prompt",
+      };
+    }
     const estimatedCostUSD = estimateCostUSD(model, completion.usage?.inputTokens ?? null, completion.usage?.outputTokens ?? null);
 
     let rating: number | null = null;

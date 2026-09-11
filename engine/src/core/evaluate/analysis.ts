@@ -1,7 +1,8 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { getRunRowFull, getRunResults, type RunResultRow } from "./runs.js";
-import { resolvePlatformModel, callJudgeJson, DEFAULT_JUDGE_MODEL } from "./judge.js";
+import { resolvePlatformModel, callJudgeJson } from "./judge.js";
+import { mapWithConcurrency } from "../shared/concurrency.js";
 import { analysisNarrativeSchemaProperties, type AnalysisNarrative } from "@agentx/judge-core";
 
 // Self-host's own "Analyze" (AI Analysis) feature - see the plan's Context section for why this
@@ -82,8 +83,10 @@ function computeStatistics(results: RunResultRow[]): EvaluationAnalysisStatistic
   return {
     numberOfRuns,
     averageRating,
-    minRating: numberOfRuns ? Math.min(...ratings) : 0,
-    maxRating: numberOfRuns ? Math.max(...ratings) : 0,
+    // reduce, not Math.min(...ratings): the spread puts every rating on the call stack, which
+    // overflows on large runs.
+    minRating: numberOfRuns ? ratings.reduce((min, r) => (r < min ? r : min)) : 0,
+    maxRating: numberOfRuns ? ratings.reduce((max, r) => (r > max ? r : max)) : 0,
     ratingVariance: variance,
   };
 }
@@ -150,14 +153,28 @@ async function scoreItemWithJudges(row: RunResultRow, judgeModels: string[]): Pr
   const judges: ItemJudgeRating[] = await Promise.all(
     judgeModels.map(async (model, i) => {
       const variant = JUDGE_VARIANTS[i] ?? String(i + 1);
-      const result = await callJudgeJson({ model, jsonSchema: ITEM_SCORE_SCHEMA, userMessage: prompt });
-      const payload = result.payload as { rating?: number; justification?: string } | null;
-      return {
-        judgeVariant: variant,
-        model,
-        rating: typeof payload?.rating === "number" ? payload.rating : null,
-        justification: payload?.justification ?? null,
-      };
+      try {
+        const result = await callJudgeJson({ model, jsonSchema: ITEM_SCORE_SCHEMA, userMessage: prompt });
+        const payload = result.payload as { rating?: number; justification?: string } | null;
+        return {
+          judgeVariant: variant,
+          model,
+          // Clamped: percent-scale answers from compat endpoints (85 for 8.5) must not skew
+          // finalScore, the disagreement bands, or the narrative prompt.
+          rating: typeof payload?.rating === "number" ? Math.max(0, Math.min(10, payload.rating)) : null,
+          justification: payload?.justification ?? null,
+        };
+      } catch (err) {
+        // One judge without a key (or in outage) degrades to a null rating - it must not
+        // reject the item and thereby fail the whole analysis, discarding the other judges'
+        // completed, paid-for calls. ItemJudgeRating.rating is nullable for exactly this.
+        return {
+          judgeVariant: variant,
+          model,
+          rating: null,
+          justification: `judge failed: ${err instanceof Error ? err.message : "unknown error"}`,
+        };
+      }
     })
   );
 
@@ -175,12 +192,14 @@ async function scoreItemWithJudges(row: RunResultRow, judgeModels: string[]): Pr
   };
 }
 
-// All sample items scored in parallel too, not just the judges within each item - worst case
-// (SAMPLE_WORST_COUNT + SAMPLE_BEST_COUNT) x MAX_JUDGES concurrent judge calls for one "Start
-// Analysis" click. Acceptable for a manual, infrequent, user-initiated action; revisit with
-// chunking/concurrency limits if that turns out to be too aggressive against provider rate limits.
+// Bounded fan-out: the unbounded version fired (SAMPLE_WORST + SAMPLE_BEST) x MAX_JUDGES
+// concurrent judge calls (up to 51) for one click - past provider rate limits, and wide open
+// as a check-then-act window on the daily judge quota (all 51 read "under cap" before any
+// recorded). Eight in flight keeps the click fast while shrinking both.
+const ANALYSIS_ITEM_CONCURRENCY = 8;
+
 async function scoreSampleWithJudges(sample: RunResultRow[], judgeModels: string[]): Promise<JudgeEvidenceSampleItem[]> {
-  return Promise.all(sample.map(row => scoreItemWithJudges(row, judgeModels)));
+  return mapWithConcurrency(sample, ANALYSIS_ITEM_CONCURRENCY, row => scoreItemWithJudges(row, judgeModels));
 }
 
 const ANALYSIS_JSON_SCHEMA = {
@@ -245,24 +264,21 @@ export async function getEvaluationAnalysisRow(db: Db, evaluationId: string): Pr
 }
 
 async function upsertEvaluationAnalysisRow(db: Db, row: EvaluationAnalysisRow): Promise<void> {
-  const existing = await getEvaluationAnalysisRow(db, row.evaluationId);
-  if (existing) {
-    const updateCond = and(
-      eq(db.schema.evaluationAnalyses.evaluationId, row.evaluationId),
-      eq(db.schema.evaluationAnalyses.projectId, db.projectId)
-    );
-    if (db.kind === "sqlite") {
-      await db.db.update(db.schema.evaluationAnalyses).set(row).where(updateCond);
-    } else {
-      await db.db.update(db.schema.evaluationAnalyses).set(row).where(updateCond);
-    }
-    return;
-  }
+  // Atomic on the table's real primary key (evaluationId). The old read-then-branch raced a
+  // double-click into a raw PK violation after both requests paid the full judge fan-out, and
+  // could never update a legacy row whose projectId is null (the read filtered on projectId,
+  // narrower than the constraint).
   const insertRow = { ...row, projectId: db.projectId };
   if (db.kind === "sqlite") {
-    await db.db.insert(db.schema.evaluationAnalyses).values(insertRow);
+    await db.db
+      .insert(db.schema.evaluationAnalyses)
+      .values(insertRow)
+      .onConflictDoUpdate({ target: db.schema.evaluationAnalyses.evaluationId, set: insertRow });
   } else {
-    await db.db.insert(db.schema.evaluationAnalyses).values(insertRow);
+    await db.db
+      .insert(db.schema.evaluationAnalyses)
+      .values(insertRow)
+      .onConflictDoUpdate({ target: db.schema.evaluationAnalyses.evaluationId, set: insertRow });
   }
 }
 
@@ -273,7 +289,30 @@ export type AnalyzeEvaluationOptions = {
 
 export type AnalyzeEvaluationResult = { evaluationId: string; status: "completed" | "failed"; judgeModel: string };
 
+// One in-flight analysis per run: a second Start-Analysis click (or a poll-triggered retry)
+// joins the first instead of re-paying the full items x judges judge fan-out.
+const analysisInFlight = new Map<string, Promise<AnalyzeEvaluationResult | null>>();
+
 export async function runEvaluationAnalysis(
+  db: Db,
+  evaluationId: string,
+  opts: AnalyzeEvaluationOptions = {}
+): Promise<AnalyzeEvaluationResult | null> {
+  // The judge selection is part of the identity: restarting with different judges must start
+  // a new analysis, not silently join (and return) the in-flight one with the old panel.
+  const inFlightKey = `${db.projectId ?? ""}|${evaluationId}|${(opts.judges ?? []).map(j => j.model).sort().join(",")}|${opts.qualityMode ?? ""}`;
+  const inFlight = analysisInFlight.get(inFlightKey);
+  if (inFlight) {
+    return inFlight;
+  }
+  const task = runEvaluationAnalysisInner(db, evaluationId, opts).finally(() => {
+    analysisInFlight.delete(inFlightKey);
+  });
+  analysisInFlight.set(inFlightKey, task);
+  return task;
+}
+
+async function runEvaluationAnalysisInner(
   db: Db,
   evaluationId: string,
   opts: AnalyzeEvaluationOptions = {}
@@ -283,7 +322,9 @@ export async function runEvaluationAnalysis(
     return null;
   }
   const requested = (opts.judges ?? []).map(j => j.model).filter((m): m is string => !!m);
-  const judgeModels = (requested.length ? requested : [await resolvePlatformModel(db)]).slice(0, MAX_JUDGES);
+  // Deduped: the same model sent three times would triple the spend and report manufactured
+  // "unanimous" inter-judge agreement.
+  const judgeModels = [...new Set(requested.length ? requested : [await resolvePlatformModel(db)])].slice(0, MAX_JUDGES);
   const judgeModel = judgeModels[0]!;
   const results = await getRunResults(db, evaluationId);
   const statistics = computeStatistics(results);
@@ -306,14 +347,33 @@ export async function runEvaluationAnalysis(
     return { evaluationId, status: "failed", judgeModel };
   }
 
-  const judgeEvidence = await scoreSampleWithJudges(sample, judgeModels);
-
-  const judgeResult = await callJudgeJson({
-    model: judgeModel,
-    jsonSchema: ANALYSIS_JSON_SCHEMA,
-    userMessage: buildJudgePrompt(judgeEvidence, statistics, judgeModels.length),
-    maxTokens: 3000,
-  });
+  // Judge calls can throw outright (missing key, provider outage) - persist the failure on the
+  // existing failed-row path instead of letting the request 500 with nothing recorded.
+  let judgeEvidence: JudgeEvidenceSampleItem[] = [];
+  let judgeResult: Awaited<ReturnType<typeof callJudgeJson>>;
+  try {
+    judgeEvidence = await scoreSampleWithJudges(sample, judgeModels);
+    judgeResult = await callJudgeJson({
+      model: judgeModel,
+      jsonSchema: ANALYSIS_JSON_SCHEMA,
+      userMessage: buildJudgePrompt(judgeEvidence, statistics, judgeModels.length),
+      maxTokens: 3000,
+    });
+  } catch (err) {
+    const row: EvaluationAnalysisRow = {
+      evaluationId,
+      status: "failed",
+      judgeModel,
+      judgeModels,
+      analysis: null,
+      statistics,
+      judgeEvidence,
+      error: err instanceof Error ? err.message : String(err),
+      createdAt: now,
+    };
+    await upsertEvaluationAnalysisRow(db, row);
+    return { evaluationId, status: "failed", judgeModel };
+  }
   // judgeResult.payload's own type (judge-core's JudgeCallResult) is `unknown` - a parsed JSON
   // object on success, or null on failure - never actually guaranteed to be the right shape at
   // runtime (the judge model's raw response only *should* match jsonSchema, an LLM call can always

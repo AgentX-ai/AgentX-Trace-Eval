@@ -110,6 +110,7 @@ describe("pairwise comparison", () => {
             ties: number;
             winner: string;
             flipRate: number | null;
+            errors: number;
           };
           cases: {
             presentedFirst: string;
@@ -124,13 +125,16 @@ describe("pairwise comparison", () => {
     ).comparison;
     batchId = comparison.batchId;
 
-    expect(comparison.summary.total).toBe(2);
+    expect(comparison.cases).toHaveLength(2);
     expect(comparison.cases.map(c => c.presentedFirst)).toEqual(["a", "b"]);
-    // With no key every judge call throws, and an unresolved pair is a tie rather than a win for
-    // whichever run happened to be presented first.
-    expect(comparison.summary.ties).toBe(2);
+    // With no key every judge call throws. An errored pair is stored as a tie (never a win for
+    // whichever run happened to be presented first) but reported as an error, excluded from the
+    // win/tie counts rather than dressed up as a real verdict.
+    expect(comparison.summary.total).toBe(0);
+    expect(comparison.summary.errors).toBe(2);
+    expect(comparison.summary.ties).toBe(0);
     expect(comparison.summary.winner).toBe("tie");
-    expect(comparison.cases[0]!.justification).toContain("Judging failed");
+    expect(comparison.cases[0]!.justification).toContain("JUDGE_ERROR");
     // flipRate is null unless both orders were actually judged - not a fabricated 0.
     expect(comparison.summary.flipRate).toBeNull();
     expect(comparison.bothOrders).toBe(false);
@@ -169,12 +173,15 @@ describe("pairwise comparison", () => {
     const comparison = (
       created.body as {
         comparison: {
-          summary: { total: number };
+          summary: { total: number; errors: number };
+          cases: unknown[];
           skipped: { questionIndex: number; reason: string }[];
         };
       }
     ).comparison;
-    expect(comparison.summary.total).toBe(1);
+    // The one judgeable case errors (no key), so it lands in `errors`, not `total`.
+    expect(comparison.cases).toHaveLength(1);
+    expect(comparison.summary.total + comparison.summary.errors).toBe(1);
     expect(comparison.skipped).toHaveLength(1);
     expect(comparison.skipped[0]!.reason).toContain("no output");
 

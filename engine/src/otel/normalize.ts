@@ -34,7 +34,16 @@ function idToHex(value: unknown): string | null {
   if ((value.length === 32 || value.length === 16) && /^[0-9a-fA-F]+$/.test(value)) {
     return value.toLowerCase();
   }
-  return Buffer.from(value, "base64").toString("hex");
+  // Strict base64 charset check before decoding: Buffer.from silently skips invalid characters,
+  // so a garbage id would decode to garbage hex instead of being rejected as no id at all.
+  // base64url (-/_, what several Go and hand-rolled exporters emit) folds onto standard
+  // base64 first - rejecting it stripped the span id, which broke retry idempotency: the 429
+  // "retry with backoff" answer redelivered batches whose spans then re-ingested as new rows.
+  const standard = value.replace(/-/g, "+").replace(/_/g, "/");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(standard)) {
+    return null;
+  }
+  return Buffer.from(standard, "base64").toString("hex");
 }
 
 // A handful of real-world JSON producers emit snake_case (the literal .proto field names) instead

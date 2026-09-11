@@ -149,6 +149,11 @@ evaluationsRouter.post("/runs", async (req: Request, res: Response) => {
   }
   // A typo'd (or cross-project) group id must not silently downgrade the whole run to the
   // dataset's own grading - the 201 would look identical and nothing downstream could tell.
+  // Non-string values are a 400, not a silent drop, for exactly the same reason.
+  if (scorerGroupId !== undefined && scorerGroupId !== null && typeof scorerGroupId !== "string") {
+    res.status(400).json({ error: "scorerGroupId must be a string" });
+    return;
+  }
   if (typeof scorerGroupId === "string" && scorerGroupId && !(await getScorerGroup(scopedDb(req), scorerGroupId))) {
     res.status(404).json({ error: "Scorer group not found" });
     return;
@@ -174,8 +179,8 @@ evaluationsRouter.post("/runs", async (req: Request, res: Response) => {
 
 evaluationsRouter.post("/runs/:runId/results", async (req: Request, res: Response) => {
   const { batchId, results } = req.body ?? {};
-  if (!batchId) {
-    res.status(400).json({ error: "batchId is required" });
+  if (typeof batchId !== "string" || !batchId) {
+    res.status(400).json({ error: "batchId must be a non-empty string" });
     return;
   }
   if (!Array.isArray(results) || results.length === 0) {
@@ -206,7 +211,8 @@ evaluationsRouter.post("/runs/:runId/results", async (req: Request, res: Respons
     // The only expected throw is the terminal-state guard - a real conflict. Anything else is
     // an engine fault and must not masquerade as one.
     const message = err instanceof Error ? err.message : "Unable to append results";
-    if (message.includes("terminal state") || message.includes("scorer group grading this run")) {
+    // Tagged at the throw sites (runs.ts) - matching prose here broke silently on any reword.
+    if ((err as { code?: string }).code === "conflict") {
       res.status(409).json({ error: message });
       return;
     }
@@ -350,8 +356,8 @@ evaluationsRouter.get("/runs/:runId/gate", async (req: Request, res: Response) =
     res.status(400).json({ error: "failUnder must be a number" });
     return;
   }
-  if (tolerance !== undefined && !Number.isFinite(tolerance)) {
-    res.status(400).json({ error: "tolerance must be a number" });
+  if (tolerance !== undefined && (!Number.isFinite(tolerance) || tolerance < 0)) {
+    res.status(400).json({ error: "tolerance must be a non-negative number" });
     return;
   }
   if (failUnder == null && !noRegression) {

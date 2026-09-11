@@ -124,6 +124,35 @@ export async function downloadWebBundle(options: { force?: boolean } = {}): Prom
       throw new Error("bundle extracted but web/index.html is missing");
     }
     if (options.force) {
+      // Downgrade guard: --upgrade means "get me the latest", and a locally deployed bundle
+      // BUILT AFTER the release is already later than latest - replacing it silently rolled
+      // operators back to older UIs whenever they restarted with --upgrade after deploying a
+      // local build. Only provable downgrades are refused (both sides need a build-info.json
+      // stamp); AGENTX_WEB_FORCE=1 overrides for a deliberate roll-back to the release.
+      const builtAtOf = (dir: string): number | null => {
+        try {
+          const info = JSON.parse(fs.readFileSync(path.join(dir, "build-info.json"), "utf8")) as {
+            builtAt?: string;
+          };
+          const ts = info.builtAt ? Date.parse(info.builtAt) : NaN;
+          return Number.isFinite(ts) ? ts : null;
+        } catch {
+          return null;
+        }
+      };
+      const localBuiltAt = builtAtOf(webDir);
+      const stagedBuiltAt = builtAtOf(stageDir);
+      if (
+        process.env.AGENTX_WEB_FORCE !== "1" &&
+        localBuiltAt !== null &&
+        stagedBuiltAt !== null &&
+        localBuiltAt > stagedBuiltAt
+      ) {
+        logger.warn(
+          `Dashboard upgrade skipped: the local bundle (built ${new Date(localBuiltAt).toISOString()}) is NEWER than the latest release (built ${new Date(stagedBuiltAt).toISOString()}). Keeping the local build; set AGENTX_WEB_FORCE=1 to roll back to the release anyway.`
+        );
+        return path.join(webDir, "index.html");
+      }
       fs.rmSync(webDir, { recursive: true, force: true });
       fs.renameSync(stageDir, webDir);
     }

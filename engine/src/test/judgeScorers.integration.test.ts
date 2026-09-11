@@ -329,6 +329,10 @@ describe("camelCase ingest aliases (wire-casing unification)", () => {
       sessionId: "camel-session",
       spanId: "camel-span-1",
       latencyMs: 42,
+      inputTokens: 11,
+      outputTokens: 7,
+      cacheReadTokens: 3,
+      cacheWriteTokens: 2,
     }));
     expect(res.status).toBe(200);
     const body = res.body as { trace_id: string; traceId: string };
@@ -336,10 +340,22 @@ describe("camelCase ingest aliases (wire-casing unification)", () => {
     expect(body.traceId).toBe(body.trace_id);
 
     const detail = await api(`/ingest/traces/${body.traceId}`);
-    const trace = detail.body as { sessionId?: string; latencyMs?: number; spanId?: string };
+    const trace = detail.body as {
+      sessionId?: string;
+      latencyMs?: number;
+      spanId?: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
+    };
     expect(trace.sessionId).toBe("camel-session");
     expect(trace.latencyMs).toBe(42);
     expect(trace.spanId).toBe("camel-span-1");
+    expect(trace.inputTokens).toBe(11);
+    expect(trace.outputTokens).toBe(7);
+    expect(trace.cacheReadTokens).toBe(3);
+    expect(trace.cacheWriteTokens).toBe(2);
   });
 });
 

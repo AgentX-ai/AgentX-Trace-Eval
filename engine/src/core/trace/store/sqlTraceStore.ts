@@ -146,13 +146,55 @@ export class SqlTraceStore implements TraceStore {
     return rows as TraceRow[];
   }
 
+  async listForExport(args: { since?: Date | null; cursor?: string | null; limit: number }): Promise<TraceRow[]> {
+    const db = this.db;
+    const conds: SQL[] = [eq(db.schema.traces.projectId, db.projectId)];
+    if (args.since) conds.push(gte(db.schema.traces.createdAt, args.since));
+    if (args.cursor) conds.push(gt(db.schema.traces.id, args.cursor));
+    const rows =
+      db.kind === "sqlite"
+        ? db.db
+            .select()
+            .from(db.schema.traces)
+            .where(and(...conds))
+            .orderBy(asc(db.schema.traces.id))
+            .limit(args.limit)
+            .all()
+        : await db.db
+            .select()
+            .from(db.schema.traces)
+            .where(and(...conds))
+            .orderBy(asc(db.schema.traces.id))
+            .limit(args.limit);
+    return rows as TraceRow[];
+  }
+
+  async countAll(since?: Date | null): Promise<number> {
+    const db = this.db;
+    const conds: SQL[] = [eq(db.schema.traces.projectId, db.projectId)];
+    if (since) conds.push(gte(db.schema.traces.createdAt, since));
+    const rows = (
+      db.kind === "sqlite"
+        ? db.db
+            .select({ n: count() })
+            .from(db.schema.traces)
+            .where(and(...conds))
+            .all()
+        : await db.db
+            .select({ n: count() })
+            .from(db.schema.traces)
+            .where(and(...conds))
+    ) as { n: number | string }[];
+    return Number(rows[0]?.n ?? 0);
+  }
+
   async listRecent(limit: number): Promise<TraceRow[]> {
     const db = this.db;
     const cond = eq(db.schema.traces.projectId, db.projectId);
     const rows =
       db.kind === "sqlite"
-        ? db.db.select().from(db.schema.traces).where(cond).limit(limit).all()
-        : await db.db.select().from(db.schema.traces).where(cond).limit(limit);
+        ? db.db.select().from(db.schema.traces).where(cond).orderBy(desc(db.schema.traces.createdAt)).limit(limit).all()
+        : await db.db.select().from(db.schema.traces).where(cond).orderBy(desc(db.schema.traces.createdAt)).limit(limit);
     return rows as TraceRow[];
   }
 

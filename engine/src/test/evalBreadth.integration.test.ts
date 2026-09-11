@@ -24,6 +24,18 @@ beforeAll(async () => {
       // Alternates 3, 9, 3, 9... so repetitions of the same case get a real spread.
       const rating = stubCalls % 2 === 1 ? 3 : 9;
       res.setHeader("content-type", "application/json");
+      // Custom (OpenAI-compat) models are now correctly routed to /chat/completions -
+      // serve the same verdict in that shape.
+      if ((req.url ?? "").includes("/chat/completions")) {
+        res.end(
+          JSON.stringify({
+            id: "chat_stub",
+            choices: [{ message: { role: "assistant", content: JSON.stringify({ rating, justification: `stub verdict ${rating}` }) } }],
+            usage: { prompt_tokens: 5, completion_tokens: 5 },
+          })
+        );
+        return;
+      }
       res.end(
         JSON.stringify({
           id: "resp_stub",

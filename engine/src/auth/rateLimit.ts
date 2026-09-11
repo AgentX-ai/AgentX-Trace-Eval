@@ -14,8 +14,23 @@ import type { RequestHandler } from "express";
 // are env-tunable, for an operator whose real volume outruns the default.
 const WINDOW_MS = 60_000;
 
-export const CREDENTIAL_LIMIT = Number(process.env.AGENTX_RATE_LIMIT_CREDENTIAL || 120);
-export const DATA_PLANE_LIMIT = Number(process.env.AGENTX_RATE_LIMIT_DATA_PLANE || 6000);
+// A non-numeric override ("1k", a stray unit) must fall back to the default WITH a warning,
+// not silently disable the limiter - fail-open on a typo is the exact property this module
+// exists to remove from the credential surface. Explicit <= 0 remains the intentional off.
+function envLimit(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    // eslint-disable-next-line no-console -- boot-time misconfiguration warning, logger not imported here to keep this module dependency-free
+    console.warn(`${name}="${raw}" is not a number - using the default of ${fallback}`);
+    return fallback;
+  }
+  return parsed;
+}
+
+export const CREDENTIAL_LIMIT = envLimit("AGENTX_RATE_LIMIT_CREDENTIAL", 120);
+export const DATA_PLANE_LIMIT = envLimit("AGENTX_RATE_LIMIT_DATA_PLANE", 6000);
 
 // The operator kill-switch, exported so a limiter built elsewhere (routes/mcp.ts's consent
 // ceiling, which CodeQL needs to see at the route) honours it too.

@@ -15,7 +15,7 @@ import { groupByIntent, MIN_TRACES_PER_TOPIC } from "./coverage.js";
 // send a team writing tests for things nobody asks. That case gets its own verdict, which is why
 // this is a file rather than a single cosine.
 
-export type ProbeVerdict = "covered" | "adjacent" | "gap" | "untested-and-unasked";
+export type ProbeVerdict = "covered" | "adjacent" | "gap" | "untested-and-unasked" | "warming";
 
 export type ProbeNearestCase = {
   datasetId: string;
@@ -35,6 +35,9 @@ export type ProbeResult = {
   similarity: number;
   bands: { covered: number; related: number };
   degraded: boolean;
+  /** Cases not yet embedded (cache warming) - a negative verdict is downgraded to "warming"
+   * while this is non-zero, because an invisible case could be the exact cover. */
+  pendingCases: number;
   nearestCases: ProbeNearestCase[];
   /** The production topic this query lands in, when one is close enough. */
   topic: { topic: string; trafficShare: number; traceCount: number } | null;
@@ -71,6 +74,11 @@ function explain(
           `rather than meaning. Check its expected result asserts what you meant.`
         : `Effectively the same question as an existing case${nearest ? ` ("${nearest.query}")` : ""} - close enough ` +
           `that adding it would be rejected as a duplicate. Check its expected result asserts what you meant.`;
+    case "warming":
+      return (
+        `Nothing close was found - but some dataset cases are still being indexed, and one of ` +
+        `them could be the cover. Probe again once indexing finishes before treating this as a gap.`
+      );
     case "adjacent":
       return (
         `The nearest case asks something related but not this${nearest ? ` ("${nearest.query}")` : ""}. It sits in the ` +
@@ -95,13 +103,16 @@ type ProbeContext = {
   groups: ReturnType<typeof groupByIntent>;
   totalTraces: number;
   embeddedCases: boolean;
+  // Cases whose embeddings are still warming - invisible to similarity scoring, so any
+  // negative verdict while this is non-zero is a floor, not a fact.
+  pendingCases: number;
 };
 
 async function loadContext(db: Db, window: MonitoringWindow, datasetIds?: string[]): Promise<ProbeContext> {
   const { days } = windowConfig(window);
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const [rows, cases] = await Promise.all([listClassificationsSince(db, since), listDatasetCases(db, datasetIds)]);
-  const { embedded } = await attachCaseEmbeddings(db, cases);
+  const { embedded, pending } = await attachCaseEmbeddings(db, cases);
   // Same floor the coverage sweep applies. Without it a single stray classification is enough to
   // turn "nobody asks this" into a fabricated real gap - the one verdict the probe exists to avoid
   // handing out.
@@ -109,7 +120,7 @@ async function loadContext(db: Db, window: MonitoringWindow, datasetIds?: string
   // Denominator over the SAME filtered groups the sweep uses, not every classified row - otherwise
   // one topic reports two different traffic shares depending on which screen you read it from.
   const totalTraces = groups.reduce((sum, g) => sum + g.rows.length, 0);
-  return { cases, groups, totalTraces, embeddedCases: embedded };
+  return { cases, groups, totalTraces, embeddedCases: embedded, pendingCases: pending };
 }
 
 async function scorerFor(query: string, ctx: ProbeContext): Promise<Scorer> {
@@ -176,14 +187,20 @@ function probeWith(query: string, ctx: ProbeContext, scorer: Scorer): ProbeResul
     topic = null;
   }
 
+  // A cold embedding cache hides real cases from the scorer - asserting "gap" then sends a
+  // team to write a duplicate test for a query case #200 already covers. Positive verdicts
+  // stand (a found cover is a found cover); negative ones downgrade to "warming".
+  const blind = !scorer.degraded && ctx.pendingCases > 0;
   const verdict: ProbeVerdict =
     best >= scorer.bands.covered
       ? "covered"
       : best >= scorer.bands.related
         ? "adjacent"
-        : topic
-          ? "gap"
-          : "untested-and-unasked";
+        : blind
+          ? "warming"
+          : topic
+            ? "gap"
+            : "untested-and-unasked";
 
   return {
     query,
@@ -191,6 +208,7 @@ function probeWith(query: string, ctx: ProbeContext, scorer: Scorer): ProbeResul
     similarity: Math.round(best * 1000) / 1000,
     bands: scorer.bands,
     degraded: scorer.degraded,
+    pendingCases: ctx.pendingCases,
     nearestCases,
     topic,
     explanation: explain(verdict, nearestCases[0] ?? null, topic, scorer.degraded),

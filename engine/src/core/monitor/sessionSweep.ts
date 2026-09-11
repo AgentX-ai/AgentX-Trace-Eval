@@ -24,6 +24,7 @@ import {
   scorePatternMember,
   scoreCustomMember,
   aggregateGroupScore,
+  BUDGET_EXHAUSTED_ERROR,
   describeGroupScore,
   type MemberScore,
   type ScorerGroupRow,
@@ -182,8 +183,8 @@ export async function judgeSessionWithDraftCriteria(
 async function judgeSessionAgainstEvaluator(
   db: Db,
   sessionId: string,
-  spanCount: number,
-  evaluator: OnlineEvaluatorRow
+  evaluator: OnlineEvaluatorRow,
+  prefetchedSpans?: SpanWire[]
 ): Promise<{
   rating: number | null;
   justification: string | null;
@@ -201,7 +202,7 @@ async function judgeSessionAgainstEvaluator(
     logger.error(`Session sweep: evaluator "${evaluator.name}" has no valid evaluator config, skipping`);
     return null;
   }
-  const spans = (await listSessionSpans(db, sessionId)) as SpanWire[];
+  const spans = prefetchedSpans ?? ((await listSessionSpans(db, sessionId)) as SpanWire[]);
   if (spans.length === 0) {
     return null;
   }
@@ -283,8 +284,6 @@ async function judgeSessionAgainstEvaluator(
   // calibration and tuning. Fallback: last span of any kind (OTel sessions whose roots folded).
   const roots = spans.filter(s => !s.parentSpanId);
   const anchorTraceId = (roots.length > 0 ? roots[roots.length - 1] : spans[spans.length - 1])?._id ?? null;
-  // The caller's windowed count is NOT what the judge saw - listSessionSpans is all-time.
-  void spanCount;
   return { rating, justification, judgeModel, anchorTraceId, driftSpanId, findings, spanCount: spans.length };
 }
 
@@ -325,11 +324,11 @@ export async function runSessionEvaluatorCheck(db: Db, sessionId: string, evalua
   if (!evaluator) {
     return null;
   }
-  const spans = await listSessionSpans(db, sessionId);
+  const spans = (await listSessionSpans(db, sessionId)) as SpanWire[];
   if (spans.length === 0) {
     return null;
   }
-  const verdict = await judgeSessionAgainstEvaluator(db, sessionId, spans.length, evaluator);
+  const verdict = await judgeSessionAgainstEvaluator(db, sessionId, evaluator, spans);
   if (!verdict) {
     return null;
   }
@@ -346,7 +345,8 @@ export async function runSessionEvaluatorCheck(db: Db, sessionId: string, evalua
     justification: verdict.justification,
     driftSpanId: verdict.driftSpanId,
     findings: verdict.findings,
-    spanCount: spans.length,
+    // What the judge actually read - the prefetched array it was handed.
+    spanCount: verdict.spanCount,
     judgeModel: verdict.judgeModel,
   });
 }
@@ -420,7 +420,7 @@ export async function scoreSessionWithGroup(
       // One budget slot per judge call actually made - a deleted ref or empty session never
       // burns a slot, and an exhausted budget degrades this member instead of the whole sweep.
       if (!(await reserveOnlineJudgeCall(db))) {
-        members.push({ ...base, name, goodness: null, detail: "-", error: "Online judge budget exhausted" });
+        members.push({ ...base, name, goodness: null, detail: "-", error: BUDGET_EXHAUSTED_ERROR });
         continue;
       }
       const toolContext = settings.toolContext ?? "simple";
@@ -504,11 +504,20 @@ const inBackoff = (key: string): boolean => {
   const last = failedAttempts.get(key);
   return last !== undefined && Date.now() - last < RETRY_BACKOFF_MS;
 };
+// Entries for permanently-failing pairs would otherwise accumulate forever; anything older
+// than a day is no longer backing anything off and can go.
+function purgeStaleBackoffs(): void {
+  const cutoff = Date.now() - 24 * 60 * 60_000;
+  for (const [key, ts] of failedAttempts) {
+    if (ts < cutoff) failedAttempts.delete(key);
+  }
+}
 
 // One pass over every project: find idle, unscored (or grown-since-scored) multi-turn sessions
 // and judge them against each enabled session-scoped evaluator. Exported for the manual-trigger
 // route (used by tests/demos); startSessionSweep below is the production path.
 export async function sweepSessionsOnce(options: { projectId?: string | null } = {}): Promise<{ judged: number }> {
+  purgeStaleBackoffs();
   const baseDb = getDb();
   const listed = await listProjectRows(baseDb);
   // The manual trigger passes the caller's project: a project API key must spend only its own
@@ -570,7 +579,7 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
         // outage (blowing straight through the sweep lease TTL).
         judged++;
         try {
-          const verdict = await judgeSessionAgainstEvaluator(db, session.sessionId, session.spanCount, evaluator);
+          const verdict = await judgeSessionAgainstEvaluator(db, session.sessionId, evaluator);
           if (!verdict) {
             // No spans (pruned mid-tick) - back off like any failed attempt so the race
             // cannot consume a tick slot every 60s.
@@ -716,7 +725,10 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
               traceId: result.anchorTraceId,
               onlineEvaluatorId: null,
               rating: null,
-              justification: "No group member produced a usable score for this session",
+              // The group's own explanation distinguishes "no member scored" from a
+              // fail-closed gate or a budget-truncated panel - a flat string sent operators
+              // debugging the judge key when only one custom scorer was broken.
+              justification: result.justification,
               sessionId: session.sessionId,
             });
             failedAttempts.set(retryKey, Date.now());

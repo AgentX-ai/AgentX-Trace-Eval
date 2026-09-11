@@ -115,7 +115,8 @@ const curateSchema = z.object({
   // Bounded: "fill the whole target" is at most a dozen cases; anything larger is a bulk import,
   // which has its own surface.
   limit: z.number().int().min(1).max(12).optional(),
-});
+})
+  .strip();
 
 insightsRouter.post("/topics/curate", validateBody(curateSchema), async (req: Request, res: Response) => {
   const body = req.body as z.infer<typeof curateSchema>;

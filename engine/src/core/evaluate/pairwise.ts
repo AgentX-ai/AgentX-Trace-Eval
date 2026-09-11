@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, or, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, type SQL } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { Db } from "../../storage/db.js";
 import { logger } from "../../log.js";
@@ -64,6 +64,8 @@ export type PairwiseCaseWire = {
 };
 
 export type PairwiseSummary = {
+  // Judged cases only - errored cases are excluded from every count here and reported in
+  // `errors` instead.
   total: number;
   aWins: number;
   bWins: number;
@@ -73,6 +75,9 @@ export type PairwiseSummary = {
   // Share of cases whose winner flipped with the presentation order (bothOrders only). High flip
   // rate means the judge is reading position, not quality - treat the whole batch as inconclusive.
   flipRate: number | null;
+  // Cases the judge call itself failed on (provider outage, unusable output) - stored with the
+  // JUDGE_ERROR justification marker, never counted as real ties.
+  errors: number;
 };
 
 export type PairwiseBatch = {
@@ -120,18 +125,29 @@ function toCaseWire(row: Row): PairwiseCaseWire {
   };
 }
 
+// The schema has no errored column, so an errored case is persisted as winner "tie" (the safe
+// stored value) with this justification prefix marking it - summarize() reads the marker back
+// to keep judge failures out of the win/tie/flip math.
+export const JUDGE_ERROR_PREFIX = "JUDGE_ERROR:";
+
+function isErroredCase(c: PairwiseCaseWire): boolean {
+  return c.justification?.startsWith(JUDGE_ERROR_PREFIX) ?? false;
+}
+
 export function summarize(cases: PairwiseCaseWire[], bothOrders: boolean): PairwiseSummary {
-  const aWins = cases.filter(c => c.winner === "a").length;
-  const bWins = cases.filter(c => c.winner === "b").length;
-  const ties = cases.filter(c => c.winner === "tie").length;
+  const scored = cases.filter(c => !isErroredCase(c));
+  const aWins = scored.filter(c => c.winner === "a").length;
+  const bWins = scored.filter(c => c.winner === "b").length;
+  const ties = scored.filter(c => c.winner === "tie").length;
   return {
-    total: cases.length,
+    total: scored.length,
     aWins,
     bWins,
     ties,
     winner: aWins > bWins ? "a" : bWins > aWins ? "b" : "tie",
     flipRate:
-      bothOrders && cases.length ? Math.round((cases.filter(c => c.flipped).length / cases.length) * 100) / 100 : null,
+      bothOrders && scored.length ? Math.round((scored.filter(c => c.flipped).length / scored.length) * 100) / 100 : null,
+    errors: cases.length - scored.length,
   };
 }
 
@@ -179,10 +195,13 @@ async function judgeOnce(
     justification?: string;
   } | null;
   if (!payload || !["answer_1", "answer_2", "tie"].includes(payload.winner ?? "")) {
-    // An unusable verdict is a tie, never a coin flip toward one side.
+    // An unusable verdict must not masquerade as a REAL tie: without the error prefix these
+    // counted in total/ties/flipRate, so a provider outage over 60 of 100 cases read as a
+    // confident "judge saw no difference" with errors: 0. The prefix routes it into the same
+    // excluded-and-counted error bucket a thrown judge call already uses.
     return {
       winner: "tie",
-      justification: "The judge returned no usable verdict for this pair.",
+      justification: `${JUDGE_ERROR_PREFIX} the judge returned no usable verdict for this pair`,
     };
   }
   return {
@@ -291,16 +310,21 @@ export async function runPairwise(db: Db, input: RunPairwiseInput): Promise<Pair
         );
         const swappedWinner = toSide(swapped.winner, !aFirst);
         if (swappedWinner !== winner) {
-          // Opposite verdicts from the same pair: the order decided it, not the answers.
-          flipped = true;
+          // Any disagreement between the passes scores as a tie, but only OPPOSITE verdicts
+          // (a vs b) count as a position flip - the order decided it, not the answers. A
+          // tie-vs-a disagreement is ordinary judge wobble, not evidence of position bias.
+          const opposite = winner !== "tie" && swappedWinner !== "tie";
+          flipped = opposite;
           winner = "tie";
-          justification = `Verdict flipped when the answers were swapped, so this pair is scored as a tie. First pass: ${primary.justification} Second pass: ${swapped.justification}`;
+          justification = opposite
+            ? `Verdict flipped when the answers were swapped, so this pair is scored as a tie. First pass: ${primary.justification} Second pass: ${swapped.justification}`
+            : `The two passes disagreed (one saw a tie), so this pair is scored as a tie. First pass: ${primary.justification} Second pass: ${swapped.justification}`;
         }
       }
     } catch (err) {
       logger.error({ err, questionIndex: c.questionIndex }, "Pairwise judge call failed");
       winner = "tie";
-      justification = `Judging failed for this pair: ${(err as Error).message}`;
+      justification = `${JUDGE_ERROR_PREFIX} ${(err as Error).message}`;
     }
 
     return {
@@ -343,23 +367,36 @@ export async function runPairwise(db: Db, input: RunPairwiseInput): Promise<Pair
   };
 }
 
-const scope = (db: Db) =>
-  or(eq(db.schema.pairwiseComparisons.projectId, db.projectId), isNull(db.schema.pairwiseComparisons.projectId));
+// Strict project scope: every write stamps projectId, so the old isNull(projectId) escape hatch
+// only ever matched legacy rows - and leaked them into every OTHER project's batch listings.
+const scope = (db: Db) => eq(db.schema.pairwiseComparisons.projectId, db.projectId);
 
-async function rowsFor(db: Db, where: ReturnType<typeof scope>): Promise<Row[]> {
+async function rowsFor(db: Db, where: SQL | undefined, limit?: number): Promise<Row[]> {
   if (db.kind === "sqlite") {
-    return db.db
+    const query = db.db
       .select()
       .from(db.schema.pairwiseComparisons)
       .where(where)
-      .orderBy(desc(db.schema.pairwiseComparisons.createdAt), asc(db.schema.pairwiseComparisons.questionIndex))
-      .all() as Row[];
+      // batchId between createdAt and questionIndex: rows of two batches created in the same
+      // millisecond must stay contiguous, or the cap-pop below drops a COMPLETE batch while a
+      // truncated one survives and summarizes as a clean sweep.
+      .orderBy(
+        desc(db.schema.pairwiseComparisons.createdAt),
+        asc(db.schema.pairwiseComparisons.batchId),
+        asc(db.schema.pairwiseComparisons.questionIndex)
+      );
+    return (limit ? query.limit(limit).all() : query.all()) as Row[];
   }
-  return (await db.db
+  const query = db.db
     .select()
     .from(db.schema.pairwiseComparisons)
     .where(where)
-    .orderBy(desc(db.schema.pairwiseComparisons.createdAt), asc(db.schema.pairwiseComparisons.questionIndex))) as Row[];
+    .orderBy(
+      desc(db.schema.pairwiseComparisons.createdAt),
+      asc(db.schema.pairwiseComparisons.batchId),
+      asc(db.schema.pairwiseComparisons.questionIndex)
+    );
+  return (await (limit ? query.limit(limit) : query)) as Row[];
 }
 
 export async function getPairwiseBatch(db: Db, batchId: string): Promise<PairwiseBatch | null> {
@@ -390,6 +427,10 @@ export type PairwiseBatchSummaryWire = {
   createdAt: string;
 };
 
+// Newest-first ordering means the SQL row cap sheds the OLDEST history, never recent
+// comparisons: 20 max-size batches' worth of rows, far more in typical use.
+const BATCH_LIST_ROW_LIMIT = 20 * MAX_PAIRWISE_CASES;
+
 // Batches for one pair of runs (or every batch when no pair is given), newest first.
 export async function listPairwiseBatches(
   db: Db,
@@ -398,7 +439,7 @@ export async function listPairwiseBatches(
   const conditions = [scope(db)];
   if (filter.runAId) conditions.push(eq(db.schema.pairwiseComparisons.runAId, filter.runAId));
   if (filter.runBId) conditions.push(eq(db.schema.pairwiseComparisons.runBId, filter.runBId));
-  const rows = await rowsFor(db, and(...conditions));
+  const rows = await rowsFor(db, and(...conditions), BATCH_LIST_ROW_LIMIT);
 
   const byBatch = new Map<string, Row[]>();
   for (const row of rows) {
@@ -406,7 +447,13 @@ export async function listPairwiseBatches(
     list.push(row);
     byBatch.set(row.batchId, list);
   }
-  return [...byBatch.entries()].map(([batchId, batchRows]) => {
+  const batches = [...byBatch.entries()];
+  // A cap hit can truncate the oldest batch mid-group (its rows sort contiguously, so only the
+  // last group is at risk) - drop it rather than summarize a partial batch as a clean sweep.
+  if (rows.length === BATCH_LIST_ROW_LIMIT && batches.length > 1) {
+    batches.pop();
+  }
+  return batches.map(([batchId, batchRows]) => {
     const cases = batchRows.map(toCaseWire);
     const bothOrders = batchRows[0]!.bothOrders;
     return {

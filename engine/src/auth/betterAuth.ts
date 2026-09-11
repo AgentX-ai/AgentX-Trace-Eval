@@ -7,6 +7,8 @@ import { genericOAuth, organization } from "better-auth/plugins";
 import { mailerConfigured, sendMailInBackground } from "./mailer.js";
 
 // Verification is an explicit opt-in on top of a working mailer.
+let firstSignupChain: Promise<void> = Promise.resolve();
+
 export function verificationRequired(): boolean {
   return mailerConfigured() && process.env.AGENTX_REQUIRE_EMAIL_VERIFICATION === "true";
 }
@@ -142,6 +144,10 @@ async function onUserCreated(db: Db, userId: string, userName?: string | null): 
     await ensureMetricPackConfigs(scoped).catch(() => undefined);
     return;
   }
+  // Serialized: two simultaneous first signups both passing the anyMember check would each
+  // mint a "first" org, with one silently owning every unclaimed project and the other an
+  // empty shell. In-process is the realistic boundary - first boot is one instance.
+  const run = async () => {
   const anyMember =
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.authMembers).limit(1).all()[0]
@@ -183,6 +189,18 @@ async function onUserCreated(db: Db, userId: string, userName?: string | null): 
     await db.db.insert(db.schema.authMembers).values(memberRow);
   } else {
     await db.db.insert(db.schema.authMembers).values(memberRow);
+  }
+  };
+  // Chain stays alive across failures (then(run, run) posture) - but THIS caller still sees
+  // its own error: a failed first-signup bootstrap must not silently produce an org-less user.
+  const prior = firstSignupChain;
+  let settle!: () => void;
+  firstSignupChain = new Promise<void>(resolve => (settle = resolve));
+  await prior.catch(() => undefined);
+  try {
+    await run();
+  } finally {
+    settle();
   }
 }
 
@@ -312,13 +330,18 @@ export async function needsSetup(db: Db): Promise<boolean> {
 
 // Session-signing secret: explicit env wins; otherwise generated once and persisted in
 // app_settings (instance-wide) so sessions survive restarts without any required setup step.
+// The instance singleton row is ALWAYS id "default" - the same key appSettings.ts uses.
+// These readers used to take LIMIT 1 with no predicate and insert random ids, so the table
+// grew multiple pretender rows and heap order decided which one each boot read: the session
+// secret rotated (logging everyone out), and the whole-table casefold + metric-pack backfills
+// re-ran, per boot, forever. Multi-tenant "org:<id>" rows must never carry instance flags.
 export async function resolveAuthSecret(db: Db): Promise<string> {
   const fromEnv = process.env.AGENTX_AUTH_SECRET?.trim();
   if (fromEnv) return fromEnv;
   const existing =
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.appSettings).limit(1).all()[0]
-      : (await db.db.select().from(db.schema.appSettings).limit(1))[0];
+      ? db.db.select().from(db.schema.appSettings).where(eq(db.schema.appSettings.id, "default")).limit(1).all()[0]
+      : (await db.db.select().from(db.schema.appSettings).where(eq(db.schema.appSettings.id, "default")).limit(1))[0];
   if (existing?.authSecret) return existing.authSecret as string;
   const secret = randomBytes(32).toString("hex");
   if (existing) {
@@ -326,7 +349,7 @@ export async function resolveAuthSecret(db: Db): Promise<string> {
     if (db.kind === "sqlite") await db.db.update(db.schema.appSettings).set({ authSecret: secret }).where(cond);
     else await db.db.update(db.schema.appSettings).set({ authSecret: secret }).where(cond);
   } else {
-    const row = { id: nanoid(), openaiApiKey: null, anthropicApiKey: null, geminiApiKey: null, authSecret: secret, updatedAt: new Date() };
+    const row = { id: "default", openaiApiKey: null, anthropicApiKey: null, geminiApiKey: null, authSecret: secret, updatedAt: new Date() };
     if (db.kind === "sqlite") await db.db.insert(db.schema.appSettings).values(row);
     else await db.db.insert(db.schema.appSettings).values(row);
   }

@@ -52,6 +52,21 @@ async function countJudgeCallsToday(db: Db, organizationId: string | null): Prom
 // QuotaExceededError when the day's allowance is spent - callers already treat judge failures
 // as isolated per-item errors, so one tenant hitting its cap degrades exactly like a judge
 // outage would: clear message, nothing else affected.
+// Record-only twin of checkAndRecordJudgeCall - for accounting a call that ALREADY happened
+// (judge-core's internal retry is a second real provider call). The quota gate must not run
+// here: throwing after a successful, billed result would discard it, which is worse than
+// letting the day's count land one over the ceiling.
+export async function recordJudgeCall(model: string | null): Promise<void> {
+  const db = getDb();
+  const { organizationId = null, projectId = null } = currentTenancy();
+  const row = { id: nanoid(), kind: "judge_call", model, organizationId, projectId, createdAt: new Date() };
+  if (db.kind === "sqlite") {
+    await db.db.insert(db.schema.usageEvents).values(row);
+  } else {
+    await db.db.insert(db.schema.usageEvents).values(row);
+  }
+}
+
 export async function checkAndRecordJudgeCall(model: string | null): Promise<void> {
   const db = getDb();
   const { organizationId = null, projectId = null } = currentTenancy();
@@ -84,14 +99,28 @@ export async function checkAndRecordJudgeCall(model: string | null): Promise<voi
 // Admin overview helper: per-org judge calls in the trailing 24h.
 export async function judgeCallsSince(db: Db, since: Date): Promise<Map<string | null, number>> {
   const cond = and(eq(db.schema.usageEvents.kind, "judge_call"), gte(db.schema.usageEvents.createdAt, since));
-  const rows = (
+  // Grouped count in SQL: an instance doing millions of judge calls a day must not ship every
+  // usage row to the admin overview just to count them.
+  const grouped =
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.usageEvents).where(cond).all()
-      : await db.db.select().from(db.schema.usageEvents).where(cond)
-  ) as { organizationId: string | null }[];
+      ? db.db
+          .select({ organizationId: db.schema.usageEvents.organizationId, n: sql<number>`count(*)` })
+          .from(db.schema.usageEvents)
+          .where(cond)
+          .groupBy(db.schema.usageEvents.organizationId)
+          .all()
+      : await db.db
+          .select({ organizationId: db.schema.usageEvents.organizationId, n: sql<number>`count(*)` })
+          .from(db.schema.usageEvents)
+          .where(cond)
+          .groupBy(db.schema.usageEvents.organizationId);
+  const rows = grouped.map(g => ({ organizationId: g.organizationId, n: Number(g.n) })) as {
+    organizationId: string | null;
+    n: number;
+  }[];
   const counts = new Map<string | null, number>();
   for (const row of rows) {
-    counts.set(row.organizationId, (counts.get(row.organizationId) ?? 0) + 1);
+    counts.set(row.organizationId, row.n);
   }
   return counts;
 }

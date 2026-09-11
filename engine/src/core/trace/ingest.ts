@@ -4,7 +4,7 @@ import type { Db } from "../../storage/db.js";
 import { traceStoreFor } from "./store/index.js";
 import { enqueueSpan } from "./ingestQueue.js";
 import { resolveAgentId } from "../monitor/agents.js";
-import { listPortabilityModels, estimateCostUSD } from "../evaluate/models.js";
+import { normalizeModelId, listPortabilityModels, estimateCostUSD } from "../evaluate/models.js";
 import { getClassificationForTrace } from "../monitor/topics.js";
 import { unixNanosToDate } from "../shared/unixNano.js";
 import { logger } from "../../log.js";
@@ -54,9 +54,12 @@ function foldCamelAliases(value: unknown): unknown {
 }
 
 export const ingestTraceSchema = z.preprocess(foldCamelAliases, z.object({
-  name: z.string().min(1),
+  name: z.string().min(1).max(2_000),
   input: z.unknown().optional(),
   output: z.unknown().optional(),
+  // No hard cap: a 25KB chained-exception traceback is the single most diagnostically
+  // valuable span of the day and must not be the one payload the schema REJECTS while a 10MB
+  // healthy output gets truncated-and-kept. capPayloadField clips it below like its siblings.
   error: z.string().optional(),
   latency_ms: z.number().optional(),
   framework: z.string().optional(),
@@ -130,6 +133,24 @@ export function capPayloadField(value: unknown): unknown {
     return value;
   }
   if (serialized.length <= MAX_FIELD_CHARS) return value;
+  if (Array.isArray(value)) {
+    // Arrays keep their shape: readers .map/.find over toolCalls, and an object impostor is a
+    // TypeError waiting in every one of them. Drop tail items until it fits (floor: 1 marker).
+    const kept: unknown[] = [];
+    let budget = MAX_FIELD_CHARS;
+    for (const item of value) {
+      let itemLen = 0;
+      try {
+        itemLen = (JSON.stringify(item) ?? "").length;
+      } catch {
+        break;
+      }
+      if (itemLen > budget) break;
+      kept.push(item);
+      budget -= itemLen;
+    }
+    return [...kept, { "agentx.truncated": true, dropped: value.length - kept.length }];
+  }
   return { "agentx.truncated": true, preview: serialized.slice(0, MAX_FIELD_CHARS) };
 }
 
@@ -163,7 +184,7 @@ async function prepareSpanRow(
     name: payload.name,
     input: capPayloadField(payload.input ?? null),
     output: capPayloadField(payload.output ?? null),
-    error: payload.error ?? null,
+    error: (capPayloadField(payload.error ?? null) as string | null),
     latencyMs: payload.latency_ms ?? null,
     framework: normalizeFramework(payload.framework),
     model: payload.model ?? null,
@@ -172,7 +193,7 @@ async function prepareSpanRow(
     source: normalizeTraceSource(payload.source),
     metadata: capPayloadField(payload.metadata ?? null),
     sessionId: payload.session_id ?? null,
-    performanceSummary: payload.performance_summary ?? null,
+    performanceSummary: capPayloadField(payload.performance_summary ?? null),
     inputTokens: payload.input_tokens ?? null,
     outputTokens: payload.output_tokens ?? null,
     cacheReadTokens: payload.cache_read_tokens ?? null,
@@ -181,8 +202,13 @@ async function prepareSpanRow(
     parentSpanId: payload.parent_span_id ?? null,
     startedAt,
     // Historical imports send real past start times; createdAt drives every window-based view,
-    // so it reflects when the traffic HAPPENED, not when it was imported.
-    createdAt: startedAt ?? new Date(),
+    // so it reflects when the traffic HAPPENED, not when it was imported. Clamped against
+    // future clocks (a container without NTP, a replay with a unit bug): one span stamped a
+    // year ahead sits in pg's DEFAULT partition and blocks that day's partition creation
+    // forever, and is invisible to every window and immune to retention. startedAt itself
+    // stays verbatim - the waterfall renders the stated time; only the window key is clamped.
+    createdAt:
+      startedAt && startedAt.getTime() <= Date.now() + 60_000 ? startedAt : new Date(),
     agentId,
     projectId: db.projectId,
   };
@@ -370,7 +396,12 @@ export async function toTraceDetailWireWithCost(db: Db, row: TraceRow) {
     return { ...wire, estimatedCostUSD: null, topic };
   }
   const pricingModels = await listPortabilityModels(db);
-  const pricing = pricingModels.find(m => m.id === row.model) ?? null;
+  // Same two-step resolution the Monitor cost chart uses (metrics.ts): exact id first, then
+  // the snapshot-suffix-stripped id - otherwise "gpt-4o-mini-2024-07-18" priced on the chart
+  // but showed "no cost data" in this very dialog.
+  const pricing =
+    pricingModels.find(m => m.id === row.model) ??
+    (row.model ? pricingModels.find(m => m.id === normalizeModelId(row.model!)) ?? null : null);
   return {
     ...wire,
     estimatedCostUSD: estimateCostUSD(pricing, row.inputTokens, row.outputTokens, row.cacheReadTokens, row.cacheWriteTokens),

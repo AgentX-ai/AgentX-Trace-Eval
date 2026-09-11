@@ -147,6 +147,27 @@ for (const backend of backends) {
       expect(await s.findBySpanId("nope")).toBeUndefined();
     });
 
+    it("a stated span kind round-trips verbatim (memory included)", async () => {
+      // Its own project so the fixture-count assertions elsewhere in the suite stay untouched.
+      // span_kind is free text on every backend (TEXT on SQL, LowCardinality(Nullable(String))
+      // on ClickHouse) - a newly-added vocabulary word like "memory" must survive storage
+      // as-is, on every backend, with no enum or migration in the way.
+      const kindProjectId = `${projectId}-kinds`;
+      const s = backend.makeStore(kindProjectId);
+      await s.insertSpan(
+        span({ id: "kind-mem", projectId: kindProjectId, spanId: "sp-kind-mem", sessionId: "sess-kind", spanKind: "memory" })
+      );
+      await s.insertSpan(
+        span({ id: "kind-ret", projectId: kindProjectId, spanId: "sp-kind-ret", sessionId: "sess-kind", spanKind: "retrieval" })
+      );
+      expect((await s.getById("kind-mem"))?.spanKind).toBe("memory");
+      const bySession = await s.listBySession("sess-kind");
+      expect(bySession.map(r => [r.id, r.spanKind]).sort()).toEqual([
+        ["kind-mem", "memory"],
+        ["kind-ret", "retrieval"],
+      ]);
+    });
+
     it("session listing and recency", async () => {
       const s = store();
       const sess = await s.listBySession("sess-1");
