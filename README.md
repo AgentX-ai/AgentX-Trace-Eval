@@ -270,23 +270,25 @@ That is a focused subset. The full eval workflow lives in
 
 ## What's in this repo
 
-| Path                    | What it is                                                                                                                                                                                                                                                             |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cli/`                  | Go CLI (`agentx`/`agentx-server`) - installer glue and process supervisor. Launches the bundled engine binary, opens the browser, handles shutdown.                                                                                                                    |
-| `engine/`               | TypeScript governance engine + HTTP API (Trace, Evaluate, Monitor). Compiles to a single native executable via Bun (`bun build --compile`) so end users never need Node/Bun installed.                                                                                 |
-| `packages/judge-core/`  | The LLM-as-judge prompt/scoring logic, published as `@agentx/judge-core` so `engine/` and AgentX's hosted SaaS backend share one implementation.                                                                                                                       |
-| `packages/agentx-eval/` | `@agentx/eval` - a minimal, zero-dependency TypeScript client for the engine's evaluation CI surface (datasets, runs, result submission, the CI gate, pairwise comparison).                                                                                            |
-| `web/`                  | The dashboard - **not tracked in this repo**. Populated by building [AgentX-eval-front](https://github.com/AgentX-ai/AgentX-eval-front) in self-host mode, or by downloading its prebuilt release asset (see [Dashboard release process](#dashboard-release-process)). |
-| `skills/`               | Bundled Claude Code skill for Prompt Registry improvements (`improve-prompt/`) - see [Claude Code skills](#claude-code-skills). The full eval plugin is [AgentX-Eval-Skill](https://github.com/AgentX-ai/AgentX-Eval-Skill).                                           |
-| `install.sh`            | The `curl \| bash` installer - downloads the platform binary from GitHub Releases.                                                                                                                                                                                     |
-| `build.sh`              | Builds a local `dist/` laid out the same way a real install would, for testing the full distribution without cutting a release.                                                                                                                                        |
-| `Dockerfile`            | Multi-stage build producing a container image - see [Docker](#docker).                                                                                                                                                                                                 |
-| `scripts/`              | `smoke-test.sh` / `smoke_test.py` - end-to-end verification against a real running engine and the real Python SDK.                                                                                                                                                     |
+| Path                   | What it is                                                                                                                                                                                                                                                             |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cli/`                 | Go CLI (`agentx`/`agentx-server`) - installer glue and process supervisor. Launches the bundled engine binary, opens the browser, handles shutdown.                                                                                                                    |
+| `engine/`              | TypeScript governance engine + HTTP API (Trace, Evaluate, Monitor). Compiles to a single native executable via Bun (`bun build --compile`) so end users never need Node/Bun installed.                                                                                 |
+| `packages/judge-core/` | The LLM-as-judge prompt/scoring logic, published as `@agentx/judge-core` so `engine/` and AgentX's hosted SaaS backend share one implementation.                                                                                                                       |
+| `packages/agentx-eval/` | `@agentx/eval` - a minimal, zero-dependency TypeScript client for the engine's evaluation CI surface (datasets, runs, result submission, the CI gate, pairwise comparison).                                                                          |
+| `web/`                 | The dashboard - **not tracked in this repo**. Populated by building [AgentX-eval-front](https://github.com/AgentX-ai/AgentX-eval-front) in self-host mode, or by downloading its prebuilt release asset (see [Dashboard release process](#dashboard-release-process)). |
+| `skills/`              | Bundled Claude Code skill for Prompt Registry improvements (`improve-prompt/`) - see [Claude Code skills](#claude-code-skills). The full eval plugin is [AgentX-Eval-Skill](https://github.com/AgentX-ai/AgentX-Eval-Skill). |
+| `install.sh`           | The `curl \| bash` installer - downloads the platform binary from GitHub Releases.                                                                                                                                                                                     |
+| `build.sh`             | Builds a local `dist/` laid out the same way a real install would, for testing the full distribution without cutting a release.                                                                                                                                        |
+| `Dockerfile`           | Multi-stage build producing a container image - see [Docker](#docker).                                                                                                                                                                                                 |
+| `scripts/`             | `smoke-test.sh` / `smoke_test.py` - end-to-end verification against a real running engine and the real Python SDK. `smoke-binary.sh` covers the compiled binary instead, which takes the `bun:sqlite` branch nothing under `engine/src/test` reaches.                    |
 
 ## Building from source
 
 Prerequisites: [Go](https://go.dev/), Node.js + [Yarn](https://yarnpkg.com/), and
 [Bun](https://bun.sh/) (only needed for the compiled single-binary path, not day-to-day dev).
+CI builds on Node.js 24.x, Bun 1.3.14, and the Go toolchain in `cli/go.mod`, so those are the
+versions a local pass predicts a green build against.
 
 ```bash
 git clone git@github.com:AgentX-ai/AgentX-trace-eval.git && cd AgentX-trace-eval
