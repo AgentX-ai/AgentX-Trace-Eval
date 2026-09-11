@@ -1080,38 +1080,6 @@ export const authInvitations = sqliteTable("auth_invitation", {
   inviterId: text("inviter_id").notNull(),
 });
 
-export type SqliteSchema = {
-  projects: typeof projects;
-  traces: typeof traces;
-  agents: typeof agents;
-  datasets: typeof datasets;
-  evaluationSettings: typeof evaluationSettings;
-  evaluationRuns: typeof evaluationRuns;
-  evaluationRunResults: typeof evaluationRunResults;
-  datasetVersions: typeof datasetVersions;
-  evaluationSettingsVersions: typeof evaluationSettingsVersions;
-  playgroundRuns: typeof playgroundRuns;
-  monitorPatterns: typeof monitorPatterns;
-  monitorSignalFeedback: typeof monitorSignalFeedback;
-  monitorProfiles: typeof monitorProfiles;
-  monitorSignals: typeof monitorSignals;
-  monitorEvents: typeof monitorEvents;
-  monitorClassifications: typeof monitorClassifications;
-  insightCaseEmbeddings: typeof insightCaseEmbeddings;
-  monitorOnlineEvaluators: typeof monitorOnlineEvaluators;
-  customEvaluators: typeof customEvaluators;
-  agentConnectors: typeof agentConnectors;
-  outcomeReports: typeof outcomeReports;
-  sessionScores: typeof sessionScores;
-  toolSchemas: typeof toolSchemas;
-  toolSchemaVersions: typeof toolSchemaVersions;
-  prompts: typeof prompts;
-  promptVersions: typeof promptVersions;
-  portabilityModels: typeof portabilityModels;
-  evaluationAnalyses: typeof evaluationAnalyses;
-  appSettings: typeof appSettings;
-};
-
 // Human-review queue for traces that did NOT raise a signal - the "annotation queue" half of
 // review. Signals arrive here implicitly (Review's signal stream); rows in THIS table are traces
 // a human asked for (source "manual") or an automation rule sampled (source "rule"), so a

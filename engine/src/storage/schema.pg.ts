@@ -449,7 +449,7 @@ export const usageEvents = pgTable("usage_events", {
   model: text("model"),
   organizationId: text("organization_id"),
   projectId: text("project_id"),
-  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  createdAt: timestamp("created_at", { mode: "date", withTimezone: true }).notNull(),
 });
 
 // See schema.sqlite.ts's gateResults for the full comment.
@@ -471,7 +471,7 @@ export const gateResults = pgTable("gate_results", {
 // Append-only audit trail - see schema.sqlite.ts's auditEvents comment for the contract.
 export const auditEvents = pgTable("audit_events", {
   id: text("id").primaryKey(),
-  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  createdAt: timestamp("created_at", { mode: "date", withTimezone: true }).notNull(),
   actor: text("actor").notNull(),
   actorType: text("actor_type").notNull(),
   action: text("action").notNull(),
@@ -501,7 +501,7 @@ export const sessionScores = pgTable("session_scores", {
   driftSpanId: text("drift_span_id"),
   findings: jsonb("findings"),
   spanCount: integer("span_count").notNull(),
-  judgeModel: text("judge_model").notNull(),
+  judgeModel: text("judge_model").notNull().notNull(),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
   projectId: text("project_id"),
 });
@@ -700,38 +700,6 @@ export const authInvitations = pgTable("auth_invitation", {
   inviterId: text("inviter_id").notNull(),
 });
 
-export type PgSchema = {
-  projects: typeof projects;
-  traces: typeof traces;
-  agents: typeof agents;
-  datasets: typeof datasets;
-  evaluationSettings: typeof evaluationSettings;
-  evaluationRuns: typeof evaluationRuns;
-  evaluationRunResults: typeof evaluationRunResults;
-  datasetVersions: typeof datasetVersions;
-  evaluationSettingsVersions: typeof evaluationSettingsVersions;
-  playgroundRuns: typeof playgroundRuns;
-  monitorSignalFeedback: typeof monitorSignalFeedback;
-  monitorPatterns: typeof monitorPatterns;
-  monitorProfiles: typeof monitorProfiles;
-  monitorSignals: typeof monitorSignals;
-  monitorEvents: typeof monitorEvents;
-  monitorClassifications: typeof monitorClassifications;
-  insightCaseEmbeddings: typeof insightCaseEmbeddings;
-  monitorOnlineEvaluators: typeof monitorOnlineEvaluators;
-  customEvaluators: typeof customEvaluators;
-  agentConnectors: typeof agentConnectors;
-  outcomeReports: typeof outcomeReports;
-  sessionScores: typeof sessionScores;
-  toolSchemas: typeof toolSchemas;
-  toolSchemaVersions: typeof toolSchemaVersions;
-  prompts: typeof prompts;
-  promptVersions: typeof promptVersions;
-  portabilityModels: typeof portabilityModels;
-  evaluationAnalyses: typeof evaluationAnalyses;
-  appSettings: typeof appSettings;
-};
-
 // See schema.sqlite.ts's reviewQueueItems for the full comment.
 export const reviewQueueItems = pgTable("review_queue_items", {
   id: text("id").primaryKey(),
@@ -779,7 +747,7 @@ export const pairwiseComparisons = pgTable("pairwise_comparisons", {
   flipped: boolean("flipped").notNull().default(false),
   justification: text("justification"),
   judgeModel: text("judge_model"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
 });
 
 // See schema.sqlite.ts's playgroundProfiles for the full comment.
@@ -790,8 +758,8 @@ export const playgroundProfiles = pgTable("playground_profiles", {
   description: text("description"),
   promptId: text("prompt_id"),
   config: jsonb("config").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
 });
 
 // Per-minute metric rollups - see schema.sqlite.ts's monitorRollups for the full comment.

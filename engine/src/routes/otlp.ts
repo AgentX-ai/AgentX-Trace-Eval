@@ -94,6 +94,19 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
     return;
   }
 
+  // A body with NO resourceSpans key at all is not an ExportTraceServiceRequest - a proxy
+  // that unwrapped the envelope, or a hand-rolled client posting {"spans": [...]}. Answering
+  // the OTLP "everything accepted" 200 would drop every span while the exporter reads green -
+  // the same silent-drop failure the content-type gate above already closes for its dimension.
+  // A genuinely empty {"resourceSpans": []} stays a 200: that IS a valid empty export.
+  const hasEnvelope =
+    parsed !== null &&
+    typeof parsed === "object" &&
+    ("resourceSpans" in (parsed as object) || "resource_spans" in (parsed as object));
+  if (!hasEnvelope) {
+    res.status(400).json({ error: "body carried no resourceSpans - not an ExportTraceServiceRequest" });
+    return;
+  }
   const spans = normalizeExportRequest(parsed);
   if (spans.length > MAX_SPANS_PER_EXPORT) {
     res.status(413).json({

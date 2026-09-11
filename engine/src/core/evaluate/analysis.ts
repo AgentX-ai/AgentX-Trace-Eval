@@ -153,14 +153,28 @@ async function scoreItemWithJudges(row: RunResultRow, judgeModels: string[]): Pr
   const judges: ItemJudgeRating[] = await Promise.all(
     judgeModels.map(async (model, i) => {
       const variant = JUDGE_VARIANTS[i] ?? String(i + 1);
-      const result = await callJudgeJson({ model, jsonSchema: ITEM_SCORE_SCHEMA, userMessage: prompt });
-      const payload = result.payload as { rating?: number; justification?: string } | null;
-      return {
-        judgeVariant: variant,
-        model,
-        rating: typeof payload?.rating === "number" ? payload.rating : null,
-        justification: payload?.justification ?? null,
-      };
+      try {
+        const result = await callJudgeJson({ model, jsonSchema: ITEM_SCORE_SCHEMA, userMessage: prompt });
+        const payload = result.payload as { rating?: number; justification?: string } | null;
+        return {
+          judgeVariant: variant,
+          model,
+          // Clamped: percent-scale answers from compat endpoints (85 for 8.5) must not skew
+          // finalScore, the disagreement bands, or the narrative prompt.
+          rating: typeof payload?.rating === "number" ? Math.max(0, Math.min(10, payload.rating)) : null,
+          justification: payload?.justification ?? null,
+        };
+      } catch (err) {
+        // One judge without a key (or in outage) degrades to a null rating - it must not
+        // reject the item and thereby fail the whole analysis, discarding the other judges'
+        // completed, paid-for calls. ItemJudgeRating.rating is nullable for exactly this.
+        return {
+          judgeVariant: variant,
+          model,
+          rating: null,
+          justification: `judge failed: ${err instanceof Error ? err.message : "unknown error"}`,
+        };
+      }
     })
   );
 
@@ -284,7 +298,9 @@ export async function runEvaluationAnalysis(
   evaluationId: string,
   opts: AnalyzeEvaluationOptions = {}
 ): Promise<AnalyzeEvaluationResult | null> {
-  const inFlightKey = `${db.projectId ?? ""}|${evaluationId}`;
+  // The judge selection is part of the identity: restarting with different judges must start
+  // a new analysis, not silently join (and return) the in-flight one with the old panel.
+  const inFlightKey = `${db.projectId ?? ""}|${evaluationId}|${(opts.judges ?? []).map(j => j.model).sort().join(",")}|${opts.qualityMode ?? ""}`;
   const inFlight = analysisInFlight.get(inFlightKey);
   if (inFlight) {
     return inFlight;

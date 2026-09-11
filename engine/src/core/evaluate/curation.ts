@@ -15,6 +15,8 @@ import { cosine, normalizeText } from "../shared/vector.js";
 // only reads main_question/follow_up_questions) but lets the dashboard badge production-born
 // cases and lets addCaseToDataset refuse to add the same trace twice.
 
+export const MAX_CURATED_FOLLOW_UPS = 50;
+
 export type CuratedTestCase = { query: string; expectedResults: string | null };
 
 export type CuratedCase = {
@@ -85,7 +87,10 @@ export async function previewCaseFromSession(db: Db, sessionId: string): Promise
   return {
     case: {
       main_question: { query: first.query, expectedResults: null },
-      follow_up_questions: turns.slice(1).map(t => ({ query: t.query, expectedResults: null })),
+      // Capped: one case's follow-ups become sequential agent turns on EVERY future run of the
+      // dataset, and its JSON is copied into every later version snapshot - a 4,000-turn
+      // runaway session must not become a 4,000-turn test case.
+      follow_up_questions: turns.slice(1, 1 + MAX_CURATED_FOLLOW_UPS).map(t => ({ query: t.query, expectedResults: null })),
       source: { sessionId, addedAt: new Date().toISOString() },
     },
     turns,

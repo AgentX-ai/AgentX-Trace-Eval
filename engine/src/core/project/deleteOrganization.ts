@@ -59,15 +59,23 @@ export async function deleteOrganization(db: Db, organizationId: string): Promis
   if (db.kind === "sqlite") {
     await db.db.delete(db.schema.appSettings).where(settingsCond);
     await db.db.delete(db.schema.portabilityModels).where(catalogCond);
-    await db.db.delete(db.schema.authMembers).where(membersCond);
+    // Org row BEFORE members: a failure between the two leaves the owner's membership alive
+    // (pointing at a gone org - GET /organizations drops it), so the DELETE can be retried.
+    // The old order stranded a half-deleted org the owner could no longer authenticate
+    // against to finish the job.
     await db.db.delete(db.schema.authInvitations).where(invitesCond);
     await db.db.delete(db.schema.authOrganizations).where(orgCond);
+    await db.db.delete(db.schema.authMembers).where(membersCond);
   } else {
     await db.db.delete(db.schema.appSettings).where(settingsCond);
     await db.db.delete(db.schema.portabilityModels).where(catalogCond);
-    await db.db.delete(db.schema.authMembers).where(membersCond);
+    // Org row BEFORE members: a failure between the two leaves the owner's membership alive
+    // (pointing at a gone org - GET /organizations drops it), so the DELETE can be retried.
+    // The old order stranded a half-deleted org the owner could no longer authenticate
+    // against to finish the job.
     await db.db.delete(db.schema.authInvitations).where(invitesCond);
     await db.db.delete(db.schema.authOrganizations).where(orgCond);
+    await db.db.delete(db.schema.authMembers).where(membersCond);
   }
 
   return { projectsDeleted: projectIds.length };

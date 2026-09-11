@@ -161,6 +161,9 @@ export async function pruneRetentionData(db: Db, agentId: string | null, retenti
   if (Date.now() - last < PRUNE_INTERVAL_MS) {
     return;
   }
+  // Stamped up front so concurrent callers in the same tick don't all run the delete - but
+  // RESET on failure below, so a failed prune retries on the next call instead of silently
+  // waiting out the hour with the invariant broken.
   lastPruneAt.set(key, Date.now());
   const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
 
@@ -189,14 +192,12 @@ export async function pruneRetentionData(db: Db, agentId: string | null, retenti
           eq(db.schema.monitorClassifications.projectId, db.projectId)
         );
 
-  // Spans age out through the port (ADR-0007): the store picks its engine-native mechanism.
-  await traceStoreFor(db).prune(cutoff, agentId);
-  // Rollups ride the same clock (ADR-0006). They are project-minute keyed (not agent-scoped),
-  // so they are pruned past EVERY scope's cutoff, agent passes included: an agent-scoped prune
-  // just removed raw spans whose counts still live inside this project's rollup minutes, and a
-  // rollup that outlives its raw spans would let the dashboard's fast path report pruned
-  // traffic the raw fallback can no longer see. Deleting rollups is always safe - they are
-  // derived data, and an under-covered window falls back to the raw scan (slower, never wrong).
+  // Rollups FIRST, then the spans they were derived from: the two deletes have no shared
+  // transaction (on the enterprise tier they are two different systems), and the failure modes
+  // are asymmetric - losing a rollup early just sends a window to the raw scan (slower, never
+  // wrong), while a rollup outliving its pruned spans makes the fast path report traffic the
+  // raw fallback can no longer see. Rollups are project-minute keyed (not agent-scoped), so
+  // they are pruned past EVERY scope's cutoff, agent passes included.
   const cutoffMinute = Math.floor(cutoff.getTime() / 60_000) * 60_000;
   const rollupCond = and(
     eq(db.schema.monitorRollups.projectId, db.projectId),
@@ -204,10 +205,17 @@ export async function pruneRetentionData(db: Db, agentId: string | null, retenti
   );
   // The branches read identically but narrow drizzle's dialect union - .delete() is not
   // callable on the un-narrowed Db.
-  if (db.kind === "sqlite") {
-    await db.db.delete(db.schema.monitorRollups).where(rollupCond);
-  } else {
-    await db.db.delete(db.schema.monitorRollups).where(rollupCond);
+  try {
+    if (db.kind === "sqlite") {
+      await db.db.delete(db.schema.monitorRollups).where(rollupCond);
+    } else {
+      await db.db.delete(db.schema.monitorRollups).where(rollupCond);
+    }
+    // Spans age out through the port (ADR-0007): the store picks its engine-native mechanism.
+    await traceStoreFor(db).prune(cutoff, agentId);
+  } catch (err) {
+    lastPruneAt.delete(key);
+    throw err;
   }
   if (db.kind === "sqlite") {
     await db.db.delete(db.schema.monitorEvents).where(eventsCond);

@@ -140,8 +140,8 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
   const cond = and(gte(db.schema.outcomeReports.reportedAt, since), eq(db.schema.outcomeReports.projectId, db.projectId));
   const reports = (
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.outcomeReports).where(cond).all()
-      : await db.db.select().from(db.schema.outcomeReports).where(cond)
+      ? db.db.select().from(db.schema.outcomeReports).where(cond).limit(50_000).all()
+      : await db.db.select().from(db.schema.outcomeReports).where(cond).limit(50_000)
   ) as OutcomeReportRow[];
 
   let noVerdict = 0;
@@ -180,8 +180,8 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
   );
   const reviewLabels = (
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).all()
-      : await db.db.select().from(db.schema.reviewQueueItems).where(reviewCond)
+      ? db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).limit(50_000).all()
+      : await db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).limit(50_000)
   ) as { traceId: string; label: string | null }[];
 
   const eventsByTrace = await listEventsByTrace(db, [
@@ -200,9 +200,12 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
   reports.sort((a, b) => a.reportedAt.getTime() - b.reportedAt.getTime());
   const talliedTraces = new Set<string>();
   for (const report of reports) {
-    if (report.traceId) {
-      if (talliedTraces.has(report.traceId)) continue;
-      talliedTraces.add(report.traceId);
+    // Run-result-keyed reports dedupe too: 5 retries of one ServiceNow POST against one eval
+    // result must contribute one matrix row, exactly like trace-keyed ground truth.
+    const dedupeKey = report.traceId ?? (report.evaluationRunResultId ? `rr:${report.evaluationRunResultId}` : null);
+    if (dedupeKey) {
+      if (talliedTraces.has(dedupeKey)) continue;
+      talliedTraces.add(dedupeKey);
     }
     tally(await resolveAgentxVerdict(db, report, eventsByTrace), report.isNegative);
   }

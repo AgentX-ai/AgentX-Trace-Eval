@@ -1,6 +1,6 @@
 import { getTraceRow, type TraceRow } from "../trace/ingest.js";
 import type { Db } from "../../storage/db.js";
-import { callModelCompletion, scorePortabilityResponse, type ReconstructedContext } from "./judge.js";
+import { callModelCompletion, scorePortabilityResponse, resolvePlatformModel, type ReconstructedContext } from "./judge.js";
 import { getPortabilityModel, estimateCostUSD, type PortabilityModel } from "./models.js";
 
 // Model portability: "would a different model handle this specific captured input about as
@@ -160,11 +160,15 @@ export async function runModelPortabilityCheck(
   // its rating is directly comparable to the candidates (it was never judged against this rubric
   // when first ingested - Monitor's checks are pattern/rating checks, not a quality score).
   const baselineOutputText = extractContent(trace.output);
+  // Same platform-model resolution every other platform operation uses - an operator with only
+  // an Anthropic key must not have portability hard-wired to the OpenAI default judge.
+  const platformJudgeModel = await resolvePlatformModel(db);
   const baselineModel = trace.model ? await getPortabilityModel(db, trace.model) : null;
   try {
     const { rating, justification } = await scorePortabilityResponse(
       reconstructed.messages[reconstructed.messages.length - 1]?.content ?? "",
-      baselineOutputText
+      baselineOutputText,
+      platformJudgeModel
     );
     results.push({
       model: trace.model ?? "(unknown)",
@@ -209,7 +213,8 @@ export async function runModelPortabilityCheck(
       const latencyMs = Date.now() - start;
       const { rating, justification } = await scorePortabilityResponse(
         reconstructed.messages[reconstructed.messages.length - 1]?.content ?? "",
-        completion.text
+        completion.text,
+        platformJudgeModel
       );
       results.push({
         model: modelId,

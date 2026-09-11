@@ -98,6 +98,8 @@ export type MonitorMetricsResponse = {
   /** Which path answered: "rollups" (ADR-0006 fast path) or "raw" (window scan). Diagnostic -
    *  and load-bearing in tests, which assert the fast path was actually taken. */
   source: "rollups" | "raw";
+  /** Raw path only: the window scan hit its row cap - counts below cover a subset. */
+  truncated?: boolean;
   buckets: MonitorMetricsBucket[];
   totals: {
     spansLlm: number;
@@ -176,8 +178,16 @@ export async function getMonitorMetrics(
     if (fast) return fast;
   }
   // One window scan through the TraceStore port (ADR-0002); production only - the buckets
-  // describe live traffic, not eval harnesses.
-  let rows = (await traceStoreFor(db).queryWindow({ since, productionOnly: true })) as unknown as Row[];
+  // describe live traffic, not eval harnesses. Bounded: an unfiltered 30d window on a busy
+  // install is millions of full rows, and the engine shares one process with ingest - past
+  // the cap the response says so (truncated) instead of presenting a subset as the whole.
+  const RAW_METRICS_ROW_CAP = 200_000;
+  let rows = (await traceStoreFor(db).queryWindow({
+    since,
+    productionOnly: true,
+    limit: RAW_METRICS_ROW_CAP,
+  })) as unknown as Row[];
+  const truncated = rows.length >= RAW_METRICS_ROW_CAP;
 
   // ---- filters, resolved per SESSION so a matching root brings its child spans along ---------
   // (a root and its children share sessionId - every SDK trace auto-creates one; rows without a
@@ -274,9 +284,11 @@ export async function getMonitorMetrics(
       toolCalls: row.toolCalls,
       parentSpanId: row.parentSpanId,
     });
+    // Model facet is kind-independent (the rollup path counts every byModel key) - a model on
+    // a chain-classified span must not appear in the dropdown unfiltered and vanish filtered.
+    if (row.model) facetModels.add(row.model);
     if (kind === "llm") {
       bucket.spansLlm++;
-      if (row.model) facetModels.add(row.model);
     } else if (kind === "tool") {
       bucket.spansTool++;
     } else if (kind === "retrieval") {
@@ -430,6 +442,7 @@ export async function getMonitorMetrics(
     start,
     end: range.to,
     source: "raw",
+    truncated,
     buckets,
     totals,
     tools,

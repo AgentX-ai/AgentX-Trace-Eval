@@ -690,6 +690,15 @@ export const scorerGroupRatingsResponseSchema = z
   })
   .strict();
 
+// POST /agent-monitoring/session-sweep/run - the SDK's client.monitor.sessions.run_sweep().
+export const sessionSweepRunResponseSchema = z
+  .object({
+    judged: z.number(),
+    // Present (true) when a sweep was already in flight and this call did nothing.
+    skipped: z.boolean().optional(),
+  })
+  .strict();
+
 export const sessionScoresResponseSchema = z
   .object({
     scores: z.array(
@@ -910,6 +919,13 @@ export const WIRE_CONTRACT = [
     summary: "Session-level verdicts - evaluators, scorer groups, legacy coherence",
     response: sessionScoresResponseSchema,
     name: "SessionScores",
+  },
+  {
+    method: "post" as const,
+    path: "/agent-monitoring/session-sweep/run",
+    summary: "Run the idle-session sweep once, scoped to the caller's project",
+    response: sessionSweepRunResponseSchema,
+    name: "SessionSweepRun",
   },
   {
     method: "post" as const,

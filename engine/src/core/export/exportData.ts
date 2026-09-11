@@ -12,6 +12,19 @@ import type { Db } from "../../storage/db.js";
 // flat regardless of table size and an interrupted export can be diffed against a re-run (ids
 // are stable). Instance-wide tables (portability models, app settings, auth_*) are deliberately
 // absent: they belong to the operator's own infrastructure backup, not a project's data export.
+// Bearer tokens live in connector header VALUES - the dashboard masks them on every GET, and
+// the export stream must not be the one surface that hands them out in cleartext. A restored
+// backup keeps the header KEYS; the operator re-enters the secrets, same as provider keys
+// (which are excluded from export entirely).
+function redactConnectorRow(row: Record<string, unknown>): Record<string, unknown> {
+  const headers = row.headers;
+  if (!headers || typeof headers !== "object") return row;
+  return {
+    ...row,
+    headers: Object.fromEntries(Object.entries(headers as Record<string, unknown>).map(([k]) => [k, "***redacted***"])),
+  };
+}
+
 export const EXPORT_ENTITIES = {
   traces: { table: "traces", sinceColumn: "createdAt" },
   signals: { table: "monitorSignals", sinceColumn: "lastSeenAt" },
@@ -64,7 +77,7 @@ export const EXPORT_ENTITIES = {
   // Playground runs, and the audit log.
   agents: { table: "agents", sinceColumn: "createdAt" },
   "monitor-profiles": { table: "monitorProfiles", sinceColumn: "createdAt" },
-  "agent-connectors": { table: "agentConnectors", sinceColumn: "createdAt" },
+  "agent-connectors": { table: "agentConnectors", sinceColumn: "createdAt", redact: redactConnectorRow },
   "playground-runs": { table: "playgroundRuns", sinceColumn: "createdAt" },
   "audit-events": { table: "auditEvents", sinceColumn: "createdAt" },
   // Deliberately excluded (derived/ephemeral, cheap to rebuild): monitorRollups,
@@ -145,6 +158,9 @@ export async function fetchExportBatch(
     .where(buildWhere(db, entity, since, cursor))
     .orderBy(asc(entityKeyColumn(db, entity)))
     .limit(EXPORT_BATCH);
-  return db.kind === "sqlite" ? q.all() : await q;
+  const rows = (db.kind === "sqlite" ? q.all() : await q) as Record<string, unknown>[];
+  const redact = (EXPORT_ENTITIES[entity] as { redact?: (row: Record<string, unknown>) => Record<string, unknown> })
+    .redact;
+  return redact ? rows.map(redact) : rows;
 }
  

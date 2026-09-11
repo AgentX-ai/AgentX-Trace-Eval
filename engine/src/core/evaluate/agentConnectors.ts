@@ -31,7 +31,7 @@ export type AgentConnectorRow = {
 function toWire(row: AgentConnectorRow) {
   // Header VALUES are where bearer tokens live - the one purpose of the field. Every other
   // stored secret masks on read (provider keys, per-model keys); echoing these verbatim put a
-  // production credential in every GET, and in the NDJSON export. Keys stay readable so the
+  // production credential in every GET, and the NDJSON export redacts the values outright (core/export/exportData.ts). Keys stay readable so the
   // editor can list what's set; a masked value sent back on PUT means "unchanged".
   const headers = (row.headers as Record<string, string> | null) ?? {};
   return {
