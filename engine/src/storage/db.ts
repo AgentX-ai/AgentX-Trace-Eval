@@ -456,6 +456,7 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
       run_source TEXT,
       sdk_info TEXT,
       smoke_test_variants TEXT,
+      questions_snapshot TEXT,
       status TEXT NOT NULL DEFAULT 'in_progress',
       created_at INTEGER NOT NULL,
       project_id TEXT
@@ -1105,6 +1106,7 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
     // pairwise_comparisons shipped before the both-orders pass existed; an install upgraded past
     // that point 500s on every new comparison without this (fresh DBs get it via CREATE TABLE).
     ["pairwise_comparisons", "ALTER TABLE pairwise_comparisons ADD COLUMN both_orders INTEGER NOT NULL DEFAULT 0"],
+    ["evaluation_runs", "ALTER TABLE evaluation_runs ADD COLUMN questions_snapshot TEXT"],
     ["monitor_classifications", "ALTER TABLE monitor_classifications ADD COLUMN input_embedding TEXT"],
     ["monitor_signal_feedback", "ALTER TABLE monitor_signal_feedback ADD COLUMN event_id TEXT"],
     ["monitor_profiles", "ALTER TABLE monitor_profiles ADD COLUMN topics_enabled INTEGER NOT NULL DEFAULT 0"],
@@ -1825,6 +1827,7 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
       run_source TEXT,
       sdk_info JSONB,
       smoke_test_variants JSONB,
+      questions_snapshot JSONB,
       status TEXT NOT NULL DEFAULT 'in_progress',
       created_at TIMESTAMP NOT NULL,
       project_id TEXT
@@ -2420,6 +2423,7 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
     ALTER TABLE monitor_patterns ADD COLUMN IF NOT EXISTS scope_mode TEXT NOT NULL DEFAULT 'all';
     ALTER TABLE monitor_patterns ADD COLUMN IF NOT EXISTS agent_ids JSONB;
     ALTER TABLE pairwise_comparisons ADD COLUMN IF NOT EXISTS both_orders BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS questions_snapshot JSONB;
     ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS scorer_group_id TEXT;
     ALTER TABLE monitor_classifications ADD COLUMN IF NOT EXISTS input_embedding JSONB;
     ALTER TABLE monitor_profiles ADD COLUMN IF NOT EXISTS channels JSONB;

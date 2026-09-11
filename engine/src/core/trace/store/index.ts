@@ -62,8 +62,8 @@ export async function backfillFrameworkCasefold(db: Db): Promise<void> {
   try {
     const settings =
       db.kind === "sqlite"
-        ? db.db.select().from(db.schema.appSettings).limit(1).all()[0]
-        : (await db.db.select().from(db.schema.appSettings).limit(1))[0];
+        ? db.db.select().from(db.schema.appSettings).where(eq(db.schema.appSettings.id, "default")).limit(1).all()[0]
+        : (await db.db.select().from(db.schema.appSettings).where(eq(db.schema.appSettings.id, "default")).limit(1))[0];
     if ((settings as { frameworkCasefoldedAt?: Date | null } | undefined)?.frameworkCasefoldedAt) {
       return;
     }
@@ -102,7 +102,7 @@ export async function backfillFrameworkCasefold(db: Db): Promise<void> {
     } else {
       // No settings row yet (fresh install pre-first-save): the marker still has to persist or
       // every boot rescans. Insert the singleton the same way markMetricPackBackfillDone does.
-      const row = { id: `app-${now.getTime()}`, frameworkCasefoldedAt: now, updatedAt: now };
+      const row = { id: "default", frameworkCasefoldedAt: now, updatedAt: now };
       if (db.kind === "sqlite") {
         await db.db.insert(db.schema.appSettings).values(row);
       } else {

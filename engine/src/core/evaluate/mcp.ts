@@ -1,5 +1,6 @@
 import { outboundUrlProblem } from "../shared/urlGuard.js";
 import { randomUUID } from "node:crypto";
+import { currentTenancy } from "../../auth/requestContext.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
@@ -53,6 +54,10 @@ type TransportKind = "streamable" | "sse";
 
 type McpSession = {
   id: string;
+  // Tenancy the session was minted under. Sessions hold live OAuth tokens and the tool-call
+  // surface they unlock; a session id leaking across orgs (logs, screenshots, proxies) must
+  // not let another tenant execute tools with this tenant's credentials.
+  ownerKey: string;
   serverUrl: string;
   headers: Record<string, string>;
   callbackUrl: string;
@@ -65,6 +70,19 @@ type McpSession = {
 };
 
 const sessions = new Map<string, McpSession>();
+
+// The tenancy stamp sessions are keyed to - and the guard every session lookup applies.
+const tenancyKey = (): string => {
+  const t = currentTenancy();
+  return `${t.organizationId ?? ""}|${t.projectId ?? ""}`;
+};
+const ownedSession = (sessionId: string | undefined | null): McpSession | undefined => {
+  if (!sessionId) return undefined;
+  const session = sessions.get(sessionId);
+  if (!session) return undefined;
+  // A foreign-tenant lookup behaves exactly like an expired session - no oracle.
+  return session.ownerKey === tenancyKey() ? session : undefined;
+};
 
 function sweepSessions(): void {
   const cutoff = Date.now() - SESSION_TTL_MS;
@@ -187,10 +205,11 @@ export async function loadMcpTools(input: {
     return { error: "serverUrl must be an http(s) URL" };
   }
 
-  let session = input.sessionId ? sessions.get(input.sessionId) : undefined;
+  let session = ownedSession(input.sessionId);
   if (!session) {
     session = {
       id: randomUUID(),
+      ownerKey: tenancyKey(),
       serverUrl: url.toString(),
       headers: input.headers,
       callbackUrl: input.callbackUrl,
@@ -265,7 +284,7 @@ export async function callMcpToolOnce(input: {
   } catch {
     throw new Error(`MCP server URL "${input.serverUrl}" is not a valid URL`);
   }
-  const stored = input.sessionId ? sessions.get(input.sessionId) : undefined;
+  const stored = ownedSession(input.sessionId);
   if (input.sessionId && !stored) {
     throw new Error(
       `MCP authorization for ${url.toString()} has expired - reconnect the tool (Connect on the tool row) and run again`
@@ -273,6 +292,7 @@ export async function callMcpToolOnce(input: {
   }
   const session: McpSession = stored ?? {
     id: randomUUID(),
+    ownerKey: tenancyKey(),
     serverUrl: url.toString(),
     headers: {},
     callbackUrl: "http://unused.invalid/callback",
@@ -330,7 +350,7 @@ export async function callMcpToolOnce(input: {
 // dashboard's ongoing poll then reconnects with them.
 export async function finishMcpAuth(sessionId: string, code: string): Promise<{ ok: true } | { error: string }> {
   sweepSessions();
-  const session = sessions.get(sessionId);
+  const session = ownedSession(sessionId);
   if (!session) {
     return { error: "Authorization session not found or expired - reload the MCP server and try again" };
   }

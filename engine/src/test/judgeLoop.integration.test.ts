@@ -38,6 +38,18 @@ beforeAll(async () => {
           }
         : { rating: 3, justification: "stub: weak answer" };
       res.setHeader("content-type", "application/json");
+      // Custom (OpenAI-compat) models are now correctly routed to /chat/completions -
+      // serve the same marker-keyed verdict in that shape.
+      if ((req.url ?? "").includes("/chat/completions")) {
+        res.end(
+          JSON.stringify({
+            id: "chat_stub",
+            choices: [{ message: { role: "assistant", content: JSON.stringify(payload) } }],
+            usage: { prompt_tokens: 10, completion_tokens: 10 },
+          })
+        );
+        return;
+      }
       res.end(
         JSON.stringify({
           id: "resp_stub",
@@ -179,19 +191,48 @@ describe("provenance-gated publish", () => {
     expect(summaries.some(s => s.includes("[judge tuning: published without validation]"))).toBe(true);
   });
 
-  it("accepts a validated improvement and stamps the measured gain", async () => {
+  it("refuses a client-asserted verdict without the validate token, accepts the verified one", async () => {
+    const criteria = {
+      acceptanceCriteria: "Concrete resolution with specifics, v2.",
+      rejectionCriteria: "Brush-offs.",
+      evaluationCriteria: "Did the agent actually resolve the request?",
+    };
+    // Claiming "improved" with no proof used to pass the regression gate outright - the gate
+    // now runs on the VERIFIED verdict only, so a token-less assertion is a 409, not a bypass.
+    const asserted = await api(
+      `/agent-monitoring/online-evaluators/${profileId}/tune/publish`,
+      postJson({ ...criteria, validation: { verdict: "improved", netAgreementGain: 3 } })
+    );
+    expect(asserted.status).toBe(409);
+
+    // The real flow: validate mints the HMAC token for exactly this package...
+    const validated = await api(
+      `/agent-monitoring/online-evaluators/${profileId}/tune/validate`,
+      postJson(criteria)
+    );
+    expect(validated.status).toBe(200);
+    const validationBody = validated.body as {
+      verdict: string;
+      netAgreementGain: number;
+      validationToken?: string;
+    };
+    expect(typeof validationBody.validationToken).toBe("string");
+
+    // ...and publish accepts the token-carrying result, stamping the measured verdict.
     const ok = await api(
       `/agent-monitoring/online-evaluators/${profileId}/tune/publish`,
       postJson({
-        acceptanceCriteria: "Concrete resolution with specifics, v2.",
-        rejectionCriteria: "Brush-offs.",
-        evaluationCriteria: "Did the agent actually resolve the request?",
-        validation: { verdict: "improved", netAgreementGain: 3 },
+        ...criteria,
+        validation: {
+          verdict: validationBody.verdict,
+          netAgreementGain: validationBody.netAgreementGain,
+          token: validationBody.validationToken,
+        },
       })
     );
     expect(ok.status).toBe(200);
     const versions = await api(`/evaluate/evaluationSettings/${scorerId}/versions`);
     const summaries = (versions.body as Array<{ changeSummary?: string }>).map(v => v.changeSummary ?? "");
-    expect(summaries.some(s => s.includes("validated improved") && s.includes("+3"))).toBe(true);
+    expect(summaries.some(s => s.includes(`validated ${validationBody.verdict}`))).toBe(true);
   });
 });

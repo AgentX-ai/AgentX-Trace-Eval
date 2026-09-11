@@ -278,10 +278,13 @@ export async function listScoreEventsForEvaluatorSince(db: Db, evaluatorId: stri
     eq(db.schema.monitorEvents.onlineEvaluatorId, evaluatorId),
     isNotNull(db.schema.monitorEvents.rating)
   );
+  // Bounded: a busy evaluator's 30d window can be millions of rows - materializing them in
+  // JS to keep 40 tuning cases stalled the event loop for every project on the box. 50k is
+  // far beyond what any consumer aggregates meaningfully.
   const rows =
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.monitorEvents).where(cond).all()
-      : await db.db.select().from(db.schema.monitorEvents).where(cond);
+      ? db.db.select().from(db.schema.monitorEvents).where(cond).orderBy(desc(db.schema.monitorEvents.createdAt)).limit(50000).all()
+      : await db.db.select().from(db.schema.monitorEvents).where(cond).orderBy(desc(db.schema.monitorEvents.createdAt)).limit(50000);
   return rows as EventRow[];
 }
 

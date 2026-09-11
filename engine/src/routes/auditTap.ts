@@ -110,6 +110,11 @@ export function classifyControlPlane(method: string, path: string): Classified |
   return { action: `${noun}.${verb}`, entityType: noun, entityId };
 }
 
+// Field NAMES are caller-controlled strings too: thirty megabyte-long keys would land megabytes
+// per request in an append-only table. 10KB keeps every row bounded without losing which fields
+// a legitimate request touched.
+const MAX_SUMMARY_JSON_CHARS = 10 * 1024;
+
 function safeSummary(body: unknown): Record<string, unknown> | null {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return null;
@@ -119,10 +124,15 @@ function safeSummary(body: unknown): Record<string, unknown> | null {
   if (fields.length === 0) {
     return null;
   }
-  return {
+  const summary = {
     fields,
     ...(typeof record.name === "string" ? { name: record.name.slice(0, 200) } : {}),
   };
+  const json = JSON.stringify(summary);
+  if (json.length > MAX_SUMMARY_JSON_CHARS) {
+    return { truncated: `${json.slice(0, MAX_SUMMARY_JSON_CHARS)}…[truncated]` };
+  }
+  return summary;
 }
 
 async function resolveActor(req: Request): Promise<{ actor: string; actorType: AuditActorType }> {

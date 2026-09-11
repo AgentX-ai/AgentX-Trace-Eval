@@ -359,8 +359,8 @@ export const METRIC_PACK_VERSION = 3;
 export async function metricPackBackfillDone(db: Db): Promise<boolean> {
   const row =
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.appSettings).limit(1).all()[0]
-      : (await db.db.select().from(db.schema.appSettings).limit(1))[0];
+      ? db.db.select().from(db.schema.appSettings).where(eq(db.schema.appSettings.id, "default")).limit(1).all()[0]
+      : (await db.db.select().from(db.schema.appSettings).where(eq(db.schema.appSettings.id, "default")).limit(1))[0];
   if (!row?.metricPackSeededAt) return false;
   const version = (row as { metricPackVersion?: number | null }).metricPackVersion ?? 1;
   return version >= METRIC_PACK_VERSION;
@@ -369,8 +369,8 @@ export async function metricPackBackfillDone(db: Db): Promise<boolean> {
 export async function markMetricPackBackfillDone(db: Db): Promise<void> {
   const existing =
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.appSettings).limit(1).all()[0]
-      : (await db.db.select().from(db.schema.appSettings).limit(1))[0];
+      ? db.db.select().from(db.schema.appSettings).where(eq(db.schema.appSettings.id, "default")).limit(1).all()[0]
+      : (await db.db.select().from(db.schema.appSettings).where(eq(db.schema.appSettings.id, "default")).limit(1))[0];
   const now = new Date();
   if (existing) {
     const cond = eq(db.schema.appSettings.id, existing.id as string);
@@ -379,7 +379,7 @@ export async function markMetricPackBackfillDone(db: Db): Promise<void> {
     else await db.db.update(db.schema.appSettings).set(patch).where(cond);
   } else {
     const row = {
-      id: nanoid(),
+      id: "default",
       openaiApiKey: null,
       anthropicApiKey: null,
       geminiApiKey: null,

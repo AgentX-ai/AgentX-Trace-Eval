@@ -160,7 +160,7 @@ describe("project deletion", () => {
     expect(countIn(before, "evaluation_settings")).toBeGreaterThan(0);
     before.close();
 
-    const deleted = await engine.request(`/api/v1/projects/${doomed._id}`, { method: "DELETE", apiKey: keyA });
+    const deleted = await engine.request(`/api/v1/projects/${doomed._id}`, { method: "DELETE", apiKey: doomed.apiKey });
     expect(deleted.status).toBe(204);
     await deleted.text();
 
@@ -178,7 +178,7 @@ describe("project deletion", () => {
     const doomed = await createProject("Key revoked on delete");
     expect((await engine.json("/api/v1/ingest/traces", { apiKey: doomed.apiKey })).status).toBe(200);
 
-    const deleted = await engine.request(`/api/v1/projects/${doomed._id}`, { method: "DELETE", apiKey: keyA });
+    const deleted = await engine.request(`/api/v1/projects/${doomed._id}`, { method: "DELETE", apiKey: doomed.apiKey });
     expect(deleted.status).toBe(204);
     await deleted.text();
 
@@ -199,6 +199,19 @@ describe("project deletion", () => {
 
     const still = await engine.json("/api/v1/projects", { apiKey: keyA });
     expect((still.body as { projects: { _id: string }[] }).projects.map(p => p._id)).toContain(fallback!._id);
+  });
+
+  it("a key cannot delete another project (404, no existence oracle)", async () => {
+    const doomed = await createProject("Someone else's project");
+    // keyA belongs to the default project - deleting a DIFFERENT project with it used to
+    // cascade-delete it; now the caller only ever deletes itself.
+    const res = await engine.request(`/api/v1/projects/${doomed._id}`, { method: "DELETE", apiKey: keyA });
+    expect(res.status).toBe(404);
+    await res.text();
+    const still = await engine.json("/api/v1/projects", { apiKey: keyA });
+    expect((still.body as { projects: { _id: string }[] }).projects.map(p => p._id)).toContain(doomed._id);
+    // Cleanup with its own key - the allowed path.
+    await (await engine.request(`/api/v1/projects/${doomed._id}`, { method: "DELETE", apiKey: doomed.apiKey })).text();
   });
 
   it("404s an unknown project id", async () => {

@@ -136,7 +136,10 @@ export async function runConversationSimulation(
   // to the dashboard as an SSE event, so the transcript renders turn by turn).
   onTurn?: (turn: SimulationTurn, index: number) => void
 ): Promise<SimulationResult> {
-  const maxTurns = Math.max(1, Math.min(MAX_TURNS_CAP, input.maxTurns ?? DEFAULT_MAX_TURNS));
+  // NaN slides through Math.min/max unchanged, and `i < NaN` is false - a non-finite maxTurns
+  // produced a zero-turn "finished" simulation instead of a conversation.
+  const requestedTurns = Number.isFinite(input.maxTurns) ? (input.maxTurns as number) : DEFAULT_MAX_TURNS;
+  const maxTurns = Math.max(1, Math.min(MAX_TURNS_CAP, requestedTurns));
   const userModel = input.userModel?.trim() || DEFAULT_JUDGE_MODEL;
   const record = input.record !== false;
   const sessionId = record ? `sim-${nanoid(12)}` : null;
@@ -202,6 +205,11 @@ export async function runConversationSimulation(
         { maxTokens: input.maxTokens, temperature: input.temperature }
       );
       turn.latencyMs = Date.now() - start;
+      if (completion.truncated) {
+        // The round cap cut the trajectory - an empty agentMessage pushed into history would
+        // poison every later turn and read as "the agent said nothing".
+        turn.error = "Tool loop exceeded the round cap without a final answer";
+      }
       turn.agentMessage = completion.text;
       if (completion.toolCalls.length > 0) turn.toolCalls = completion.toolCalls;
 

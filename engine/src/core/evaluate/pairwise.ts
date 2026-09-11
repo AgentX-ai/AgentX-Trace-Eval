@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, or, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, type SQL } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { Db } from "../../storage/db.js";
 import { logger } from "../../log.js";
@@ -195,10 +195,13 @@ async function judgeOnce(
     justification?: string;
   } | null;
   if (!payload || !["answer_1", "answer_2", "tie"].includes(payload.winner ?? "")) {
-    // An unusable verdict is a tie, never a coin flip toward one side.
+    // An unusable verdict must not masquerade as a REAL tie: without the error prefix these
+    // counted in total/ties/flipRate, so a provider outage over 60 of 100 cases read as a
+    // confident "judge saw no difference" with errors: 0. The prefix routes it into the same
+    // excluded-and-counted error bucket a thrown judge call already uses.
     return {
       winner: "tie",
-      justification: "The judge returned no usable verdict for this pair.",
+      justification: `${JUDGE_ERROR_PREFIX} the judge returned no usable verdict for this pair`,
     };
   }
   return {
@@ -364,10 +367,11 @@ export async function runPairwise(db: Db, input: RunPairwiseInput): Promise<Pair
   };
 }
 
-const scope = (db: Db) =>
-  or(eq(db.schema.pairwiseComparisons.projectId, db.projectId), isNull(db.schema.pairwiseComparisons.projectId));
+// Strict project scope: every write stamps projectId, so the old isNull(projectId) escape hatch
+// only ever matched legacy rows - and leaked them into every OTHER project's batch listings.
+const scope = (db: Db) => eq(db.schema.pairwiseComparisons.projectId, db.projectId);
 
-async function rowsFor(db: Db, where: ReturnType<typeof scope>, limit?: number): Promise<Row[]> {
+async function rowsFor(db: Db, where: SQL | undefined, limit?: number): Promise<Row[]> {
   if (db.kind === "sqlite") {
     const query = db.db
       .select()

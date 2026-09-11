@@ -117,7 +117,7 @@ async function driveConnectorRun(
               outputTokens: response.outputTokens,
             };
             return {
-              idempotencyKey: nanoid(),
+              idempotencyKey: `${runId}:${questionIndex}:${runNumber}`,
               questionIndex,
               runNumber,
               input: { query },
@@ -127,7 +127,7 @@ async function driveConnectorRun(
             };
           } catch (err) {
             return {
-              idempotencyKey: nanoid(),
+              idempotencyKey: `${runId}:${questionIndex}:${runNumber}`,
               questionIndex,
               runNumber,
               input: { query },
@@ -143,7 +143,14 @@ async function driveConnectorRun(
     }
     await finalizeRun(db, runId);
   } catch (err) {
-    logger.error({ err: err instanceof Error ? err.message : err }, `Connector-driven run ${runId} failed:`);
+    // A terminal-state conflict means someone legitimately finalized the run under us - the
+    // results already stored are the run; failing it would erase a completed status.
+    const message = err instanceof Error ? err.message : String(err);
+    if ((err as { code?: string }).code === "conflict" || message.includes("terminal state")) {
+      logger.warn({ runId }, "Connector run finalized elsewhere mid-drive; leaving its status untouched");
+      return;
+    }
+    logger.error({ err: message }, `Connector-driven run ${runId} failed:`);
     await failRun(db, runId);
   }
 }

@@ -13,7 +13,21 @@ export type VersionEntryWire = {
   changeSummary?: string;
 };
 
-const DATASET_SNAPSHOT_FIELDS = ["name", "description", "questions", "status"] as const;
+// The full editable recipe, not just the four display fields: a snapshot that omits the
+// criteria/scorers/metrics means any restore built from it NULLS them through the full-replace
+// update route - "go back to how it was" destroying the rubric it claimed to restore.
+const DATASET_SNAPSHOT_FIELDS = [
+  "name",
+  "description",
+  "questions",
+  "status",
+  "acceptanceCriteria",
+  "rejectionCriteria",
+  "evaluationCriteria",
+  "numberOfRequests",
+  "similarityConfig",
+  "codeScorers",
+] as const;
 const DATASET_FIELD_LABELS: Record<string, string> = {
   name: "name",
   description: "description",

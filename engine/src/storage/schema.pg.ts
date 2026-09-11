@@ -121,6 +121,8 @@ export const evaluationRuns = pgTable("evaluation_runs", {
   additionalScorerIds: jsonb("additional_scorer_ids"),
   scorerGroupId: text("scorer_group_id"),
   smokeTestVariants: jsonb("smoke_test_variants"),
+  // See schema.sqlite.ts - frozen questions so positional scoring survives dataset edits.
+  questionsSnapshot: jsonb("questions_snapshot"),
   status: text("status").notNull().default("in_progress"),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
   projectId: text("project_id"),

@@ -356,8 +356,8 @@ evaluationsRouter.get("/runs/:runId/gate", async (req: Request, res: Response) =
     res.status(400).json({ error: "failUnder must be a number" });
     return;
   }
-  if (tolerance !== undefined && !Number.isFinite(tolerance)) {
-    res.status(400).json({ error: "tolerance must be a number" });
+  if (tolerance !== undefined && (!Number.isFinite(tolerance) || tolerance < 0)) {
+    res.status(400).json({ error: "tolerance must be a non-negative number" });
     return;
   }
   if (failUnder == null && !noRegression) {

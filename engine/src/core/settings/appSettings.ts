@@ -24,6 +24,58 @@ function settingsRowId(): string {
   return SETTINGS_ROW_ID;
 }
 
+
+// One-time adoption for installs whose app_settings grew "pretender" rows: before the readers
+// were keyed on the "default" id, boot-time writers (auth secret, casefold + metric-pack
+// markers) inserted rows under random ids, and LIMIT-1 heap order decided which one each boot
+// read. Merge every non-org pretender's instance flags onto "default" (creating it from the
+// first pretender when absent) and delete the pretenders, so keyed readers see the history
+// instead of rotating the session secret and re-running whole-table backfills one last time.
+export async function consolidateAppSettingsSingleton(db: Db): Promise<void> {
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.appSettings).all()
+      : await db.db.select().from(db.schema.appSettings)
+  ) as Array<Record<string, unknown> & { id: string }>;
+  const pretenders = rows.filter(r => r.id !== "default" && !r.id.startsWith("org:"));
+  if (pretenders.length === 0) return;
+  const existingDefault = rows.find(r => r.id === "default");
+  const FLAGS = [
+    "authSecret",
+    "frameworkCasefoldedAt",
+    "metricPackSeededAt",
+    "metricPackVersion",
+    "openaiApiKey",
+    "anthropicApiKey",
+    "geminiApiKey",
+  ] as const;
+  const merged: Record<string, unknown> = { ...(existingDefault ?? { id: "default", updatedAt: new Date() }) };
+  for (const pretender of pretenders) {
+    for (const flag of FLAGS) {
+      if (merged[flag] == null && pretender[flag] != null) merged[flag] = pretender[flag];
+    }
+  }
+  if (db.kind === "sqlite") {
+    if (existingDefault) {
+      await db.db.update(db.schema.appSettings).set(merged as never).where(eq(db.schema.appSettings.id, "default"));
+    } else {
+      await db.db.insert(db.schema.appSettings).values({ ...merged, id: "default" } as never);
+    }
+    for (const pretender of pretenders) {
+      await db.db.delete(db.schema.appSettings).where(eq(db.schema.appSettings.id, pretender.id));
+    }
+  } else {
+    if (existingDefault) {
+      await db.db.update(db.schema.appSettings).set(merged as never).where(eq(db.schema.appSettings.id, "default"));
+    } else {
+      await db.db.insert(db.schema.appSettings).values({ ...merged, id: "default" } as never);
+    }
+    for (const pretender of pretenders) {
+      await db.db.delete(db.schema.appSettings).where(eq(db.schema.appSettings.id, pretender.id));
+    }
+  }
+}
+
 export type AppSettings = {
   openaiApiKey: string | null;
   anthropicApiKey: string | null;

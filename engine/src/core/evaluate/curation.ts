@@ -247,21 +247,25 @@ async function addCaseToDatasetSerialized(
 
   // Fresh re-read directly before the write: the dedupe pass above awaited embeddings, and a
   // write that raced in through another path (bulk coverage add, a dashboard edit) must be
-  // appended TO, not clobbered with our stale copy.
-  const fresh = (await getDataset(db, datasetId)) as (Record<string, unknown> & { questions: unknown }) | null;
-  const freshQuestions = (Array.isArray(fresh?.questions) ? fresh!.questions : questions) as ExistingQuestion[];
+  // appended TO, not clobbered with our stale copy. The WHOLE update body comes from the fresh
+  // row, not just questions - a name/criteria edit that raced in must survive this write too.
+  const fresh = (await getDataset(db, datasetId)) as
+    | (Record<string, unknown> & { name: string; questions: unknown })
+    | null;
+  const snapshot = fresh ?? dataset;
+  const freshQuestions = (Array.isArray(snapshot.questions) ? snapshot.questions : questions) as ExistingQuestion[];
 
   // updateDataset (not a raw column write) so the append lands in version history like any other
   // dataset edit. The wire shape spreads similarityConfig flat, so extract helpers map it back.
   await updateDataset(db, datasetId, {
-    name: dataset.name,
-    description: (dataset.description as string | undefined) ?? undefined,
-    numberOfRequests: (dataset.numberOfRequests as number | undefined) ?? undefined,
-    similarityConfig: extractSimilarityConfig(dataset),
-    codeScorers: extractCodeScorers(dataset),
-    acceptanceCriteria: (dataset.acceptanceCriteria as string | undefined) ?? undefined,
-    rejectionCriteria: (dataset.rejectionCriteria as string | undefined) ?? undefined,
-    evaluationCriteria: (dataset.evaluationCriteria as string | undefined) ?? undefined,
+    name: snapshot.name,
+    description: (snapshot.description as string | undefined) ?? undefined,
+    numberOfRequests: (snapshot.numberOfRequests as number | undefined) ?? undefined,
+    similarityConfig: extractSimilarityConfig(snapshot),
+    codeScorers: extractCodeScorers(snapshot),
+    acceptanceCriteria: (snapshot.acceptanceCriteria as string | undefined) ?? undefined,
+    rejectionCriteria: (snapshot.rejectionCriteria as string | undefined) ?? undefined,
+    evaluationCriteria: (snapshot.evaluationCriteria as string | undefined) ?? undefined,
     questions: [...freshQuestions, curatedCase],
   });
   return { ok: true, caseCount: freshQuestions.length + 1 };

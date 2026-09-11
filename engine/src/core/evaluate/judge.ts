@@ -279,7 +279,7 @@ ${criteria.evaluationCriteria ? `**Evaluation Criteria:** ${criteria.evaluationC
     strictSchema: true,
     userMessage: `${substitutedPrompt}\n${additionalContext}`,
   });
-  const payload = judgeResult.payload as { rating: number; justification: string } | null;
+  const payload = judgeResult.payload as { rating: unknown; justification?: unknown } | null;
   if (!payload) {
     // A judge that returned nothing usable is a FAILURE, not a verdict. This used to return
     // rating 0, which offline was averaged into the run/gate as if the agent had answered
@@ -288,7 +288,17 @@ ${criteria.evaluationCriteria ? `**Evaluation Criteria:** ${criteria.evaluationC
     // (offline: status "skipped", rating null; online: judge_failure event, no Signal).
     throw new JudgeFailedError(judgeResult.failureReason ?? "emptyResponse");
   }
-  return { rating: payload.rating, justification: payload.justification };
+  // Only real-OpenAI strict mode guarantees the schema's types - Anthropic, Gemini and custom
+  // endpoints can answer {"rating": "8"} or a percent-scale 85. A string rating used to reach
+  // the run column, where averaging CONCATENATED it; clamp to the rubric's 0-10 instead.
+  const rating = Number(payload.rating);
+  if (!Number.isFinite(rating)) {
+    throw new JudgeFailedError("parseError");
+  }
+  return {
+    rating: Math.max(0, Math.min(10, rating)),
+    justification: typeof payload.justification === "string" ? payload.justification : "",
+  };
 }
 
 // The judge model was reachable but produced no usable verdict (empty response or unparseable
@@ -330,7 +340,7 @@ export async function callJudgeJson({
     throw new Error(`Judge model "${model}" needs a ${keyLabel} API key. Set ${envVar} and restart agentx-server.`);
   }
 
-  return callJudgeJsonShared({
+  const result = await callJudgeJsonShared({
     userMessage,
     model,
     jsonSchema,
@@ -339,6 +349,9 @@ export async function callJudgeJson({
     // (Gemini, vLLM/Ollama/... custom baseURLs) don't reliably implement json_schema strict
     // mode, and a rejected request would turn a fine judge model into a scoring failure.
     strictSchema: strictSchema && !isGemini && !isCustom,
+    // Compat endpoints implement /chat/completions, not the Responses API - routing them
+    // there 404ed every judge call, skipping every result they were asked to score.
+    useChatCompletions: isGemini || isCustom,
     openaiClient,
     anthropicClient: await getAnthropic(),
     // Authoritative: judge-core must not re-derive routing from the model NAME - a custom
@@ -346,6 +359,12 @@ export async function callJudgeJson({
     // upstream id) would otherwise be sent to the Anthropic client, ignoring its baseUrl.
     provider,
   });
+  if (result.retried) {
+    // judge-core's automatic empty/parse-failure retry is a second real provider call - the
+    // billing ledger under-counted by up to 2x on flaky generations without this.
+    await checkAndRecordJudgeCall(model);
+  }
+  return result;
 }
 
 // Vector similarity needs an OpenAI client for embeddings regardless of which provider judges the
@@ -404,7 +423,7 @@ async function embedOnce(
   client: EmbeddingClient,
   model: string,
   inputs: string[]
-): Promise<(number[] | null)[] | null> {
+): Promise<(number[] | null)[] | null | "transient"> {
   try {
     const response = (await client.embeddings.create({ model, input: inputs })) as {
       data?: { index: number; embedding: unknown }[];
@@ -423,7 +442,12 @@ async function embedOnce(
     // Logged by the caller, which is the only place that knows whether this is a batch about to be
     // split and retried or a single input that is genuinely unembeddable.
     logger.debug({ err: err instanceof Error ? err.message : err, inputs: inputs.length }, "Embedding batch failed");
-    return null;
+    // 400/413 = payload problem, worth halving to isolate the oversized input. Anything else
+    // (429, 5xx, timeout) is the PROVIDER failing - splitting would fire 2^k requests at an
+    // endpoint that just said stop; report it as transient so the caller leaves the whole
+    // batch pending for the next request instead.
+    const status = (err as { status?: number }).status;
+    return status === 400 || status === 413 ? null : "transient";
   }
 }
 
@@ -439,6 +463,11 @@ async function embedSplit(
   inputs: string[]
 ): Promise<(number[] | null)[]> {
   const direct = await embedOnce(client, model, inputs);
+  if (direct === "transient") {
+    // Provider outage/rate limit - the whole batch stays unembedded (callers already treat
+    // null vectors as pending) rather than recursing into a request storm.
+    return new Array<number[] | null>(inputs.length).fill(null);
+  }
   if (direct) {
     return direct;
   }
@@ -583,6 +612,10 @@ export type ModelWithToolsResult = {
   text: string;
   usage: { inputTokens: number; outputTokens: number } | null;
   toolCalls: ToolCallTrace[];
+  // True when MAX_TOOL_ROUNDS cut the loop off mid-trajectory. The empty text is then OUR
+  // truncation, not the model's answer - callers must not judge it as one (an empty string
+  // scored ~0 is a fabricated verdict about the agent).
+  truncated?: boolean;
 };
 
 // In-process CPU/network-bound loop, not a hard cost cap - just enough to stop a prompt that keeps
@@ -670,7 +703,7 @@ export async function callModelWithTools(
       messages.push({ role: "user", content: toolResults });
     }
 
-    return { text: "", usage: { inputTokens, outputTokens }, toolCalls };
+    return { text: "", usage: { inputTokens, outputTokens }, toolCalls, truncated: true };
   }
 
   const client = openaiClient;
@@ -753,7 +786,7 @@ export async function callModelWithTools(
     }
   }
 
-  return { text: "", usage: { inputTokens, outputTokens }, toolCalls };
+  return { text: "", usage: { inputTokens, outputTokens }, toolCalls, truncated: true };
 }
 
 const SMOKE_TEST_VARIANTS_SCHEMA = {

@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { desc, and, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { listOccurrencesForSignal, extractText, type EventRow } from "./events.js";
 import { logger } from "../../log.js";
@@ -283,10 +283,13 @@ export async function signalCountsByPatternKey(db: Db): Promise<Map<string, { to
 
 export async function listSignalRows(db: Db): Promise<SignalRow[]> {
   const cond = eq(db.schema.monitorSignals.projectId, db.projectId);
+  // Bounded: interactive readers (the Overview digest polls this) keep at most a dozen rows,
+  // and a years-old install has no business materializing its whole signal history per poll.
+  // Newest-first so the cap keeps what those readers actually rank.
   const rows =
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.monitorSignals).where(cond).all()
-      : await db.db.select().from(db.schema.monitorSignals).where(cond);
+      ? db.db.select().from(db.schema.monitorSignals).where(cond).orderBy(desc(db.schema.monitorSignals.lastSeenAt)).limit(10000).all()
+      : await db.db.select().from(db.schema.monitorSignals).where(cond).orderBy(desc(db.schema.monitorSignals.lastSeenAt)).limit(10000);
   return rows as SignalRow[];
 }
 

@@ -10,6 +10,10 @@ import { getDataset } from "./datasets.js";
 
 const MAX_CASES = 20;
 
+// The whole source lands verbatim in one judge prompt: past this it exceeds context windows and
+// burns tokens on a call that was going to fail anyway, so oversized input is refused up front.
+const MAX_SOURCE_CHARS = 100_000;
+
 const SYNTHESIS_SCHEMA = {
   type: "object",
   properties: {
@@ -40,6 +44,11 @@ export async function generateSyntheticCases(
   const sourceText = input.sourceText.trim();
   if (!sourceText) {
     return { error: "sourceText is required - paste the document the cases should be grounded in" };
+  }
+  if (sourceText.length > MAX_SOURCE_CHARS) {
+    return {
+      error: `sourceText is too long (${sourceText.length} characters, cap ${MAX_SOURCE_CHARS}) - trim the document to the sections the cases should cover`,
+    };
   }
   const count = Math.max(1, Math.min(MAX_CASES, Math.floor(input.count) || 5));
 

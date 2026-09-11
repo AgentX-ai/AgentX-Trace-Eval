@@ -1,6 +1,8 @@
 import { nanoid } from "nanoid";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
+import { maskSecret, isMaskedSecret } from "../shared/maskSecret.js";
+import { outboundUrlProblem } from "../shared/urlGuard.js";
 
 // "How to invoke my deployed agent" - modeled directly on core/monitor/customEvaluators.ts's CRUD
 // shape (same webhook-config idea, different contract: a connector returns an agent's answer to
@@ -27,14 +29,29 @@ export type AgentConnectorRow = {
 };
 
 function toWire(row: AgentConnectorRow) {
+  // Header VALUES are where bearer tokens live - the one purpose of the field. Every other
+  // stored secret masks on read (provider keys, per-model keys); echoing these verbatim put a
+  // production credential in every GET, and in the NDJSON export. Keys stay readable so the
+  // editor can list what's set; a masked value sent back on PUT means "unchanged".
+  const headers = (row.headers as Record<string, string> | null) ?? {};
   return {
     _id: row.id,
     name: row.name,
     url: row.url,
-    headers: (row.headers as Record<string, string> | null) ?? {},
+    headers: Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, maskSecret(String(v))])),
     timeoutMs: row.timeoutMs,
     createdAt: row.createdAt.toISOString(),
   };
+}
+
+
+// PUT round-trips: a value that still carries the read-side mask means "keep what's stored".
+function unmaskHeaders(incoming: Record<string, string> | null, stored: unknown): Record<string, string> | null {
+  if (!incoming) return incoming;
+  const previous = (stored as Record<string, string> | null) ?? {};
+  return Object.fromEntries(
+    Object.entries(incoming).map(([k, v]) => [k, isMaskedSecret(v) && previous[k] !== undefined ? previous[k]! : v])
+  );
 }
 
 export async function createAgentConnector(db: Db, input: CreateAgentConnectorInput) {
@@ -93,7 +110,7 @@ export async function updateAgentConnector(db: Db, id: string, input: UpdateAgen
     ...existing,
     name: input.name ?? existing.name,
     url: input.url ?? existing.url,
-    headers: input.headers !== undefined ? input.headers : existing.headers,
+    headers: input.headers !== undefined ? unmaskHeaders(input.headers, existing.headers) : existing.headers,
     timeoutMs: input.timeoutMs ?? existing.timeoutMs,
   };
   const setValues = { name: updated.name, url: updated.url, headers: updated.headers, timeoutMs: updated.timeoutMs };
@@ -149,23 +166,68 @@ export type AgentConnectorResponse = {
   latencyMs?: number;
 };
 
-// Throws on any failure (network error, timeout, non-2xx, missing string `output`) - same posture
-// as callCustomEvaluator; callers (runDatasetAgainstConnector, the dashboard's test-connection
-// route) decide how to present/isolate a failure.
+// One agent answer plus metadata - 2MB is far beyond any real one, and without a cap a hostile
+// or misconfigured endpoint streams unbounded bytes into this process's memory.
+const MAX_CONNECTOR_RESPONSE_BYTES = 2 * 1024 * 1024;
+
+// Reads up to the cap, then cancels the transfer - checking content-length alone would miss
+// chunked responses, and res.text() would have buffered everything before any length check ran.
+async function readConnectorBody(res: Response, url: string): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) {
+    return "";
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_CONNECTOR_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => {});
+      throw new Error(`Agent connector ${url} response exceeded ${MAX_CONNECTOR_RESPONSE_BYTES / (1024 * 1024)}MB - aborted`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+// Throws on any failure (refused URL, network error, timeout, non-2xx, oversized body, missing
+// string `output`) - same posture as callCustomEvaluator; callers (runDatasetAgainstConnector,
+// the dashboard's test-connection route) decide how to present/isolate a failure.
 export async function callAgentConnector(
   connector: Pick<AgentConnectorRow, "url" | "headers" | "timeoutMs">,
   payload: AgentConnectorRequest
 ): Promise<AgentConnectorResponse> {
+  // Checked per call, not only at write time: a stored URL outlives any posture change, and the
+  // error string lands in the run result where the operator can see WHY the case failed.
+  const urlProblem = outboundUrlProblem(connector.url);
+  if (urlProblem) {
+    throw new Error(`Agent connector URL refused (${connector.url}): ${urlProblem}`);
+  }
   const res = await fetch(connector.url, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...((connector.headers as Record<string, string> | null) ?? {}) },
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(connector.timeoutMs),
+    // The URL was vetted, a redirect target was not - never follow one (same posture as
+    // core/monitor/webhooks.ts). A 3xx surfaces below as a non-2xx failure.
+    redirect: "manual",
   });
   if (!res.ok) {
     throw new Error(`Agent connector ${connector.url} responded ${res.status}`);
   }
-  const body = (await res.json()) as {
+  const raw = await readConnectorBody(res, connector.url);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = null;
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error(`Agent connector ${connector.url} did not return a JSON object`);
+  }
+  const body = parsed as {
     output?: unknown;
     toolCalls?: unknown;
     error?: unknown;
