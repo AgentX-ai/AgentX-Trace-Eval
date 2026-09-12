@@ -33,6 +33,8 @@ const MIN_POINTS_FOR_MAP = 10;
 const MAX_TRACE_BACKFILL_PER_REQUEST = 100;
 // Single-flight guard for the backfill, per project - see the block below.
 const backfillInFlight = new Set<string>();
+// Per-project scan offset into the unembedded backlog - see the dead-window escape below.
+const backfillScanOffset = new Map<string, number>();
 
 export type CoverageMapPoint = {
   x: number;
@@ -93,10 +95,15 @@ export async function getCoverageMap(
   // drains front-to-back across requests.
   const MAX_UNEMBEDDED_CONSIDERED = 500;
   const unembeddedAll = withTrace.filter(r => !hasVector(r));
-  const unembedded = unembeddedAll.slice(0, MAX_UNEMBEDDED_CONSIDERED);
-  // Rows beyond the window are pending-unknown (their traces were not fetched to check) - they
-  // count toward the "still indexing" number rather than silently vanishing from it.
-  const pendingBeyondWindow = unembeddedAll.length - unembedded.length;
+  // The considered window normally starts at the newest rows; when a whole window turns out to
+  // be dead (every trace pruned by retention - the absorbing state that used to wedge the scan
+  // permanently), scanOffset advances so the next request examines the NEXT 500 instead of
+  // re-verifying the same corpses forever.
+  const offset = Math.min(backfillScanOffset.get(db.projectId ?? "") ?? 0, Math.max(0, unembeddedAll.length - 1));
+  const unembedded = unembeddedAll.slice(offset, offset + MAX_UNEMBEDDED_CONSIDERED);
+  // Rows OUTSIDE the window are pending-unknown (their traces were not fetched to check) -
+  // both behind it and, while a mid-scan offset is active, the newer rows in front of it.
+  const pendingBeyondWindow = Math.max(0, unembeddedAll.length - unembedded.length);
 
   // Texts for point labels (and the backfill) - fetched only for rows that might be plotted
   // or backfilled this request.
@@ -111,6 +118,17 @@ export async function getCoverageMap(
   // Rows whose trace was pruned by retention can never be embedded - they are excluded from
   // the pending count instead of reading "still indexing" forever.
   const backfillable = unembedded.filter(r => inputTextOf(r).trim().length > 0);
+  if (unembedded.length > 0 && backfillable.length === 0 && pendingBeyondWindow > 0) {
+    // Everything in this window is dead - advance so later requests reach the rows behind it.
+    backfillScanOffset.set(db.projectId ?? "", offset + unembedded.length);
+  } else if (backfillable.length > 0) {
+    backfillScanOffset.set(db.projectId ?? "", 0);
+  } else {
+    // The LAST window was all-dead (or there was nothing to scan): the pass is complete.
+    // Reset to the front - the list is newest-first, so fresh unembedded rows arrive at
+    // index 0, and a pinned tail offset would skip them forever.
+    backfillScanOffset.set(db.projectId ?? "", 0);
+  }
 
   // Lazy backfill, bounded per request and single-flight per project: two Map tabs polling at
   // once must not both pay for the same 100 embeddings. The loser simply reports the rows as

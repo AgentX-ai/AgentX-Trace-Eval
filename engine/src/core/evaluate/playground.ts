@@ -1,4 +1,5 @@
 import { outboundUrlProblem } from "../shared/urlGuard.js";
+import { readConnectorBody } from "./agentConnectors.js";
 import type { Db } from "../../storage/db.js";
 import { callModelWithTools, scoreAgainstCriteria, DEFAULT_JUDGE_MODEL, DEFAULT_JUDGE_PROMPT, type ToolCallTrace } from "./judge.js";
 import { getPortabilityModel, estimateCostUSD } from "./models.js";
@@ -105,8 +106,16 @@ export async function callPlaygroundTool(tools: PlaygroundTool[], name: string, 
   if (!res.ok) {
     throw new Error(`Tool "${name}" endpoint ${tool.endpointUrl} responded ${res.status}`);
   }
-  const body = (await res.json()) as { result?: unknown };
-  if (!("result" in body)) {
+  // Capped read (2MB, streaming) - res.json() buffers the entire body before any length
+  // check could run, and AbortSignal.timeout bounds seconds, not bytes.
+  const raw = await readConnectorBody(res, tool.endpointUrl);
+  let body: { result?: unknown };
+  try {
+    body = JSON.parse(raw) as { result?: unknown };
+  } catch {
+    throw new Error(`Tool "${name}" endpoint ${tool.endpointUrl} did not return valid JSON`);
+  }
+  if (!body || typeof body !== "object" || !("result" in body)) {
     throw new Error(`Tool "${name}" endpoint ${tool.endpointUrl} response missing a "result" field`);
   }
   return body.result;
@@ -207,6 +216,10 @@ export type PlaygroundRunResult = {
   onlineEvaluatorChecks?: PlaygroundOnlineEvaluatorCheckResult[];
   judgeScorerResults?: PlaygroundJudgeScorerResult[];
   error: string | null;
+  // Set when the MODEL call succeeded but scoring did not (judge outage, deleted group) - the
+  // cell can badge it instead of rendering an unscored result indistinguishable from a judge
+  // that legitimately declined. `error` stays for model-call failures only.
+  scoringError?: string | null;
 };
 
 // Dry-run version of detect.ts's detectCustomPatterns - evaluates every requested pattern
@@ -396,6 +409,7 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
     const estimatedCostUSD = estimateCostUSD(model, completion.usage?.inputTokens ?? null, completion.usage?.outputTokens ?? null);
 
     let rating: number | null = null;
+    let scoringError: string | null = null;
     let justification: string | null = null;
     let groupMemberJudges: PlaygroundJudgeScorerResult[] | undefined;
     let groupMemberChecks: CodeScorerResult[] | undefined;
@@ -427,6 +441,7 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
           .map(m => ({ name: m.name, score: m.goodness, reasoning: m.error ? undefined : m.detail, error: m.error }));
       } else {
         justification = "Scorer group no longer exists.";
+        scoringError = "Scorer group no longer exists.";
       }
     }
     // Only score when there's a ground truth to compare against - a question with no
@@ -449,6 +464,7 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
         // A judge failure (bad key, provider outage) shouldn't blank out the real model output
         // that already succeeded - same isolation posture as runs.ts's scoreOneResult.
         justification = `Scoring failed: ${err instanceof Error ? err.message : "unknown error"}`;
+        scoringError = err instanceof Error ? err.message : "Scoring failed";
       }
     }
 
@@ -524,6 +540,7 @@ export async function runPlayground(db: Db, input: PlaygroundRunInput): Promise<
       onlineEvaluatorChecks,
       judgeScorerResults,
       error: null,
+      scoringError,
     };
   } catch (err) {
     return {

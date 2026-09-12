@@ -24,12 +24,36 @@ import {
 // that could corrupt engine-owned invariants (dedupe, id uniqueness, derived agent rows).
 export const exportRouter = asyncRouter();
 
-exportRouter.get("/", async (req: Request, res: Response) => {
-  const db = scopedDb(req);
-  const entities = [];
-  for (const entity of Object.keys(EXPORT_ENTITIES) as ExportEntity[]) {
-    entities.push({ entity, rows: await countExportRows(db, entity), path: `/api/v1/export/${entity}` });
+// `?since=` parsing shared by both handlers. Returns undefined (after answering 400) when the
+// value is present but not a date.
+function parseSince(req: Request, res: Response): Date | null | undefined {
+  if (typeof req.query.since === "string" && req.query.since) {
+    const since = new Date(req.query.since);
+    if (Number.isNaN(since.getTime())) {
+      res.status(400).json({ error: "since must be an ISO-8601 date" });
+      return undefined;
+    }
+    return since;
   }
+  return null;
+}
+
+exportRouter.get("/", async (req: Request, res: Response) => {
+  // `?since=` works on the manifest too, so an incremental pull can see what a `?since=`
+  // stream will actually contain before fetching it.
+  const since = parseSince(req, res);
+  if (since === undefined) {
+    return;
+  }
+  const db = scopedDb(req);
+  // Counts are independent reads - run them concurrently rather than one entity at a time.
+  const entities = await Promise.all(
+    (Object.keys(EXPORT_ENTITIES) as ExportEntity[]).map(async entity => ({
+      entity,
+      rows: await countExportRows(db, entity, since),
+      path: `/api/v1/export/${entity}`,
+    }))
+  );
   res.status(200).json({ generatedAt: new Date().toISOString(), format: "ndjson", entities });
 });
 
@@ -39,13 +63,9 @@ exportRouter.get("/:entity", async (req: Request, res: Response) => {
     res.status(404).json({ error: `Unknown export entity "${entity}"`, entities: Object.keys(EXPORT_ENTITIES) });
     return;
   }
-  let since: Date | null = null;
-  if (typeof req.query.since === "string" && req.query.since) {
-    since = new Date(req.query.since);
-    if (Number.isNaN(since.getTime())) {
-      res.status(400).json({ error: "since must be an ISO-8601 date" });
-      return;
-    }
+  const since = parseSince(req, res);
+  if (since === undefined) {
+    return;
   }
   const db = scopedDb(req);
   res.status(200);

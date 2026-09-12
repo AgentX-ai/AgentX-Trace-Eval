@@ -129,3 +129,12 @@ describe("GET /agent-monitoring/metrics", () => {
     expect(past.facets.agents).toEqual([]);
   });
 });
+
+it("a blank ?from= falls back to the preset window instead of an epoch-0 year scan", async () => {
+  // Number("") is 0 (finite), which used to pass the custom-range guard and turn a cleared
+  // date picker into a 366-day window on every metrics poll.
+  const res = await api("/agent-monitoring/metrics?window=24h&from=&to=1757548800000");
+  expect(res.status).toBe(200);
+  expect((res.body as { window: string }).window).not.toBe("custom");
+});
+

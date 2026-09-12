@@ -309,7 +309,8 @@ export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
 }
 
 // Second pass over a mapped batch: fold each tool-call span's one-element tool_calls summary up
-// into its ROOT ancestor within the batch - the root, specifically, because that's the one span
+// into its ROOT ancestor within the batch (or, when that top is itself a tool span, the nearest
+// non-tool ancestor) - the root, specifically, because that's the one span
 // Monitor checks (child spans are skipped by default, see routes/otlp.ts) and the one the
 // dashboard's Tool quality column and Tool Schema evidence gathering read, the same place the
 // SDK's trace_tool_call dual-writes its flat summary. This is what makes all three work for OTel
@@ -329,20 +330,29 @@ export function reconstructParentToolCalls(candidates: IngestTraceInput[]): void
     bySpanId.set(candidate.span_id, candidate);
     if (candidate.tool_calls && candidate.tool_calls.length > 0) toolSpanIds.add(candidate.span_id);
   }
+  const isToolSpan = (s: IngestTraceInput | undefined): boolean => Boolean(s?.span_id && toolSpanIds.has(s.span_id));
   for (const candidate of candidates) {
     if (!candidate.span_id || !toolSpanIds.has(candidate.span_id) || !candidate.parent_span_id) continue;
     // Walk to the topmost ancestor reachable within the batch, cycle-guarded; a missing parent
-    // ends the walk at the highest span that did arrive.
+    // ends the walk at the highest span that did arrive. Along the way, remember the NEAREST
+    // non-tool ancestor: when the topmost reachable ancestor is itself a tool span (a tool
+    // nested under another tool at the top of what arrived), the call folds there instead of
+    // nowhere - previously such a span's call vanished from the flat summary entirely.
     let top = bySpanId.get(candidate.parent_span_id);
+    let nearestNonTool = isToolSpan(top) ? undefined : top;
     const visited = new Set<string>([candidate.span_id]);
     while (top?.parent_span_id && top.span_id && !visited.has(top.span_id)) {
       visited.add(top.span_id);
       const next = bySpanId.get(top.parent_span_id);
       if (!next) break;
       top = next;
+      if (!nearestNonTool && !isToolSpan(top)) nearestNonTool = top;
     }
-    if (!top || top === candidate) continue;
-    if (top.span_id && toolSpanIds.has(top.span_id)) continue;
-    top.tool_calls = [...(top.tool_calls ?? []), ...candidate.tool_calls!.map(call => ({ ...call }))];
+    // Never fold one tool span into another: the topmost non-tool target wins (the span Monitor
+    // checks), falling back to the nearest non-tool ancestor when the top is a tool span. A
+    // chain that is tool spans all the way up folds nowhere.
+    const target = isToolSpan(top) ? nearestNonTool : top;
+    if (!target || target === candidate) continue;
+    target.tool_calls = [...(target.tool_calls ?? []), ...candidate.tool_calls!.map(call => ({ ...call }))];
   }
 }

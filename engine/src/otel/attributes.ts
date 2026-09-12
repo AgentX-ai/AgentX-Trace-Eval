@@ -49,7 +49,11 @@ export function anyValueToJs(av: WireAnyValue | undefined): unknown {
 }
 
 export function keyValueListToRecord(kvs: WireKeyValue[] | undefined): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
+  // Null prototype: attribute keys are caller-controlled wire data, and on a plain object a key
+  // named "__proto__" would not become an own property - it would silently rewire the record's
+  // prototype (or be dropped), shadowing every later lookup. With no prototype at all, every
+  // key is just a key.
+  const out: Record<string, unknown> = Object.create(null);
   for (const kv of kvs ?? []) {
     if (typeof kv?.key === "string") {
       out[kv.key] = anyValueToJs(kv.value);

@@ -49,11 +49,18 @@ function buildSpanLine(span: SpanWire, index: number, includeToolLines = true): 
   const output = span.output !== undefined ? truncate(extractText(span.output), MAX_TEXT_PER_SPAN) : "";
   if (input) parts.push(`  input: ${input}`);
   // toolContext="none": the judge sees the conversation, not the plumbing.
-  if (includeToolLines && Array.isArray(span.toolCalls) && span.toolCalls.length > 0) {
-    const names = span.toolCalls
-      .map(t => (t && typeof t === "object" && "name" in t ? String((t as { name: unknown }).name) : "unknown"))
-      .join(", ");
-    parts.push(`  tools called: ${names}`);
+  if (includeToolLines && Array.isArray(span.toolCalls)) {
+    // The ingest cap's {"agentx.truncated": true} marker is bookkeeping, not a call - rendered
+    // as "unknown" it invited "called an unknown tool" findings from the session judge.
+    const realCalls = span.toolCalls.filter(
+      t => !(t && typeof t === "object" && (t as Record<string, unknown>)["agentx.truncated"] === true)
+    );
+    if (realCalls.length > 0) {
+      const names = realCalls
+        .map(t => (t && typeof t === "object" && "name" in t ? String((t as { name: unknown }).name) : "unknown"))
+        .join(", ");
+      parts.push(`  tools called: ${names}`);
+    }
   }
   if (output) parts.push(`  output: ${output}`);
   if (span.error) parts.push(`  ERROR: ${truncate(span.error, MAX_TEXT_PER_SPAN)}`);

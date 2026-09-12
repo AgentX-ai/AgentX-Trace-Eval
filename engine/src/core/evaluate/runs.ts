@@ -514,7 +514,10 @@ async function scoreOneResult(
   // rides the existing storage and results UI as one more named scorer row.
   const expectedTrajectory = mainQ?.expectedTrajectory;
   const expectedTools = (expectedTrajectory?.tools ?? []).map(t => String(t).trim()).filter(Boolean);
-  if (expectedTools.length > 0) {
+  // Presence of the block is the assertion, not a non-empty list: an explicit EMPTY tools
+  // list means "this case calls no tools" and must produce a scorer row that fails when the
+  // trace called any - silently skipping it made the SDK's expected_tools=[] a false promise.
+  if (expectedTrajectory && Array.isArray(expectedTrajectory.tools)) {
     const mode = (["strict", "unordered", "subset", "superset"] as const).includes(
       expectedTrajectory?.mode as TrajectoryMatchMode
     )
@@ -528,6 +531,9 @@ async function scoreOneResult(
       });
     } else {
       const actualSequence = (await extractTraceToolSequence(db, item.traceId)) ?? [];
+      // matchTrajectory is correct for an empty expected list in every mode - including
+      // superset, where it is vacuously true (an explicitly-unconstrained assertion). The old
+      // special case here failed superset whenever the agent called any tool at all.
       const match = matchTrajectory(expectedTools, actualSequence, mode);
       codeScorerResults.push({
         name: `Trajectory match (${mode})`,

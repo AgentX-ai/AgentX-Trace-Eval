@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { isMultiTenant } from "../../auth/mode.js";
 import { currentTenancy } from "../../auth/requestContext.js";
+import { maskSecret } from "../shared/maskSecret.js";
 
 // LLM provider keys. Single-tenant modes use one instance-wide row ("default"). Multi-tenant
 // (AGENTX_MULTI_TENANT=true, the cloud posture) resolves a per-organization row instead -
@@ -38,6 +39,16 @@ export async function consolidateAppSettingsSingleton(db: Db): Promise<void> {
       : await db.db.select().from(db.schema.appSettings)
   ) as Array<Record<string, unknown> & { id: string }>;
   const pretenders = rows.filter(r => r.id !== "default" && !r.id.startsWith("org:"));
+  // A legacy shared "org:none" sentinel row (written before orgless writes were refused) is
+  // unowned cross-tenant state - never merged anywhere, only removed.
+  const orgNone = rows.find(r => r.id === "org:none");
+  if (orgNone) {
+    if (db.kind === "sqlite") {
+      db.db.delete(db.schema.appSettings).where(eq(db.schema.appSettings.id, "org:none")).run();
+    } else {
+      await db.db.delete(db.schema.appSettings).where(eq(db.schema.appSettings.id, "org:none"));
+    }
+  }
   if (pretenders.length === 0) return;
   const existingDefault = rows.find(r => r.id === "default");
   const FLAGS = [
@@ -48,6 +59,11 @@ export async function consolidateAppSettingsSingleton(db: Db): Promise<void> {
     "openaiApiKey",
     "anthropicApiKey",
     "geminiApiKey",
+    // Every key/selection column must be here: consolidation DELETES the pretender rows, so a
+    // column missing from this list is silently destroyed (openrouter keys and the platform
+    // model were lost exactly this way before these two lines existed).
+    "openrouterApiKey",
+    "platformModel",
   ] as const;
   const merged: Record<string, unknown> = { ...(existingDefault ?? { id: "default", updatedAt: new Date() }) };
   for (const pretender of pretenders) {
@@ -107,6 +123,16 @@ export async function getAppSettings(db: Db): Promise<AppSettings> {
 
 // Empty string is treated the same as clearing the key (not stored as "", which a later
 // `if (key)` truthiness check would still treat as falsy-but-present - nicer to just store null).
+// Thrown when a multi-tenant request with no organization tries to WRITE provider keys: the
+// read path fails closed (the "org:none" sentinel matches no real row), but a write used to
+// CREATE that sentinel row - one shared key row that every orgless tenant then read and
+// billed against, leaking the first writer's key to the rest. Routes map this to a 409.
+export class OrglessSettingsWriteError extends Error {
+  constructor() {
+    super("Claim this project into an organization before configuring LLM keys.");
+  }
+}
+
 export async function updateAppSettings(
   db: Db,
   patch: {
@@ -117,12 +143,21 @@ export async function updateAppSettings(
     platformModel?: string | null;
   }
 ): Promise<AppSettings> {
+  if (isMultiTenant() && !currentTenancy().organizationId) {
+    throw new OrglessSettingsWriteError();
+  }
   const existing = await getRow(db);
+  // The GET returns keys as maskSecret(key); the settings form round-trips the whole object,
+  // so an untouched field arrives as that exact masked string. Storing it would replace the
+  // real key with its 11-character display form - every judge call then 401s at the provider
+  // while "configured" still reads true. An echo of the CURRENT key's mask means "unchanged".
+  const keepIfMaskedEcho = (incoming: string | null | undefined, stored: string | null | undefined) =>
+    incoming && stored && incoming === maskSecret(stored) ? stored : incoming || null;
   const next: AppSettings = {
-    openaiApiKey: "openaiApiKey" in patch ? patch.openaiApiKey || null : (existing?.openaiApiKey ?? null),
-    anthropicApiKey: "anthropicApiKey" in patch ? patch.anthropicApiKey || null : (existing?.anthropicApiKey ?? null),
-    geminiApiKey: "geminiApiKey" in patch ? patch.geminiApiKey || null : (existing?.geminiApiKey ?? null),
-    openrouterApiKey: "openrouterApiKey" in patch ? patch.openrouterApiKey || null : (existing?.openrouterApiKey ?? null),
+    openaiApiKey: "openaiApiKey" in patch ? keepIfMaskedEcho(patch.openaiApiKey, existing?.openaiApiKey) : (existing?.openaiApiKey ?? null),
+    anthropicApiKey: "anthropicApiKey" in patch ? keepIfMaskedEcho(patch.anthropicApiKey, existing?.anthropicApiKey) : (existing?.anthropicApiKey ?? null),
+    geminiApiKey: "geminiApiKey" in patch ? keepIfMaskedEcho(patch.geminiApiKey, existing?.geminiApiKey) : (existing?.geminiApiKey ?? null),
+    openrouterApiKey: "openrouterApiKey" in patch ? keepIfMaskedEcho(patch.openrouterApiKey, existing?.openrouterApiKey) : (existing?.openrouterApiKey ?? null),
     platformModel: "platformModel" in patch ? patch.platformModel || null : (existing?.platformModel ?? null),
   };
   const row = { id: settingsRowId(), ...next, updatedAt: new Date() };

@@ -1,4 +1,6 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, isNull, sql } from "drizzle-orm";
+import { traceStoreFor } from "../trace/store/index.js";
+import { countJudgeSpendSince } from "../monitor/events.js";
 import { nanoid } from "nanoid";
 import { getDb, type Db } from "../../storage/db.js";
 import { currentTenancy } from "../../auth/requestContext.js";
@@ -20,13 +22,19 @@ export class QuotaExceededError extends Error {
 }
 
 function dayStart(): Date {
+  // UTC, matching the online-judge budget's boundary (onlineEvaluators.ts) - two daily caps
+  // releasing hours apart on non-UTC hosts read as one being stuck.
   const now = new Date();
-  now.setHours(0, 0, 0, 0);
-  return now;
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 }
 
 function judgeQuota(): number | null {
   const raw = Number(process.env.AGENTX_QUOTA_JUDGE_CALLS_PER_DAY || 0);
+  return raw > 0 ? raw : null;
+}
+
+function onlineJudgeQuota(): number | null {
+  const raw = Number(process.env.AGENTX_QUOTA_ONLINE_JUDGE_CALLS_PER_DAY || 0);
   return raw > 0 ? raw : null;
 }
 
@@ -35,10 +43,18 @@ export function traceQuota(): number | null {
   return raw > 0 ? raw : null;
 }
 
-async function countJudgeCallsToday(db: Db, organizationId: string | null): Promise<number> {
+// `scope` null = whole instance (single-tenant); otherwise the count is confined to that
+// organization's rows - and an orgless multi-tenant request (a bare project key with no
+// organization) counts only the other orgless rows via IS NULL, rather than omitting the
+// predicate and metering one project's traffic against every tenant's combined spend.
+async function countJudgeCallsToday(db: Db, scope: { organizationId: string | null } | null): Promise<number> {
   const conditions = [eq(db.schema.usageEvents.kind, "judge_call"), gte(db.schema.usageEvents.createdAt, dayStart())];
-  if (organizationId) {
-    conditions.push(eq(db.schema.usageEvents.organizationId, organizationId));
+  if (scope) {
+    conditions.push(
+      scope.organizationId
+        ? eq(db.schema.usageEvents.organizationId, scope.organizationId)
+        : isNull(db.schema.usageEvents.organizationId)
+    );
   }
   const cond = and(...conditions);
   const rows =
@@ -72,12 +88,15 @@ export async function checkAndRecordJudgeCall(model: string | null): Promise<voi
   const { organizationId = null, projectId = null } = currentTenancy();
   const quota = judgeQuota();
   if (quota !== null) {
-    const scopeOrg = isMultiTenant() ? organizationId : null;
-    const used = await countJudgeCallsToday(db, scopeOrg);
+    const multiTenant = isMultiTenant();
+    const used = await countJudgeCallsToday(db, multiTenant ? { organizationId } : null);
     if (used >= quota) {
+      // Orgless multi-tenant requests are counted against the orgless bucket, not the whole
+      // instance - so the message says "project", not "organization".
+      const scopeNote = multiTenant ? (organizationId ? " for this organization" : " for this project") : "";
       throw new QuotaExceededError(
-        `Daily judge-call quota reached (${quota}/day${isMultiTenant() ? " for this organization" : ""}). ` +
-          "Quota resets at midnight; raise AGENTX_QUOTA_JUDGE_CALLS_PER_DAY to change the ceiling."
+        `Daily judge-call quota reached (${quota}/day${scopeNote}). ` +
+          "Quota resets at midnight UTC; raise AGENTX_QUOTA_JUDGE_CALLS_PER_DAY to change the ceiling."
       );
     }
   }
@@ -97,6 +116,38 @@ export async function checkAndRecordJudgeCall(model: string | null): Promise<voi
 }
 
 // Admin overview helper: per-org judge calls in the trailing 24h.
+// The read-only "Usage & limits" wire (Platform Settings card + GET /agent-monitoring/usage):
+// today's spend against each daily cap, computed by the SAME counters the enforcement paths
+// seed from - the card can never disagree with the thing that actually says no. Limits are
+// env-configured (unset = unlimited = null); editing them stays a deployment decision on
+// purpose - these are cost-control levers, not per-user settings.
+export type UsageAndLimits = {
+  day: string;
+  resetsAt: string;
+  traces: { used: number; limit: number | null };
+  onlineJudgeCalls: { used: number; limit: number | null };
+  judgeCalls: { used: number; limit: number | null };
+};
+
+export async function getUsageAndLimits(db: Db): Promise<UsageAndLimits> {
+  const start = dayStart();
+  const resetsAt = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  const multiTenant = isMultiTenant();
+  const { organizationId = null } = currentTenancy();
+  const [tracesUsed, onlineUsed, judgeUsed] = await Promise.all([
+    traceStoreFor(db).countRoots(start),
+    countJudgeSpendSince(db, start),
+    countJudgeCallsToday(db, multiTenant ? { organizationId } : null),
+  ]);
+  return {
+    day: start.toISOString().slice(0, 10),
+    resetsAt: resetsAt.toISOString(),
+    traces: { used: tracesUsed, limit: traceQuota() },
+    onlineJudgeCalls: { used: onlineUsed, limit: onlineJudgeQuota() },
+    judgeCalls: { used: judgeUsed, limit: judgeQuota() },
+  };
+}
+
 export async function judgeCallsSince(db: Db, since: Date): Promise<Map<string | null, number>> {
   const cond = and(eq(db.schema.usageEvents.kind, "judge_call"), gte(db.schema.usageEvents.createdAt, since));
   // Grouped count in SQL: an instance doing millions of judge calls a day must not ship every

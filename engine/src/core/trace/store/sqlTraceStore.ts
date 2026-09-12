@@ -141,8 +141,8 @@ export class SqlTraceStore implements TraceStore {
     // arbitrary subset - callers sort again, but they can only sort what they received.
     const rows =
       db.kind === "sqlite"
-        ? db.db.select().from(db.schema.traces).where(cond).orderBy(asc(db.schema.traces.createdAt)).limit(5000).all()
-        : await db.db.select().from(db.schema.traces).where(cond).orderBy(asc(db.schema.traces.createdAt)).limit(5000);
+        ? db.db.select().from(db.schema.traces).where(cond).orderBy(asc(db.schema.traces.createdAt), asc(db.schema.traces.startedAt)).limit(5000).all()
+        : await db.db.select().from(db.schema.traces).where(cond).orderBy(asc(db.schema.traces.createdAt), asc(db.schema.traces.startedAt)).limit(5000);
     return rows as TraceRow[];
   }
 

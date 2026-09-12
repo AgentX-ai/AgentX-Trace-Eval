@@ -515,3 +515,27 @@ describe("two grading modes: reference-centric rubrics are offline-only", () => 
     expect(wire.online).toBeNull();
   });
 });
+
+describe("legacy online-evaluator route validation", () => {
+  it("rejects out-of-bounds online fields instead of passing bare casts to the sweep", async () => {
+    // Regression: sampleRate "abc", severity "urgent", idleSeconds -5 all previously reached
+    // createOnlineEvaluator unvalidated - a sub-minute idle or NaN sample silently broke the
+    // sweep's spend controls.
+    const bads = [
+      { sampleRate: "abc" },
+      { severity: "urgent" },
+      { idleSeconds: -5 },
+      { idleSeconds: 1.5 },
+      { alertThreshold: 42 },
+      { scope: "conversation" },
+    ];
+    for (const bad of bads) {
+      const res = await api(
+        "/agent-monitoring/online-evaluators",
+        postJson({ name: "bad", evaluationSettingsId: "nope", ...bad })
+      );
+      expect(res.status, JSON.stringify(bad)).toBe(400);
+    }
+  });
+});
+

@@ -138,7 +138,11 @@ export async function extractTraceToolSequence(db: Db, traceId: string): Promise
   const root = (await traceStoreFor(db).getById(traceId)) as { toolCalls: unknown } | undefined;
   if (!root) return null;
   if (!Array.isArray(root.toolCalls)) return [];
-  return (root.toolCalls as { name?: unknown }[]).map(tc => String(tc.name ?? "unknown"));
+  // The ingest cap's {"agentx.truncated": true} marker is bookkeeping, not a call - mapped to
+  // "unknown" it failed every subset/strict trajectory check on large traces.
+  return (root.toolCalls as Record<string, unknown>[])
+    .filter(tc => tc["agentx.truncated"] !== true)
+    .map(tc => String(tc.name ?? "unknown"));
 }
 
 function normalizeNames(names: string[]): string[] {

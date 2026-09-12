@@ -689,7 +689,9 @@ export async function validateJudgeTuning(
   if (scoredDisagreements.length === 0) {
     return {
       threshold,
-      disagreements: { total: disagreements.length, fixed: 0 },
+      // Same denominator as the success path below (scored disagreements, not raw ones) so the
+      // two response shapes agree on what "total" counts.
+      disagreements: { total: scoredDisagreements.length, fixed: 0 },
       controls: { total: scoredControls.length, preserved: scoredControls.filter(c => c.candidateAgrees).length },
       netAgreementGain: 0,
       verdict: "insufficient",

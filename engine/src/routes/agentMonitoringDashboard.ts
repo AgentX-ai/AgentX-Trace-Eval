@@ -1,4 +1,5 @@
 import rateLimitMiddleware from "express-rate-limit";
+import { getUsageAndLimits } from "../core/shared/usage.js";
 import type { Request, Response } from "express";
 import { asyncRouter } from "./asyncRouter.js";
 import { getDb, type Db } from "../storage/db.js";
@@ -101,7 +102,7 @@ import {
   deletePortabilityModel,
   testCustomModelConnection,
 } from "../core/evaluate/models.js";
-import { getAppSettings, updateAppSettings } from "../core/settings/appSettings.js";
+import { OrglessSettingsWriteError, getAppSettings, updateAppSettings } from "../core/settings/appSettings.js";
 import { getModelCatalog } from "../core/settings/modelCatalog.js";
 import { DEFAULT_JUDGE_MODEL } from "../core/evaluate/judge.js";
 import {
@@ -699,6 +700,13 @@ agentMonitoringDashboardRouter.get("/sessions", async (req: Request, res: Respon
 // Manual trigger for the idle-session sweep (core/monitor/sessionSweep.ts) - the production path
 // is the 60s interval started at boot; this exists for tests and demos that shouldn't have to
 // wait a tick.
+// Read-only usage vs. the daily caps (Platform Settings' "Usage & limits" card). Computed by
+// the same counters the enforcement paths seed from - see core/shared/usage.ts. Limits are
+// env-configured and deliberately NOT writable here.
+agentMonitoringDashboardRouter.get("/usage", async (req: Request, res: Response) => {
+  res.status(200).json(await getUsageAndLimits(scopedDb(req)));
+});
+
 agentMonitoringDashboardRouter.post("/session-sweep/run", async (req: Request, res: Response) => {
   // Scoped to the caller's project (a key must not spend other tenants' budgets) and
   // serialized - a concurrent sweep returns { judged: 0, skipped: true } instead of
@@ -741,6 +749,22 @@ agentMonitoringDashboardRouter.get("/online-evaluators", async (req: Request, re
   res.status(200).json({ evaluators });
 });
 
+// The legacy online-evaluator routes write the same row the judge-scorer online section does,
+// and were the one entry point still passing sampleRate/severity/idleSeconds through as bare
+// casts - idleSeconds: 1 (or "abc" as a sampleRate) went straight to the sweep. Same bounds as
+// judgeScorerOnlineSchema; kept separate because this body mixes in name/evaluationSettingsId.
+const onlineEvaluatorBodySchema = z
+  .object({
+    sampleRate: z.number().min(0).max(1).optional(),
+    scopeMode: z.enum(["all", "selected"]).optional(),
+    enabled: z.boolean().optional(),
+    alertThreshold: z.number().min(0).max(10).nullable().optional(),
+    severity: z.enum(["low", "medium", "high", "critical"]).optional(),
+    scope: z.enum(["trace", "session"]).optional(),
+    idleSeconds: z.number().int().min(0).max(86400).optional(),
+  })
+  .strip();
+
 agentMonitoringDashboardRouter.post("/online-evaluators", async (req: Request, res: Response) => {
   const body = req.body ?? {};
   if (typeof body.name !== "string" || !body.name.trim()) {
@@ -751,18 +775,23 @@ agentMonitoringDashboardRouter.post("/online-evaluators", async (req: Request, r
     res.status(400).json({ error: "evaluationSettingsId is required" });
     return;
   }
+  const parsedOnline = onlineEvaluatorBodySchema.safeParse(body);
+  if (!parsedOnline.success) {
+    res.status(400).json({ error: parsedOnline.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ") });
+    return;
+  }
   try {
     const evaluator = await createOnlineEvaluator(scopedDb(req), {
       name: body.name,
       evaluationSettingsId: body.evaluationSettingsId,
-      sampleRate: body.sampleRate,
-      scopeMode: body.scopeMode,
+      sampleRate: parsedOnline.data.sampleRate,
+      scopeMode: parsedOnline.data.scopeMode,
       agentIds: await resolveAgentIds(scopedDb(req), body.agentIds),
-      enabled: body.enabled,
-      alertThreshold: body.alertThreshold,
-      severity: body.severity,
-      scope: typeof body.scope === "string" ? body.scope : undefined,
-      idleSeconds: typeof body.idleSeconds === "number" ? body.idleSeconds : undefined,
+      enabled: parsedOnline.data.enabled,
+      alertThreshold: parsedOnline.data.alertThreshold,
+      severity: parsedOnline.data.severity,
+      scope: parsedOnline.data.scope,
+      idleSeconds: parsedOnline.data.idleSeconds,
     });
     res.status(201).json({ evaluator });
   } catch (err) {
@@ -784,18 +813,23 @@ agentMonitoringDashboardRouter.put("/online-evaluators/:evaluatorId", async (req
     res.status(400).json({ error: "evaluationSettingsId must be a non-empty string" });
     return;
   }
+  const parsedOnline = onlineEvaluatorBodySchema.safeParse(body);
+  if (!parsedOnline.success) {
+    res.status(400).json({ error: parsedOnline.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ") });
+    return;
+  }
   try {
     const evaluator = await updateOnlineEvaluator(scopedDb(req), req.params.evaluatorId!, {
       name: body.name,
       evaluationSettingsId: body.evaluationSettingsId,
-      sampleRate: body.sampleRate,
-      scopeMode: body.scopeMode,
+      sampleRate: parsedOnline.data.sampleRate,
+      scopeMode: parsedOnline.data.scopeMode,
       agentIds: await resolveAgentIds(scopedDb(req), body.agentIds),
-      enabled: body.enabled,
-      alertThreshold: body.alertThreshold,
-      severity: body.severity,
-      scope: typeof body.scope === "string" ? body.scope : undefined,
-      idleSeconds: typeof body.idleSeconds === "number" ? body.idleSeconds : undefined,
+      enabled: parsedOnline.data.enabled,
+      alertThreshold: parsedOnline.data.alertThreshold,
+      severity: parsedOnline.data.severity,
+      scope: parsedOnline.data.scope,
+      idleSeconds: parsedOnline.data.idleSeconds,
     });
     if (!evaluator) {
       res.status(404).json({ error: "Online evaluator not found" });
@@ -832,12 +866,33 @@ agentMonitoringDashboardRouter.delete("/online-evaluators/:evaluatorId", async (
 // client.monitor.judge_scorers use. camelCase only, per the project's wire convention.
 // ---------------------------------------------------------------------------
 
-function parseOnlineSection(body: Record<string, unknown>): { ok: true; online: JudgeScorerOnlineInput | null | undefined } | { ok: false } {
+// Validated like the scorer-group online schema below - a bare cast let idleSeconds: 1 (or
+// 10000000) straight through to the sweep, re-judging conversations after a second of quiet
+// on the operator's own LLM key.
+const judgeScorerOnlineSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    sampleRate: z.number().min(0).max(1).optional(),
+    scopeMode: z.enum(["all", "selected"]).optional(),
+    agentIds: z.array(z.string().min(1).max(200)).max(200).optional(),
+    alertThreshold: z.number().min(0).max(10).nullable().optional(),
+    severity: z.enum(["low", "medium", "high", "critical"]).optional(),
+    scope: z.enum(["trace", "session"]).optional(),
+    // Floor 0, matching the scorer-group schema: idleSeconds delays the FIRST judging after
+    // quiet, and the freshness check already guarantees at most one judging per new activity -
+    // 0 means "score as soon as the sweep sees it idle", the demo/test posture, not a flood.
+    idleSeconds: z.number().int().min(0).max(86400).optional(),
+  })
+  .strip();
+
+function parseOnlineSection(body: Record<string, unknown>): { ok: true; online: JudgeScorerOnlineInput | null | undefined } | { ok: false; error?: string } {
   const online = body.online;
   if (online === undefined) return { ok: true, online: undefined };
   if (online === null) return { ok: true, online: null };
   if (typeof online !== "object" || Array.isArray(online)) return { ok: false };
-  return { ok: true, online: online as JudgeScorerOnlineInput };
+  const parsed = judgeScorerOnlineSchema.safeParse(online);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message };
+  return { ok: true, online: parsed.data as JudgeScorerOnlineInput };
 }
 
 // ---- Scorer groups (core/monitor/scorerGroups.ts) --------------------------------------------
@@ -1133,7 +1188,10 @@ agentMonitoringDashboardRouter.delete(
 
 // Generates the report - one real LLM call over the group's evidence, so this is explicit and
 // billed, never implicit.
-const generateReportSchema = z.object({ model: z.string().min(1).optional() }).strict();
+// .strip(), not .strict(): validateBody's own contract is that unknown keys are stripped so
+// legacy/pinning clients keep working - the SDK sends workspaceId on every body it posts, and
+// this was the one schema in the codebase that hard-400ed on it.
+const generateReportSchema = z.object({ model: z.string().min(1).optional() }).strip();
 
 agentMonitoringDashboardRouter.post(
   "/improvement-groups/:id/report",
@@ -1844,7 +1902,12 @@ agentMonitoringDashboardRouter.post("/portability/models", async (req: Request, 
     res.status(409).json({ error: `A model with id "${body.id}" already exists` });
     return;
   }
-  const model = await createPortabilityModel(scopedDb(req), {
+  // Model ids are one global namespace (primary key across tenants), but the list above is
+  // tenant-filtered - a cross-tenant clash used to die on the raw PK violation as a 500 that
+  // also confirmed the id existed elsewhere. Catch it and answer the same neutral 409.
+  let model;
+  try {
+    model = await createPortabilityModel(scopedDb(req), {
     id: body.id,
     provider: body.provider,
     label: body.label,
@@ -1856,6 +1919,13 @@ agentMonitoringDashboardRouter.post("/portability/models", async (req: Request, 
     baseUrl: typeof body.baseUrl === "string" ? body.baseUrl : null,
     apiKey: typeof body.apiKey === "string" ? body.apiKey : null,
   });
+  } catch (err) {
+    if (err instanceof Error && /unique|constraint|duplicate/i.test(err.message)) {
+      res.status(409).json({ error: `A model with id "${body.id}" already exists` });
+      return;
+    }
+    throw err;
+  }
   res.status(201).json({ model });
 });
 
@@ -2038,7 +2108,16 @@ agentMonitoringDashboardRouter.put("/settings/llm-keys", async (req: Request, re
   if ("openrouterApiKey" in body) {
     patch.openrouterApiKey = typeof body.openrouterApiKey === "string" ? body.openrouterApiKey : null;
   }
-  const settings = await updateAppSettings(getDb(), patch);
+  let settings;
+  try {
+    settings = await updateAppSettings(getDb(), patch);
+  } catch (err) {
+    if (err instanceof OrglessSettingsWriteError) {
+      res.status(409).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
   res.status(200).json({
     llm: {
       openai: { configured: !!settings.openaiApiKey, masked: settings.openaiApiKey ? maskSecret(settings.openaiApiKey) : null },
