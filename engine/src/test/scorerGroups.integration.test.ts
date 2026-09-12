@@ -246,6 +246,33 @@ describe("scorer groups", () => {
     expect((after.body as { error: string }).error).toContain("scorer group");
   });
 
+  it("a grandfathered judge cannot ride an online-only PUT past the requiresExpected guard", async () => {
+    // A reference-centric judge (requiresExpected) is fine in an OFFLINE group; the PUT that
+    // newly enables live scoring must validate the STORED members, not just the body.
+    const refJudge = await api(
+      "/agent-monitoring/judge-scorers",
+      postJson({
+        name: "Reference-centric",
+        judge: { evaluationCriteria: "Judge with NICE.", judgeModel: "stub-judge-g", requiresExpected: true },
+      })
+    );
+    expect(refJudge.status).toBe(201);
+    const refId = (refJudge.body as { judgeScorer: { _id: string } }).judgeScorer._id;
+    const group = await api(
+      "/agent-monitoring/scorer-groups",
+      postJson({ name: "Offline ref group", members: [{ kind: "judge", refId, weight: 1 }] })
+    );
+    expect(group.status).toBe(201);
+    const groupId = (group.body as { scorerGroup: { _id: string } }).scorerGroup._id;
+
+    const goLive = await api(`/agent-monitoring/scorer-groups/${groupId}`, {
+      ...postJson({ online: { enabled: true, sampleRate: 1, alertThreshold: 5, severity: "high" } }),
+      method: "PUT",
+    });
+    expect(goLive.status).toBe(400);
+    expect((goLive.body as { error: string }).error).toContain("requiresExpected");
+  });
+
   it("grades a dataset run: weighted blend in the rating column, member verdicts per row", async () => {
     const kindId = await makeJudge("Kind judge", "KINDMARK"); // stub rates 8
     const harshId = await makeJudge("Harsh judge", "HARSHMARK"); // stub rates 2

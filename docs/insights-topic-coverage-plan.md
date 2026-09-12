@@ -1,7 +1,8 @@
 # Insights: production topic coverage of evaluation datasets
 
-**Status:** Phase 0 is implemented and shipped, plus one piece of Phase 1 pulled forward.
-Phases 1-3 below are otherwise still design.
+**Status:** Phase 0 is implemented and shipped, plus two pieces of Phase 1 pulled forward:
+topic merging (§3.1) and facility-location depth coverage with its count fallback and
+`coverageBasis` (§4.2). Phases 1-3 below are otherwise still design.
 
 | Shipped | Where |
 |---|---|
@@ -10,9 +11,9 @@ Phases 1-3 below are otherwise still design.
 | The probe (single + batch) | `engine/src/core/insights/probe.ts` |
 | Routes + wire contract | `engine/src/routes/insights.ts`, `engine/src/contract/wire.ts` |
 | Tests | `engine/src/test/insights.integration.test.ts`, `contract.integration.test.ts` |
-| **Insights tab** | `AgentX-eval-front`, branch `claude/insights-dataset-topic-coverage-mo44s9` |
+| **Insights tab** | `AgentX-eval-front/src/pages/Governance/tabs/InsightsTab.tsx` + `tabs/insights/*` |
 
-**Four things changed during implementation.** This document has been corrected rather than left
+**Seven things changed during implementation.** This document has been corrected rather than left
 describing something the code does not do:
 
 1. **Coverage is the facility-location value alone**, never blended with the case count. The first
@@ -27,6 +28,15 @@ describing something the code does not do:
    every classified trace was older than seven days, so the screen read "nothing classified yet"
    while the 30d window was full. Those charts are recent health; this is accumulated test debt
    measured against a *sampled* classifier.
+5. **Facility-location depth coverage shipped in Phase 0**, not Phase 1: per-topic depth with the
+   count-based fallback and `coverageBasis` labelling which basis produced each number. §10's
+   phasing now says so.
+6. **Compute is synchronous per request**, not the planned background sweep + snapshot reads. The
+   UMAP map was split onto its own route (`GET /insights/coverage/map`) so its cost is only paid
+   when the Map tab asks; the sweep + snapshot machinery is re-scoped as future work. See §9.
+7. **The route table grew and shrank**: `GET /insights/coverage/map` and
+   `POST /insights/topics/curate` shipped; `GET /insights/topics/:id` is superseded, with the
+   detail panel served inline from `/coverage`.
 
 **Validated against a real install** (340 classified traces, 54 datasets), which found (3) and (4)
 - neither was reachable from the unit tests. It reports 43% traffic-weighted / 6 of 35 topics /
@@ -584,19 +594,23 @@ engine/src/core/insights/
   identity, §4.3), adequacy factor weights, coverage thresholds. Weights must be inspectable and
   editable, or the composite score is a black box nobody trusts.
 
-**Compute posture.** Clustering + coverage is far too heavy for a request. Follow
-`improvementSweep.ts`: a leased background sweep (`sweepLease.ts`) on a schedule plus an
-explicit `POST /insights/recompute`. Reads serve the last snapshot. Follow
-`attention.ts` exactly for the cache-miss case: return what we have immediately, compute
-in the background, let the next poll pick it up. Never block a dashboard load on an LLM
-or a UMAP fit.
+**Compute posture.** *(As-built, corrected from the original plan.)* Coverage is computed
+**synchronously per request** - at current scale it fits inside a request, and a live number
+beats a stale snapshot. The one genuinely heavy piece, the UMAP fit, was split onto its own
+route (`GET /insights/coverage/map`) so its cost is only paid when the Map tab asks for it,
+never on the coverage table load. The originally planned posture - a leased background sweep
+per `improvementSweep.ts`/`sweepLease.ts` with reads serving the last snapshot, and the
+`attention.ts` return-stale-compute-behind pattern - is re-scoped as future work, to pick up
+when scale demands it.
 
 **Routes** - `engine/src/routes/insights.ts`:
 
 | Route | Returns |
 |---|---|
 | `GET /insights/coverage` | three headline numbers, topic list w/ state, degraded flag, unknown-mass estimate |
-| `GET /insights/topics/:id` | the detail panel: traffic share, cases vs target, coverage, risk components, sub-modes, suggested action |
+| `GET /insights/coverage/map` | *(shipped)* the joint UMAP projection for the Map tab - split out so its cost is only paid when asked for |
+| `POST /insights/topics/curate` | *(shipped)* generate candidate cases from a topic's own traces through the standard curation path |
+| `GET /insights/topics/:id` | *(superseded)* the detail panel is served inline from `/coverage` instead |
 | `POST /insights/topics/:id/brief` | the generation brief (selected traces, failure evidence, style anchors) |
 | `POST /insights/topics/:id/generate` | topic-grounded synthesis -> preview cases (no write) |
 | `POST /insights/probe` | calibrated verdict for one query: nearest cases, topic, traffic, adequacy |
@@ -610,14 +624,16 @@ wire shape needs to be settled in this plan's review, before UI work starts.
 ## 10. Phasing
 
 **Phase 0 - the screen, and the probe.** *(shipped, engine + dashboard)* Case embedding cache, string-grouped topics from
-existing `intent` values, count-based coverage, three headline tiles, topic map states,
-per-topic panel - plus the single-query and batch **probe** (§7), which needs none of the
+existing `intent` values, facility-location depth coverage (with the count fallback and
+`coverageBasis`), three headline tiles, topic map states, per-topic panel, the coverage
+**Map** tab - plus the single-query and batch **probe** (§7), which needs none of the
 topic machinery and is the fastest way to make the idea tangible. Ships the mockup. No
 clustering, no sweep. Proves the concept and settles the wire contract.
 
-**Phase 1 - real topics.** *(synonym merging shipped early - see §3.1; the rest outstanding.)*
+**Phase 1 - real topics.** *(synonym merging and facility-location coverage shipped early -
+see §3.1 and §4.2; the rest outstanding.)*
 Consolidation sweep, centroids, soft assignment,
-facility-location coverage, sub-mode analysis, and the full attribute row (§4.3) including
+sub-mode analysis, and the full attribute row (§4.3) including
 unique-session weighting. The numbers become defensible.
 
 **Phase 1.5 - adequacy.** `declaredRisk` and its edit route, ground-truth confidence, the

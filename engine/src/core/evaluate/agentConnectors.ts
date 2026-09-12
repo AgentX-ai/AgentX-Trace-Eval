@@ -46,12 +46,25 @@ function toWire(row: AgentConnectorRow) {
 
 
 // PUT round-trips: a value that still carries the read-side mask means "keep what's stored".
+// Precise, not pattern-based: the value counts as a mask only when it EQUALS the mask the read
+// side produced for the currently stored value - isMaskedSecret alone false-positived on real
+// 11-character header values shaped like "abc...defg", silently reverting a user's edit.
 function unmaskHeaders(incoming: Record<string, string> | null, stored: unknown): Record<string, string> | null {
   if (!incoming) return incoming;
   const previous = (stored as Record<string, string> | null) ?? {};
   return Object.fromEntries(
-    Object.entries(incoming).map(([k, v]) => [k, isMaskedSecret(v) && previous[k] !== undefined ? previous[k]! : v])
+    Object.entries(incoming).map(([k, v]) => [
+      k,
+      isMaskedSecret(v) && previous[k] !== undefined && v === maskSecret(previous[k]!) ? previous[k]! : v,
+    ])
   );
+}
+
+// A masked value ("abc...xyz") pasted back on CREATE has no stored original to unmask against -
+// storing it verbatim yields a connector that 401s against the customer's agent with no hint
+// why. Exposed so the route can 400 it instead.
+export function hasMaskedHeaderValues(headers: Record<string, string> | null | undefined): boolean {
+  return !!headers && Object.values(headers).some(v => isMaskedSecret(v));
 }
 
 export async function createAgentConnector(db: Db, input: CreateAgentConnectorInput) {
@@ -172,7 +185,10 @@ const MAX_CONNECTOR_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 // Reads up to the cap, then cancels the transfer - checking content-length alone would miss
 // chunked responses, and res.text() would have buffered everything before any length check ran.
-async function readConnectorBody(res: Response, url: string): Promise<string> {
+// Exported for the Playground's tool endpoint (playground.ts), whose res.json() had no byte
+// bound at all - 8s of a fast hostile/misconfigured stream is gigabytes of heap.
+
+export async function readConnectorBody(res: Response, url: string): Promise<string> {
   const reader = res.body?.getReader();
   if (!reader) {
     return "";

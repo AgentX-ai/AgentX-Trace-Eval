@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lt } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, isNotNull, isNull, like, lt, or } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { traceStoreFor } from "../trace/store/index.js";
 import { getTraceRow } from "../trace/ingest.js";
@@ -276,6 +276,38 @@ export async function listEventsSince(db: Db, since: Date): Promise<EventRow[]> 
   return rows as EventRow[];
 }
 
+// Judge-call spend since `since`, counted in SQL - the daily budget seed used to materialize
+// EVERY monitor event since midnight (justifications included) inside the serialized
+// reservation chain, blocking concurrent ingests behind one giant allocation at day's end.
+// The predicate mirrors reserveOnlineJudgeCall's seed exactly: evaluator verdicts/failures
+// (trace and session), group JUDGE member verdicts, and group judge-member failures.
+export async function countJudgeSpendSince(db: Db, since: Date): Promise<number> {
+  const cond = and(
+    gte(db.schema.monitorEvents.createdAt, since),
+    eq(db.schema.monitorEvents.projectId, db.projectId),
+    or(
+      and(
+        isNotNull(db.schema.monitorEvents.onlineEvaluatorId),
+        inArray(db.schema.monitorEvents.type, ["online_eval_score", "online_eval_judge_failure", "online_eval_session_score"])
+      ),
+      and(
+        eq(db.schema.monitorEvents.type, "scorer_group_member_score"),
+        like(db.schema.monitorEvents.patternKey, "%:judge:%")
+      ),
+      and(
+        isNull(db.schema.monitorEvents.onlineEvaluatorId),
+        eq(db.schema.monitorEvents.type, "online_eval_judge_failure"),
+        like(db.schema.monitorEvents.patternKey, "%:judge:%")
+      )
+    )
+  );
+  const rows =
+    db.kind === "sqlite"
+      ? db.db.select({ n: count() }).from(db.schema.monitorEvents).where(cond).all()
+      : await db.db.select({ n: count() }).from(db.schema.monitorEvents).where(cond);
+  return Number((rows as Array<{ n: number | string }>)[0]?.n ?? 0);
+}
+
 // One evaluator's scored events in the window, filtered in SQL - judgeTuning.ts joins these
 // against ground truth per evaluator, and loading EVERY monitor event just to keep one
 // evaluator's ratings scaled with total traffic instead of with that evaluator's own volume.
@@ -495,7 +527,10 @@ export async function getScorerActivity(
     // Judge failures (provider outage, unusable output) get their own counter per scorer -
     // previously a failing judge was indistinguishable from a quiet one on the Scorers list.
     if (row.type === "online_eval_judge_failure" && row.patternKey) {
-      const entry = (activity[row.patternKey] ??= { count: 0, buckets: new Array(days).fill(0) });
+      // Group judge-member failures carry `scorer-group:<id>:judge:<refId>` - folded onto the
+      // group's own key, which IS a Scorers-list row; the raw member key resolves to nothing.
+      const key = row.patternKey.includes(":judge:") ? row.patternKey.split(":judge:")[0]! : row.patternKey;
+      const entry = (activity[key] ??= { count: 0, buckets: new Array(days).fill(0) });
       entry.judgeFailures = (entry.judgeFailures ?? 0) + 1;
       continue;
     }

@@ -130,8 +130,18 @@ describe("quotas", () => {
   });
 
   it("caps judge calls per organization and names the quota in the error", async () => {
-    // Quota is 1: the first judge attempt records usage (then fails on the missing LLM key -
-    // fine, spend was committed either way); the second must be refused by the quota itself.
+    // The quota gate runs AFTER the key-resolution guards (a missing key must not burn quota
+    // on a call that never happens), so exercising the quota needs a judge call that gets past
+    // those guards: give Carol's org a present-but-invalid key. Quota is 1: the first attempt
+    // records usage, then fails at the provider (fine - spend was committed before the call);
+    // the second must be refused by the quota itself.
+    const setKey = await engine.request("/api/v1/agent-monitoring/settings/llm-keys", {
+      method: "PUT",
+      body: JSON.stringify({ openaiApiKey: "sk-test-invalid-key-for-quota-test" }),
+      headers: { "content-type": "application/json" },
+      apiKey: carolKey,
+    });
+    expect(setKey.status).toBe(200);
     await engine.json("/api/v1/agent-monitoring/patterns/generate-regex", {
       ...json({ description: "mentions a refund" }),
       apiKey: carolKey,

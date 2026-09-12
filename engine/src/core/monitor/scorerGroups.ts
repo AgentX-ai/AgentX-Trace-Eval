@@ -259,6 +259,21 @@ const GATE_FLOOR = 0.5;
 // produces NO score - renormalizing the survivors would report a confident blend computed
 // from a recipe the operator never configured.
 export const BUDGET_EXHAUSTED_ERROR = "Online judge budget exhausted";
+export const SCORER_MISSING_ERROR = "Scorer no longer exists";
+
+// Judge members that RESERVED a budget slot and then failed to score - the spend happened, so
+// the restart-time budget seed must see a failure event for each. Members that never reserved
+// (deleted ref, budget refusal itself) are excluded; both callers share this one definition so
+// the two scopes cannot drift apart again.
+export function spentFailedJudgeMembers(members: MemberScore[]): MemberScore[] {
+  return members.filter(
+    m =>
+      m.kind === "judge" &&
+      m.goodness === null &&
+      m.error !== SCORER_MISSING_ERROR &&
+      m.error !== BUDGET_EXHAUSTED_ERROR
+  );
+}
 
 export function aggregateGroupScore(members: MemberScore[]): { score: number | null; gatedBy: string | null } {
   const gated = members.find(m => m.gate && m.goodness !== null && m.goodness < GATE_FLOOR);
@@ -337,7 +352,7 @@ async function scoreJudgeMember(
   const base = { kind: member.kind, refId: member.refId, weight: member.weight, gate: member.gate };
   const settings = await getEvaluationSettingsRow(db, member.refId);
   if (!settings) {
-    return { ...base, name: member.refId, goodness: null, detail: "-", error: "Scorer no longer exists" };
+    return { ...base, name: member.refId, goodness: null, detail: "-", error: SCORER_MISSING_ERROR };
   }
   const name = settings.name ?? member.refId;
   // Lazily, per call actually made - see BUDGET_EXHAUSTED_ERROR's comment.
@@ -505,6 +520,23 @@ export async function runScorerGroupsOnline(
         },
         { reserveOnlineBudget: true }
       );
+      // Judge members that reserved a slot and failed still SPENT the call - recorded before
+      // the score-null bail below, because a full judge outage is exactly the case where the
+      // aggregate is null and exactly the spend the restart-time budget seed must not miss.
+      for (const member of spentFailedJudgeMembers(result.members)) {
+        await recordEvent(db, {
+          signalId: null,
+          patternKey: `scorer-group:${group.id}:judge:${member.refId}`,
+          type: "online_eval_judge_failure",
+          severity: "low",
+          polarity: "score",
+          agentId: ctx.agentId,
+          traceId: ctx.traceId,
+          onlineEvaluatorId: null,
+          rating: null,
+          justification: member.error ?? "Judge member failed",
+        });
+      }
       if (result.score === null) continue;
       const justification = describeGroupScore(result, result.members);
 

@@ -14,7 +14,7 @@ import { logger } from "../log.js";
 //    is bulk egress - GET /export/* is exactly what a security team wants in the log.
 //  - Values are NOT recorded: bodies carry scripts, keys, and passwords, so a mutation's
 //    summary keeps the field NAMES that were sent plus a human-recognizable `name`, never
-//    the values. The auth tap keeps only the attempted email (the identity claim itself).
+//    the values. The auth tap records no body-derived fields at all (see auditAuthTap).
 //
 // Recording is fire-and-forget on 'finish': an audit failure never fails the request.
 
@@ -33,7 +33,6 @@ const TRANSIENT_MARKERS = [
   "/dry-run",
   "/generate-regex",
   "/coherence-check",
-  "/session-sweep",
   "/suggest-",
   "/estimate",
   "/test-connection",
@@ -189,8 +188,7 @@ export function auditControlPlaneTap(req: Request, res: Response, next: NextFunc
 }
 
 // Auth events: mounted BEFORE better-auth's handler (and before express.json - better-auth
-// reads the raw stream itself), so the body is sniffed passively from 'data' events, capped,
-// and only the attempted email is kept. Failed and successful attempts both land, with status.
+// reads the raw stream itself). Failed and successful attempts both land, with status.
 const AUTH_ACTIONS: [RegExp, string][] = [
   [/\/sign-in\b/, "auth.sign-in"],
   [/\/sign-up\b/, "auth.sign-up"],
@@ -207,35 +205,21 @@ export function auditAuthTap(req: Request, res: Response, next: NextFunction): v
     return;
   }
   const action = match[1];
-  let sniffed = "";
-  if (req.method === "POST") {
-    req.on("data", chunk => {
-      if (sniffed.length < 8192) {
-        sniffed += String(chunk);
-      }
-    });
-  }
+  // The request body is deliberately NOT read here, not even passively: better-auth consumes
+  // the raw stream itself, and attaching a 'data' listener flips the stream into flowing mode
+  // before better-auth gets to it - one middleware-ordering refactor away from draining the
+  // body and breaking sign-in instance-wide. The event therefore records without the attempted
+  // email; the attempt itself (action, status, ip, timing) is what the trail needs.
   res.on("finish", () => {
     void (async () => {
-      let email: string | null = null;
-      try {
-        const parsed = JSON.parse(sniffed || "{}");
-        if (typeof parsed.email === "string") {
-          email = parsed.email.slice(0, 200);
-        }
-      } catch {
-        // body wasn't JSON (or was truncated) - the event still records without an email
-      }
       await recordAuditEvent(getDb(), {
-        actor: email ?? "anonymous",
-        // A successful attempt with an email IS that user acting; anything else stays anonymous
-        // (failed attempts are the rows a security review reads most closely).
-        actorType: email && res.statusCode < 400 ? "user" : "anonymous",
+        actor: "anonymous",
+        actorType: "anonymous",
         action,
         method: req.method,
         path: req.originalUrl.split("?")[0] ?? req.path,
         status: res.statusCode,
-        summary: email ? { email } : null,
+        summary: null,
         ip: req.ip ?? null,
       });
     })().catch((err: unknown) => logger.error({ err }, "Auth audit tap failed (request unaffected)"));

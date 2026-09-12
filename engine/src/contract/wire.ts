@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SPAN_KINDS } from "../core/trace/spanKind.js";
 
 // The wire contract for the dashboard surfaces most prone to drift. These schemas are the
 // single written form of each response shape: the contract integration test
@@ -113,7 +114,9 @@ export const traceListItemSchema = z
     // Always present and always resolved (core/trace/spanKind.ts): the engine classifies each
     // span once so no reader has to re-derive it. Never optional - "chain" is the answer for a
     // span nothing could be said about, not an absent field.
-    spanKind: z.enum(["agent", "llm", "tool", "retrieval", "chain", "embedding", "reranker", "guardrail", "evaluator", "prompt", "memory"]),
+    // Derived from the one vocabulary (spanKind.ts) - a hand-typed copy silently drifted the day
+    // a new kind was added, and the wire schema then rejected every trace carrying it.
+    spanKind: z.enum(SPAN_KINDS),
     // "eval-run" for traffic produced inside an offline evaluation; absent for production.
     trafficSource: z.string().optional(),
     parentSpanId: z.string().optional(),
@@ -757,6 +760,19 @@ export const insightsCoverageMapResponseSchema = z
   })
   .strict();
 
+// Platform Settings' "Usage & limits" card - today's spend against each env-configured daily
+// cap, computed by the same counters the enforcement paths seed from (core/shared/usage.ts).
+const usageBucketSchema = z.object({ used: z.number(), limit: z.number().nullable() });
+const usageAndLimitsResponseSchema = z
+  .object({
+    day: z.string(),
+    resetsAt: z.string(),
+    traces: usageBucketSchema,
+    onlineJudgeCalls: usageBucketSchema,
+    judgeCalls: usageBucketSchema,
+  })
+  .strict();
+
 // ---- GET /mcp/grants -----------------------------------------------------------------------
 
 // OAuth grants issued to MCP clients (claude.ai connectors, Claude Code) for the caller's
@@ -873,6 +889,13 @@ export const WIRE_CONTRACT = [
     summary: "Cursor-paginated trace list with database-side search",
     response: tracesPageSchema,
     name: "TracesPage",
+  },
+  {
+    method: "get" as const,
+    path: "/agent-monitoring/usage",
+    summary: "Today's usage against the configured daily caps",
+    response: usageAndLimitsResponseSchema,
+    name: "UsageAndLimitsResponse",
   },
   {
     method: "get" as const,

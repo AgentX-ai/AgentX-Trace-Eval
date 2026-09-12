@@ -12,13 +12,10 @@ import {
 import { runMonitorCheck } from "../core/monitor/detect.js";
 import { evaluateTraceAgainst } from "../core/evaluate/runs.js";
 import { traceQuota } from "../core/shared/usage.js";
+import { reserveTraceRoots } from "../core/shared/traceQuota.js";
 import type { Db } from "../storage/db.js";
 
-async function countTracesToday(db: Db): Promise<number> {
-  const dayStart = new Date();
-  dayStart.setHours(0, 0, 0, 0);
-  return traceStoreFor(db).countRoots(dayStart);
-}
+
 import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
 import { traceStoreFor } from "../core/trace/store/index.js";
 import { runCustomEvaluators } from "../core/monitor/customEvaluators.js";
@@ -48,10 +45,11 @@ ingestRouter.post("/traces", async (req: Request, res: Response) => {
   // already-counted interaction ride free - the quota is about interactions, not tree size.
   const quota = traceQuota();
   if (quota !== null && !parsed.data.parent_span_id) {
-    const used = await countTracesToday(scopedDb(req));
-    if (used >= quota) {
+    // Reserved, not check-then-acted: concurrent ingests must not all read "one slot left"
+    // and each take it - see core/shared/traceQuota.ts.
+    if (!(await reserveTraceRoots(scopedDb(req), 1, quota))) {
       res.status(429).json({
-        error: `Daily trace quota reached (${quota}/day for this project). Quota resets at midnight; raise AGENTX_QUOTA_TRACES_PER_DAY to change the ceiling.`,
+        error: `Daily trace quota reached (${quota}/day for this project). Quota resets at midnight UTC; raise AGENTX_QUOTA_TRACES_PER_DAY to change the ceiling.`,
       });
       return;
     }

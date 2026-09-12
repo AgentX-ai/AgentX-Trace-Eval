@@ -25,9 +25,11 @@ import {
   scoreCustomMember,
   aggregateGroupScore,
   BUDGET_EXHAUSTED_ERROR,
+  spentFailedJudgeMembers,
   describeGroupScore,
   type MemberScore,
   type ScorerGroupRow,
+  SCORER_MISSING_ERROR,
 } from "./scorerGroups.js";
 import { reserveOnlineJudgeCall } from "./onlineEvaluators.js";
 import { getProfileRow } from "./profiles.js";
@@ -413,7 +415,7 @@ export async function scoreSessionWithGroup(
     if (member.kind === "judge") {
       const settings = await getEvaluationSettingsRow(db, member.refId);
       if (!settings) {
-        members.push({ ...base, name: member.refId, goodness: null, detail: "-", error: "Scorer no longer exists" });
+        members.push({ ...base, name: member.refId, goodness: null, detail: "-", error: SCORER_MISSING_ERROR });
         continue;
       }
       const name = settings.name ?? member.refId;
@@ -497,19 +499,33 @@ function passesSessionSample(sessionId: string, scorerId: string, rate: number):
 // stuck sessions cannot starve every healthy one. In-process on purpose - a restart retrying
 // sooner is harmless; the map exists only to stop steady-state starvation.
 const RETRY_BACKOFF_MS = 10 * 60_000;
-const failedAttempts = new Map<string, number>();
+const MAX_BACKOFF_ENTRIES = 50_000;
+const failedAttempts = new Map<string, { first: number; last: number }>();
 const attemptKey = (projectId: string | null, patternKey: string, sessionId: string) =>
   `${projectId ?? ""}|${patternKey}|${sessionId}`;
 const inBackoff = (key: string): boolean => {
-  const last = failedAttempts.get(key);
-  return last !== undefined && Date.now() - last < RETRY_BACKOFF_MS;
+  const entry = failedAttempts.get(key);
+  return entry !== undefined && Date.now() - entry.last < RETRY_BACKOFF_MS;
 };
-// Entries for permanently-failing pairs would otherwise accumulate forever; anything older
-// than a day is no longer backing anything off and can go.
+const recordFailedAttempt = (key: string): void => {
+  const now = Date.now();
+  const entry = failedAttempts.get(key);
+  failedAttempts.set(key, { first: entry?.first ?? now, last: now });
+  if (failedAttempts.size > MAX_BACKOFF_ENTRIES) {
+    // Hard cap: evict the oldest insertion (Map iteration order) rather than growing without
+    // bound on an operator-widened 30d candidate window full of stuck sessions.
+    const oldest = failedAttempts.keys().next().value;
+    if (oldest !== undefined) failedAttempts.delete(oldest);
+  }
+};
+// Evict on FIRST-seen age: a pair that keeps failing refreshes `last` every backoff interval,
+// so a last-failure cutoff never fires while the session stays in the candidate window - the
+// entry would live as long as the failure does. A day after the first failure it goes
+// regardless; if the pair is still failing, re-adding one entry per day is free.
 function purgeStaleBackoffs(): void {
   const cutoff = Date.now() - 24 * 60 * 60_000;
-  for (const [key, ts] of failedAttempts) {
-    if (ts < cutoff) failedAttempts.delete(key);
+  for (const [key, entry] of failedAttempts) {
+    if (entry.first < cutoff) failedAttempts.delete(key);
   }
 }
 
@@ -525,7 +541,9 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
   const allProjects = options.projectId ? listed.filter(project => project.id === options.projectId) : listed;
   // Rotate the starting project each tick so the shared MAX_JUDGED_PER_SWEEP budget reaches
   // every project over time instead of being eaten by whichever lists first.
-  const offset = allProjects.length > 0 ? sweepTick++ % allProjects.length : 0;
+  // The rotation cursor belongs to the instance-wide interval tick - a project-scoped manual
+  // sweep advancing it would bias which projects the shared budget reaches.
+  const offset = options.projectId ? 0 : allProjects.length > 0 ? sweepTick++ % allProjects.length : 0;
   const projects = [...allProjects.slice(offset), ...allProjects.slice(0, offset)];
   let judged = 0;
 
@@ -573,6 +591,11 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
         if (!passesSessionSample(session.sessionId, evaluator.id, evaluator.sampleRate)) continue;
         const retryKey = attemptKey(db.projectId, kind, session.sessionId);
         if (inBackoff(retryKey)) continue;
+        // One budget slot per session judging, same pool as trace-scope scoring and group
+        // members - without this the sweep judged for free while the restart seed COUNTED its
+        // events, so a restart double-charged the day in the other direction. The explicit
+        // per-session Re-run route stays unmetered (a human click, like the playground).
+        if (!(await reserveOnlineJudgeCall(db))) continue;
 
         // Count the ATTEMPT, not the verdict: judge spend happens whether or not a usable
         // rating comes back, and a cap that only counts successes is unbounded during an
@@ -583,7 +606,7 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
           if (!verdict) {
             // No spans (pruned mid-tick) - back off like any failed attempt so the race
             // cannot consume a tick slot every 60s.
-            failedAttempts.set(retryKey, Date.now());
+            recordFailedAttempt(retryKey);
             continue;
           }
           if (verdict.rating === null) {
@@ -606,7 +629,7 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
               justification: "Judge returned no usable verdict for this session",
               sessionId: session.sessionId,
             });
-            failedAttempts.set(retryKey, Date.now());
+            recordFailedAttempt(retryKey);
             continue;
           }
           failedAttempts.delete(retryKey);
@@ -681,7 +704,7 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
         } catch (err) {
           // Isolated per session+evaluator, same posture as every other detector loop - one
           // failing judge call (missing key, provider outage) never blocks the rest of the sweep.
-          failedAttempts.set(retryKey, Date.now());
+          recordFailedAttempt(retryKey);
           logger.error(
             { err },
             `Session sweep: evaluator "${evaluator.name}" failed on session ${session.sessionId}`
@@ -709,8 +732,28 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
         try {
           const result = await scoreSessionWithGroup(db, group, session.sessionId);
           if (!result) {
-            failedAttempts.set(retryKey, Date.now());
+            recordFailedAttempt(retryKey);
             continue;
+          }
+          // Judge members that reserved a slot and failed still SPENT the call - recorded
+          // before the score-null bail below, because a full judge outage is exactly the case
+          // where the aggregate is null and exactly the spend the restart-time budget seed
+          // must not miss. Members that never reserved (deleted ref, budget refusal) are
+          // excluded by the shared helper.
+          for (const member of spentFailedJudgeMembers(result.members)) {
+            await recordEvent(db, {
+              signalId: null,
+              patternKey: `${kind}:judge:${member.refId}`,
+              type: "online_eval_judge_failure",
+              severity: "low",
+              polarity: "score",
+              agentId: session.agentId,
+              traceId: result.anchorTraceId,
+              onlineEvaluatorId: null,
+              rating: null,
+              justification: member.error ?? "Judge member failed",
+              sessionId: session.sessionId,
+            });
           }
           if (result.score === null) {
             // No member produced a score (judge outage, deleted refs). Same posture as the
@@ -731,7 +774,7 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
               justification: result.justification,
               sessionId: session.sessionId,
             });
-            failedAttempts.set(retryKey, Date.now());
+            recordFailedAttempt(retryKey);
             continue;
           }
           failedAttempts.delete(retryKey);
@@ -803,7 +846,7 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
             });
           }
         } catch (err) {
-          failedAttempts.set(retryKey, Date.now());
+          recordFailedAttempt(retryKey);
           logger.error(
             { err },
             `Session sweep: scorer group "${group.name}" failed on session ${session.sessionId}`
@@ -818,20 +861,31 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
 }
 
 let sweepTimer: NodeJS.Timeout | null = null;
-let sweeping = false;
+// In-flight sweep scopes. "*" is the interval's whole-instance sweep and conflicts with
+// everything; a project id conflicts only with itself - so project A's manual sweep never
+// tells project B "skipped". The global tick DOES defer while any manual sweep runs (third
+// clause below): a whole-instance pass would double-judge the very project a manual sweep is
+// mid-way through, and the tick retries in 60s anyway. The narrow race where the tick wins
+// the lease and then finds a just-started manual sweep abandons that lease; it self-heals
+// because the holder id can re-take its own lease next tick.
+const sweepingScopes = new Set<string>();
+const GLOBAL_SWEEP = "*";
+const scopeConflicts = (scope: string): boolean =>
+  sweepingScopes.has(GLOBAL_SWEEP) || sweepingScopes.has(scope) || (scope === GLOBAL_SWEEP && sweepingScopes.size > 0);
 
-// The route's entry point: scoped to one project, and serialized against both the interval
-// sweep and other manual invocations - N concurrent sweeps all pass the freshness check
-// before any inserts, judging the same sessions N times on the caller's bill.
+// The route's entry point: scoped to one project, and serialized against the interval sweep
+// and same-project manual invocations - N concurrent sweeps of one project all pass the
+// freshness check before any inserts, judging the same sessions N times on the caller's bill.
 export async function runManualSweep(projectId: string | null): Promise<{ judged: number; skipped?: boolean }> {
-  if (sweeping) {
+  const scope = projectId ?? GLOBAL_SWEEP;
+  if (scopeConflicts(scope)) {
     return { judged: 0, skipped: true };
   }
-  sweeping = true;
+  sweepingScopes.add(scope);
   try {
     return await sweepSessionsOnce({ projectId });
   } finally {
-    sweeping = false;
+    sweepingScopes.delete(scope);
   }
 }
 
@@ -842,18 +896,21 @@ export function startSessionSweep(): void {
     return;
   }
   sweepTimer = setInterval(() => {
-    if (sweeping) return; // a slow judge round must not stack a second concurrent sweep
-    sweeping = true;
-    // The lease is the cross-REPLICA version of the `sweeping` flag above: N engines sharing one
-    // database elect one sweeper per tick instead of all judging the same idle sessions. TTL
-    // covers a worst-case round (MAX_JUDGED_PER_SWEEP slow judge calls) so a crashed holder's
-    // lease times out on its own. The manual /session-sweep/run route bypasses this on purpose.
+    if (scopeConflicts(GLOBAL_SWEEP)) return; // a slow round must not stack a second sweep
+    // The lease is the cross-REPLICA guard: N engines sharing one database elect one sweeper
+    // per tick instead of all judging the same idle sessions. TTL covers a worst-case round so
+    // a crashed holder's lease times out on its own. The scope is claimed only AFTER the lease
+    // is won - claiming before it meant a lost-lease tick still refused manual sweeps for its
+    // duration. The manual route bypasses the lease on purpose (single-project, user-invoked).
     acquireSweepLease(getDb(), "session-sweep", 5 * 60_000)
-      .then(acquired => (acquired ? sweepSessionsOnce() : null))
-      .catch((err: unknown) => logger.error({ err }, "Session sweep failed"))
-      .finally(() => {
-        sweeping = false;
-      });
+      .then(acquired => {
+        if (!acquired || scopeConflicts(GLOBAL_SWEEP)) return null;
+        sweepingScopes.add(GLOBAL_SWEEP);
+        return sweepSessionsOnce().finally(() => {
+          sweepingScopes.delete(GLOBAL_SWEEP);
+        });
+      })
+      .catch((err: unknown) => logger.error({ err }, "Session sweep failed"));
   }, SWEEP_INTERVAL_MS);
   // Never keep the process alive just for the sweep - Ctrl+C shuts down cleanly without an
   // explicit clearInterval in the signal handler.

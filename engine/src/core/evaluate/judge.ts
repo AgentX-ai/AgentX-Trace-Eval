@@ -122,16 +122,27 @@ async function getGemini(): Promise<OpenAI | null> {
 // Custom (bring-your-own-endpoint) portability_models rows - cached by the resolved
 // baseUrl+apiKey pair, same "rebuild only when the actual config changes" idiom as
 // getOpenAI/getAnthropic above, so editing a custom model's key in the dashboard takes effect
-// immediately without needing to clear this cache explicitly.
+// immediately without needing to clear this cache explicitly. Bounded as a simple LRU (a hit
+// re-inserts, so Map iteration order is recency order): every edited key/baseUrl pair used to
+// stay cached forever, an unbounded growth path on an instance whose custom endpoints churn.
+const CUSTOM_CLIENT_CACHE_MAX = 32;
 const customClientCache = new Map<string, OpenAI>();
 function getCustomClient(row: PortabilityModelRow): OpenAI {
   const cacheKey = `${row.baseUrl}::${row.apiKey ?? ""}`;
   let client = customClientCache.get(cacheKey);
-  if (!client) {
+  if (client) {
+    // Refresh recency: delete + set moves the entry to the end of the Map's iteration order.
+    customClientCache.delete(cacheKey);
+  } else {
     // Most self-hosted/local model servers don't require a key at all; the SDK still needs a
     // non-empty string to construct, hence the placeholder.
     client = new OpenAI({ apiKey: row.apiKey || "not-required", baseURL: row.baseUrl! });
-    customClientCache.set(cacheKey, client);
+  }
+  customClientCache.set(cacheKey, client);
+  if (customClientCache.size > CUSTOM_CLIENT_CACHE_MAX) {
+    // Evict the least recently used entry (the first in iteration order).
+    const oldest = customClientCache.keys().next().value;
+    if (oldest !== undefined) customClientCache.delete(oldest);
   }
   return client;
 }
@@ -172,7 +183,10 @@ async function resolveModelRouting(model: string): Promise<ModelRouting> {
       isCustom: true,
     };
   }
-  if (!custom && model.includes("/")) {
+  // Slash-form ids are OpenRouter's namespace, whatever provider label the catalog row
+  // carries - "anthropic/claude-sonnet-4" sent to the native Anthropic API 404s. Only a
+  // custom-provider row (own baseUrl, handled above) may claim a slashed id for itself.
+  if (model.includes("/")) {
     return {
       provider: "openai",
       openaiClient: await getOpenRouter(),
@@ -180,6 +194,30 @@ async function resolveModelRouting(model: string): Promise<ModelRouting> {
       envVar: "OPENROUTER_API_KEY",
       isGemini: false,
       isCustom: true,
+    };
+  }
+  // A catalog row that SAYS anthropic/openai must route there - "claude-" prefix sniffing is
+  // only for models the catalog has never seen. Without this, a row saved as
+  // provider:"anthropic" with a non-claude id was silently sent to OpenAI and 404ed on every
+  // judge call while the UI showed it correctly configured.
+  if (custom?.provider === "anthropic") {
+    return {
+      provider: "anthropic",
+      openaiClient: null,
+      keyLabel: "Anthropic",
+      envVar: "ANTHROPIC_API_KEY",
+      isGemini: false,
+      isCustom: false,
+    };
+  }
+  if (custom?.provider === "openai") {
+    return {
+      provider: "openai",
+      openaiClient: await getOpenAI(),
+      keyLabel: "OpenAI",
+      envVar: "OPENAI_API_KEY",
+      isGemini: false,
+      isCustom: false,
     };
   }
   if (custom?.provider === "gemini" || (!custom && model.startsWith("gemini-"))) {
@@ -327,9 +365,6 @@ export async function callJudgeJson({
   // Pass only for schemas whose every property is required - see judge-core's callJudgeJson.
   strictSchema?: boolean;
 }): Promise<JudgeCallResult> {
-  // Metering + daily quota, both scoped by the request's tenancy context (see
-  // core/shared/usage.ts). Every judge path in the engine funnels through here.
-  await checkAndRecordJudgeCall(model);
   const { provider, openaiClient, keyLabel, envVar, isGemini, isCustom } = await resolveModelRouting(model);
   if (provider === "anthropic" && !(await getAnthropic())) {
     throw new Error(
@@ -339,6 +374,11 @@ export async function callJudgeJson({
   if (provider === "openai" && !openaiClient) {
     throw new Error(`Judge model "${model}" needs a ${keyLabel} API key. Set ${envVar} and restart agentx-server.`);
   }
+  // Metering + daily quota, both scoped by the request's tenancy context (see
+  // core/shared/usage.ts). Every judge path in the engine funnels through here - AFTER the
+  // key-resolution guards above, so a missing key doesn't burn daily quota on calls that
+  // never reach a provider.
+  await checkAndRecordJudgeCall(model);
 
   const result = await callJudgeJsonShared({
     userMessage,
@@ -363,8 +403,9 @@ export async function callJudgeJson({
     // judge-core's automatic empty/parse-failure retry is a second real provider call - the
     // billing ledger under-counted by up to 2x on flaky generations without this. Record-only:
     // the quota gate ran before the call, and throwing HERE would discard a successful,
-    // already-billed result at the exact boundary of the daily cap.
-    await recordJudgeCall(model);
+    // already-billed result at the exact boundary of the daily cap. Best-effort for the same
+    // reason: a DB hiccup on the ledger insert must not discard a paid-for judge response.
+    await recordJudgeCall(model).catch(err => logger.warn({ err, model }, "judge retry not metered"));
   }
   return result;
 }

@@ -155,14 +155,19 @@ async function scoreItemWithJudges(row: RunResultRow, judgeModels: string[]): Pr
       const variant = JUDGE_VARIANTS[i] ?? String(i + 1);
       try {
         const result = await callJudgeJson({ model, jsonSchema: ITEM_SCORE_SCHEMA, userMessage: prompt });
-        const payload = result.payload as { rating?: number; justification?: string } | null;
+        const payload = result.payload as { rating?: unknown; justification?: string } | null;
+        // Coerced like scoreAgainstCriteria: Anthropic/Gemini/custom endpoints legitimately
+        // answer {"rating": "8"} - a typeof check silently nulled two of three paid judges
+        // and reported the survivor as "single_judge" consensus. Clamped for percent-scale
+        // answers (85 for 8.5) so finalScore/bands/narrative stay on the rubric's 0-10.
+        const numeric = payload?.rating === undefined || payload?.rating === null ? Number.NaN : Number(payload.rating);
         return {
           judgeVariant: variant,
           model,
-          // Clamped: percent-scale answers from compat endpoints (85 for 8.5) must not skew
-          // finalScore, the disagreement bands, or the narrative prompt.
-          rating: typeof payload?.rating === "number" ? Math.max(0, Math.min(10, payload.rating)) : null,
-          justification: payload?.justification ?? null,
+          rating: Number.isFinite(numeric) ? Math.max(0, Math.min(10, numeric)) : null,
+          justification:
+            (typeof payload?.justification === "string" ? payload.justification : null) ??
+            (Number.isFinite(numeric) ? null : "judge returned a non-numeric rating"),
         };
       } catch (err) {
         // One judge without a key (or in outage) degrades to a null rating - it must not
@@ -300,7 +305,10 @@ export async function runEvaluationAnalysis(
 ): Promise<AnalyzeEvaluationResult | null> {
   // The judge selection is part of the identity: restarting with different judges must start
   // a new analysis, not silently join (and return) the in-flight one with the old panel.
-  const inFlightKey = `${db.projectId ?? ""}|${evaluationId}|${(opts.judges ?? []).map(j => j.model).sort().join(",")}|${opts.qualityMode ?? ""}`;
+  // Order-sensitive on purpose: judgeModels[0] authors the narrative, so [A,B] and [B,A] are
+  // different requests - a sorted key would silently join them and hand the second caller the
+  // wrong writer judge.
+  const inFlightKey = `${db.projectId ?? ""}|${evaluationId}|${(opts.judges ?? []).map(j => j.model).join(",")}|${opts.qualityMode ?? ""}`;
   const inFlight = analysisInFlight.get(inFlightKey);
   if (inFlight) {
     return inFlight;
@@ -419,6 +427,27 @@ async function runEvaluationAnalysisInner(
 }
 
 export async function getEvaluationAnalysisStatus(db: Db, evaluationId: string) {
+  // An analysis in flight for this run outranks whatever terminal row a PREVIOUS analysis
+  // left behind - without this, a re-analyze whose HTTP call timed out client-side polls
+  // straight into last week's "completed" and presents the stale narrative as the new one.
+  const inFlightPrefix = `${db.projectId ?? ""}|${evaluationId}|`;
+  for (const key of analysisInFlight.keys()) {
+    if (key.startsWith(inFlightPrefix)) {
+      // Same shape as the two branches below - clients poll THIS branch the longest, and a
+      // narrower object here threw in consumers reading warnings/overflowStats mid-poll.
+      return {
+        evaluationId,
+        jobId: evaluationId,
+        status: "running" as const,
+        progress: { overallPercentage: 0, currentLevel: "l1_score", levels: {} },
+        failureReason: null,
+        warnings: [],
+        cost: { estimatedUSD: null },
+        etaUpdatedAt: null,
+        overflowStats: { compressedItems: 0, maxCompressionRatio: null, tokenOverflowCount: 0, recursiveSplitCount: 0 },
+      };
+    }
+  }
   const row = await getEvaluationAnalysisRow(db, evaluationId);
   if (!row) {
     return {

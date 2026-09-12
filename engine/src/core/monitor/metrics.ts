@@ -29,9 +29,13 @@ export type MetricsRange = { from: number; to: number; window: string };
 // Presets ("1h".."90d") or an explicit custom range via from/to (epoch ms). Custom ranges are
 // clamped to [1 minute, 366 days]; nonsense falls back to the 7-day preset.
 export function parseMetricsRange(query: Record<string, unknown>): MetricsRange {
-  const from = Number(query.from);
-  const to = Number(query.to);
-  if (Number.isFinite(from) && Number.isFinite(to) && to > from) {
+  // Same guard as the two route-level parseRange twins: Number("") is 0 (finite!), so a blank
+  // ?from= must not become epoch 0 and turn a metrics-grid poll into a year-long table scan.
+  const rawFrom = typeof query.from === "string" ? query.from.trim() : "";
+  const rawTo = typeof query.to === "string" ? query.to.trim() : "";
+  const from = rawFrom === "" ? Number.NaN : Number(rawFrom);
+  const to = rawTo === "" ? Number.NaN : Number(rawTo);
+  if (Number.isFinite(from) && Number.isFinite(to) && from > 0 && to > from) {
     const clampedFrom = Math.max(from, to - 366 * 24 * HOUR);
     return { from: clampedFrom, to: Math.max(to, clampedFrom + 60_000), window: "custom" };
   }
@@ -230,8 +234,6 @@ export async function getMonitorMetrics(
   // span that states no kind and carries no tool calls of its own - it is the weakest of the
   // three rules that used to live here, and it misattributes any span that happens to share a
   // tool's name. The classifier (core/trace/spanKind.ts) is consulted first.
-  const toolNames = new Set<string>();
-  for (const row of filtered) for (const tc of toolCallList(row.toolCalls)) toolNames.add(tc.name);
 
   const pricingModels = await listPortabilityModels(db);
   const pricingById = new Map<string, PortabilityModel>();
@@ -293,12 +295,6 @@ export async function getMonitorMetrics(
       bucket.spansTool++;
     } else if (kind === "retrieval") {
       bucket.spansRetrieval++;
-    } else if (kind === "chain" && row.parentSpanId && toolNames.has(row.name)) {
-      // The name set really is a LAST resort now (see its comment): only a span the classifier
-      // could say nothing about ("chain") falls back to name matching. It previously overrode
-      // stated retrieval/memory kinds AND disagreed with rollups.ts, so the same span counted
-      // as retrieval on the unfiltered dashboard and as tool the moment a filter was applied.
-      bucket.spansTool++;
     } else {
       // "memory" (and every other minor kind) deliberately counts as other for now - the
       // bucket columns are wire shape, and a dedicated memory metric belongs to the memory

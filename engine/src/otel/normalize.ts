@@ -32,7 +32,10 @@ function idToHex(value: unknown): string | null {
     return null;
   }
   if ((value.length === 32 || value.length === 16) && /^[0-9a-fA-F]+$/.test(value)) {
-    return value.toLowerCase();
+    // All-zero is OTLP's encoding of "no id" (several producers emit it explicitly for "no
+    // parent"). Accepting it made every root span a child instance-wide - empty Live Traces,
+    // zeroed rollups - and folded unrelated traffic into one "000...0" session.
+    return /^0+$/.test(value) ? null : value.toLowerCase();
   }
   // Strict base64 charset check before decoding: Buffer.from silently skips invalid characters,
   // so a garbage id would decode to garbage hex instead of being rejected as no id at all.
@@ -43,7 +46,8 @@ function idToHex(value: unknown): string | null {
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(standard)) {
     return null;
   }
-  return Buffer.from(standard, "base64").toString("hex");
+  const hex = Buffer.from(standard, "base64").toString("hex");
+  return /^0+$/.test(hex) ? null : hex;
 }
 
 // A handful of real-world JSON producers emit snake_case (the literal .proto field names) instead

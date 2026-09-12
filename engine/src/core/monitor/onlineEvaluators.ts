@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { scoreAgainstCriteria, DEFAULT_JUDGE_PROMPT, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { matchesAgentScope, passesSampleRate } from "./routing.js";
-import { recordEvent, listEventsSince } from "./events.js";
+import { countJudgeSpendSince, recordEvent, listEventsSince } from "./events.js";
 import { upsertSignal } from "./signals.js";
 import {
   cloneEvaluationSettings,
@@ -333,19 +333,12 @@ export async function reserveOnlineJudgeCall(db: Db): Promise<boolean> {
     let entry = onlineJudgeSpend.get(key);
     if (!entry || entry.day !== day) {
       const midnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-      const rows = await listEventsSince(db, midnight);
-      // Approximate judge calls made today: per-trace and per-session evaluator verdicts and
-      // failures, plus scorer-group JUDGE member verdicts (their patternKey embeds the member
-      // kind - pattern/custom members cost no judge call and are excluded). Restart-resistant:
-      // without the group terms, a mid-day restart re-seeded 0 and handed the cap out twice.
-      const spent = rows.filter(
-        r =>
-          (r.onlineEvaluatorId &&
-            (r.type === "online_eval_score" ||
-              r.type === "online_eval_judge_failure" ||
-              r.type === "online_eval_session_score")) ||
-          (r.type === "scorer_group_member_score" && r.patternKey.includes(":judge:"))
-      ).length;
+      // Approximate judge calls made today, counted in SQL (countJudgeSpendSince mirrors this
+      // seed's predicate): evaluator verdicts and failures (trace and session), group JUDGE
+      // member verdicts, and group judge-member failures. Pattern/custom members cost no judge
+      // call and are excluded. Restart-resistant: without the group terms, a mid-day restart
+      // re-seeded 0 and handed the cap out twice.
+      const spent = await countJudgeSpendSince(db, midnight);
       entry = { day, count: spent };
       onlineJudgeSpend.set(key, entry);
     }

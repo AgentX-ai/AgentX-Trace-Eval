@@ -1,9 +1,14 @@
 import type { Request, Response } from "express";
+import { reserveTraceRoots } from "../core/shared/traceQuota.js";
 import express from "express";
 import { asyncRouter } from "./asyncRouter.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { ingestTraceSchema, beginIngestTraceQueued, type IngestTraceInput, type QueuedIngestResult } from "../core/trace/ingest.js";
 import { runMonitorCheck } from "../core/monitor/detect.js";
+import { traceQuota } from "../core/shared/usage.js";
+import { traceStoreFor } from "../core/trace/store/index.js";
+import type { Db } from "../storage/db.js";
+
 import { runOnlineEvaluators } from "../core/monitor/onlineEvaluators.js";
 import { runScorerGroupsOnline } from "../core/monitor/scorerGroups.js";
 import { runCustomEvaluators } from "../core/monitor/customEvaluators.js";
@@ -58,6 +63,29 @@ const MONITOR_CHILD_SPANS = process.env.AGENTX_MONITOR_CHILD_SPANS === "true";
 // before any span is processed, so a conforming exporter can split and resend without dupes.
 const MAX_SPANS_PER_EXPORT = 5000;
 
+// Counts spans straight off the parsed envelope, BEFORE normalizeExportRequest allocates a
+// NormalizedSpan (attributes record included) per span - materializing 100k spans just to
+// refuse them is exactly the amplification the cap exists to prevent. Handles both wire key
+// spellings, like the envelope check below; anything shaped too strangely to count here still
+// hits the post-normalize backstop.
+function countWireSpans(parsed: Record<string, unknown>): number {
+  const resourceSpans = parsed.resourceSpans ?? parsed.resource_spans;
+  if (!Array.isArray(resourceSpans)) return 0;
+  let n = 0;
+  for (const rs of resourceSpans) {
+    if (!rs || typeof rs !== "object") continue;
+    const rec = rs as Record<string, unknown>;
+    const scopeSpans = rec.scopeSpans ?? rec.scope_spans;
+    if (!Array.isArray(scopeSpans)) continue;
+    for (const ss of scopeSpans) {
+      if (!ss || typeof ss !== "object") continue;
+      const spans = (ss as Record<string, unknown>).spans;
+      if (Array.isArray(spans)) n += spans.length;
+    }
+  }
+  return n;
+}
+
 otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   const isProtobuf = Boolean(req.is("application/x-protobuf"));
   // Any other content type leaves req.body an empty object, which reads here as a valid export of
@@ -107,7 +135,16 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
     res.status(400).json({ error: "body carried no resourceSpans - not an ExportTraceServiceRequest" });
     return;
   }
+  // Cap enforced on the raw envelope first, before normalization materializes anything.
+  const wireSpanCount = countWireSpans(parsed);
+  if (wireSpanCount > MAX_SPANS_PER_EXPORT) {
+    res.status(413).json({
+      error: `too many spans in one export (${wireSpanCount} > ${MAX_SPANS_PER_EXPORT}) - nothing was ingested, split the batch and resend`,
+    });
+    return;
+  }
   const spans = normalizeExportRequest(parsed);
+  // Backstop for envelope shapes countWireSpans couldn't walk.
   if (spans.length > MAX_SPANS_PER_EXPORT) {
     res.status(413).json({
       error: `too many spans in one export (${spans.length} > ${MAX_SPANS_PER_EXPORT}) - nothing was ingested, split the batch and resend`,
@@ -151,6 +188,25 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
     }
   }
   reconstructParentToolCalls(candidates);
+
+  // The daily trace quota applies to OTLP roots exactly as it does to SDK ingest - without
+  // this, AGENTX_QUOTA_TRACES_PER_DAY silently meant "SDK traffic only" and an OTel exporter
+  // walked past the cap. Counted once per export (root spans in this batch) and answered as
+  // 429, which OTLP/HTTP exporters treat as retryable-with-backoff.
+  const quota = traceQuota();
+  if (quota !== null) {
+    const incomingRoots = candidates.filter(c => !c.parent_span_id).length;
+    if (incomingRoots > 0) {
+      // Reserved, not check-then-acted - see core/shared/traceQuota.ts.
+      if (!(await reserveTraceRoots(scopedDb(req), incomingRoots, quota))) {
+        res.status(429).setHeader("Retry-After", "60");
+        res.json({
+          error: `Daily trace quota reached (${quota}/day for this project). Quota resets at midnight UTC; raise AGENTX_QUOTA_TRACES_PER_DAY to change the ceiling.`,
+        });
+        return;
+      }
+    }
+  }
 
   // Checked after the span durably lands (queued ingest, ADR-0005): a judge failure must
   // never break OTLP ingestion, and only conflict WINNERS run - an exporter retry that raced

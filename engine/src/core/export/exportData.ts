@@ -17,12 +17,26 @@ import type { Db } from "../../storage/db.js";
 // backup keeps the header KEYS; the operator re-enters the secrets, same as provider keys
 // (which are excluded from export entirely).
 function redactConnectorRow(row: Record<string, unknown>): Record<string, unknown> {
+  // Credentials live in the URL as often as in headers (https://user:pass@host, ?api_key=...):
+  // strip userinfo and mask every query value, keeping the shape so the export stays useful.
+  let url = row.url;
+  if (typeof url === "string") {
+    try {
+      const parsed = new URL(url);
+      parsed.username = "";
+      parsed.password = "";
+      for (const key of [...parsed.searchParams.keys()]) parsed.searchParams.set(key, "***redacted***");
+      url = parsed.toString();
+    } catch {
+      // Not parseable as a URL - leave as stored; nothing to redact structurally.
+    }
+  }
   const headers = row.headers;
-  if (!headers || typeof headers !== "object") return row;
-  return {
-    ...row,
-    headers: Object.fromEntries(Object.entries(headers as Record<string, unknown>).map(([k]) => [k, "***redacted***"])),
-  };
+  const redactedHeaders =
+    headers && typeof headers === "object"
+      ? Object.fromEntries(Object.entries(headers as Record<string, unknown>).map(([k]) => [k, "***redacted***"]))
+      : headers;
+  return { ...row, url, headers: redactedHeaders };
 }
 
 export const EXPORT_ENTITIES = {
@@ -117,7 +131,13 @@ export function exportKeyName(entity: ExportEntity): string {
 
 function buildWhere(db: Db, entity: ExportEntity, since: Date | null, cursor: string | null): SQL | undefined {
   const t = entityTable(db, entity);
-  const conds: SQL[] = [eq(t.projectId, db.projectId)];
+  // Strict projectId match for EVERY entity, audit-events included. The NULL-projectId audit
+  // rows are the instance-wide auth trail (every user's sign-in/sign-up attempts with IPs) -
+  // handing them to any project API key crossed the tenant boundary this module's header
+  // promises never to cross. Operators read the auth trail via the admin-token-gated
+  // GET /admin/audit instead.
+  const projectCond: SQL = eq(t.projectId, db.projectId);
+  const conds: SQL[] = [projectCond];
   if (since) {
     conds.push(gte(t[EXPORT_ENTITIES[entity].sinceColumn], since));
   }

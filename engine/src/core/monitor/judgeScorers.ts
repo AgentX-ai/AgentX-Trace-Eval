@@ -14,6 +14,7 @@ import {
 } from "../evaluate/evaluationSettings.js";
 import { getEvaluationSettingsVersionCounts } from "../evaluate/versions.js";
 import {
+  ReferenceCentricScorerError,
   createOnlineEvaluator,
   deleteOnlineEvaluator,
   findEvaluatorBoundToSettings,
@@ -21,6 +22,7 @@ import {
   updateOnlineEvaluator,
   type OnlineEvaluatorRow,
 } from "./onlineEvaluators.js";
+import { listScorerGroups } from "./scorerGroups.js";
 
 // The unified LLM Judge Scorer (2026-08 consolidation): ONE entity with a judge rubric and two
 // setting profiles, presented over the two storage halves that already existed -
@@ -259,7 +261,23 @@ export async function updateJudgeScorer(db: Db, id: string, patch: UpdateJudgeSc
       if (patch.judge[key] !== undefined) settingsPatch[key] = patch.judge[key];
     }
     if (patch.judge.toolContext !== undefined) settingsPatch.toolContext = normalizeToolContext(patch.judge.toolContext);
-    if (patch.judge.requiresExpected !== undefined) settingsPatch.requiresExpected = patch.judge.requiresExpected;
+    if (patch.judge.requiresExpected !== undefined) {
+      // Turning requiresExpected ON while the scorer is live would bypass the exact 409
+      // assertScorableOnline exists for - the judge would grade live traffic against a
+      // reference that does not exist. Same rule for membership in a live scorer group.
+      if (patch.judge.requiresExpected === true) {
+        const goingLive = patch.online !== null && (patch.online?.enabled ?? profile?.enabled ?? false);
+        const inLiveGroup = (await listScorerGroups(db)).some(
+          g => g.online?.enabled && g.members.some(m => m.kind === "judge" && m.refId === id)
+        );
+        if (goingLive || inLiveGroup) {
+          throw new ReferenceCentricScorerError(
+            `"${settings.name}" is scoring live traffic (directly or as a scorer-group member) - a reference answer (requiresExpected) cannot be required for live traffic. Disable live scoring first.`
+          );
+        }
+      }
+      settingsPatch.requiresExpected = patch.judge.requiresExpected;
+    }
   }
   if (patch.offline) {
     if (patch.offline.numberOfRequests !== undefined) settingsPatch.numberOfRequests = patch.offline.numberOfRequests;

@@ -151,7 +151,14 @@ export function capPayloadField(value: unknown): unknown {
     }
     return [...kept, { "agentx.truncated": true, dropped: value.length - kept.length }];
   }
-  return { "agentx.truncated": true, preview: serialized.slice(0, MAX_FIELD_CHARS) };
+  // Preserve a legacy metadata.kind statement through truncation - resolveSpanKind reads it,
+  // and losing it silently reclassified pre-column retrieval spans to "chain" (dropping them
+  // from the RAG judges' {context}).
+  const statedKind =
+    value && typeof value === "object" && typeof (value as { kind?: unknown }).kind === "string"
+      ? { kind: (value as { kind: string }).kind }
+      : {};
+  return { "agentx.truncated": true, ...statedKind, preview: serialized.slice(0, MAX_FIELD_CHARS) };
 }
 
 // Platform label (the platform-agnostic tracing story): producers send any string - an SDK

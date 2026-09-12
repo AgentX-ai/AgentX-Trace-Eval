@@ -106,6 +106,10 @@ describe("memory span kind", () => {
   it("memory is NOT retrieval: recalled state never feeds the RAG judges' {context}", () => {
     expect(isRetrievalSpan({ spanKind: "memory" })).toBe(false);
     expect(isRetrievalSpan({ name: "Memory recall" })).toBe(false);
+    // A memory op wearing a retrieval verb classifies as memory, matching the alias table.
+    expect(resolveSpanKind({ name: "retrieve_memories" })).toBe("memory");
+    expect(isRetrievalSpan({ name: "retrieval_of_user_memories" })).toBe(false);
+    expect(resolveSpanKind({ name: "retrieve_documents" })).toBe("retrieval");
   });
 });
 

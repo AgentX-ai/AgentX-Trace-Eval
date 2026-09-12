@@ -78,7 +78,10 @@ const ALIASES: Record<string, SpanKind> = {
   add_memory: "memory",
   get_memory: "memory",
   recall: "memory",
-  // MLflow's own vocabulary for the rest.
+  // MLflow's own vocabulary for the rest (CHAT_MODEL is its chat-model span type); OTel's
+  // GenAI semconv adds generate_content for Gemini/Vertex instrumentation.
+  chat_model: "llm",
+  generate_content: "llm",
   llm: "llm",
   parser: "chain",
   // LangSmith's "chain" and MLflow's "CHAIN"/"UNKNOWN" are both "some step in the middle".
@@ -132,7 +135,12 @@ export function resolveSpanKind(span: SpanKindInput): SpanKind {
   // integrations emit, and the Execution Timeline depended on that literal string until now.
   const name = span.name ?? "";
   if (/^llm call/i.test(name)) return "llm";
-  if (/^retriev/i.test(name)) return "retrieval";
+  // "retrieve_memories" is a MEMORY op wearing a retrieval verb - the alias table already
+  // folds memory_retrieval onto memory, and the name ladder must agree, or recalled user
+  // state rides into the RAG judges' {context} via isRetrievalSpan. Word-matched, not
+  // stem-matched: "Retrieval: memoranda index" is a knowledge lookup whose chunks must NOT
+  // be silently dropped from {context}.
+  if (/^retriev/i.test(name)) return /memor(y|ies)/i.test(name) ? "memory" : "retrieval";
   if (/^memory/i.test(name)) return "memory";
   // Everything else is a step in the middle. Note this is where the timeline used to say "tool",
   // which is how an unrecognized span got drawn as a tool call it never was.
@@ -154,6 +162,9 @@ export const toolCallList = (raw: unknown): { name: string; failed: boolean }[] 
   if (!Array.isArray(raw)) return [];
   return raw
     .filter((tc): tc is Record<string, unknown> => !!tc && typeof tc === "object")
+    // The ingest cap appends an {"agentx.truncated": true, dropped: n} marker into oversized
+    // arrays - it is bookkeeping, not a successful call to a tool named "tool".
+    .filter(tc => tc["agentx.truncated"] !== true)
     .map(tc => ({
       name: typeof tc.name === "string" ? tc.name : "tool",
       failed: tc.success === false,

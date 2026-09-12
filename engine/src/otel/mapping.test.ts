@@ -209,6 +209,41 @@ describe("reconstructParentToolCalls", () => {
     expect(outer.tool_calls).toEqual(call("outer"));
   });
 
+  it("folds a tool span nested under another tool span into the non-tool root above both", () => {
+    const root: IngestTraceInput = { name: "agent", span_id: "root" };
+    const outer: IngestTraceInput = { name: "outer", span_id: "outer", parent_span_id: "root", tool_calls: call("outer") };
+    const inner: IngestTraceInput = { name: "inner", span_id: "inner", parent_span_id: "outer", tool_calls: call("inner") };
+
+    reconstructParentToolCalls([root, outer, inner]);
+
+    expect(root.tool_calls).toEqual([...call("outer"), ...call("inner")]);
+    expect(outer.tool_calls).toEqual(call("outer"));
+  });
+
+  it("falls back to the nearest non-tool ancestor when the topmost reachable span is a tool", () => {
+    // The batch's top is itself a tool span (its own parent arrived in an earlier export):
+    // the nested tool's call used to fold nowhere - now it lands on the non-tool span between.
+    const topTool: IngestTraceInput = { name: "top", span_id: "top", tool_calls: call("top") };
+    const mid: IngestTraceInput = { name: "llm", span_id: "mid", parent_span_id: "top" };
+    const inner: IngestTraceInput = { name: "inner", span_id: "inner", parent_span_id: "mid", tool_calls: call("inner") };
+
+    reconstructParentToolCalls([topTool, mid, inner]);
+
+    expect(mid.tool_calls).toEqual(call("inner"));
+    expect(topTool.tool_calls).toEqual(call("top"));
+  });
+
+  it("still folds nowhere when every reachable ancestor is a tool span", () => {
+    const topTool: IngestTraceInput = { name: "top", span_id: "top", tool_calls: call("top") };
+    const midTool: IngestTraceInput = { name: "mid", span_id: "mid", parent_span_id: "top", tool_calls: call("mid") };
+    const inner: IngestTraceInput = { name: "inner", span_id: "inner", parent_span_id: "mid", tool_calls: call("inner") };
+
+    reconstructParentToolCalls([topTool, midTool, inner]);
+
+    expect(topTool.tool_calls).toEqual([...call("top")]);
+    expect(midTool.tool_calls).toEqual(call("mid"));
+  });
+
   it("terminates on a parent cycle instead of looping forever", () => {
     const a: IngestTraceInput = { name: "a", span_id: "a", parent_span_id: "b" };
     const b: IngestTraceInput = { name: "b", span_id: "b", parent_span_id: "a" };
