@@ -1008,3 +1008,12 @@ window while treating later reuse as theft (whole grant revoked), a scope-narrow
 only the access token, and a dashboard user's grant is re-checked against their organization
 membership on every refresh and token verification. The consent page's CSP now lists the client's
 callback origin in `form-action`, which Chromium applies to the post-submit redirect.
+
+`POST /mcp` now negotiates the `Accept` header instead of insisting on the exact pair the
+Streamable HTTP spec asks clients to send. A client offering `*/*`, `application/*`, or no header
+at all used to be refused at the handshake with a `406` that most hosts never surface: the
+connector registered no tools and the model was left to improvise around an MCP server that looked
+present but empty. The engine now answers in the shape the caller can actually read - a single
+JSON body unless the client named `text/event-stream` outright, which keeps spec-compliant clients
+on the event stream exactly as before - and still returns `406` when nothing on offer is
+serviceable.

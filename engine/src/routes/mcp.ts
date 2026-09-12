@@ -128,6 +128,45 @@ function requireMcpAuth(provider: EngineOAuthProvider | null, resourceMetadataUr
   };
 }
 
+// Accept-header negotiation for /mcp.
+//
+// The Streamable HTTP spec tells a client to send `Accept: application/json, text/event-stream`,
+// and the SDK transport answers 406 to anything else - including `*/*` and a missing header,
+// which is what a great many HTTP clients send by default. A wildcard does accept both, so
+// refusing it strands a working client at the handshake behind an error most clients never
+// surface: the connector simply registers no tools and the model is left to improvise.
+//
+// So: work out what the caller can actually read, answer in that shape (a plain JSON body for a
+// client that never said it understands an event stream), and hand the transport the explicit
+// pair it insists on. A caller that accepts neither type is left alone to get its 406, which is
+// the one case where the status is the truth.
+const JSON_TYPE = "application/json";
+const SSE_TYPE = "text/event-stream";
+
+type AcceptOffer = {
+  /** Either type is readable, wildcards included - i.e. this request can be served at all. */
+  serviceable: boolean;
+  /** The client named the event-stream type outright, so it is ready to parse SSE frames. */
+  wantsStream: boolean;
+};
+
+function acceptOffer(header: string | undefined): AcceptOffer {
+  const raw = (header ?? "").trim();
+  // No Accept header means "anything is acceptable" (RFC 9110 section 12.5.1).
+  if (raw === "") return { serviceable: true, wantsStream: false };
+  const offered = raw
+    .split(",")
+    .map(entry => entry.trim().toLowerCase())
+    // `q=0` is an explicit refusal of that type, not an offer of it.
+    .filter(entry => entry !== "" && !/;\s*q=0(\.0+)?\s*(;|$)/.test(entry))
+    .map(entry => entry.split(";")[0]!.trim());
+  const readable = (type: string) => {
+    const group = type.split("/")[0];
+    return offered.some(entry => entry === type || entry === "*/*" || entry === `${group}/*`);
+  };
+  return { serviceable: readable(JSON_TYPE) || readable(SSE_TYPE), wantsStream: offered.includes(SSE_TYPE) };
+}
+
 async function handleMcpPost(req: Request, res: Response): Promise<void> {
   const projectId = req.projectId!;
   const server = createMcpServer({
@@ -139,7 +178,16 @@ async function handleMcpPost(req: Request, res: Response): Promise<void> {
     principal: req.mcpPrincipal ?? { kind: "project-key" },
     ip: req.ip ?? null,
   });
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  const offer = acceptOffer(req.header("accept"));
+  if (offer.serviceable) {
+    req.headers.accept = `${JSON_TYPE}, ${SSE_TYPE}`;
+  }
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    // Only a client that asked for an event stream gets one; everyone else gets a single JSON
+    // body, which both the spec and every such client can read.
+    enableJsonResponse: !offer.wantsStream,
+  });
   res.on("close", () => {
     void transport.close();
     void server.close();

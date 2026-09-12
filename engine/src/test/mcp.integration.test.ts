@@ -228,6 +228,56 @@ describe("MCP endpoint, AGENTX_AUTH=disabled", () => {
     expect((await rawToolsList(engine, { Authorization: "Bearer agtx_mcp_at_nope" })).status).toBe(401);
   });
 
+  it("serves clients whatever Accept header they send, streaming only when asked", async () => {
+    // A connector that sends `*/*` (or nothing) used to be refused at the handshake with a 406
+    // it never surfaced, so it registered no tools at all and the model improvised around it.
+    const init = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "accept-probe", version: "0" } },
+    };
+    const handshake = (accept: string) =>
+      fetch(mcpUrl(engine), {
+        method: "POST",
+        headers: { "content-type": "application/json", accept, authorization: `Bearer ${engine.apiKey}` },
+        body: JSON.stringify(init),
+      });
+
+    // Spec-compliant client: an event stream, exactly as before.
+    const both = await handshake("application/json, text/event-stream");
+    expect(both.status).toBe(200);
+    expect(both.headers.get("content-type")).toContain("text/event-stream");
+    expect(await both.text()).toContain("event: message");
+
+    // Wildcard and JSON-only clients: a single JSON body they can actually parse.
+    for (const accept of ["*/*", "application/json", "application/*", "application/json;q=1, */*;q=0.1"]) {
+      const res = await handshake(accept);
+      expect(res.status, `Accept: ${accept}`).toBe(200);
+      expect(res.headers.get("content-type"), `Accept: ${accept}`).toContain("application/json");
+      const body = (await res.json()) as { result?: { serverInfo?: { name?: string } } };
+      expect(body.result?.serverInfo?.name, `Accept: ${accept}`).toBe("agentx-self-host");
+    }
+
+    // A client that named the stream type alone still gets the stream.
+    const streamOnly = await handshake("text/event-stream");
+    expect(streamOnly.status).toBe(200);
+    expect(streamOnly.headers.get("content-type")).toContain("text/event-stream");
+
+    // Nothing we can serve, and nothing to guess at: the 406 stands.
+    const unusable = await handshake("text/plain");
+    expect(unusable.status).toBe(406);
+
+    // And the negotiated JSON path carries real tool results, not just the handshake.
+    const tools = await fetch(mcpUrl(engine), {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "*/*", authorization: `Bearer ${engine.apiKey}` },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+    });
+    const listed = (await tools.json()) as { result: { tools: { name: string }[] } };
+    expect(listed.result.tools.map(t => t.name).sort()).toEqual([...EXPECTED_TOOLS].sort());
+  });
+
   it("only speaks POST (stateless transport)", async () => {
     const res = await fetch(mcpUrl(engine));
     expect(res.status).toBe(405);

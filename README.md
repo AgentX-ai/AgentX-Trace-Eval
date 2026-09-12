@@ -242,7 +242,15 @@ How a client authenticates depends on where it runs:
 | Claude Code | `claude mcp add --transport http agentx http://localhost:4700/mcp --header "Authorization: Bearer <project API key>"` | Project API key (printed at startup) |
 | Claude Desktop, Cursor, other stdio-only hosts | A stdio bridge, e.g. `npx mcp-remote http://localhost:4700/mcp --header "Authorization: Bearer <key>"` | Same key |
 | Agent SDK, scripts, CI | Any MCP client pointed at `/mcp` with the header | Same key |
+| Codex and other HTTP connectors | Point at `http://localhost:4700/mcp`; `x-api-key: <key>` works wherever a bearer header is awkward | Same key |
 | **claude.ai / Claude Desktop connectors** | Add `https://<your instance>/mcp` as a custom connector | OAuth 2.1 (below) - static keys are not an option there |
+
+If a host is configured with the *name* of an environment variable holding the key (Codex's
+`bearer_token_env_var`, for one), put the variable name there and export the key in the
+environment that launches the host - pasting the key itself makes the host look up a variable
+that does not exist, send no credential, and quietly register no tools. The engine logs every
+request with its status, so a `401` on `/mcp` in its output is the credential, a `406` is the
+`Accept` header, and no line at all means the host never dialled.
 
 **OAuth for claude.ai.** Anthropic's servers open the connection, so the instance needs a public
 HTTPS URL, and the engine acts as the OAuth 2.1 authorization server for its own `/mcp`: RFC 9728
