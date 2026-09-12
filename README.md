@@ -23,6 +23,7 @@ browser, and prints the Default project API key for the SDK. Prefer a container?
 - [Configuration](#configuration)
 - [Scaling tiers](#scaling-tiers)
 - [SDK & OpenTelemetry](#sdk--opentelemetry)
+- [Connect Claude (MCP)](#connect-claude-mcp)
 - [Claude Code skills](#claude-code-skills)
 - [What's in this repo](#whats-in-this-repo)
 - [Building from source](#building-from-source)
@@ -141,6 +142,8 @@ Set these in the environment before starting `agentx-server`:
 | `AGENTX_METRICS_TOKEN`       | -                | When set, `GET /metrics` requires `Authorization: Bearer <token>`; unset leaves the endpoint open (fine for a local install, not for a network-exposed one).                                                                                    |
 | `AGENTX_PUBLIC_URL`          | -                | The externally reachable base URL when running behind a proxy/domain with auth enabled (used for auth callbacks/cookies).                                                                                                                       |
 | `AGENTX_TRUSTED_ORIGINS`     | -                | Comma-separated extra origins allowed to make authenticated browser requests (e.g. a dev dashboard on another port).                                                                                                                            |
+| `AGENTX_MCP`                 | (enabled)        | Set to `disabled` to turn off the MCP connector surface (`POST /mcp` and the OAuth endpoints) entirely. See [Connect Claude (MCP)](#connect-claude-mcp).                                                                                          |
+| `AGENTX_MCP_REDIRECT_ALLOWLIST` | -             | Comma-separated extra OAuth redirect URIs an MCP client may register with (exact match, or a prefix ending in `*`). claude.ai's callback and loopback URIs are always allowed.                                                                  |
 
 Trace ingest and pattern matching on phrase/regex both work with no keys configured at all - only
 judge scoring, semantic pattern detection, and the embeddings-backed features (topic clustering,
@@ -222,6 +225,58 @@ OTel traffic is a first-class citizen of the full loop, via three attribute conv
 | `gen_ai.tool.name` on a child span                             | The tool call is folded up into its root interaction's `tool_calls` (with `success`/`error` from the span's status), lighting up the Tool quality column, the built-in Tool failure check, and Tool Schema evidence. In-batch only: a parent exported in an earlier OTLP batch isn't updated retroactively. |
 
 Known gap: gRPC transport isn't supported (HTTP only).
+
+## Connect Claude (MCP)
+
+The engine is also a remote [MCP](https://modelcontextprotocol.io) server: `POST /mcp` (Streamable
+HTTP) exposes read-only tools over one project's traces, sessions, signals and KPIs, datasets and
+evaluation runs, the Prompt and Tool Schema registries, and coverage insights - the same
+`agentx_*` tool names as the hosted AgentX connector, so prompts and skills port between the two.
+Every call runs through the same project-scoped core functions the dashboard uses; there is no
+side door.
+
+How a client authenticates depends on where it runs:
+
+| Client | How it reaches the engine | Credential |
+| --- | --- | --- |
+| Claude Code | `claude mcp add --transport http agentx http://localhost:4700/mcp --header "Authorization: Bearer <project API key>"` | Project API key (printed at startup) |
+| Claude Desktop, Cursor, other stdio-only hosts | A stdio bridge, e.g. `npx mcp-remote http://localhost:4700/mcp --header "Authorization: Bearer <key>"` | Same key |
+| Agent SDK, scripts, CI | Any MCP client pointed at `/mcp` with the header | Same key |
+| Codex and other HTTP connectors | Point at `http://localhost:4700/mcp`; `x-api-key: <key>` works wherever a bearer header is awkward | Same key |
+| **claude.ai / Claude Desktop connectors** | Add `https://<your instance>/mcp` as a custom connector | OAuth 2.1 (below) - static keys are not an option there |
+
+If a host is configured with the *name* of an environment variable holding the key (Codex's
+`bearer_token_env_var`, for one), put the variable name there and export the key in the
+environment that launches the host - pasting the key itself makes the host look up a variable
+that does not exist, send no credential, and quietly register no tools. The engine logs every
+request with its status, so a `401` on `/mcp` in its output is the credential, a `406` is the
+`Accept` header, and no line at all means the host never dialled.
+
+**OAuth for claude.ai.** Anthropic's servers open the connection, so the instance needs a public
+HTTPS URL, and the engine acts as the OAuth 2.1 authorization server for its own `/mcp`: RFC 9728
+protected-resource metadata, RFC 8414 discovery, dynamic client registration (PKCE required,
+redirect URIs limited to claude.ai's callback, loopback, and `AGENTX_MCP_REDIRECT_ALLOWLIST`),
+one-hour access tokens bound to this server, 30-day refresh tokens rotated on every use, and
+revocation. An access token is a short-lived stand-in for the project API key: regenerating the
+key revokes every grant. What the consent page asks for follows the auth mode:
+
+- `AGENTX_AUTH=enabled` (recommended for anything internet-reachable): sign in with your dashboard
+  account, pick the project to connect, approve.
+- `AGENTX_AUTH=disabled`: paste the project API key. Same trust posture as the rest of that mode,
+  which lets you connect claude.ai to a laptop through a tunnel (`cloudflared tunnel --url
+  http://localhost:4700`, Tailscale Funnel, ngrok) without turning on accounts.
+
+```bash
+AGENTX_PUBLIC_URL=https://agentx.example.com AGENTX_AUTH=enabled agentx-server
+# claude.ai -> Settings -> Connectors -> Add custom connector -> https://agentx.example.com/mcp
+```
+
+`AGENTX_PUBLIC_URL` must be `https://` for OAuth to mount (loopback `http://localhost` also works,
+for local clients); without it `/mcp` still accepts the bearer key. Live grants are listed at
+`GET /api/v1/mcp/grants` (key-authenticated) and revoked with `DELETE /api/v1/mcp/grants/:id`; every
+tool call lands in the audit trail as `mcp.tool_call`. Design notes and the roadmap (write tools
+behind an `mcp:write` scope, a dashboard "connected apps" card) live in
+[docs/self-hosted-mcp-plan.md](docs/self-hosted-mcp-plan.md).
 
 ## Claude Code skills
 

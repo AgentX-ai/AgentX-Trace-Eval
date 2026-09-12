@@ -1251,3 +1251,57 @@ export const improvementReports = sqliteTable("improvement_reports", {
   report: text("report", { mode: "json" }).notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
+
+// MCP connector authorization (core/mcp/*): the engine acts as a small OAuth 2.1 authorization
+// server so claude.ai / Claude Code can connect to /mcp without a project API key ever leaving
+// the box. Tokens are opaque and stored HASHED (sha256) - unlike project keys they are derived,
+// short-lived credentials, so hashing them costs nothing and bounds a database leak. Clients
+// are the output of Dynamic Client Registration (RFC 7591); the secret stays plaintext because
+// the SDK's token endpoint compares it directly (PKCE is mandatory, so a leaked secret alone
+// mints nothing). No project_id on clients: a registered client is instance-wide, it is the
+// GRANT (code/token rows) that names the project.
+export const mcpOauthClients = sqliteTable("mcp_oauth_clients", {
+  id: text("id").primaryKey(),
+  clientSecret: text("client_secret"),
+  // The full RFC 7591 metadata document as registered (redirect_uris, client_name, ...), minus
+  // the id/secret columns above - returned verbatim to the SDK's client store.
+  metadata: text("metadata", { mode: "json" }).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  lastUsedAt: integer("last_used_at", { mode: "timestamp_ms" }),
+});
+
+export const mcpOauthCodes = sqliteTable("mcp_oauth_codes", {
+  codeHash: text("code_hash").primaryKey(),
+  clientId: text("client_id").notNull(),
+  projectId: text("project_id").notNull(),
+  organizationId: text("organization_id"),
+  userId: text("user_id"),
+  scopes: text("scopes", { mode: "json" }).notNull(),
+  codeChallenge: text("code_challenge").notNull(),
+  redirectUri: text("redirect_uri").notNull(),
+  resource: text("resource"),
+  expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export const mcpOauthTokens = sqliteTable("mcp_oauth_tokens", {
+  tokenHash: text("token_hash").primaryKey(),
+  // "access" | "refresh". A grant (one approved authorization) owns one refresh chain and the
+  // access tokens minted from it; revoking the grant revokes every row sharing grant_id.
+  kind: text("kind").notNull(),
+  grantId: text("grant_id").notNull(),
+  clientId: text("client_id").notNull(),
+  projectId: text("project_id").notNull(),
+  organizationId: text("organization_id"),
+  userId: text("user_id"),
+  scopes: text("scopes", { mode: "json" }).notNull(),
+  resource: text("resource"),
+  expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+  revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
+  // Refresh tokens only: set when the token was rotated out by a successful refresh. Distinct
+  // from revoked_at so a retry inside the rotation grace window can be told apart from a token
+  // that was deliberately revoked.
+  rotatedAt: integer("rotated_at", { mode: "timestamp_ms" }),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  lastUsedAt: integer("last_used_at", { mode: "timestamp_ms" }),
+});

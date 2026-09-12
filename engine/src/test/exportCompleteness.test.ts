@@ -16,6 +16,11 @@ const DELIBERATELY_EXCLUDED = new Set([
   "usage_events", // metering counters
   "projects", // the container itself - created by the import target, not restored into it
   "api_keys", // credentials never leave an install in a backup file
+  // MCP OAuth grant state - credentials too, and bound to this issuer: a code or token minted
+  // by one install means nothing to another, and restoring one would hand a foreign client a
+  // live grant. Clients re-register and re-consent against the target install.
+  "mcp_oauth_codes",
+  "mcp_oauth_tokens",
 ]);
 
 describe("export registry completeness", () => {

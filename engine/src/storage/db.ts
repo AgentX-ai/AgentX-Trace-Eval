@@ -1046,6 +1046,47 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
       created_at INTEGER,
       inviter_id TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS mcp_oauth_clients (
+      id TEXT PRIMARY KEY,
+      client_secret TEXT,
+      metadata TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS mcp_oauth_codes (
+      code_hash TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      organization_id TEXT,
+      user_id TEXT,
+      scopes TEXT NOT NULL,
+      code_challenge TEXT NOT NULL,
+      redirect_uri TEXT NOT NULL,
+      resource TEXT,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS mcp_oauth_tokens (
+      token_hash TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      grant_id TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      organization_id TEXT,
+      user_id TEXT,
+      scopes TEXT NOT NULL,
+      resource TEXT,
+      expires_at INTEGER NOT NULL,
+      revoked_at INTEGER,
+      rotated_at INTEGER,
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS mcp_oauth_tokens_grant_id ON mcp_oauth_tokens (grant_id);
+    CREATE INDEX IF NOT EXISTS mcp_oauth_tokens_project_id ON mcp_oauth_tokens (project_id);
   `);
 
   // Columns added after the tables above already shipped: CREATE TABLE IF NOT EXISTS doesn't
@@ -2416,6 +2457,47 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
       created_at TIMESTAMP,
       inviter_id TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS mcp_oauth_clients (
+      id TEXT PRIMARY KEY,
+      client_secret TEXT,
+      metadata JSONB NOT NULL,
+      created_at TIMESTAMP NOT NULL,
+      last_used_at TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS mcp_oauth_codes (
+      code_hash TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      organization_id TEXT,
+      user_id TEXT,
+      scopes JSONB NOT NULL,
+      code_challenge TEXT NOT NULL,
+      redirect_uri TEXT NOT NULL,
+      resource TEXT,
+      expires_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS mcp_oauth_tokens (
+      token_hash TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      grant_id TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      organization_id TEXT,
+      user_id TEXT,
+      scopes JSONB NOT NULL,
+      resource TEXT,
+      expires_at TIMESTAMP NOT NULL,
+      revoked_at TIMESTAMP,
+      rotated_at TIMESTAMP,
+      created_at TIMESTAMP NOT NULL,
+      last_used_at TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS mcp_oauth_tokens_grant_id ON mcp_oauth_tokens (grant_id);
+    CREATE INDEX IF NOT EXISTS mcp_oauth_tokens_project_id ON mcp_oauth_tokens (project_id);
 
     -- Postgres supports IF NOT EXISTS on ADD COLUMN natively, unlike SQLite (see
     -- bootstrapSqlite's columnMigrations for the equivalent there), so pre-existing databases

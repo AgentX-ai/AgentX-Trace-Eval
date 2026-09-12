@@ -810,3 +810,43 @@ export const improvementReports = pgTable("improvement_reports", {
   report: jsonb("report").notNull(),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),
 });
+
+// MCP connector authorization - see schema.sqlite.ts's mcp_oauth_* block for the full comment.
+export const mcpOauthClients = pgTable("mcp_oauth_clients", {
+  id: text("id").primaryKey(),
+  clientSecret: text("client_secret"),
+  metadata: jsonb("metadata").notNull(),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  lastUsedAt: timestamp("last_used_at", { mode: "date" }),
+});
+
+export const mcpOauthCodes = pgTable("mcp_oauth_codes", {
+  codeHash: text("code_hash").primaryKey(),
+  clientId: text("client_id").notNull(),
+  projectId: text("project_id").notNull(),
+  organizationId: text("organization_id"),
+  userId: text("user_id"),
+  scopes: jsonb("scopes").notNull(),
+  codeChallenge: text("code_challenge").notNull(),
+  redirectUri: text("redirect_uri").notNull(),
+  resource: text("resource"),
+  expiresAt: timestamp("expires_at", { mode: "date" }).notNull(),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+});
+
+export const mcpOauthTokens = pgTable("mcp_oauth_tokens", {
+  tokenHash: text("token_hash").primaryKey(),
+  kind: text("kind").notNull(),
+  grantId: text("grant_id").notNull(),
+  clientId: text("client_id").notNull(),
+  projectId: text("project_id").notNull(),
+  organizationId: text("organization_id"),
+  userId: text("user_id"),
+  scopes: jsonb("scopes").notNull(),
+  resource: text("resource"),
+  expiresAt: timestamp("expires_at", { mode: "date" }).notNull(),
+  revokedAt: timestamp("revoked_at", { mode: "date" }),
+  rotatedAt: timestamp("rotated_at", { mode: "date" }),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  lastUsedAt: timestamp("last_used_at", { mode: "date" }),
+});

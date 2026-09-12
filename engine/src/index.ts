@@ -17,6 +17,7 @@ import { authMode, initAuth, resolveAuthSecret } from "./auth/betterAuth.js";
 import { consolidateAppSettingsSingleton } from "./core/settings/appSettings.js";
 import { mailerConfigured } from "./auth/mailer.js";
 import { registerAuthRoutes, registerApiV1 } from "./routes/apiV1.js";
+import { registerMcp } from "./routes/mcp.js";
 import { findWebIndexHtml, downloadWebBundle, webBundleCandidates, describeWebBundle } from "./web.js";
 import { startSessionSweep } from "./core/monitor/sessionSweep.js";
 import { startImprovementSweep } from "./core/evaluate/improvementSweep.js";
@@ -182,6 +183,11 @@ async function main() {
   const apiKey = asyncHandler(requireApiKey());
 
   registerApiV1(app, { credentialLimit, dataPlaneLimit, apiKey });
+
+  // MCP connector surface (routes/mcp.ts): POST /mcp plus the OAuth endpoints at the root.
+  // Registered after the API and before the SPA fallback below, which would otherwise answer
+  // /mcp and /.well-known/* with index.html.
+  registerMcp(app, { credentialLimit, dataPlaneLimit, port: PORT });
 
   // The dashboard bundle is AgentX's real, full frontend (see README's "Open source scope"), so
   // it still calls a handful of hosted-SaaS-only endpoints this engine doesn't implement
