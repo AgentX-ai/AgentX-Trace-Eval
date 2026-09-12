@@ -40,12 +40,10 @@ export type ScriptScorerResult = {
   error?: string;
 };
 
-// What a scorer sees per span: the trace-detail wire fields plus a derived `type`, classified
-// from what the span actually recorded (heuristic, documented in the dialog placeholder):
-//   "llm" - a model is recorded on the span
-//   "tool" - tool calls are recorded (and no model)
-//   "retrieval" - metadata.kind === "retrieval" (the SDK's retrieval-span marker)
-//   "span" - anything else
+// What a scorer sees per span: the trace-detail wire fields plus a derived `type` - the
+// engine-wide span kind (core/trace/spanKind.ts): a stated span_kind wins, else the fallback
+// ladder ("llm" for a span with a model, "tool" for recorded tool calls, "retrieval"/"memory"
+// from the kind marker or name, "chain" for anything else).
 export type ScorerSpan = {
   span_id: string | null;
   parent_span_id: string | null;
@@ -134,14 +132,17 @@ export async function loadScorerSpans(db: Db, traceId: string | null): Promise<S
     span_id: (span.spanId ?? span.span_id ?? null) as string | null,
     parent_span_id: (span.parentSpanId ?? span.parent_span_id ?? null) as string | null,
     name: String(span.name ?? ""),
-    type: ((): string => {
-      const metadata = span.metadata as { kind?: unknown } | null | undefined;
-      if (metadata && metadata.kind === "retrieval") return "retrieval";
-      if (span.model) return "llm";
-      const calls = span.toolCalls ?? span.tool_calls;
-      if (Array.isArray(calls) && calls.length > 0) return "tool";
-      return "span";
-    })(),
+    // The ONE classifier (core/trace/spanKind.ts) - this used to be a second, pre-unification
+    // ladder that ignored the stated spanKind and emitted the retired word "span", so one
+    // spans[] array handed to a scorer mixed two vocabularies depending on tree position.
+    type: resolveSpanKind({
+      spanKind: span.spanKind ?? span.span_kind,
+      metadata: span.metadata,
+      name: (span.name ?? null) as string | null,
+      model: (span.model ?? null) as string | null,
+      toolCalls: span.toolCalls ?? span.tool_calls,
+      parentSpanId: (span.parentSpanId ?? span.parent_span_id ?? null) as string | null,
+    }),
     input: span.input ?? null,
     output: span.output ?? null,
     error: (span.error ?? null) as string | null,

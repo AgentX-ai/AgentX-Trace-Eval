@@ -53,6 +53,7 @@ import {
 } from "../core/evaluate/runs.js";
 import {
   createAgentConnector,
+  hasMaskedHeaderValues,
   listAgentConnectorsWire,
   updateAgentConnector,
   deleteAgentConnector,
@@ -576,6 +577,12 @@ evaluateDashboardRouter.post("/agent-connectors", async (req: Request, res: Resp
   const headerProblem = connectorHeaderProblem(body.headers);
   if (headerProblem) {
     res.status(400).json({ error: headerProblem });
+    return;
+  }
+  if (hasMaskedHeaderValues(body.headers && typeof body.headers === "object" ? body.headers : null)) {
+    res.status(400).json({
+      error: "One or more header values look masked (\"abc...xyz\") - paste the real secret; masked placeholders only round-trip on update, where the stored original exists.",
+    });
     return;
   }
   const connector = await createAgentConnector(scopedDb(req), {

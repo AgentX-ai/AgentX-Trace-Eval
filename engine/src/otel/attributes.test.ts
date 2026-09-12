@@ -108,6 +108,22 @@ describe("keyValueListToRecord", () => {
     ).toEqual({ dup: "second" });
   });
 
+  it("treats a wire attribute named __proto__ as an ordinary own key", () => {
+    // On a plain object this key would rewire the record's prototype instead of landing as data;
+    // the null-prototype record keeps it inert.
+    const record = keyValueListToRecord([
+      { key: "__proto__", value: { stringValue: "evil" } },
+      { key: "constructor", value: { stringValue: "also-data" } },
+      { key: "gen_ai.request.model", value: { stringValue: "gpt-4o" } },
+    ]);
+    expect(record["__proto__"]).toBe("evil");
+    expect(record["constructor"]).toBe("also-data");
+    expect(record["gen_ai.request.model"]).toBe("gpt-4o");
+    expect(Object.keys(record).sort()).toEqual(["__proto__", "constructor", "gen_ai.request.model"]);
+    // The global Object prototype is untouched.
+    expect(({} as Record<string, unknown>).evil).toBeUndefined();
+  });
+
   it("tolerates a null entry in the list", () => {
     expect(() => keyValueListToRecord([null as never, { key: "k", value: { stringValue: "v" } }])).not.toThrow();
     expect(keyValueListToRecord([null as never, { key: "k", value: { stringValue: "v" } }])).toEqual({ k: "v" });

@@ -80,7 +80,7 @@ config block - with two kinds of entries:
       },
       {
         "question": "Any meal restrictions for my flight?",
-        "category": "single_session_recall",
+        "category": "preference_recall",
         "dependsOn": ["seed-prefs"],
         "expectedResults": "Vegetarian meal"
       }
@@ -89,11 +89,14 @@ config block - with two kinds of entries:
 }
 ```
 
-Probe categories are LongMemEval's, minus none: `single_session_recall`, `assistant_recall`
-(what the *agent* said or did earlier), `preference_recall`, `knowledge_update`,
-`temporal_reasoning` ("what did I ask about *before* I moved?"), `multi_session` (the answer
-requires joining facts across seeds). `abstention` is the seventh, implicit category: probes
-whose `dependsOn` is empty test that the agent does NOT fabricate a memory it was never given.
+Probe categories are LongMemEval's six types, renamed for readability: `single_session_recall`
+(LongMemEval's single-session-user), `assistant_recall` (single-session-assistant - what the
+*agent* said or did earlier), `preference_recall` (single-session-preference), while
+`knowledge_update`, `temporal_reasoning` ("what did I ask about *before* I moved?"), and
+`multi_session` (the answer requires joining facts across seeds) keep their names. `abstention`
+- which LongMemEval models as a variant of each type rather than a category of its own - is
+promoted to an explicit seventh category here: probes whose `dependsOn` is empty test that the
+agent does NOT fabricate a memory it was never given.
 
 Why by-reference seeds instead of one long transcript: per-seed attribution. When
 `knowledge_update` fails, the report can say "recalled seed-prefs, missed seed-update" - the
@@ -124,8 +127,9 @@ all apply unchanged.
           category/dependsOn in the result metadata.
 
 5. REPORT Per-category aggregates + per-seed-age curve (recall @ 3d vs @ 14d) on the run;
-          gate(fail_under=..., scorer="knowledge_update") works because categories are
-          surfaced through the existing per-scorer breakdown machinery.
+          gate(fail_under=..., scorer="knowledge_update") works once Phase 1 surfaces
+          categories as scorerBreakdown entries - it does not resolve today (gate's
+          scorer= only matches judge entries in scorerBreakdown).
 ```
 
 **Who executes the turns:** the same three subject adapters dataset runs already have.
@@ -185,7 +189,8 @@ Layered, all existing machinery:
   gains `memoryBreakdown: [{ category, scored, averageRating, staleFactHits }]`.
 - **SDK:** `client.evaluations.memory_probe_suite(...)` builder +
   `run(dataset_id=..., ...)` unchanged; `run.memory_breakdown()` accessor;
-  `gate(fail_under=..., scorer="knowledge_update")` already works.
+  `gate(fail_under=..., scorer="knowledge_update")` works once Phase 1 surfaces categories as
+  scorerBreakdown entries (it does not resolve today).
 - **UI:** the dataset editor gets a Seeds/Probes view for `memoryProbe` datasets; the run
   detail gets a category breakdown card and, per probe row, links to the seed sessions and the
   probe session (both are real sessions - the existing session detail dialog is the drill-down).

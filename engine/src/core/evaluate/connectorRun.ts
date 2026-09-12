@@ -79,8 +79,12 @@ export async function startConnectorRun(
 
   // Fire-and-forget: driveConnectorRun awaits internally but this call site doesn't, so the HTTP
   // response can return now. Errors are handled inside driveConnectorRun itself (failRun on an
-  // unexpected failure) - nothing here should ever reject and become an unhandled rejection.
-  void driveConnectorRun(db, runId, cases, connector, repetitions);
+  // unexpected failure) - and this outer catch is the last line of defense: the recovery path
+  // itself can throw (failRun on a dead DB), and an unhandled rejection here exits the whole
+  // process, skipping the shutdown drain and losing queued spans for every project.
+  void driveConnectorRun(db, runId, cases, connector, repetitions).catch(err => {
+    logger.error({ err: err instanceof Error ? err.message : err, runId }, "Connector run driver crashed");
+  });
 
   return { runId, questionCount: cases.length };
 }
@@ -116,6 +120,17 @@ async function driveConnectorRun(
               inputTokens: response.inputTokens,
               outputTokens: response.outputTokens,
             };
+            if (response.error) {
+              // The agent answered 200 but REPORTED a failure - scoring its (usually empty)
+              // output as a real answer buries the outage in a genuine-looking low score.
+              return {
+                idempotencyKey: `${runId}:${questionIndex}:${runNumber}`,
+                questionIndex,
+                runNumber,
+                input: { query },
+                error: { type: "connector_error", message: response.error },
+              };
+            }
             return {
               idempotencyKey: `${runId}:${questionIndex}:${runNumber}`,
               questionIndex,
@@ -151,6 +166,13 @@ async function driveConnectorRun(
       return;
     }
     logger.error({ err: message }, `Connector-driven run ${runId} failed:`);
-    await failRun(db, runId);
+    try {
+      await failRun(db, runId);
+    } catch (failErr) {
+      logger.error(
+        { err: failErr instanceof Error ? failErr.message : failErr, runId },
+        "Could not mark connector run failed"
+      );
+    }
   }
 }

@@ -1,4 +1,4 @@
-import { eq, gte, and, inArray } from "drizzle-orm";
+import { desc, eq, gte, and, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import type { MonitoringWindow } from "./events.js";
 import type { OutcomeReportRow } from "../outcomes/outcomeReports.js";
@@ -140,8 +140,8 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
   const cond = and(gte(db.schema.outcomeReports.reportedAt, since), eq(db.schema.outcomeReports.projectId, db.projectId));
   const reports = (
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.outcomeReports).where(cond).limit(50_000).all()
-      : await db.db.select().from(db.schema.outcomeReports).where(cond).limit(50_000)
+      ? db.db.select().from(db.schema.outcomeReports).where(cond).orderBy(desc(db.schema.outcomeReports.reportedAt)).limit(50_000).all()
+      : await db.db.select().from(db.schema.outcomeReports).where(cond).orderBy(desc(db.schema.outcomeReports.reportedAt)).limit(50_000)
   ) as OutcomeReportRow[];
 
   let noVerdict = 0;
@@ -180,9 +180,16 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
   );
   const reviewLabels = (
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).limit(50_000).all()
-      : await db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).limit(50_000)
-  ) as { traceId: string; label: string | null }[];
+      // Newest first, THEN capped: an unordered LIMIT keeps arbitrary rows, so the newest
+      // re-review could fall outside the fetched set and a superseded label would win.
+      ? db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).orderBy(desc(db.schema.reviewQueueItems.reviewedAt)).limit(50_000).all()
+      : await db.db.select().from(db.schema.reviewQueueItems).where(reviewCond).orderBy(desc(db.schema.reviewQueueItems.reviewedAt)).limit(50_000)
+  ) as { traceId: string; label: string | null; reviewedAt: Date | null }[];
+  // Deterministic order: a bare SELECT's row order is unspecified, and "whichever row happened
+  // to come back first" used to decide which of two labels on the same trace was tallied.
+  // Sorted ascending so the per-trace loop below lands on the LATEST label - the same
+  // latest-reviewedAt-wins keying judgeTuning's calibration evidence uses.
+  reviewLabels.sort((a, b) => (a.reviewedAt?.getTime() ?? 0) - (b.reviewedAt?.getTime() ?? 0));
 
   const eventsByTrace = await listEventsByTrace(db, [
     ...new Set([
@@ -210,13 +217,21 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
     tally(await resolveAgentxVerdict(db, report, eventsByTrace), report.isNegative);
   }
 
-  let reviewLabelCount = 0;
+  // One label per trace, LATEST reviewedAt wins (the ascending sort above makes the last write
+  // the newest) - a re-review supersedes the earlier verdict, matching judgeTuning.ts's
+  // latest-wins keying. Outcome reports still outrank sampled labels: talliedTraces already
+  // holds every report-covered trace by the time this runs.
+  const latestLabelByTrace = new Map<string, "good" | "bad">();
   for (const item of reviewLabels) {
     if (item.label !== "good" && item.label !== "bad") continue;
-    if (talliedTraces.has(item.traceId)) continue;
-    talliedTraces.add(item.traceId);
+    latestLabelByTrace.set(item.traceId, item.label);
+  }
+  let reviewLabelCount = 0;
+  for (const [traceId, label] of latestLabelByTrace) {
+    if (talliedTraces.has(traceId)) continue;
+    talliedTraces.add(traceId);
     reviewLabelCount++;
-    tally(await resolveAgentxVerdict(db, { traceId: item.traceId } as OutcomeReportRow, eventsByTrace), item.label === "bad");
+    tally(await resolveAgentxVerdict(db, { traceId } as OutcomeReportRow, eventsByTrace), label === "bad");
   }
 
   const comparedCount = truePositive + trueNegative + falsePositive + falseNegative;

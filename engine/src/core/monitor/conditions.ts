@@ -44,9 +44,9 @@ export function buildSourceTexts({ responseText, trace }: { responseText?: strin
     trace: [
       stringify(trace?.output),
       trace?.error ?? "",
-      ...((Array.isArray(trace?.toolCalls) ? trace.toolCalls : []) as NonNullable<TraceLike["toolCalls"]>).map(call =>
-        [call.name, stringify(call.output), stringify(call.input)].filter(Boolean).join(" ")
-      ),
+      ...((Array.isArray(trace?.toolCalls) ? trace.toolCalls : []) as NonNullable<TraceLike["toolCalls"]>)
+        .filter(call => (call as Record<string, unknown>)["agentx.truncated"] !== true)
+        .map(call => [call.name, stringify(call.output), stringify(call.input)].filter(Boolean).join(" ")),
     ]
       .filter(Boolean)
       .join("\n"),

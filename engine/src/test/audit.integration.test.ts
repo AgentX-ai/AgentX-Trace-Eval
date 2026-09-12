@@ -137,7 +137,7 @@ describe("who can read it, and that nobody can rewrite it", () => {
 });
 
 describe("auth events (enabled mode)", () => {
-  it("records sign-up and sign-in attempts with the attempted email, and failures too", async () => {
+  it("records sign-up and sign-in attempts (failures too) without reading the body", async () => {
     const authEngine = await startEngine({ AGENTX_AUTH: "enabled", AGENTX_ADMIN_TOKEN: ADMIN_TOKEN });
     try {
       const signUp = await authEngine.request("/api/v1/auth/sign-up/email", {
@@ -159,14 +159,16 @@ describe("auth events (enabled mode)", () => {
       const signUps = events.filter(e => e.action === "auth.sign-up");
       const signIns = events.filter(e => e.action === "auth.sign-in");
       expect(signUps.length).toBe(1);
-      expect(signUps[0]!.actor).toBe("owner@example.com");
-      expect(signUps[0]!.actorType).toBe("user");
+      expect(signUps[0]!.status).toBeLessThan(300);
       expect(signIns.length).toBe(1);
       expect(signIns[0]!.status).toBeGreaterThanOrEqual(400);
       expect(signIns[0]!.actorType).toBe("anonymous");
-      // The password must never appear anywhere in the trail.
+      // The auth tap must not read the request body at all (a 'data' listener would flip the
+      // stream into flowing mode under better-auth): no body-derived value - the email
+      // included - may appear anywhere in the trail.
       expect(JSON.stringify(events)).not.toContain("correct-horse-battery");
       expect(JSON.stringify(events)).not.toContain("wrong-password");
+      expect(JSON.stringify([...signUps, ...signIns])).not.toContain("owner@example.com");
     } finally {
       await authEngine.stop();
     }

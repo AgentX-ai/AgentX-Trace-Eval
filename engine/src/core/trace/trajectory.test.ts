@@ -47,3 +47,28 @@ describe("matchTrajectory", () => {
     expect(matchTrajectory(["a"], [], "strict").reasoning).toContain("no tool calls");
   });
 });
+
+describe("truncation marker exclusion", () => {
+  it("the ingest cap's bookkeeping row is not a tool named 'unknown'", async () => {
+    // extractTraceToolSequence consumers score subset/strict checks - a marker row mapped to
+    // "unknown" failed every one of them on large traces. Simulate the stored shape directly.
+    const calls = [
+      { name: "search", success: true },
+      { "agentx.truncated": true, dropped: 40 },
+    ] as Record<string, unknown>[];
+    const names = calls.filter(tc => tc["agentx.truncated"] !== true).map(tc => String(tc.name ?? "unknown"));
+    expect(names).toEqual(["search"]);
+  });
+
+  it("an empty expected list is vacuously true under superset, and requires an empty actual elsewhere", () => {
+    // Regression: a caller-side special case used to fail superset whenever the agent called
+    // any tool at all - an explicitly-unconstrained assertion scored 0 on every result.
+    expect(matchTrajectory([], ["search", "send"], "superset").matched).toBe(true);
+    expect(matchTrajectory([], [], "superset").matched).toBe(true);
+    expect(matchTrajectory([], ["search"], "strict").matched).toBe(false);
+    expect(matchTrajectory([], [], "strict").matched).toBe(true);
+    expect(matchTrajectory([], ["search"], "unordered").matched).toBe(false);
+    expect(matchTrajectory([], ["search"], "subset").matched).toBe(false);
+  });
+});
+
