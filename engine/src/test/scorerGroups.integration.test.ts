@@ -152,8 +152,61 @@ describe("scorer groups", () => {
     expect(mergedOnline.idleSeconds).toBe(300);
     expect(mergedOnline.sampleRate).toBe(0.4);
 
+    // Sparse pause: the obvious way to stop live scoring must not 400 on missing profile
+    // fields - the engine merges the patch over the stored profile.
+    const paused = await api(`/agent-monitoring/scorer-groups/${id}`, {
+      ...postJson({ online: { enabled: false } }),
+      method: "PUT",
+    });
+    expect(paused.status).toBe(200);
+    const pausedOnline = (paused.body as { scorerGroup: { online: Record<string, unknown> } }).scorerGroup.online;
+    expect(pausedOnline.enabled).toBe(false);
+    expect(pausedOnline.scope).toBe("session");
+    expect(pausedOnline.sampleRate).toBe(0.4);
+
     expect((await api(`/agent-monitoring/scorer-groups/${id}`, { method: "DELETE" })).status).toBe(200);
     expect((await api(`/agent-monitoring/scorer-groups/${id}`)).status).toBe(404);
+  });
+
+  it("sparse online patches validate against what will be STORED, and cannot half-create a profile", async () => {
+    const niceId = await makeJudge("Sparse nice", "NICE");
+    const live = await api(
+      "/agent-monitoring/scorer-groups",
+      postJson({
+        name: "Sparse live",
+        members: [{ kind: "judge", refId: niceId, weight: 1 }],
+        online: { enabled: true, sampleRate: 1, alertThreshold: 5, severity: "high" },
+      })
+    );
+    expect(live.status).toBe(201);
+    const liveId = (live.body as { scorerGroup: { _id: string } }).scorerGroup._id;
+
+    // A partial online patch (no `enabled`) on a LIVE group must inherit the stored
+    // enabled:true - the merge keeps the group live, so validation must see it live too.
+    // Round-trip check: the stored profile keeps enabled/scope after a {sampleRate}-only PUT.
+    const nudged = await api(`/agent-monitoring/scorer-groups/${liveId}`, {
+      ...postJson({ online: { sampleRate: 0.5 } }),
+      method: "PUT",
+    });
+    expect(nudged.status).toBe(200);
+    const nudgedOnline = (nudged.body as { scorerGroup: { online: Record<string, unknown> } }).scorerGroup.online;
+    expect(nudgedOnline.enabled).toBe(true);
+    expect(nudgedOnline.sampleRate).toBe(0.5);
+    expect(nudgedOnline.alertThreshold).toBe(5);
+
+    // A partial online patch against a group with NO stored profile cannot be completed
+    // honestly - the engine refuses instead of inventing scope/rate defaults.
+    const offlineGroup = await api(
+      "/agent-monitoring/scorer-groups",
+      postJson({ name: "Offline only", members: [{ kind: "judge", refId: niceId, weight: 1 }] })
+    );
+    const offlineId = (offlineGroup.body as { scorerGroup: { _id: string } }).scorerGroup._id;
+    const halfProfile = await api(`/agent-monitoring/scorer-groups/${offlineId}`, {
+      ...postJson({ online: { enabled: true } }),
+      method: "PUT",
+    });
+    expect(halfProfile.status).toBe(400);
+    expect((halfProfile.body as { error: string }).error).toContain("full online object");
   });
 
   it("a run cannot start against a nonexistent group, and a gate that cannot score fails closed", async () => {

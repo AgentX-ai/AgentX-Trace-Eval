@@ -91,9 +91,12 @@ describe("isRetrievalSpan", () => {
 
 describe("memory span kind", () => {
   it("normalizes every memory spelling onto the one kind", () => {
-    for (const raw of ["memory", "MEMORY", "memory_read", "memory-write", "memory_search", "memory_store", "recall"]) {
+    for (const raw of ["memory", "MEMORY", "memory_read", "memory-write", "memory_search", "memory_store", "memory_recall"]) {
       expect(normalizeSpanKind(raw)).toBe("memory");
     }
+    // Bare "recall" is a retrieval METRIC name in eval harnesses (Ragas/DeepEval per-metric
+    // spans) - deliberately not an alias, so those evaluator spans never classify as memory.
+    expect(normalizeSpanKind("recall")).toBeNull();
   });
 
   it("infers memory from SDK-style names, stated kinds still win", () => {
@@ -101,6 +104,16 @@ describe("memory span kind", () => {
     expect(resolveSpanKind({ name: "memory_store user prefs" })).toBe("memory");
     // A stated kind beats the name - a tool that happens to be called "memory..." says so.
     expect(resolveSpanKind({ spanKind: "tool", name: "Memory recall" })).toBe("tool");
+  });
+
+  it("camelCase memory names classify: the hump is a word boundary", () => {
+    expect(resolveSpanKind({ name: "memoryRead" })).toBe("memory");
+    expect(resolveSpanKind({ name: "MemoryWrite user prefs" })).toBe("memory");
+    // The one that mattered: a retrieval-prefixed MEMORY op must not feed RAG {context}.
+    expect(resolveSpanKind({ name: "retrieveMemories" })).toBe("memory");
+    expect(isRetrievalSpan({ name: "retrieveMemories" })).toBe(false);
+    // Knowledge lookups stay retrieval - "memoranda" is not the word "memory".
+    expect(resolveSpanKind({ name: "Retrieval: memoranda index" })).toBe("retrieval");
   });
 
   it("memory is NOT retrieval: recalled state never feeds the RAG judges' {context}", () => {
@@ -112,4 +125,16 @@ describe("memory span kind", () => {
     expect(resolveSpanKind({ name: "retrieve_documents" })).toBe("retrieval");
   });
 });
+
+describe("UNKNOWN is not a stated kind", () => {
+  it("falls through to the inference ladder instead of freezing as chain", () => {
+    // OpenInference SpanKind.UNKNOWN / MLflow's default SpanType.UNKNOWN mean "nothing was
+    // stated" - a span carrying a model must still classify as the LLM call it is.
+    expect(normalizeSpanKind("unknown")).toBe(null);
+    expect(normalizeSpanKind("UNKNOWN")).toBe(null);
+    expect(resolveSpanKind({ spanKind: "UNKNOWN", model: "gpt-4o" })).toBe("llm");
+    expect(resolveSpanKind({ spanKind: "unknown", toolCalls: [{ name: "t" }] })).toBe("tool");
+  });
+});
+
 

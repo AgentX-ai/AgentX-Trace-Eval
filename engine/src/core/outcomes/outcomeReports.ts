@@ -58,10 +58,13 @@ export async function createOutcomeReport(db: Db, input: CreateOutcomeReportInpu
     projectId: db.projectId,
     traceId: input.traceId ?? null,
     evaluationRunResultId: input.evaluationRunResultId ?? null,
-    outcome: input.outcome,
+    // Capped like the sibling feedback path's comment cap: a misconfigured integration
+    // pasting a whole incident body as `reason` must not write megabytes per report into a
+    // table with no retention and full export exposure.
+    outcome: input.outcome.slice(0, 200),
     isNegative: input.isNegative,
-    reason: input.reason ?? null,
-    reportedBy: input.reportedBy ?? null,
+    reason: input.reason ? input.reason.slice(0, 4000) : null,
+    reportedBy: input.reportedBy ? input.reportedBy.slice(0, 200) : null,
     reportedAt: new Date(),
   };
   if (db.kind === "sqlite") {

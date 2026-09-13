@@ -99,7 +99,11 @@ export async function getCoverageMap(
   // be dead (every trace pruned by retention - the absorbing state that used to wedge the scan
   // permanently), scanOffset advances so the next request examines the NEXT 500 instead of
   // re-verifying the same corpses forever.
-  const offset = Math.min(backfillScanOffset.get(db.projectId ?? "") ?? 0, Math.max(0, unembeddedAll.length - 1));
+  const stored = backfillScanOffset.get(db.projectId ?? "") ?? 0;
+  // Past-the-end means the previous pass finished: restart at the front (newest rows), never
+  // clamp to L-1 - the clamp made the tail an absorbing state that re-verified one dead trace
+  // per request forever while fresh unembedded traffic piled up unscanned at index 0.
+  const offset = stored >= unembeddedAll.length ? 0 : stored;
   const unembedded = unembeddedAll.slice(offset, offset + MAX_UNEMBEDDED_CONSIDERED);
   // Rows OUTSIDE the window are pending-unknown (their traces were not fetched to check) -
   // both behind it and, while a mid-scan offset is active, the newer rows in front of it.
@@ -119,8 +123,10 @@ export async function getCoverageMap(
   // the pending count instead of reading "still indexing" forever.
   const backfillable = unembedded.filter(r => inputTextOf(r).trim().length > 0);
   if (unembedded.length > 0 && backfillable.length === 0 && pendingBeyondWindow > 0) {
-    // Everything in this window is dead - advance so later requests reach the rows behind it.
-    backfillScanOffset.set(db.projectId ?? "", offset + unembedded.length);
+    // Everything in this window is dead - advance so later requests reach the rows behind it,
+    // wrapping to the front once the advance passes the end (pass complete).
+    const next = offset + unembedded.length;
+    backfillScanOffset.set(db.projectId ?? "", next >= unembeddedAll.length ? 0 : next);
   } else if (backfillable.length > 0) {
     backfillScanOffset.set(db.projectId ?? "", 0);
   } else {
@@ -170,34 +176,44 @@ export async function getCoverageMap(
   const datasetRows = await listDatasetRows(db);
   const cases = await listDatasetCases(db, options.datasetIds, datasetRows);
   const { pending } = await attachCaseEmbeddings(db, cases);
-  // Query-only embeddings - the same question space the trace side projects in.
+  // Query-only embeddings position the point; the interaction-space twin (embeddingFull) is
+  // what the topic matcher runs on. A case holding one vector but not the other is PENDING -
+  // the coverage table skips it and counts it warming, and plotting it here labeled
+  // "unmatched" would read as "this test covers nothing" about a case that was never matched.
   const embeddedCases = cases
-    .filter((c): c is DatasetCase & { embedding: number[] } => Array.isArray(c.embedding))
+    .filter(
+      (c): c is DatasetCase & { embedding: number[]; embeddingFull: number[] } =>
+        Array.isArray(c.embedding) && Array.isArray(c.embeddingFull)
+    )
     .slice(0, MAX_POINTS_PER_SOURCE);
+  // attachCaseEmbeddings' `pending` already counts every case failing (embedding AND
+  // embeddingFull) - half-embedded cases INCLUDED. Adding them again reported "10 still
+  // warming" for a 5-case dataset.
+  const casesPending = pending;
 
   // Unlike the coverage table, the map has no lexical fallback - positions ARE similarities, and
   // there is no honest place to draw a point whose similarity was never measured.
   if (traceRows.length === 0) {
-    return empty("No classified production traffic carries an embedding in this window.", pending, tracePending);
+    return empty("No classified production traffic carries an embedding in this window.", casesPending, tracePending);
   }
   if (embeddedCases.length === 0) {
     return empty(
       cases.length === 0
         ? "No dataset cases to place yet."
         : "No dataset case embeddings are available yet - set OPENAI_API_KEY, or wait for the cache to warm.",
-      pending,
+      casesPending,
       tracePending
     );
   }
   if (traceRows.length + embeddedCases.length < MIN_POINTS_FOR_MAP) {
     return empty(
       `The map needs at least ${MIN_POINTS_FOR_MAP} embedded points across production traffic and dataset cases - only ${traceRows.length + embeddedCases.length} available in this window.`,
-      pending,
+      casesPending,
       tracePending
     );
   }
 
-  // Topic assignment for dataset points reuses the coverage table's exact matcher (bands and
+  // Topic assignment for dataset points reuses the coverage table's embedding matcher (bands and
   // all), so a case never reads as covered here and off-map there. Two parity rules from the
   // table: a case with no interaction-space embedding (embeddingFull) is never matched by
   // similarity - the table skips those outright - and a case whose best match lives in a RARE
@@ -278,7 +294,7 @@ export async function getCoverageMap(
     datasetIds,
     insufficientData: false,
     degradedReason: null,
-    caseEmbeddingsPending: pending,
+    caseEmbeddingsPending: casesPending,
     traceEmbeddingsPending: tracePending,
     points,
     topics,

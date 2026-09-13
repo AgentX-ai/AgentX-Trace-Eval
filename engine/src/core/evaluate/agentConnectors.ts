@@ -49,20 +49,51 @@ function toWire(row: AgentConnectorRow) {
 // Precise, not pattern-based: the value counts as a mask only when it EQUALS the mask the read
 // side produced for the currently stored value - isMaskedSecret alone false-positived on real
 // 11-character header values shaped like "abc...defg", silently reverting a user's edit.
-function unmaskHeaders(incoming: Record<string, string> | null, stored: unknown): Record<string, string> | null {
+// Written once at save time so a config mistake is corrected here, not surfaced as a per-row
+// internal error when AbortSignal.timeout(0 | -5 | NaN) throws mid-run.
+function clampTimeoutMs(raw: number | undefined): number | undefined {
+  if (raw === undefined || !Number.isFinite(raw)) return undefined;
+  return Math.min(120000, Math.max(1000, Math.floor(raw)));
+}
+
+export function unmaskHeaders(incoming: Record<string, string> | null, stored: unknown): Record<string, string> | null {
   if (!incoming) return incoming;
   const previous = (stored as Record<string, string> | null) ?? {};
   return Object.fromEntries(
-    Object.entries(incoming).map(([k, v]) => [
-      k,
-      isMaskedSecret(v) && previous[k] !== undefined && v === maskSecret(previous[k]!) ? previous[k]! : v,
-    ])
+    Object.entries(incoming).map(([k, v]) => {
+      if (isMaskedSecret(v) && previous[k] !== undefined && v === maskSecret(previous[k]!)) {
+        return [k, previous[k]!];
+      }
+      // A masked value on a key with NO stored counterpart (copied from the read payload onto
+      // a renamed/new header) has nothing to unmask against - storing the literal mask ships
+      // a connector that 401s upstream with no hint why. Refuse loudly instead.
+      if (isMaskedSecret(v) && previous[k] === undefined) {
+        throw Object.assign(
+          new Error(`Header "${k}" carries a masked placeholder value - paste the real secret for new header keys`),
+          { code: "masked_header" }
+        );
+      }
+      return [k, v];
+    })
   );
 }
 
 // A masked value ("abc...xyz") pasted back on CREATE has no stored original to unmask against -
 // storing it verbatim yields a connector that 401s against the customer's agent with no hint
 // why. Exposed so the route can 400 it instead.
+// A connector URL safe to put in an error message: credentials live in URLs as often as in
+// headers (https://user:pass@host, ?api_key=...), and thrown messages land verbatim on every
+// result row's error.message - which the run-results export does NOT redact. Origin + path
+// carries everything a debugging operator needs.
+export function safeConnectorUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return "<invalid url>";
+  }
+}
+
 export function hasMaskedHeaderValues(headers: Record<string, string> | null | undefined): boolean {
   return !!headers && Object.values(headers).some(v => isMaskedSecret(v));
 }
@@ -76,7 +107,7 @@ export async function createAgentConnector(db: Db, input: CreateAgentConnectorIn
     headers: input.headers ?? null,
     // A real agent call is heavier than Custom Evaluators' verdict check (retrieval, tool use,
     // multiple LLM calls) - 30s default instead of that 8s, still overridable per connector.
-    timeoutMs: input.timeoutMs ?? 30000,
+    timeoutMs: clampTimeoutMs(input.timeoutMs) ?? 30000,
     createdAt: new Date(),
   };
   if (db.kind === "sqlite") {
@@ -124,7 +155,7 @@ export async function updateAgentConnector(db: Db, id: string, input: UpdateAgen
     name: input.name ?? existing.name,
     url: input.url ?? existing.url,
     headers: input.headers !== undefined ? unmaskHeaders(input.headers, existing.headers) : existing.headers,
-    timeoutMs: input.timeoutMs ?? existing.timeoutMs,
+    timeoutMs: clampTimeoutMs(input.timeoutMs) ?? existing.timeoutMs,
   };
   const setValues = { name: updated.name, url: updated.url, headers: updated.headers, timeoutMs: updated.timeoutMs };
   const updateCond = and(eq(db.schema.agentConnectors.id, id), eq(db.schema.agentConnectors.projectId, db.projectId));
@@ -201,7 +232,7 @@ export async function readConnectorBody(res: Response, url: string): Promise<str
     total += value.byteLength;
     if (total > MAX_CONNECTOR_RESPONSE_BYTES) {
       await reader.cancel().catch(() => {});
-      throw new Error(`Agent connector ${url} response exceeded ${MAX_CONNECTOR_RESPONSE_BYTES / (1024 * 1024)}MB - aborted`);
+      throw new Error(`Agent connector ${safeConnectorUrl(url)} response exceeded ${MAX_CONNECTOR_RESPONSE_BYTES / (1024 * 1024)}MB - aborted`);
     }
     chunks.push(Buffer.from(value));
   }
@@ -219,7 +250,7 @@ export async function callAgentConnector(
   // error string lands in the run result where the operator can see WHY the case failed.
   const urlProblem = outboundUrlProblem(connector.url);
   if (urlProblem) {
-    throw new Error(`Agent connector URL refused (${connector.url}): ${urlProblem}`);
+    throw new Error(`Agent connector URL refused (${safeConnectorUrl(connector.url)}): ${urlProblem}`);
   }
   const res = await fetch(connector.url, {
     method: "POST",
@@ -231,7 +262,7 @@ export async function callAgentConnector(
     redirect: "manual",
   });
   if (!res.ok) {
-    throw new Error(`Agent connector ${connector.url} responded ${res.status}`);
+    throw new Error(`Agent connector ${safeConnectorUrl(connector.url)} responded ${res.status}`);
   }
   const raw = await readConnectorBody(res, connector.url);
   let parsed: unknown;
@@ -241,7 +272,7 @@ export async function callAgentConnector(
     parsed = null;
   }
   if (typeof parsed !== "object" || parsed === null) {
-    throw new Error(`Agent connector ${connector.url} did not return a JSON object`);
+    throw new Error(`Agent connector ${safeConnectorUrl(connector.url)} did not return a JSON object`);
   }
   const body = parsed as {
     output?: unknown;
@@ -257,7 +288,7 @@ export async function callAgentConnector(
     latency_ms?: unknown;
   };
   if (typeof body.output !== "string") {
-    throw new Error(`Agent connector ${connector.url} response missing a string "output" field`);
+    throw new Error(`Agent connector ${safeConnectorUrl(connector.url)} response missing a string "output" field`);
   }
   // snake_case accepted alongside camelCase: a connector is usually somebody's Python or Go
   // service, and rejecting `trace_id` would make the field unusable for exactly the callers most

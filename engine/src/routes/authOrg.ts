@@ -239,6 +239,14 @@ authOrgRouter.post("/invitations/:id/accept", async (req: Request, res: Response
     res.status(403).json({ error: `This invitation was issued to ${invitation.email} - sign in with that account` });
     return;
   }
+  // Sign-up is open and email verification is optional - so the email match above is a CLAIM
+  // unless verified. Whenever a mailer exists (verification is actually possible), require it
+  // before an invite turns the claim into org membership and, through GET /projects, every
+  // project API key in the org.
+  if (mailerConfigured() && !(user as { emailVerified?: boolean }).emailVerified) {
+    res.status(403).json({ error: "Verify this email address first - check your inbox, then accept the invitation again" });
+    return;
+  }
   // The org can be deleted between invite and accept - a member row pointing at nothing reads
   // as a successful accept with no workspace, which is worse than saying what happened.
   const orgRows = (

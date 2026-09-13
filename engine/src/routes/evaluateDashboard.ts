@@ -41,6 +41,7 @@ import {
 } from "../core/evaluate/versions.js";
 import {
   getRunRowFull,
+  runExists,
   getRunResults,
   computeCaseStatistics,
   listRunRows,
@@ -588,7 +589,10 @@ evaluateDashboardRouter.post("/agent-connectors", async (req: Request, res: Resp
   const connector = await createAgentConnector(scopedDb(req), {
     name: body.name,
     url: String(body.url).trim(),
-    headers: body.headers && typeof body.headers === "object" ? body.headers : undefined,
+    // null means UNCHANGED, exactly like absent: form models and GET round-trips routinely
+    // serialize an untouched optional field as null, and treating that as "clear the stored
+    // Authorization header" silently 401ed every later run. Clearing = send {} explicitly.
+    headers: body.headers && typeof body.headers === "object" ? (body.headers as Record<string, string>) : undefined,
     timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : undefined,
   });
   res.status(201).json({ connector });
@@ -605,12 +609,24 @@ evaluateDashboardRouter.put("/agent-connectors/:id", async (req: Request, res: R
     res.status(400).json({ error: putHeaderProblem });
     return;
   }
-  const connector = await updateAgentConnector(scopedDb(req), req.params.id!, {
-    name: typeof body.name === "string" ? body.name : undefined,
-    url: typeof body.url === "string" ? body.url : undefined,
-    headers: body.headers && typeof body.headers === "object" ? body.headers : undefined,
-    timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : undefined,
-  });
+  let connector;
+  try {
+    connector = await updateAgentConnector(scopedDb(req), req.params.id!, {
+      name: typeof body.name === "string" ? body.name : undefined,
+      url: typeof body.url === "string" ? body.url : undefined,
+      // null means UNCHANGED, exactly like absent: form models and GET round-trips routinely
+      // serialize an untouched optional field as null, and treating that as "clear the stored
+      // Authorization header" silently 401ed every later run. Clearing = send {} explicitly.
+      headers: body.headers && typeof body.headers === "object" ? (body.headers as Record<string, string>) : undefined,
+      timeoutMs: typeof body.timeoutMs === "number" ? body.timeoutMs : undefined,
+    });
+  } catch (err) {
+    if ((err as { code?: string }).code === "masked_header") {
+      res.status(400).json({ error: (err as Error).message });
+      return;
+    }
+    throw err;
+  }
   if (!connector) {
     res.status(404).json({ error: "Agent connector not found" });
     return;
@@ -1320,6 +1336,13 @@ evaluateDashboardRouter.post("/analyze/:id", async (req: Request, res: Response)
 });
 
 evaluateDashboardRouter.get("/analyze/:id/status", async (req: Request, res: Response) => {
+  // 404 for an unknown run, same as the SDK router's twin - "not_started" for a typo'd or
+  // deleted id kept the dashboard's poll loop waiting forever. Existence probe only: this is
+  // a poll loop, and the full row drags questionsSnapshot along on every tick.
+  if (!(await runExists(scopedDb(req), req.params.id!))) {
+    res.status(404).json({ error: "Run not found" });
+    return;
+  }
   const status = await getEvaluationAnalysisStatus(scopedDb(req), req.params.id!);
   res.status(200).json(status);
 });
@@ -1647,7 +1670,10 @@ async function toEvaluateWire(db: Db, run: FullRunRow, includeResults: boolean, 
     _id: run.id,
     // Group-graded runs: name the group so the Evaluate list's Scorers column doesn't claim
     // the dataset's own twin config graded the run.
-    scorerGroupId: scorerGroup?.id ?? null,
+    // The STORED id (already computed above), not the resolved row's - a deleted group must
+    // not erase which grader produced this run, and the card's "(deleted scorer group)"
+    // fallback keys on exactly this field surviving deletion. Mirrors core/evaluate/runs.ts.
+    scorerGroupId: scorerGroupId,
     scorerGroupName: scorerGroup?.name ?? null,
     evaluationSettings: evaluationSettings ?? undefined,
     datasetId: dataset ? { _id: dataset._id, name: dataset.name, description: dataset.description } : run.datasetId,

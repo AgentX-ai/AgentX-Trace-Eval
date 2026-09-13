@@ -160,6 +160,28 @@ export async function bootstrapClickHouse(client: ClickHouseClient, ttlDays: num
   });
 }
 
+// Network-level failures reaching the store adapter get a NAMED error so the app-level 503
+// handler can recognize "the telemetry store is down" without string-matching generic
+// undici messages ("fetch failed" also describes a judge provider or webhook outage, which
+// must stay 500s pointing at the right runbook section, not the ClickHouse one).
+export class TelemetryStoreUnreachableError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : "telemetry store unreachable");
+    this.name = "TelemetryStoreUnreachableError";
+    this.cause = cause;
+  }
+}
+
+const NETWORK_ERROR = /socket hang up|fetch failed|ECONNREFUSED|ECONNRESET|UND_ERR_SOCKET|Connect(?:ion)? (?:refused|error)/i;
+function rethrowTagged(err: unknown): never {
+  const code = (err as { code?: unknown } | null)?.code;
+  const msg = err instanceof Error ? err.message : "";
+  if (code === "ECONNREFUSED" || code === "ECONNRESET" || code === "UND_ERR_SOCKET" || NETWORK_ERROR.test(msg)) {
+    throw new TelemetryStoreUnreachableError(err);
+  }
+  throw err;
+}
+
 export class ClickHouseTraceStore implements TraceStore {
   private readonly client: ClickHouseClient;
   private readonly projectId: string;
@@ -170,12 +192,16 @@ export class ClickHouseTraceStore implements TraceStore {
   }
 
   private async rows(query: string, params: Record<string, unknown> = {}): Promise<StoredRow[]> {
-    const result = await this.client.query({
-      query,
-      query_params: { project: this.projectId, ...params },
-      format: "JSONEachRow",
-    });
-    return (await result.json()) as StoredRow[];
+    try {
+      const result = await this.client.query({
+        query,
+        query_params: { project: this.projectId, ...params },
+        format: "JSONEachRow",
+      });
+      return (await result.json()) as StoredRow[];
+    } catch (err) {
+      rethrowTagged(err);
+    }
   }
 
   private scope(): string {
@@ -211,7 +237,9 @@ export class ClickHouseTraceStore implements TraceStore {
       winners.push(row);
     }
     if (winners.length > 0) {
-      await this.client.insert({ table: TABLE, values: winners.map(toStored), format: "JSONEachRow" });
+      await this.client
+        .insert({ table: TABLE, values: winners.map(toStored), format: "JSONEachRow" })
+        .catch(err => rethrowTagged(err));
     }
     return new Set(winners.map(r => r.id));
   }
@@ -377,19 +405,25 @@ export class ClickHouseTraceStore implements TraceStore {
 
   async prune(cutoff: Date, agentScope: string | null): Promise<void> {
     const agentCond = agentScope === null ? "gen_ai_agent_id IS NULL" : "gen_ai_agent_id = {agent:String}";
-    await this.client.command({
-      query: `ALTER TABLE ${TABLE} DELETE WHERE ${this.scope()} AND ${agentCond} AND created_at < fromUnixTimestamp64Milli(${cutoff.getTime()})`,
-      query_params: { project: this.projectId, ...(agentScope === null ? {} : { agent: agentScope }) },
-      clickhouse_settings: { mutations_sync: "1" },
-    });
+    // .catch(rethrowTagged) like every other adapter call: an untagged network failure here
+    // surfaced a CH outage on DELETE /projects/:id as a 500 instead of the 503 runbook path.
+    await this.client
+      .command({
+        query: `ALTER TABLE ${TABLE} DELETE WHERE ${this.scope()} AND ${agentCond} AND created_at < fromUnixTimestamp64Milli(${cutoff.getTime()})`,
+        query_params: { project: this.projectId, ...(agentScope === null ? {} : { agent: agentScope }) },
+        clickhouse_settings: { mutations_sync: "1" },
+      })
+      .catch(err => rethrowTagged(err));
   }
 
   async deleteAllForProject(): Promise<void> {
-    await this.client.command({
-      query: `ALTER TABLE ${TABLE} DELETE WHERE ${this.scope()}`,
-      query_params: { project: this.projectId },
-      clickhouse_settings: { mutations_sync: "1" },
-    });
+    await this.client
+      .command({
+        query: `ALTER TABLE ${TABLE} DELETE WHERE ${this.scope()}`,
+        query_params: { project: this.projectId },
+        clickhouse_settings: { mutations_sync: "1" },
+      })
+      .catch(err => rethrowTagged(err));
   }
 }
 

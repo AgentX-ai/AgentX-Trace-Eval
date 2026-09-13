@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { and, eq } from "drizzle-orm";
+import { count, desc, and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { getTraceRow } from "../trace/ingest.js";
 import { upsertSignal } from "./signals.js";
@@ -45,6 +45,7 @@ export type RecordFeedbackInput = {
   endUserId?: string;
 };
 
+const MAX_ANONYMOUS_FEEDBACK_PER_TRACE = 200;
 const MAX_FEEDBACK_COMMENT_CHARS = 4_000;
 
 export async function recordUserFeedback(db: Db, input: RecordFeedbackInput) {
@@ -81,6 +82,33 @@ export async function recordUserFeedback(db: Db, input: RecordFeedbackInput) {
         await db.db.update(db.schema.userFeedback).set(patch).where(idCond);
       }
       return toWire({ ...prior, ...patch });
+    }
+  }
+
+  // Anonymous feedback (no endUserId) has no voter to dedupe on - legitimate distinct users
+  // stay distinct rows, but a misbehaving retry loop must not grow the table, the outcome
+  // reports, and the signal's occurrence rank without bound. 200 anonymous votes on ONE trace
+  // says everything 10,000 would; past the cap the write is acknowledged but not stored.
+  if (!voter) {
+    const countCond = and(
+      eq(db.schema.userFeedback.projectId, db.projectId),
+      eq(db.schema.userFeedback.traceId, input.traceId)
+    );
+    const existingCount = (
+      db.kind === "sqlite"
+        ? db.db.select({ n: count() }).from(db.schema.userFeedback).where(countCond).all()
+        : await db.db.select({ n: count() }).from(db.schema.userFeedback).where(countCond)
+    ) as Array<{ n: number }>;
+    if ((existingCount[0]?.n ?? 0) >= MAX_ANONYMOUS_FEEDBACK_PER_TRACE) {
+      return toWire({
+        id: "capped",
+        traceId: input.traceId,
+        rating: input.rating,
+        comment: null,
+        endUserId: null,
+        createdAt: new Date(),
+        projectId: db.projectId,
+      } as UserFeedbackRow);
     }
   }
 
@@ -126,11 +154,12 @@ export async function recordUserFeedback(db: Db, input: RecordFeedbackInput) {
 
 export async function listFeedbackForTrace(db: Db, traceId: string) {
   const cond = and(eq(db.schema.userFeedback.traceId, traceId), eq(db.schema.userFeedback.projectId, db.projectId));
+  // Newest 200 - the dialog shows a handful; an abuse-inflated trace must not pull every row
+  // into the heap on each open.
   const rows = (
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.userFeedback).where(cond).all()
-      : await db.db.select().from(db.schema.userFeedback).where(cond)
+      ? db.db.select().from(db.schema.userFeedback).where(cond).orderBy(desc(db.schema.userFeedback.createdAt)).limit(200).all()
+      : await db.db.select().from(db.schema.userFeedback).where(cond).orderBy(desc(db.schema.userFeedback.createdAt)).limit(200)
   ) as UserFeedbackRow[];
-  rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   return rows.map(toWire);
 }

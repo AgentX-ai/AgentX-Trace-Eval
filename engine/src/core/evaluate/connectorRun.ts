@@ -161,7 +161,7 @@ async function driveConnectorRun(
     // A terminal-state conflict means someone legitimately finalized the run under us - the
     // results already stored are the run; failing it would erase a completed status.
     const message = err instanceof Error ? err.message : String(err);
-    if ((err as { code?: string }).code === "conflict" || message.includes("terminal state")) {
+    if ((err as { code?: string }).code === "conflict") {
       logger.warn({ runId }, "Connector run finalized elsewhere mid-drive; leaving its status untouched");
       return;
     }

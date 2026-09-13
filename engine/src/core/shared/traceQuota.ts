@@ -37,3 +37,22 @@ export async function reserveTraceRoots(db: Db, roots: number, quota: number): P
   await reservationChain;
   return granted;
 }
+
+// Hand a reservation back. For the answers a conforming OTLP exporter WILL redeliver (429
+// queue-full, 503 storage-down - nothing was stored), keeping the reservation turns a
+// transient outage into a burned day: each retry of a 500-root batch re-reserved 500 roots
+// against a store that grew by zero, and the quota exhausted with no traces in it. Bounded
+// below by the store re-seed: the counter can never go under what the store actually holds
+// for the day (the next seed corrects any residual drift).
+export async function releaseTraceRoots(db: Db, roots: number): Promise<void> {
+  if (roots <= 0) return;
+  const release = async () => {
+    const day = new Date().toISOString().slice(0, 10);
+    const key = db.projectId ?? "";
+    const entry = rootSpend.get(key);
+    if (!entry || entry.day !== day) return;
+    entry.count = Math.max(0, entry.count - roots);
+  };
+  reservationChain = reservationChain.then(release, release);
+  await reservationChain;
+}

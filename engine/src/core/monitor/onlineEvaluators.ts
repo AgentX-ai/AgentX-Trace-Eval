@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { scoreAgainstCriteria, DEFAULT_JUDGE_PROMPT, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { matchesAgentScope, passesSampleRate } from "./routing.js";
-import { countJudgeSpendSince, recordEvent, listEventsSince } from "./events.js";
+import { countJudgeSpendSince, recordEvent } from "./events.js";
 import { upsertSignal } from "./signals.js";
 import {
   cloneEvaluationSettings,

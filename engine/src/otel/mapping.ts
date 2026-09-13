@@ -21,7 +21,9 @@ function strAttr(v: unknown): string | undefined {
 }
 
 function numAttr(v: unknown): number | undefined {
-  if (typeof v === "number" && Number.isFinite(v)) {
+  // Non-negative only: token counts and latencies feed cost/latency aggregates unguarded, and
+  // one negative doubleValue drives a project's cost chart negative for the whole window.
+  if (typeof v === "number" && Number.isFinite(v) && v >= 0) {
     return v;
   }
   // Some exporters send counts as stringValue attributes - a string of digits is still a number.

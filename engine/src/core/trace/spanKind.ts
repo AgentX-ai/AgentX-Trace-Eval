@@ -77,15 +77,20 @@ const ALIASES: Record<string, SpanKind> = {
   memory_delete: "memory",
   add_memory: "memory",
   get_memory: "memory",
-  recall: "memory",
+  // Deliberately ABSENT: bare "recall". It reads memory-ish, but eval harnesses (Ragas,
+  // DeepEval) emit per-metric spans kinded "recall"/"precision"/"faithfulness" - those are
+  // evaluator spans about a retrieval metric, not memory ops. memory_recall stays.
   // MLflow's own vocabulary for the rest (CHAT_MODEL is its chat-model span type); OTel's
   // GenAI semconv adds generate_content for Gemini/Vertex instrumentation.
   chat_model: "llm",
   generate_content: "llm",
   llm: "llm",
   parser: "chain",
-  // LangSmith's "chain" and MLflow's "CHAIN"/"UNKNOWN" are both "some step in the middle".
-  unknown: "chain",
+  // Deliberately ABSENT: unknown -> chain. OpenInference's UNKNOWN and MLflow's default
+  // SpanType.UNKNOWN literally mean "nothing was stated" - aliasing them to chain stored a
+  // guess as a stated fact that then beat the model -> llm inference one line down the
+  // ladder, hiding real LLM spans from every kind bucket. normalizeSpanKind returns null for
+  // them, and the fallback ladder classifies the span the way it always did.
 };
 
 // Parse whatever a producer said into our vocabulary, or null when it said nothing we recognize.
@@ -113,6 +118,16 @@ export type SpanKindInput = {
   parentSpanId?: string | null;
 };
 
+// "memory"/"memories" standing alone as a word, where _, - AND camelCase humps count as
+// separators (retrieve_memories and retrieveMemories are both memory ops; "memoranda" is
+// not). The hump split matters because /i case-folds a [^a-z0-9] boundary class into also
+// excluding A-Z - without it, "memoryRead" fell to chain and "retrieveMemories" classified
+// as retrieval, leaking recalled user state into the RAG judges' {context}.
+const decamel = (name: string): string => name.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+const MEMORY_WORD_RE = /(^|[^a-z0-9])memor(y|ies)([^a-z0-9]|$)/i;
+const hasMemoryWord = (name: string): boolean => MEMORY_WORD_RE.test(decamel(name));
+const startsWithMemoryWord = (name: string): boolean => /^memor(y|ies)([^a-z0-9]|$)/i.test(decamel(name));
+
 // The one classifier. Stated kind wins; everything after it is the fallback ladder, in the order
 // the old readers used, so a trace recorded before any of this still classifies the way it did.
 export function resolveSpanKind(span: SpanKindInput): SpanKind {
@@ -137,11 +152,15 @@ export function resolveSpanKind(span: SpanKindInput): SpanKind {
   if (/^llm call/i.test(name)) return "llm";
   // "retrieve_memories" is a MEMORY op wearing a retrieval verb - the alias table already
   // folds memory_retrieval onto memory, and the name ladder must agree, or recalled user
-  // state rides into the RAG judges' {context} via isRetrievalSpan. Word-matched, not
-  // stem-matched: "Retrieval: memoranda index" is a knowledge lookup whose chunks must NOT
-  // be silently dropped from {context}.
-  if (/^retriev/i.test(name)) return /memor(y|ies)/i.test(name) ? "memory" : "retrieval";
-  if (/^memory/i.test(name)) return "memory";
+  // state rides into the RAG judges' {context} via isRetrievalSpan. Word-BOUNDED on purpose:
+  // "Retrieval: memoranda index" is a knowledge lookup, and so is a knowledge base literally
+  // named "memory-bank" only when "memory" appears as its own word - the boundary keeps
+  // "memoranda" out while catching "memory"/"memories" wherever they stand alone.
+  if (/^retriev/i.test(name)) return hasMemoryWord(name) ? "memory" : "retrieval";
+  // Prefix + boundary: "Memory recall", "memory_store user prefs" classify; a perf span
+  // named "Memory usage 412MB" also lands here - acceptable for an inference (it only moves
+  // the span between fallback buckets), and a stated kind always wins anyway.
+  if (startsWithMemoryWord(name)) return "memory";
   // Everything else is a step in the middle. Note this is where the timeline used to say "tool",
   // which is how an unrecognized span got drawn as a tool call it never was.
   return "chain";

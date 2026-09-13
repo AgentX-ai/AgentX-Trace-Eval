@@ -230,7 +230,7 @@ async function runAction(db: Db, row: RuleRow, traceId: string): Promise<boolean
       const added = await addCaseToDataset(db, config.datasetId, preview.case);
       if (!added.ok) {
         // A duplicate is the dedupe working, not a failure - both are reported, neither throws.
-        const reason = "duplicate" in added ? "duplicate" : added.error;
+        const reason = "duplicate" in added ? "duplicate" : "capped" in added ? "dataset at case cap" : added.error;
         logger.info({ rule: row.name, reason }, "Rule did not add a case to the dataset");
         return false;
       }

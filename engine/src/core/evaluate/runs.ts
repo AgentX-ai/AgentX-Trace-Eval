@@ -488,7 +488,9 @@ async function scoreOneResult(
       // No member scored (or a must-pass member could not run) - surface it as a judge error
       // so the row lands as "skipped" with the group's explanation, instead of a scored-null
       // row that liveStatistics counts in no bucket at all.
-      judged.judgeError = new Error(judged.justification || "The scorer group produced no score");
+      const groupNoScore = new Error(judged.justification || "The scorer group produced no score");
+      (groupNoScore as { code?: string }).code = "group-no-score";
+      judged.judgeError = groupNoScore;
     }
     for (const member of groupResult.members) {
       if (member.kind === "judge") {
@@ -513,11 +515,14 @@ async function scoreOneResult(
   // scored against the linked trace's actual sequence. Reported through codeScorerResults so it
   // rides the existing storage and results UI as one more named scorer row.
   const expectedTrajectory = mainQ?.expectedTrajectory;
-  const expectedTools = (expectedTrajectory?.tools ?? []).map(t => String(t).trim()).filter(Boolean);
+  const rawExpectedTools = Array.isArray(expectedTrajectory?.tools) ? expectedTrajectory!.tools : null;
+  const expectedTools = (rawExpectedTools ?? []).map(t => String(t).trim()).filter(Boolean);
   // Presence of the block is the assertion, not a non-empty list: an explicit EMPTY tools
   // list means "this case calls no tools" and must produce a scorer row that fails when the
   // trace called any - silently skipping it made the SDK's expected_tools=[] a false promise.
-  if (expectedTrajectory && Array.isArray(expectedTrajectory.tools)) {
+  // A list of BLANK entries is neither: an editor serializing one empty input row as [""]
+  // must not silently become the calls-no-tools assertion - it declared nothing.
+  if (rawExpectedTools && (rawExpectedTools.length === 0 || expectedTools.length > 0)) {
     const mode = (["strict", "unordered", "subset", "superset"] as const).includes(
       expectedTrajectory?.mode as TrajectoryMatchMode
     )
@@ -530,16 +535,34 @@ async function scoreOneResult(
         error: "No trace linked to this result - trace with sync=True and return the span's trace_id",
       });
     } else {
-      const actualSequence = (await extractTraceToolSequence(db, item.traceId)) ?? [];
-      // matchTrajectory is correct for an empty expected list in every mode - including
-      // superset, where it is vacuously true (an explicitly-unconstrained assertion). The old
-      // special case here failed superset whenever the agent called any tool at all.
-      const match = matchTrajectory(expectedTools, actualSequence, mode);
-      codeScorerResults.push({
-        name: `Trajectory match (${mode})`,
-        score: match.matched ? 1 : 0,
-        reasoning: match.reasoning,
-      });
+      const extracted = await extractTraceToolSequence(db, item.traceId);
+      if (extracted === null) {
+        // The linked trace no longer exists (retention pruned it) - a fact about storage,
+        // never a 0 blamed on the agent.
+        codeScorerResults.push({
+          name: `Trajectory match (${mode})`,
+          score: null,
+          error: "Linked trace no longer exists (pruned by retention) - the tool sequence cannot be checked",
+        });
+      } else if (extracted.truncated) {
+        // The stored call list was capped at ingest - pass/fail over a partial view is a
+        // guess in either direction.
+        codeScorerResults.push({
+          name: `Trajectory match (${mode})`,
+          score: null,
+          error: "The trace's tool-call list was truncated at ingest - the full sequence cannot be checked",
+        });
+      } else {
+        // matchTrajectory is correct for an empty expected list in every mode - including
+        // superset, where it is vacuously true (an explicitly-unconstrained assertion). The old
+        // special case here failed superset whenever the agent called any tool at all.
+        const match = matchTrajectory(expectedTools, extracted.tools, mode);
+        codeScorerResults.push({
+          name: `Trajectory match (${mode})`,
+          score: match.matched ? 1 : 0,
+          reasoning: match.reasoning,
+        });
+      }
     }
   }
 
@@ -687,11 +710,21 @@ export async function appendResults(
           // Judge call failures (bad/missing API key, provider outage) previously left no trace
           // anywhere except this one result's justification field, effectively invisible unless a
           // caller went looking at the exact result row. Surfacing it here at least gets it into
-          // agentx-server's own logs.
-          logger.error(
-            { err: scored.judgeError, runId, itemKey: item.idempotencyKey },
-            "Evaluate: judge scoring failed"
-          );
+          // agentx-server's own logs. A scorer GROUP that deliberately produced no score
+          // (fail-closed gate, all members unscoreable) is a verdict, not an outage - logged
+          // at warn under its own message so an operator grepping for judge failures doesn't
+          // chase a working system.
+          if ((scored.judgeError as { code?: string }).code === "group-no-score") {
+            logger.warn(
+              { err: scored.judgeError, runId, itemKey: item.idempotencyKey },
+              "Evaluate: scorer group produced no score"
+            );
+          } else {
+            logger.error(
+              { err: scored.judgeError, runId, itemKey: item.idempotencyKey },
+              "Evaluate: judge scoring failed"
+            );
+          }
         } else {
           rating = scored.rating;
           justification = scored.justification;
@@ -1295,6 +1328,17 @@ export type FullRunRow = {
   status: string;
   createdAt: Date;
 };
+
+// Existence-only probe for poll loops (analyze-status fires every few seconds) - the full row
+// carries questionsSnapshot and results-adjacent JSON nobody polling a status needs.
+export async function runExists(db: Db, id: string): Promise<boolean> {
+  const cond = and(eq(db.schema.evaluationRuns.id, id), eq(db.schema.evaluationRuns.projectId, db.projectId));
+  const rows =
+    db.kind === "sqlite"
+      ? db.db.select({ id: db.schema.evaluationRuns.id }).from(db.schema.evaluationRuns).where(cond).limit(1).all()
+      : await db.db.select({ id: db.schema.evaluationRuns.id }).from(db.schema.evaluationRuns).where(cond).limit(1);
+  return rows.length > 0;
+}
 
 export async function getRunRowFull(db: Db, id: string): Promise<FullRunRow | null> {
   const cond = and(eq(db.schema.evaluationRuns.id, id), eq(db.schema.evaluationRuns.projectId, db.projectId));

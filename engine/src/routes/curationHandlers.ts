@@ -48,6 +48,8 @@ export async function handleSuggestExpected(req: Request, res: Response) {
   }
 }
 
+const MAX_CURATED_TEXT_CHARS = 10_000;
+
 export async function handleAddCase(req: Request, res: Response) {
   const body = (req.body ?? {}) as { case?: CuratedCase; dedupe?: boolean };
   const curated = body.case;
@@ -61,9 +63,14 @@ export async function handleAddCase(req: Request, res: Response) {
     req.params.id!,
     {
       main_question: {
-        query,
+        // Text caps: every stored query is re-sent to the judge on every future run of this
+        // dataset, and each add snapshots the whole questions array into dataset_versions -
+        // an uncapped 1MB query grows storage quadratically from a data-plane endpoint.
+        query: query.slice(0, MAX_CURATED_TEXT_CHARS),
         expectedResults:
-          typeof curated.main_question.expectedResults === "string" ? curated.main_question.expectedResults : null,
+          typeof curated.main_question.expectedResults === "string"
+            ? curated.main_question.expectedResults.slice(0, MAX_CURATED_TEXT_CHARS)
+            : null,
       },
       // Same bound the preview applies - the client's array is re-accepted here and must not
       // smuggle an unbounded case past it.
@@ -71,8 +78,8 @@ export async function handleAddCase(req: Request, res: Response) {
         .slice(0, MAX_CURATED_FOLLOW_UPS)
         .filter(f => typeof f?.query === "string" && f.query.trim())
         .map(f => ({
-          query: f.query,
-          expectedResults: typeof f.expectedResults === "string" ? f.expectedResults : null,
+          query: f.query.slice(0, MAX_CURATED_TEXT_CHARS),
+          expectedResults: typeof f.expectedResults === "string" ? f.expectedResults.slice(0, MAX_CURATED_TEXT_CHARS) : null,
         })),
       source: {
         traceId: typeof curated.source.traceId === "string" ? curated.source.traceId : undefined,
@@ -85,6 +92,10 @@ export async function handleAddCase(req: Request, res: Response) {
   );
   if (!result.ok && "error" in result) {
     res.status(404).json({ error: "Dataset not found" });
+    return;
+  }
+  if (!result.ok && "capped" in result) {
+    res.status(409).json({ error: "This dataset is at its 1000-case cap - split it before adding more" });
     return;
   }
   if (!result.ok) {

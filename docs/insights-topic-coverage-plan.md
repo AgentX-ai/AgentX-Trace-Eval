@@ -13,7 +13,7 @@ topic merging (§3.1) and facility-location depth coverage with its count fallba
 | Tests | `engine/src/test/insights.integration.test.ts`, `contract.integration.test.ts` |
 | **Insights tab** | `AgentX-eval-front/src/pages/Governance/tabs/InsightsTab.tsx` + `tabs/insights/*` |
 
-**Seven things changed during implementation.** This document has been corrected rather than left
+**Eight things changed during implementation.** This document has been corrected rather than left
 describing something the code does not do:
 
 1. **Coverage is the facility-location value alone**, never blended with the case count. The first
@@ -37,6 +37,12 @@ describing something the code does not do:
 7. **The route table grew and shrank**: `GET /insights/coverage/map` and
    `POST /insights/topics/curate` shipped; `GET /insights/topics/:id` is superseded, with the
    detail panel served inline from `/coverage`.
+
+8. **The probe's verdict set and bands drifted past the table in §5.** Shipped verdicts are
+   `covered | adjacent | gap | untested-and-unasked | warming` (probe.ts), the similarity
+   bands are `covered >= 0.75`, `related >= 0.48` (curation.ts's SIMILARITY_BANDS - the 0.56
+   in early drafts was never shipped), and the key-less degraded mode uses its own
+   `LEXICAL_BANDS = { covered: 0.5, related: 0.25 }`.
 
 **Validated against a real install** (340 classified traces, 54 datasets), which found (3) and (4)
 - neither was reachable from the unit tests. It reports 43% traffic-weighted / 6 of 35 topics /
@@ -453,8 +459,8 @@ questions at 0.48-0.56 - so the bands come for free and need no second calibrati
 | Similarity | Verdict | Wording |
 |---|---|---|
 | >= 0.75 | **Covered** | "Effectively the same question as an existing case." |
-| 0.56 - 0.75 | **Adjacent** | "Nearest case asks something related, not this." |
-| < 0.56 | **Not covered** | "Nothing in the dataset is close." |
+| 0.48 - 0.75 | **Adjacent** | "Nearest case asks something related, not this." |
+| < 0.48 | **Not covered** | "Nothing in the dataset is close." |
 
 The 0.75 band boundary is deliberately the *same constant* `addCaseToDataset` dedupes on. That
 gives the feature a property worth stating out loud:

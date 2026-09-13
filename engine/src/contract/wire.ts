@@ -23,7 +23,7 @@ export const monitorMetricsBucketSchema = z
     spansLlm: z.number(),
     spansTool: z.number(),
     spansRetrieval: z.number(),
-    spansOther: z.number(),
+    spansOther: z.number().describe("Spans of every other kind: agent, chain, embedding, reranker, guardrail, evaluator, prompt, and memory"),
     traces: z.number(),
     errors: z.number(),
     latencyP50: z.number().nullable(),

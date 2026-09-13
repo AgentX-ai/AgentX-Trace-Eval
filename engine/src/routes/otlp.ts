@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import { reserveTraceRoots } from "../core/shared/traceQuota.js";
+import { reserveTraceRoots, releaseTraceRoots } from "../core/shared/traceQuota.js";
 import express from "express";
 import { asyncRouter } from "./asyncRouter.js";
 import { scopedDb } from "../auth/apiKey.js";
@@ -194,6 +194,7 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   // walked past the cap. Counted once per export (root spans in this batch) and answered as
   // 429, which OTLP/HTTP exporters treat as retryable-with-backoff.
   const quota = traceQuota();
+  let reservedRoots = 0;
   if (quota !== null) {
     const incomingRoots = candidates.filter(c => !c.parent_span_id).length;
     if (incomingRoots > 0) {
@@ -205,6 +206,7 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
         });
         return;
       }
+      reservedRoots = incomingRoots;
     }
   }
 
@@ -236,7 +238,9 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
       logger.error({ err: err instanceof Error ? err.message : err }, "Online evaluator scoring failed:");
     });
 
-    runScorerGroupsOnline(db, { input: input.input, output: input.output }, { agentId, traceId }).catch(err => {
+    // toolCalls included, matching the SDK ingest door - a pattern member asserting tool
+    // usage must not score differently by transport.
+    runScorerGroupsOnline(db, { input: input.input, output: input.output, toolCalls: input.tool_calls }, { agentId, traceId }).catch(err => {
       logger.error({ err: err instanceof Error ? err.message : err }, "Scorer group scoring failed:");
     });
 
@@ -281,6 +285,12 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   // 1,000-span export would take longer than the exporter's own export timeout.
   const settling: Array<{ settle: Promise<QueuedIngestResult>; input: IngestTraceInput }> = [];
   let queueFull = 0;
+  // Roots that end up as NEW stored rows. The reservation charged every incoming root up
+  // front; schema-rejected, queue-shed, storage-dropped and DEDUPED roots (exporter retries -
+  // the routine OTLP case) all stored nothing and must hand their credit back, or a retrying
+  // exporter burns the day's quota against a store that grows by zero. Conversely a PARTIAL
+  // failure must not hand back credit for the part that DID land.
+  let storedNewRoots = 0;
   for (const candidate of candidates) {
     const validation = ingestTraceSchema.safeParse(candidate);
     if (!validation.success) {
@@ -304,6 +314,9 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
       droppedCount++;
       continue;
     }
+    if (!deduped && !input.parent_span_id) {
+      storedNewRoots++;
+    }
     // A replayed span (OTel exporter retry) was already checked/judged on first arrival -
     // the deduped guard mirrors routes/ingest.ts.
     if (!deduped) {
@@ -316,7 +329,17 @@ otlpRouter.post("/v1/traces", async (req: Request, res: Response) => {
   // exporters, which would turn load shedding into permanent data loss. Redelivering the whole
   // export is safe - span ids make the already-stored part idempotent. partialSuccess is
   // reserved for schema-invalid spans, which genuinely must not be retried.
+  // Release exactly what was reserved but NOT newly stored - on every path, partial ones
+  // included. The old full-reservation release on 429/503 over-credited partial failures
+  // (499 stored, 500 released), and the success path never released dedupes at all.
+  const unusedRoots = Math.max(0, reservedRoots - storedNewRoots);
+  if (unusedRoots > 0) {
+    await releaseTraceRoots(scopedDb(req), unusedRoots);
+  }
   if (queueFull > 0) {
+    // The exporter WILL redeliver this whole export (429 is retryable per OTLP/HTTP) -
+    // the already-stored part is idempotent on redelivery and its dedupes hand their credit
+    // back on that retry via the same accounting.
     res.status(429).set("Retry-After", "1").json({ message: `ingest queue full - ${queueFull} spans shed, retry with backoff` });
     return;
   }

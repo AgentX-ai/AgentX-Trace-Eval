@@ -63,6 +63,16 @@ export function notifyWebhooks(urls: string[], signal: WebhookSignal): void {
 // process, not once per skip.
 const warnedBlockedUrls = new Set<string>();
 
+// Process-wide in-flight cap. Deliveries are fire-and-forget with an 8s deadline, but with no
+// bound a rule at sampleRate 1 pointed at a black-holing host held one socket per matching
+// trace, up to the data-plane rate ceiling. Past the cap, deliveries DROP (counted and warned,
+// rate-limited) rather than queue - a webhook is a page, not a ledger, and a backlog delivered
+// minutes late is worse than a visible drop count.
+const MAX_INFLIGHT_WEBHOOKS = 20;
+let inflightWebhooks = 0;
+let droppedWebhooks = 0;
+let lastDropWarnAt = 0;
+
 // The delivery primitive both callers share: signal notifications above, and automation rules'
 // webhook action (core/monitor/rules.ts), which sends its own rule-shaped payload.
 export function postWebhooks(urls: string[], payload: Record<string, unknown>): void {
@@ -81,6 +91,16 @@ export function postWebhooks(urls: string[], payload: Record<string, unknown>): 
       }
       continue;
     }
+    if (inflightWebhooks >= MAX_INFLIGHT_WEBHOOKS) {
+      droppedWebhooks++;
+      const now = Date.now();
+      if (now - lastDropWarnAt > 60_000) {
+        lastDropWarnAt = now;
+        logger.warn({ dropped: droppedWebhooks }, "Webhook deliveries dropped - all delivery slots busy (slow/unreachable target?)");
+      }
+      continue;
+    }
+    inflightWebhooks++;
     void fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -108,6 +128,9 @@ export function postWebhooks(urls: string[], payload: Record<string, unknown>): 
           { err: err instanceof Error ? err.message : err, host: safeHost(url), url: maskSecret(url) },
           "Monitor webhook delivery failed"
         );
+      })
+      .finally(() => {
+        inflightWebhooks--;
       });
   }
 }

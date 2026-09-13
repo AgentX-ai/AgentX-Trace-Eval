@@ -51,15 +51,28 @@ adminRouter.get("/overview", async (req: Request, res: Response) => {
   }
   const judgeCalls = await judgeCallsSince(db, since);
   const tracesByProject = new Map(traceRows.map(row => [row.projectId, Number(row.n)]));
+  // Single-pass grouping - the per-org .filter() version rescanned every member and project
+  // row once per org, a quadratic scan on every poll of an operator dashboard.
+  const membersByOrg = new Map<string, number>();
+  for (const m of members) {
+    membersByOrg.set(m.organizationId, (membersByOrg.get(m.organizationId) ?? 0) + 1);
+  }
+  const projectsByOrg = new Map<string, Array<{ id: string }>>();
+  for (const p of projects) {
+    if (p.organizationId === null) continue;
+    const list = projectsByOrg.get(p.organizationId) ?? [];
+    list.push(p);
+    projectsByOrg.set(p.organizationId, list);
+  }
 
   res.status(200).json({
     organizations: orgs.map(org => {
-      const orgProjects = projects.filter(p => p.organizationId === org.id);
+      const orgProjects = projectsByOrg.get(org.id) ?? [];
       return {
         _id: org.id,
         name: org.name,
         createdAt: org.createdAt,
-        members: members.filter(m => m.organizationId === org.id).length,
+        members: membersByOrg.get(org.id) ?? 0,
         projects: orgProjects.length,
         judgeCalls24h: judgeCalls.get(org.id) ?? 0,
         traces24h: orgProjects.reduce((sum, p) => sum + (tracesByProject.get(p.id) ?? 0), 0),

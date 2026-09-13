@@ -1,6 +1,6 @@
 import { resolveSpanKind, toolCallList } from "../trace/spanKind.js";
 import { traceStoreFor } from "../trace/store/index.js";
-import { percentileFromHistogram, readRollups, LATENCY_BUCKET_COUNT, type ModelTokens, type RollupRow } from "./rollups.js";
+import { SPAN_CLASSIFIER_VERSION, percentileFromHistogram, readRollups, LATENCY_BUCKET_COUNT, type ModelTokens, type RollupRow } from "./rollups.js";
 import type { Db } from "../../storage/db.js";
 import { listPortabilityModels, normalizeModelId, type PortabilityModel } from "../evaluate/models.js";
 
@@ -229,11 +229,6 @@ export async function getMonitorMetrics(
       return true;
     });
   }
-
-  // Tool child spans are named after their tool. This name set is now only a LAST resort, for a
-  // span that states no kind and carries no tool calls of its own - it is the weakest of the
-  // three rules that used to live here, and it misattributes any span that happens to share a
-  // tool's name. The classifier (core/trace/spanKind.ts) is consulted first.
 
   const pricingModels = await listPortabilityModels(db);
   const pricingById = new Map<string, PortabilityModel>();
@@ -473,6 +468,15 @@ async function metricsFromRollups(
   const rollupRoots = all.reduce((n, r) => n + r.roots, 0);
   const rawRoots = await traceStoreFor(db).countRoots(new Date(Math.floor(range.from / 60_000) * 60_000));
   if (rollupRoots < rawRoots) return null;
+  // Classifier-version check, same posture as the coverage check above: a window containing
+  // rows bucketed by an older span classifier would disagree with the raw path's re-derived
+  // answer for identical traffic (the filtered and unfiltered views of one chart diverging).
+  // Serve it from the raw scan until the old minutes age out of the window.
+  // Cost note: this refusal keeps a WINDOW-length raw scan alive until every contributing
+  // minute post-dates the classifier bump - a 90d window raw-scans for 90 days after deploy
+  // (bounded by RAW_METRICS_ROW_CAP per poll). Deliberate: mixed-vocabulary buckets would
+  // mislabel history, and the raw path is capped, not unbounded.
+  if (all.some(r => (r.classifierVersion ?? 1) < SPAN_CLASSIFIER_VERSION)) return null;
 
   // The dashboard's KPIs describe production traffic only, mirroring the raw path's
   // productionOnly window scan.
