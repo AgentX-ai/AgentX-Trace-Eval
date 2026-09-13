@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { logger } from "../log.js";
 import type { Request, Response } from "express";
 import { asyncRouter } from "./asyncRouter.js";
@@ -55,6 +56,26 @@ exportRouter.get("/", async (req: Request, res: Response) => {
     }))
   );
   res.status(200).json({ generatedAt: new Date().toISOString(), format: "ndjson", entities });
+});
+
+// The project row's own behavior knobs (retention, thresholds, topics sampling, enabled
+// builtin patterns) - the one project-scoped surface the table registry can't express, since
+// the projects table's id IS the project id. The apiKey never leaves: the export stream must
+// not be the surface that hands the credential out.
+exportRouter.get("/project-settings", async (req: Request, res: Response) => {
+  const db = scopedDb(req);
+  const rows =
+    db.kind === "sqlite"
+      ? db.db.select().from(db.schema.projects).where(eq(db.schema.projects.id, db.projectId!)).all()
+      : await db.db.select().from(db.schema.projects).where(eq(db.schema.projects.id, db.projectId!));
+  const row = (rows as Array<Record<string, unknown>>)[0];
+  if (!row) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  const { apiKey: _apiKey, ...safe } = row;
+  res.setHeader("content-type", "application/x-ndjson");
+  res.status(200).send(JSON.stringify(safe) + "\n");
 });
 
 exportRouter.get("/:entity", async (req: Request, res: Response) => {

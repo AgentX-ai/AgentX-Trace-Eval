@@ -132,6 +132,7 @@ import {
   deleteScorerGroup,
   toScorerGroupWire,
   type ScorerGroupOnline,
+  type ScorerGroupOnlinePatch,
   type ScorerGroupMember,
   validateGroupMembers,
 } from "../core/monitor/scorerGroups.js";
@@ -707,7 +708,7 @@ agentMonitoringDashboardRouter.get("/usage", async (req: Request, res: Response)
   res.status(200).json(await getUsageAndLimits(scopedDb(req)));
 });
 
-agentMonitoringDashboardRouter.post("/session-sweep/run", async (req: Request, res: Response) => {
+agentMonitoringDashboardRouter.post("/session-sweep/run", tuningRouteLimit, async (req: Request, res: Response) => {
   // Scoped to the caller's project (a key must not spend other tenants' budgets) and
   // serialized - a concurrent sweep returns { judged: 0, skipped: true } instead of
   // double-judging the sessions the in-flight one is still scoring.
@@ -927,7 +928,13 @@ const createScorerGroupSchema = z
     online: scorerGroupOnlineSchema.nullable().optional(),
   })
   .strip();
-const updateScorerGroupSchema = createScorerGroupSchema.partial().strip();
+// online is sparse on UPDATE (updateScorerGroup merges it over the stored profile) - pausing
+// live scoring is `online: {enabled: false}`, matching the judge-scorer surface. CREATE keeps
+// the full-profile requirement: there is nothing stored to merge a partial into.
+const updateScorerGroupSchema = createScorerGroupSchema
+  .partial()
+  .extend({ online: scorerGroupOnlineSchema.partial().nullable().optional() })
+  .strip();
 
 agentMonitoringDashboardRouter.get("/scorer-groups", async (req: Request, res: Response) => {
   res.status(200).json({ scorerGroups: (await listScorerGroups(scopedDb(req))).map(toScorerGroupWire) });
@@ -977,9 +984,29 @@ agentMonitoringDashboardRouter.put(
       return;
     }
     const effectiveMembers = (req.body.members as ScorerGroupMember[] | undefined) ?? existing.members;
-    const bodyOnline = req.body.online as ScorerGroupOnline | null | undefined;
+    const bodyOnline = req.body.online as ScorerGroupOnlinePatch | null | undefined;
+    // A PARTIAL online patch inherits the stored enabled flag - {sampleRate: 0.5} on a live
+    // group must validate as live, exactly what the core merge will store. And a partial
+    // patch against a group with NO stored profile cannot be completed honestly: require the
+    // full profile rather than silently filling scope/rate defaults the caller never chose.
     const effectiveOnlineEnabled =
-      bodyOnline === null ? false : bodyOnline !== undefined ? !!bodyOnline.enabled : !!existing.online?.enabled;
+      bodyOnline === null ? false : (bodyOnline?.enabled ?? !!existing.online?.enabled);
+    // Create-parity: the same four fields createScorerGroupSchema requires, no more - scope
+    // is optional there too and documented to default to "trace", so demanding it only on a
+    // first-time PUT would contradict the create surface.
+    if (
+      bodyOnline &&
+      !existing.online &&
+      (bodyOnline.enabled === undefined ||
+        bodyOnline.sampleRate === undefined ||
+        bodyOnline.severity === undefined ||
+        !("alertThreshold" in bodyOnline))
+    ) {
+      res.status(400).json({
+        error: "This group has no online profile to patch - send a full online object (enabled, sampleRate, alertThreshold, severity; scope defaults to trace)",
+      });
+      return;
+    }
     if (req.body.members !== undefined || (bodyOnline !== undefined && bodyOnline !== null)) {
       const memberProblems = await validateGroupMembers(scopedDb(req), effectiveMembers, {
         onlineEnabled: effectiveOnlineEnabled,
@@ -994,7 +1021,7 @@ agentMonitoringDashboardRouter.put(
       name: req.body.name,
       description: req.body.description,
       members: req.body.members,
-      online: req.body.online as ScorerGroupOnline | null | undefined,
+      online: req.body.online as ScorerGroupOnlinePatch | null | undefined,
     });
     if (!group) {
       res.status(404).json({ error: "Scorer group not found" });

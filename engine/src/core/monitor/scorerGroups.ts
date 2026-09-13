@@ -54,6 +54,10 @@ export type ScorerGroupOnline = {
   idleSeconds?: number;
 };
 
+// What a sparse PUT may carry: any subset of the online profile. The stored row is always a
+// complete ScorerGroupOnline (updateScorerGroup fills defaults under the merge).
+export type ScorerGroupOnlinePatch = Partial<ScorerGroupOnline>;
+
 export type ScorerGroupRow = {
   id: string;
   projectId: string | null;
@@ -141,10 +145,13 @@ export function normalizeMembers(raw: unknown): ScorerGroupMember[] {
   if (!Array.isArray(raw)) return [];
   return raw
     .filter((m): m is Record<string, unknown> => !!m && typeof m === "object")
+    // Unrecognized kinds are DROPPED, never relabeled: coercing to "judge" stored a valid
+    // custom-scorer refId under the wrong kind, which then scored as "Scorer no longer
+    // exists" for a scorer that exists. The HTTP route's enum already rejects these; this
+    // guards every non-route caller (seeds, importers).
+    .filter(m => (["judge", "pattern", "custom"] as const).includes(m.kind as never))
     .map(m => ({
-      kind: (["judge", "pattern", "custom"] as const).includes(m.kind as never)
-        ? (m.kind as ScorerGroupMember["kind"])
-        : "judge",
+      kind: m.kind as ScorerGroupMember["kind"],
       refId: String(m.refId ?? ""),
       weight: Math.max(0, Number(m.weight ?? 1) || 0),
       gate: m.gate === true,
@@ -197,7 +204,7 @@ export async function createScorerGroup(
 export async function updateScorerGroup(
   db: Db,
   id: string,
-  input: { name?: string; description?: string | null; members?: unknown; online?: ScorerGroupOnline | null }
+  input: { name?: string; description?: string | null; members?: unknown; online?: ScorerGroupOnlinePatch | null }
 ): Promise<ScorerGroupRow | null> {
   const existing = await getScorerGroup(db, id);
   if (!existing) return null;
@@ -209,8 +216,22 @@ export async function updateScorerGroup(
     // Merge, don't replace: a client that predates scope/idleSeconds (round-tripping only
     // {enabled, sampleRate, alertThreshold, severity}) must not silently flip a session group
     // back to per-trace scoring. online:null still detaches explicitly.
-    patch.online =
-      input.online === null ? null : ({ ...(existing.online ?? {}), ...input.online } as ScorerGroupOnline);
+    if (input.online === null) {
+      patch.online = null;
+    } else {
+      // Merge first, THEN fill defaults - a sparse patch (the route allows partial online on
+      // update) against a group that never had a profile must still store a complete one.
+      // alertThreshold uses an "in" check, not ??: null is a meaningful stored value
+      // ("chart-only, never raise a Signal") and must survive the fill.
+      const merged: ScorerGroupOnlinePatch = { ...(existing.online ?? {}), ...input.online };
+      patch.online = {
+        ...merged,
+        enabled: merged.enabled ?? false,
+        sampleRate: merged.sampleRate ?? 0.1,
+        alertThreshold: "alertThreshold" in merged ? (merged.alertThreshold ?? null) : 5,
+        severity: merged.severity ?? "medium",
+      } as ScorerGroupOnline;
+    }
   }
   const cond = and(eq(db.schema.scorerGroups.id, id), eq(db.schema.scorerGroups.projectId, db.projectId));
   if (db.kind === "sqlite") {
@@ -352,7 +373,7 @@ async function scoreJudgeMember(
   const base = { kind: member.kind, refId: member.refId, weight: member.weight, gate: member.gate };
   const settings = await getEvaluationSettingsRow(db, member.refId);
   if (!settings) {
-    return { ...base, name: member.refId, goodness: null, detail: "-", error: SCORER_MISSING_ERROR };
+    return { ...base, name: `${member.kind} ${member.refId}`, goodness: null, detail: "-", error: SCORER_MISSING_ERROR };
   }
   const name = settings.name ?? member.refId;
   // Lazily, per call actually made - see BUDGET_EXHAUSTED_ERROR's comment.
@@ -381,7 +402,7 @@ export async function scorePatternMember(db: Db, member: ScorerGroupMember, cont
   const base = { kind: member.kind, refId: member.refId, weight: member.weight, gate: member.gate };
   const pattern = await getPatternRow(db, member.refId);
   if (!pattern) {
-    return { ...base, name: member.refId, goodness: null, detail: "-", error: "Pattern no longer exists" };
+    return { ...base, name: `pattern ${member.refId}`, goodness: null, detail: "-", error: "Pattern no longer exists" };
   }
   try {
     const trace: TraceLike = { input: content.input, output: content.output, error: null, toolCalls: content.toolCalls as TraceLike["toolCalls"] };
@@ -412,7 +433,7 @@ export async function scoreCustomMember(db: Db, member: ScorerGroupMember, conte
   const base = { kind: member.kind, refId: member.refId, weight: member.weight, gate: member.gate };
   const evaluator = (await getCustomEvaluatorRow(db, member.refId)) as CustomEvaluatorRow | null;
   if (!evaluator) {
-    return { ...base, name: member.refId, goodness: null, detail: "-", error: "Scorer no longer exists" };
+    return { ...base, name: `${member.kind} ${member.refId}`, goodness: null, detail: "-", error: "Scorer no longer exists" };
   }
   try {
     if (evaluator.kind === "code") {
@@ -537,6 +558,27 @@ export async function runScorerGroupsOnline(
           justification: member.error ?? "Judge member failed",
         });
       }
+      // One event per scored member alongside the aggregate - the "detailed Judge scores"
+      // behind a group score in Trace Details, AND the judge-spend record the restart-time
+      // budget seed counts. Emitted BEFORE the null-aggregate bail: a healthy judge inside a
+      // fail-closed group still made a real, reserved call.
+      // behind a group score in the Trace Details popup (listTraceEvaluations decodes the JSON
+      // payload). Rating is the member's goodness on 0-10 so every kind reads on one scale.
+      for (const member of result.members) {
+        if (member.goodness === null) continue;
+        await recordEvent(db, {
+          signalId: null,
+          patternKey: `scorer-group:${group.id}:${member.kind}:${member.refId}`,
+          type: "scorer_group_member_score",
+          severity: "low",
+          polarity: "score",
+          agentId: ctx.agentId,
+          traceId: ctx.traceId,
+          onlineEvaluatorId: null,
+          rating: Math.round(member.goodness * 100) / 10,
+          justification: JSON.stringify({ name: member.name, detail: member.detail }),
+        });
+      }
       if (result.score === null) continue;
       const justification = describeGroupScore(result, result.members);
 
@@ -578,24 +620,6 @@ export async function runScorerGroupsOnline(
         justification,
       });
 
-      // One event per scored member alongside the aggregate - the "detailed Judge scores"
-      // behind a group score in the Trace Details popup (listTraceEvaluations decodes the JSON
-      // payload). Rating is the member's goodness on 0-10 so every kind reads on one scale.
-      for (const member of result.members) {
-        if (member.goodness === null) continue;
-        await recordEvent(db, {
-          signalId: null,
-          patternKey: `scorer-group:${group.id}:${member.kind}:${member.refId}`,
-          type: "scorer_group_member_score",
-          severity: "low",
-          polarity: "score",
-          agentId: ctx.agentId,
-          traceId: ctx.traceId,
-          onlineEvaluatorId: null,
-          rating: Math.round(member.goodness * 100) / 10,
-          justification: JSON.stringify({ name: member.name, detail: member.detail }),
-        });
-      }
     } catch (err) {
       logger.error({ err: err instanceof Error ? err.message : err }, `Scorer group "${group.name}" failed to score`);
     }

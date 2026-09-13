@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { vi, describe, expect, it } from "vitest";
 import { matchTrajectory } from "./trajectory.js";
 
 describe("matchTrajectory", () => {
@@ -49,15 +49,33 @@ describe("matchTrajectory", () => {
 });
 
 describe("truncation marker exclusion", () => {
-  it("the ingest cap's bookkeeping row is not a tool named 'unknown'", async () => {
-    // extractTraceToolSequence consumers score subset/strict checks - a marker row mapped to
-    // "unknown" failed every one of them on large traces. Simulate the stored shape directly.
-    const calls = [
-      { name: "search", success: true },
-      { "agentx.truncated": true, dropped: 40 },
-    ] as Record<string, unknown>[];
-    const names = calls.filter(tc => tc["agentx.truncated"] !== true).map(tc => String(tc.name ?? "unknown"));
-    expect(names).toEqual(["search"]);
+  it("the ingest cap's bookkeeping row is not a tool named 'unknown', and truncation is surfaced", async () => {
+    // The REAL function, against a mocked store - the previous version of this test inlined
+    // the filter expression, so deleting the production filter left it green.
+    vi.resetModules();
+    vi.doMock("./store/index.js", () => ({
+      traceStoreFor: () => ({
+        getById: async (id: string) =>
+          id === "t-truncated"
+            ? { toolCalls: [{ name: "search", success: true }, { "agentx.truncated": true, dropped: 40 }] }
+            : id === "t-clean"
+              ? { toolCalls: [{ name: "search", success: true }] }
+              : undefined,
+      }),
+    }));
+    const { extractTraceToolSequence } = await import("./trajectory.js");
+    try {
+      expect(await extractTraceToolSequence({} as never, "t-truncated")).toEqual({
+        tools: ["search"],
+        truncated: true,
+      });
+      expect(await extractTraceToolSequence({} as never, "t-clean")).toEqual({ tools: ["search"], truncated: false });
+      // null (not []) for a pruned trace - callers must not blame the agent for retention.
+      expect(await extractTraceToolSequence({} as never, "t-gone")).toBeNull();
+    } finally {
+      vi.doUnmock("./store/index.js");
+      vi.resetModules();
+    }
   });
 
   it("an empty expected list is vacuously true under superset, and requires an empty actual elsewhere", () => {

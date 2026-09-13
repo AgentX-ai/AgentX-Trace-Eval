@@ -48,9 +48,23 @@ export function percentileFromHistogram(hist: number[], p: number): number | nul
 
 export type ModelTokens = { inTok: number; outTok: number; cacheRead: number; cacheWrite: number };
 
+// Bumped ONLY when resolveSpanKind's answer changes for spans whose STORED span_kind column
+// already holds a value - because ingest persists the resolved kind (ingest.ts), the raw path
+// re-derives from that stored column, and a read-time-only vocabulary change cannot make the
+// two paths disagree about those rows. A bump makes the fast path refuse whole windows (a 90d
+// window then raw-scans, capped and truncated, for 90 days on every existing install), so the
+// bar is real divergence, not any classifier edit.
+//   NOT bumped for the 2026-09 "memory" kind + unknown-alias removal: unknown->chain rows were
+//   stored as "chain" (both paths still say chain), and the memory aliases only re-bucket
+//   rare NAME-INFERRED legacy rows (stored kind null) between retrieval/other - an accepted
+//   historical imprecision that a 3-month fleet-wide raw-scan regression does not buy back.
+export const SPAN_CLASSIFIER_VERSION = 1;
+
 export type RollupRow = {
   projectId: string | null;
   minuteTs: number;
+  /** Classifier version that bucketed this row's span kinds; absent (pre-versioning) reads 1. */
+  classifierVersion?: number;
   roots: number;
   errors: number;
   spansLlm: number;
@@ -98,6 +112,7 @@ function emptyRollup(projectId: string | null, minuteTs: number, production: boo
     latencyCount: 0,
     latencySum: 0,
     production,
+    classifierVersion: SPAN_CLASSIFIER_VERSION,
   };
 }
 
@@ -123,6 +138,9 @@ export function accumulateRollups(rows: TraceRow[]): RollupRow[] {
     if (kind === "llm") acc.spansLlm++;
     else if (kind === "tool") acc.spansTool++;
     else if (kind === "retrieval") acc.spansRetrieval++;
+    // "memory" (and every other minor kind) deliberately counts as other, same decision and
+    // same wording as metrics.ts - a dedicated memory metric belongs to the memory-probe work
+    // (docs/memory-probe-benchmark-plan.md), not an ad hoc rollup column.
     else acc.spansOther++;
 
     if (!row.parentSpanId) {
@@ -162,6 +180,9 @@ export function accumulateRollups(rows: TraceRow[]): RollupRow[] {
 }
 
 function mergeInto(target: RollupRow, add: RollupRow): void {
+  // A merged row is only as fresh as its OLDEST contributor: mixing a pre-bump minute into a
+  // post-bump row must keep the raw-path fallback engaged for that minute.
+  target.classifierVersion = Math.min(target.classifierVersion ?? 1, add.classifierVersion ?? 1);
   target.roots += add.roots;
   target.errors += add.errors;
   target.spansLlm += add.spansLlm;

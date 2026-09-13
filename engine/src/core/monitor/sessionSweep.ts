@@ -15,7 +15,7 @@ import { getEvaluationSettingsRow } from "../evaluate/evaluationSettings.js";
 import { listSessionSpans } from "../trace/ingest.js";
 import { renderSessionUsedToolDefinitions } from "../trace/trajectory.js";
 import { callJudgeJson, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
-import { matchesAgentScope, passesSampleRate } from "./routing.js";
+import { matchesAgentScope } from "./routing.js";
 import { upsertSignal } from "./signals.js";
 import { recordEvent } from "./events.js";
 import { acquireSweepLease } from "../shared/sweepLease.js";
@@ -50,7 +50,9 @@ import { logger } from "../../log.js";
 // (sdk_<uuid>) and OTel groups one interaction's spans under one session id, so sweeping
 // single-turn sessions would judge every individual trace a second time at conversation prices.
 const SWEEP_INTERVAL_MS = 60_000;
-// Bounds one sweep's judge spend on a busy instance - anything left over is picked up next tick.
+// Bounds one tick's judge-call spend: evaluator judgings charge 1 each, group attempts charge
+// one per judge member (a 6-judge group is 6 calls, not 1). Anything left over is picked up
+// next tick.
 const MAX_JUDGED_PER_SWEEP = 5;
 // How far back the sweep looks for candidate sessions - anything older was either already scored
 // or has been idle so long that scoring it now answers no live monitoring question. Tunable for
@@ -374,7 +376,8 @@ const MEMBER_SESSION_SCORE_SCHEMA = {
 export async function scoreSessionWithGroup(
   db: Db,
   group: ScorerGroupRow,
-  sessionId: string
+  sessionId: string,
+  prefetchedSpans?: SpanWire[]
 ): Promise<{
   score: number | null;
   gatedBy: string | null;
@@ -383,7 +386,7 @@ export async function scoreSessionWithGroup(
   anchorTraceId: string | null;
   spanCount: number;
 } | null> {
-  const spans = (await listSessionSpans(db, sessionId)) as SpanWire[];
+  const spans = prefetchedSpans ?? ((await listSessionSpans(db, sessionId)) as SpanWire[]);
   if (spans.length === 0) return null;
   const roots = spans.filter(s => !s.parentSpanId);
   const anchorTraceId = (roots.length > 0 ? roots[roots.length - 1] : spans[spans.length - 1])?._id ?? null;
@@ -405,23 +408,46 @@ export async function scoreSessionWithGroup(
 
   const asText = (value: unknown): string =>
     typeof value === "string" ? value : value == null ? "" : JSON.stringify(value);
-  // The user side and the agent side of the conversation, for deterministic members.
-  const userText = roots.map(r => asText(r.input)).filter(Boolean).join("\n\n");
-  const agentText = roots.map(r => asText(r.output)).filter(Boolean).join("\n\n");
+  // The user side and the agent side of the conversation, for deterministic members. OTel
+  // sessions can carry all content on CHILD llm spans with empty roots - an empty side would
+  // make a "response contains X" failure pattern unable to ever match (a silent false pass)
+  // and a proper-pattern gate zero every conversation. Fall back to the full transcript for
+  // whichever side is empty: over-matching is the honest direction for a tripwire.
+  const rootUserText = roots.map(r => asText(r.input)).filter(Boolean).join("\n\n");
+  const rootAgentText = roots.map(r => asText(r.output)).filter(Boolean).join("\n\n");
+  const fallbackTranscript = (): string => transcriptFor("simple").transcript;
+  const userText = rootUserText || fallbackTranscript();
+  // The agent side must never fall back to the FULL transcript: a proper-pattern gate
+  // ("response contains a disclaimer") would pass on words the USER typed, and a PII tripwire
+  // on the agent would fire on the user's own PII. Empty roots (OTel sessions) fall back to
+  // the child spans' outputs - genuinely the agent's words - and stay empty when even those
+  // are missing, which reads as "nothing to match" rather than a false pass.
+  const agentText =
+    rootAgentText ||
+    spans
+      .filter(sp => sp.parentSpanId)
+      .map(sp => asText(sp.output))
+      .filter(Boolean)
+      .join("\n\n");
 
   const members: MemberScore[] = [];
+  let budgetGone = false;
   for (const member of group.members) {
     const base = { kind: member.kind, refId: member.refId, weight: member.weight, gate: member.gate };
     if (member.kind === "judge") {
       const settings = await getEvaluationSettingsRow(db, member.refId);
       if (!settings) {
-        members.push({ ...base, name: member.refId, goodness: null, detail: "-", error: SCORER_MISSING_ERROR });
+        members.push({ ...base, name: `judge ${member.refId}`, goodness: null, detail: "-", error: SCORER_MISSING_ERROR });
         continue;
       }
       const name = settings.name ?? member.refId;
       // One budget slot per judge call actually made - a deleted ref or empty session never
       // burns a slot, and an exhausted budget degrades this member instead of the whole sweep.
-      if (!(await reserveOnlineJudgeCall(db))) {
+      // Once refused, refused for the rest of this group: the reservation is a serialized,
+      // store-seeding chain, and re-asking once per remaining judge member per session per
+      // tick is pure contention for an answer that cannot change mid-day.
+      if (budgetGone || !(await reserveOnlineJudgeCall(db))) {
+        budgetGone = true;
         members.push({ ...base, name, goodness: null, detail: "-", error: BUDGET_EXHAUSTED_ERROR });
         continue;
       }
@@ -510,6 +536,10 @@ const inBackoff = (key: string): boolean => {
 const recordFailedAttempt = (key: string): void => {
   const now = Date.now();
   const entry = failedAttempts.get(key);
+  // delete-then-set restores insertion-recency order: a refreshed entry must move to the
+  // back, or the size-cap eviction below drops the longest-STANDING (most pathological)
+  // entries first and immediately re-judges exactly the sessions the map exists to sideline.
+  failedAttempts.delete(key);
   failedAttempts.set(key, { first: entry?.first ?? now, last: now });
   if (failedAttempts.size > MAX_BACKOFF_ENTRIES) {
     // Hard cap: evict the oldest insertion (Map iteration order) rather than growing without
@@ -549,6 +579,18 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
 
   for (const project of projects) {
     if (judged >= MAX_JUDGED_PER_SWEEP) break;
+    // Once the daily judge cap refuses, it refuses until midnight - without this latch a
+    // capped project re-asked (and re-warned, and re-fetched spans) for every remaining
+    // (session x scorer) pair, every tick, for the rest of the day. PER PROJECT on purpose:
+    // reserveOnlineJudgeCall keys its counter on db.projectId, so one tenant hitting its own
+    // cap says nothing about the others - a shared latch silently starved every project
+    // sorted after the capped one for the rest of the day.
+    let budgetGone = false;
+    // GLOBAL pass only: a manual sweep of this exact project is in flight - skip it this tick
+    // rather than double-judging the sessions it is mid-way through (the freshness check only
+    // sees committed rows). Every other project still gets its pass. A manual sweep holds its
+    // own project's scope by design and must not skip itself.
+    if (!options.projectId && sweepingScopes.has(project.id)) continue;
     const db = withProjectId(baseDb, project.id);
     // Tenancy context for the judge calls below: multi-tenant instances resolve LLM keys from
     // the project's org settings (core/settings/appSettings.ts), and a sweep runs outside any
@@ -572,14 +614,18 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
     const now = Date.now();
 
     for (const session of sessions) {
-      if (judged >= MAX_JUDGED_PER_SWEEP) break;
+      if (judged >= MAX_JUDGED_PER_SWEEP || budgetGone) break;
       if (session.turnCount < 2) continue;
 
       const lastActivity = new Date(session.lastAt).getTime();
       const scores = await listSessionScores(db, session.sessionId);
+      // One span fetch per SESSION, shared by every evaluator and group that judges it.
+      let sessionSpans: SpanWire[] | null = null;
+      const spansFor = async (): Promise<SpanWire[]> =>
+        (sessionSpans ??= (await listSessionSpans(db, session.sessionId)) as SpanWire[]);
 
       for (const evaluator of evaluators) {
-        if (judged >= MAX_JUDGED_PER_SWEEP) break;
+        if (judged >= MAX_JUDGED_PER_SWEEP || budgetGone) break;
         if (now - lastActivity < evaluator.idleSeconds * 1000) continue;
         if (!matchesAgentScope(evaluator, session.agentId)) continue;
 
@@ -591,21 +637,46 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
         if (!passesSessionSample(session.sessionId, evaluator.id, evaluator.sampleRate)) continue;
         const retryKey = attemptKey(db.projectId, kind, session.sessionId);
         if (inBackoff(retryKey)) continue;
+        // Spans fetched BEFORE the budget slot: a session pruned mid-tick (or listed with
+        // spans the store no longer holds) must degrade to a backoff, not burn a metered
+        // judge slot every retry interval against a fixed daily cap.
+        const prefetchedSpans = await spansFor();
+        if (prefetchedSpans.length === 0) {
+          recordFailedAttempt(retryKey);
+          continue;
+        }
         // One budget slot per session judging, same pool as trace-scope scoring and group
         // members - without this the sweep judged for free while the restart seed COUNTED its
         // events, so a restart double-charged the day in the other direction. The explicit
         // per-session Re-run route stays unmetered (a human click, like the playground).
-        if (!(await reserveOnlineJudgeCall(db))) continue;
+        if (!(await reserveOnlineJudgeCall(db))) {
+          budgetGone = true;
+          continue;
+        }
 
         // Count the ATTEMPT, not the verdict: judge spend happens whether or not a usable
         // rating comes back, and a cap that only counts successes is unbounded during an
         // outage (blowing straight through the sweep lease TTL).
         judged++;
         try {
-          const verdict = await judgeSessionAgainstEvaluator(db, session.sessionId, evaluator);
+          const verdict = await judgeSessionAgainstEvaluator(db, session.sessionId, evaluator, prefetchedSpans);
           if (!verdict) {
-            // No spans (pruned mid-tick) - back off like any failed attempt so the race
-            // cannot consume a tick slot every 60s.
+            // Config deleted between listing and judging. The slot was already reserved, so
+            // leave a durable event too - the restart-time budget seed counts events, and an
+            // eventless reservation under-seeds the next process (double-charging the day).
+            await recordEvent(db, {
+              signalId: null,
+              patternKey: `online-eval:${evaluator.id}`,
+              type: "online_eval_judge_failure",
+              severity: "low",
+              polarity: "score",
+              agentId: session.agentId,
+              traceId: null,
+              onlineEvaluatorId: evaluator.id,
+              rating: null,
+              justification: "Evaluator config no longer exists",
+              sessionId: session.sessionId,
+            });
             recordFailedAttempt(retryKey);
             continue;
           }
@@ -704,6 +775,21 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
         } catch (err) {
           // Isolated per session+evaluator, same posture as every other detector loop - one
           // failing judge call (missing key, provider outage) never blocks the rest of the sweep.
+          // The slot was SPENT: record the failure event the restart-time budget seed counts,
+          // or an operator restart during a provider outage hands the whole daily cap out again.
+          await recordEvent(db, {
+            signalId: null,
+            patternKey: `online-eval:${evaluator.id}`,
+            type: "online_eval_judge_failure",
+            severity: "low",
+            polarity: "score",
+            agentId: session.agentId,
+            traceId: null,
+            onlineEvaluatorId: evaluator.id,
+            rating: null,
+            justification: err instanceof Error ? err.message : "Session judging failed",
+            sessionId: session.sessionId,
+          }).catch(() => undefined);
           recordFailedAttempt(retryKey);
           logger.error(
             { err },
@@ -713,27 +799,41 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
       }
 
       for (const group of sessionGroups) {
-        if (judged >= MAX_JUDGED_PER_SWEEP) break;
+        if (judged >= MAX_JUDGED_PER_SWEEP || budgetGone) break;
         const online = group.online!;
         if (now - lastActivity < (online.idleSeconds ?? 120) * 1000) continue;
 
         const kind = `scorer-group:${group.id}`;
         const latest = scores.find(s => s.kind === kind);
         if (latest && new Date(latest.createdAt).getTime() >= lastActivity) continue;
-        if (!passesSessionSample(session.sessionId, group.id, online.sampleRate)) continue;
+        // sampleRate ?? 1: an absent rate must mean "score everything", not "score nothing"
+        // (every comparison against undefined is false inside the hash check).
+        if (!passesSessionSample(session.sessionId, group.id, online.sampleRate ?? 1)) continue;
         const retryKey = attemptKey(db.projectId, kind, session.sessionId);
         if (inBackoff(retryKey)) continue;
+        // Same pruned-mid-tick posture as the evaluator loop: a session with no spans left
+        // degrades to a backoff BEFORE it charges the tick budget.
+        const groupSpans = await spansFor();
+        if (groupSpans.length === 0) {
+          recordFailedAttempt(retryKey);
+          continue;
+        }
 
-        // Attempts count against the tick budget (see the evaluator loop). Judge-call budget
-        // is reserved lazily inside scoreSessionWithGroup, one slot per judge member as its
-        // call is actually made - reserving up front burned slots for members that turned out
-        // unscoreable (deleted refs, empty session).
-        judged++;
+        // The tick budget charges what a group attempt can actually SPEND: one slot per judge
+        // member (MAX_JUDGED_PER_SWEEP bounds judge calls per tick, and a 6-judge group is 6
+        // calls, not 1). Judge-call budget itself is still reserved lazily inside
+        // scoreSessionWithGroup, one slot per call actually made.
+        judged += Math.max(1, group.members.filter(m => m.kind === "judge").length);
         try {
-          const result = await scoreSessionWithGroup(db, group, session.sessionId);
+          const result = await scoreSessionWithGroup(db, group, session.sessionId, groupSpans);
           if (!result) {
             recordFailedAttempt(retryKey);
             continue;
+          }
+          // Any member refused by the daily cap means the cap is gone for the rest of the
+          // day - stop asking for every remaining (session x scorer) pair this tick.
+          if (result.members.some(m => m.error === BUDGET_EXHAUSTED_ERROR)) {
+            budgetGone = true;
           }
           // Judge members that reserved a slot and failed still SPENT the call - recorded
           // before the score-null bail below, because a full judge outage is exactly the case
@@ -752,6 +852,26 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
               onlineEvaluatorId: null,
               rating: null,
               justification: member.error ?? "Judge member failed",
+              sessionId: session.sessionId,
+            });
+          }
+          // Member verdicts are recorded BEFORE the null-aggregate bail: a judge member that
+          // scored 8/10 inside a fail-closed group made a real, reserved judge call, and the
+          // restart-time budget seed counts these events - skipping them under-seeded the next
+          // process and handed the daily cap out twice.
+          for (const member of result.members) {
+            if (member.goodness === null) continue;
+            await recordEvent(db, {
+              signalId: null,
+              patternKey: `${kind}:${member.kind}:${member.refId}`,
+              type: "scorer_group_member_score",
+              severity: "low",
+              polarity: "score",
+              agentId: session.agentId,
+              traceId: result.anchorTraceId,
+              onlineEvaluatorId: null,
+              rating: Math.round(member.goodness * 100) / 10,
+              justification: JSON.stringify({ name: member.name, detail: member.detail }),
               sessionId: session.sessionId,
             });
           }
@@ -829,22 +949,6 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
             justification: result.justification,
             sessionId: session.sessionId,
           });
-          for (const member of result.members) {
-            if (member.goodness === null) continue;
-            await recordEvent(db, {
-              signalId: null,
-              patternKey: `${kind}:${member.kind}:${member.refId}`,
-              type: "scorer_group_member_score",
-              severity: "low",
-              polarity: "score",
-              agentId: session.agentId,
-              traceId: result.anchorTraceId,
-              onlineEvaluatorId: null,
-              rating: Math.round(member.goodness * 100) / 10,
-              justification: JSON.stringify({ name: member.name, detail: member.detail }),
-              sessionId: session.sessionId,
-            });
-          }
         } catch (err) {
           recordFailedAttempt(retryKey);
           logger.error(
@@ -863,15 +967,16 @@ export async function sweepSessionsOnce(options: { projectId?: string | null } =
 let sweepTimer: NodeJS.Timeout | null = null;
 // In-flight sweep scopes. "*" is the interval's whole-instance sweep and conflicts with
 // everything; a project id conflicts only with itself - so project A's manual sweep never
-// tells project B "skipped". The global tick DOES defer while any manual sweep runs (third
-// clause below): a whole-instance pass would double-judge the very project a manual sweep is
-// mid-way through, and the tick retries in 60s anyway. The narrow race where the tick wins
-// the lease and then finds a just-started manual sweep abandons that lease; it self-heals
-// because the holder id can re-take its own lease next tick.
+// tells project B "skipped".
 const sweepingScopes = new Set<string>();
 const GLOBAL_SWEEP = "*";
+// Deliberately NOT "global defers while any manual scope is held": a client polling the manual
+// route every 30s (each sweep slower than 30s) kept sweepingScopes non-empty forever, and every
+// OTHER project's session scoring silently stopped. The global tick instead runs and skips the
+// specific projects a manual sweep is holding (sweepSessionsOnce checks sweepingScopes per
+// project), so overlap on the same project stays impossible without starving the rest.
 const scopeConflicts = (scope: string): boolean =>
-  sweepingScopes.has(GLOBAL_SWEEP) || sweepingScopes.has(scope) || (scope === GLOBAL_SWEEP && sweepingScopes.size > 0);
+  sweepingScopes.has(GLOBAL_SWEEP) || sweepingScopes.has(scope);
 
 // The route's entry point: scoped to one project, and serialized against the interval sweep
 // and same-project manual invocations - N concurrent sweeps of one project all pass the

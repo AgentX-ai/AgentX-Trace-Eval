@@ -22,6 +22,10 @@ type SpanWire = {
   startedAt?: string;
   createdAt: string;
   metadata?: unknown;
+  /** Engine-resolved kind (present on the ingest wire at runtime) - declared so a caller that
+   *  constructs or maps a SpanWire keeps the stated kind instead of silently falling back to
+   *  the inference ladder, the exact drift spanKind.ts exists to end. */
+  spanKind?: string;
 };
 
 // Was its own copy of the retrieval test; now one line onto the shared classifier, so this and
@@ -113,6 +117,9 @@ export async function renderTraceTrajectory(db: Db, traceId: string): Promise<st
     const indent = "  ".repeat(depthOf(span));
     const latency = span.latencyMs != null ? ` (${span.latencyMs}ms)` : "";
     const model = span.model ? ` [${span.model}]` : "";
+    // Same labeling session transcripts use (sessionScores.ts buildSpanLine): a judge reading
+    // this trajectory must see a memory recall as memory, not as one more tool call.
+    const kindTag = span.spanKind === "memory" || span.spanKind === "retrieval" ? ` [${span.spanKind}]` : "";
     let detail = "";
     if (span.parentSpanId) {
       const input = short(span.input);
@@ -120,7 +127,7 @@ export async function renderTraceTrajectory(db: Db, traceId: string): Promise<st
       if (input || output) detail = ` - ${input ? `input: ${input}` : ""}${input && output ? " " : ""}${output ? `-> ${output}` : ""}`;
     }
     const failed = span.error ? ` FAILED: ${short(span.error)}` : "";
-    lines.push(`${step}. ${indent}${span.name}${model}${latency}${detail}${failed}`);
+    lines.push(`${step}. ${indent}${span.name}${kindTag}${model}${latency}${detail}${failed}`);
   }
   return `Execution steps (in order, indentation = nesting):\n${lines.join("\n")}`;
 }
@@ -134,15 +141,23 @@ export async function renderTraceTrajectory(db: Db, traceId: string): Promise<st
 
 export type TrajectoryMatchMode = "strict" | "unordered" | "subset" | "superset";
 
-export async function extractTraceToolSequence(db: Db, traceId: string): Promise<string[] | null> {
+export async function extractTraceToolSequence(
+  db: Db,
+  traceId: string
+): Promise<{ tools: string[]; truncated: boolean } | null> {
   const root = (await traceStoreFor(db).getById(traceId)) as { toolCalls: unknown } | undefined;
   if (!root) return null;
-  if (!Array.isArray(root.toolCalls)) return [];
+  if (!Array.isArray(root.toolCalls)) return { tools: [], truncated: false };
   // The ingest cap's {"agentx.truncated": true} marker is bookkeeping, not a call - mapped to
-  // "unknown" it failed every subset/strict trajectory check on large traces.
-  return (root.toolCalls as Record<string, unknown>[])
-    .filter(tc => tc["agentx.truncated"] !== true)
-    .map(tc => String(tc.name ?? "unknown"));
+  // "unknown" it failed every subset/strict trajectory check on large traces. Its PRESENCE is
+  // surfaced: a truncated list cannot honestly pass or fail a trajectory assertion (strict/
+  // unordered/superset would fail on missing calls that happened; subset would pass a trace
+  // whose real behavior was never seen).
+  const calls = root.toolCalls as Record<string, unknown>[];
+  return {
+    tools: calls.filter(tc => tc["agentx.truncated"] !== true).map(tc => String(tc.name ?? "unknown")),
+    truncated: calls.some(tc => tc["agentx.truncated"] === true),
+  };
 }
 
 function normalizeNames(names: string[]): string[] {

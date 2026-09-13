@@ -61,7 +61,7 @@ export const ingestTraceSchema = z.preprocess(foldCamelAliases, z.object({
   // valuable span of the day and must not be the one payload the schema REJECTS while a 10MB
   // healthy output gets truncated-and-kept. capPayloadField clips it below like its siblings.
   error: z.string().optional(),
-  latency_ms: z.number().optional(),
+  latency_ms: z.number().finite().nonnegative().optional(),
   framework: z.string().optional(),
   model: z.string().optional(),
   tool_calls: z.array(z.record(z.unknown())).optional(),
@@ -77,16 +77,16 @@ export const ingestTraceSchema = z.preprocess(foldCamelAliases, z.object({
   metadata: z.record(z.unknown()).optional(),
   session_id: z.string().optional(),
   performance_summary: z.record(z.unknown()).optional(),
-  input_tokens: z.number().optional(),
-  output_tokens: z.number().optional(),
+  input_tokens: z.number().finite().nonnegative().optional(),
+  output_tokens: z.number().finite().nonnegative().optional(),
   // Subsets of input_tokens (not additional tokens) - a prompt-caching write/read, when the
   // provider reports one (Anthropic's cache_creation/cache_read_input_tokens, OpenAI's
   // prompt_tokens_details.cached_tokens, Gemini's cached_content_token_count - see AgentX-Python's
   // per-integration usage extraction). Priced separately by estimateCostUSD (core/evaluate/
   // models.ts) when the model's catalog row has its own cache rate configured, otherwise falls
   // back to the regular input rate - same $ as before this field existed.
-  cache_read_tokens: z.number().optional(),
-  cache_write_tokens: z.number().optional(),
+  cache_read_tokens: z.number().finite().nonnegative().optional(),
+  cache_write_tokens: z.number().finite().nonnegative().optional(),
   // Real span hierarchy - sent by the OTel ingestion path (routes/otlp.ts via
   // otel/mapping.ts's otelSpanToIngestInput) unconditionally, and by the Python SDK's own
   // tracer.trace() when a caller opts into span_tree=True (see AgentX-Python's tracer.py) so

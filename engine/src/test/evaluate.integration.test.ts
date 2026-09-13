@@ -249,6 +249,12 @@ describe("evaluation run loop", () => {
       expect((analyze.body as { error?: string }).error).toMatch(/run not found/i);
 
       expect((await engine.json("/api/v1/custom-agent-evaluations/runs/no-such-run/report")).status).toBe(404);
+
+      // analyze-status must 404 on BOTH routers - "not_started" for a typo'd id kept the
+      // SDK's and the dashboard's poll loops waiting forever, and the parity suite only
+      // compared the two for a VALID run, so they could drift here unseen.
+      expect((await engine.json("/api/v1/custom-agent-evaluations/runs/no-such-run/analyze-status")).status).toBe(404);
+      expect((await engine.json("/api/v1/evaluate/analyze/no-such-run/status")).status).toBe(404);
     });
 
     it("reports the same analysis state as the dashboard router", async () => {

@@ -44,6 +44,9 @@ export async function sendMail(mail: Mail): Promise<void> {
       method: "POST",
       headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({ from: fromAddress(), to: [mail.to], subject: mail.subject, text: mail.text }),
+      // Every send is fire-and-forget (sendMailInBackground), so no request blocks - but an
+      // unresponsive provider held a socket and a pending promise per mail forever.
+      signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) {
       throw new Error(`Resend rejected the email (HTTP ${response.status}): ${(await response.text()).slice(0, 200)}`);
@@ -54,7 +57,7 @@ export async function sendMail(mail: Mail): Promise<void> {
   const smtpUrl = process.env.AGENTX_SMTP_URL;
   if (smtpUrl) {
     const { createTransport } = await import("nodemailer");
-    const transport = createTransport(smtpUrl);
+    const transport = createTransport({ url: smtpUrl, connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 15_000 } as never);
     await transport.sendMail({ from: fromAddress(), to: mail.to, subject: mail.subject, text: mail.text });
     return;
   }

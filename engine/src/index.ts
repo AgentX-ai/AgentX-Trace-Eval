@@ -69,7 +69,9 @@ async function main() {
   const earlyShutdown = (signal: NodeJS.Signals) => {
     logger.info(`${signal} received during boot, closing the database and exiting.`);
     void Promise.resolve()
-      .then(() => drainIngestQueue()).then(() => closeDb())
+      .then(() => drainIngestQueue())
+      .then(() => closeTelemetryStore())
+      .then(() => closeDb())
       .catch((err: unknown) => logger.error({ err }, "Error closing database during boot shutdown"))
       .finally(() => process.exit(0));
   };
@@ -228,7 +230,14 @@ async function main() {
     // body-parser throws with its own 4xx status (400 parse.failed, 413 too.large, 415 charset).
     // Flattening those to 500 would blame the server for the client's bad request.
     const status = (err as { status?: unknown; statusCode?: unknown } | null)?.status ?? (err as { statusCode?: unknown } | null)?.statusCode;
-    if (typeof status === "number" && status >= 400 && status < 500) {
+    // Only errors that MARK themselves safe to expose: body-parser sets expose=true and
+    // type="entity.*". undici/@clickhouse/nodemailer errors also carry 4xx status fields, and
+    // their messages can embed full request URLs (query strings included) - those fall through
+    // to the generic 500 rather than echoing internals to the caller.
+    const expose =
+      (err as { expose?: unknown } | null)?.expose === true ||
+      String((err as { type?: unknown } | null)?.type ?? "").startsWith("entity.");
+    if (typeof status === "number" && status >= 400 && status < 500 && expose) {
       res.status(status).json({ statusCode: status, message: err instanceof Error ? err.message : "Bad request" });
       return;
     }
@@ -236,13 +245,19 @@ async function main() {
     // with a connection error deep in the adapter. That is a 503 with a retry hint, not a 500 -
     // the engine is healthy, the storage tier is temporarily not, and ingest already answers the
     // same outage with 503 + Retry-After. @clickhouse/client surfaces it as a socket-level error.
-    const code = (err as { code?: unknown } | null)?.code;
-    const msg = err instanceof Error ? err.message : "";
+    // Only the NAMED adapter error - "fetch failed" alone also describes a judge provider or
+    // webhook outage, and routing those to the ClickHouse runbook section sent operators
+    // debugging the wrong tier. The trace-store adapters tag their own network failures.
+    // Named telemetry-store error, plus the relational driver's socket-level codes: a
+    // Postgres outage is the same "storage tier down, engine healthy" 503, and narrowing to
+    // the named error alone regressed it to a 500 (breaking client retry behavior). Bare
+    // fetch-failure strings stay excluded - those also describe judge/webhook outages.
+    const errCode = (err as { code?: unknown } | null)?.code;
     const storageDown =
-      code === "ECONNREFUSED" ||
-      code === "ECONNRESET" ||
-      code === "UND_ERR_SOCKET" ||
-      /socket hang up|fetch failed|Connect(?:ion)? (?:refused|error)/i.test(msg);
+      (err as { name?: unknown } | null)?.name === "TelemetryStoreUnreachableError" ||
+      errCode === "ECONNREFUSED" ||
+      errCode === "ECONNRESET" ||
+      errCode === "57P01"; // Postgres admin_shutdown
     if (storageDown) {
       res
         .status(503)

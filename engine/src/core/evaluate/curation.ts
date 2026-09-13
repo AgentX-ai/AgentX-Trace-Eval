@@ -203,7 +203,8 @@ async function findDuplicate(existing: ExistingQuestion[], candidate: CuratedCas
 export type AddCaseResult =
   | { ok: true; caseCount: number }
   | { ok: false; duplicate: DuplicateInfo }
-  | { ok: false; error: "not-found" };
+  | { ok: false; error: "not-found" }
+  | { ok: false; capped: true };
 
 // Per-dataset write serialization: addCaseToDataset is a read-modify-write driven
 // CONCURRENTLY by fire-and-forget ingest rules - two traces arriving inside the (multi-second)
@@ -259,6 +260,12 @@ async function addCaseToDatasetSerialized(
     | null;
   const snapshot = fresh ?? dataset;
   const freshQuestions = (Array.isArray(snapshot.questions) ? snapshot.questions : questions) as ExistingQuestion[];
+  // Every add rewrites a full dataset_versions snapshot, so growth is quadratic in cases -
+  // and a run of this dataset judges every case. 1000 curated cases is beyond any deliberate
+  // suite; past it, additions are refused rather than silently degrading every future run.
+  if (freshQuestions.length >= 1000) {
+    return { ok: false as const, capped: true as const };
+  }
 
   // updateDataset (not a raw column write) so the append lands in version history like any other
   // dataset edit. The wire shape spreads similarityConfig flat, so extract helpers map it back.

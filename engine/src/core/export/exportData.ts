@@ -16,6 +16,15 @@ import type { Db } from "../../storage/db.js";
 // the export stream must not be the one surface that hands them out in cleartext. A restored
 // backup keeps the header KEYS; the operator re-enters the secrets, same as provider keys
 // (which are excluded from export entirely).
+// Embedding vectors are a lazily-rebuilt cache, not user data - two 1536-float arrays per
+// classified trace turned a 200k-trace export into gigabytes of JSON numbers for a table whose
+// useful content is five short strings. The engine re-embeds on demand (topics map / coverage
+// map backfill), same reasoning as excluding insight_case_embeddings outright.
+function redactClassificationRow(row: Record<string, unknown>): Record<string, unknown> {
+  const { embedding: _e, inputEmbedding: _ie, ...rest } = row;
+  return rest;
+}
+
 function redactConnectorRow(row: Record<string, unknown>): Record<string, unknown> {
   // Credentials live in the URL as often as in headers (https://user:pass@host, ?api_key=...):
   // strip userinfo and mask every query value, keeping the shape so the export stays useful.
@@ -39,14 +48,56 @@ function redactConnectorRow(row: Record<string, unknown>): Record<string, unknow
   return { ...row, url, headers: redactedHeaders };
 }
 
+// Same redaction for any field that IS a URL-shaped credential: Slack/Teams incoming-webhook
+// URLs are the secret (webhooks.ts masks them in logs for exactly that reason), and custom
+// evaluators routinely carry ?api_key=.
+function redactUrlString(url: unknown): unknown {
+  if (typeof url !== "string") return url;
+  try {
+    const parsed = new URL(url);
+    parsed.username = "";
+    parsed.password = "";
+    for (const key of [...parsed.searchParams.keys()]) parsed.searchParams.set(key, "***redacted***");
+    // Webhook hosts put the secret in the PATH tail - mask everything after the first segment.
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    if (segments.length > 1) parsed.pathname = `/${segments[0]}/***redacted***`;
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function redactCustomEvaluatorRow(row: Record<string, unknown>): Record<string, unknown> {
+  return { ...row, url: redactUrlString(row.url) };
+}
+
+function redactRuleRow(row: Record<string, unknown>): Record<string, unknown> {
+  const actionConfig = row.actionConfig;
+  if (actionConfig && typeof actionConfig === "object" && "url" in (actionConfig as Record<string, unknown>)) {
+    return { ...row, actionConfig: { ...(actionConfig as Record<string, unknown>), url: redactUrlString((actionConfig as Record<string, unknown>).url) } };
+  }
+  return row;
+}
+
+function redactProfileRow(row: Record<string, unknown>): Record<string, unknown> {
+  const channels = row.channels;
+  if (!Array.isArray(channels)) return row;
+  return {
+    ...row,
+    channels: channels.map(ch =>
+      typeof ch === "string" && ch.startsWith("webhook:") ? `webhook:${String(redactUrlString(ch.slice("webhook:".length)))}` : ch
+    ),
+  };
+}
+
 export const EXPORT_ENTITIES = {
   traces: { table: "traces", sinceColumn: "createdAt" },
   signals: { table: "monitorSignals", sinceColumn: "lastSeenAt" },
   "signal-feedback": { table: "monitorSignalFeedback", sinceColumn: "createdAt" },
   "review-queue": { table: "reviewQueueItems", sinceColumn: "createdAt" },
-  rules: { table: "monitorRules", sinceColumn: "createdAt" },
+  rules: { table: "monitorRules", sinceColumn: "createdAt", redact: redactRuleRow },
   events: { table: "monitorEvents", sinceColumn: "createdAt" },
-  classifications: { table: "monitorClassifications", sinceColumn: "createdAt" },
+  classifications: { table: "monitorClassifications", sinceColumn: "createdAt", redact: redactClassificationRow },
   runs: { table: "evaluationRuns", sinceColumn: "createdAt" },
   "run-results": { table: "evaluationRunResults", sinceColumn: "createdAt" },
   "gate-results": { table: "gateResults", sinceColumn: "createdAt" },
@@ -71,7 +122,7 @@ export const EXPORT_ENTITIES = {
   "evaluation-settings-versions": { table: "evaluationSettingsVersions", sinceColumn: "createdAt" },
   // The one table without an `id` column: its primary key is the run it analyzed.
   "evaluation-analyses": { table: "evaluationAnalyses", sinceColumn: "createdAt", keyColumn: "evaluationId" },
-  "custom-evaluators": { table: "customEvaluators", sinceColumn: "createdAt" },
+  "custom-evaluators": { table: "customEvaluators", sinceColumn: "createdAt", redact: redactCustomEvaluatorRow },
   // Scorer groups are grading config (members, weights, gates, online profile) - a restore
   // without them loses every composed grader while its member scorers survive individually.
   "scorer-groups": { table: "scorerGroups", sinceColumn: "createdAt" },
@@ -90,7 +141,7 @@ export const EXPORT_ENTITIES = {
   // per-agent monitoring profiles (webhook channels included), HTTP agent connectors, saved
   // Playground runs, and the audit log.
   agents: { table: "agents", sinceColumn: "createdAt" },
-  "monitor-profiles": { table: "monitorProfiles", sinceColumn: "createdAt" },
+  "monitor-profiles": { table: "monitorProfiles", sinceColumn: "createdAt", redact: redactProfileRow },
   "agent-connectors": { table: "agentConnectors", sinceColumn: "createdAt", redact: redactConnectorRow },
   "playground-runs": { table: "playgroundRuns", sinceColumn: "createdAt" },
   "audit-events": { table: "auditEvents", sinceColumn: "createdAt" },

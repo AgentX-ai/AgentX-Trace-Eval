@@ -19,7 +19,11 @@ import {
   computeRunGate,
   recordGateResult,
   computeLiveStatistics,
-  MAX_BATCH_SIZE, getRunResults, type RunResultRow,} from "../core/evaluate/runs.js";
+  MAX_BATCH_SIZE,
+  getRunResults,
+  runExists,
+  type RunResultRow,
+} from "../core/evaluate/runs.js";
 import { getScorerGroup } from "../core/monitor/scorerGroups.js";
 import { createPrompt, getPromptForSdk, listPromptsForSdk } from "../core/evaluate/prompts.js";
 import { runEvaluationAnalysis, getEvaluationAnalysisStatus, getEvaluationAnalysisRow } from "../core/evaluate/analysis.js";
@@ -286,7 +290,7 @@ evaluationsRouter.post("/runs/:runId/analyze", async (req: Request, res: Respons
 evaluationsRouter.get("/runs/:runId/analyze-status", async (req: Request, res: Response) => {
   // 404 for an unknown run, like /report below - "not_started" for a typo'd id kept a poll
   // loop waiting forever.
-  if (!(await getRun(scopedDb(req), req.params.runId!))) {
+  if (!(await runExists(scopedDb(req), req.params.runId!))) {
     res.status(404).json({ error: "Run not found" });
     return;
   }

@@ -123,6 +123,17 @@ export async function evaluatePatternConditions({
   let acc: boolean | null = null;
   const reasons: string[] = [];
   for (const condition of conditions) {
+    // Short-circuit once the verdict is decided: false AND x is false, true OR x is true, and
+    // false (via nor) stays false. Without this, every remaining SEMANTIC row still fired a
+    // real LLM call per sampled trace for an answer that could not change the outcome - at
+    // sampleRate 1 on a busy agent, the dominant (and invisible) monitor cost. The skipped
+    // rows' reasons are skipped with them: the verdict is identical, but the explanation
+    // lists only the rows that actually ran.
+    if (acc !== null) {
+      const connector = condition.connector ?? "and";
+      if ((connector === "and" || connector === "nor") && acc === false) continue;
+      if (connector === "or" && acc === true) continue;
+    }
     const text = textForSources(condition.sources, texts);
     const result = await evaluateDetector(condition, text, semanticJudge);
     let value = result.matched;

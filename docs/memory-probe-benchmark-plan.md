@@ -224,5 +224,7 @@ Layered, all existing machinery:
   like recall failure. `settleSeconds` plus a pre-probe verification turn ("what do you know
   about me so far?") that is recorded but unscored, so a settle failure is diagnosable as such.
 - **Open:** should seed playback bypass online scorers/session sweep (it is synthetic traffic
-  on a real project)? Leaning yes - tag seed/probe sessions `runSource: "memory-probe"` and
-  exclude them from KPIs the way `trace-eval` traffic already is.
+  on a real project)? Leaning yes - tag seed/probe TRACES with the trace-level `source`
+  (wire `trafficSource`) the way offline-eval traffic uses `"eval-run"`, which rollups and the
+  Live Traces production filter already exclude from KPIs. (`runSource: "memory-probe"` stays
+  on the run row itself, per §3 - it is an evaluation_runs column and cannot tag a session.)

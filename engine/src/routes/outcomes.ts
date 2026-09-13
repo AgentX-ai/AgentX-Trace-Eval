@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { asyncRouter } from "./asyncRouter.js";
 import { scopedDb } from "../auth/apiKey.js";
 import { createOutcomeReport } from "../core/outcomes/outcomeReports.js";
+import { getTraceRow } from "../core/trace/ingest.js";
 
 // Mounted at /api/v1/outcomes - a fresh top-level prefix, same reasoning as agents.ts: outcome
 // reporting isn't specific to Monitor or Evaluate, it's the fact those two surfaces get measured
@@ -31,6 +32,12 @@ outcomesRouter.post("/", async (req: Request, res: Response) => {
   // stored as null, creating an orphan ground-truth row calibration can never join.
   if (!traceId && !runResultId) {
     res.status(400).json({ error: "traceId or evaluationRunResultId (string) is required" });
+    return;
+  }
+  // A guessed/typo'd traceId writes an orphan ground-truth row calibration can never join -
+  // the exact failure the string check above exists to prevent, one step later.
+  if (traceId && !(await getTraceRow(scopedDb(req), traceId))) {
+    res.status(404).json({ error: "Trace not found" });
     return;
   }
   const report = await createOutcomeReport(scopedDb(req), {
