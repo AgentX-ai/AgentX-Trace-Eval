@@ -276,6 +276,43 @@ export async function listEventsSince(db: Db, since: Date): Promise<EventRow[]> 
   return rows as EventRow[];
 }
 
+// The subset of EventRow the KPI tally reads - getKpis materializes 2x the requested window
+// (current span plus the equal-length span before it for deltas), so it gets a projected,
+// bounded query instead of full rows.
+type KpiTallyRow = Pick<EventRow, "patternKey" | "polarity" | "onlineEvaluatorId" | "customEvaluatorId" | "createdAt">;
+
+async function listKpiTallyRowsSince(db: Db, since: Date): Promise<KpiTallyRow[]> {
+  const cond = and(gte(db.schema.monitorEvents.createdAt, since), eq(db.schema.monitorEvents.projectId, db.projectId));
+  // Bounded: a double-width 30d window on a busy project can be millions of rows - beyond 100k
+  // events the rates the KPI cards show no longer move meaningfully, so cap the materialization.
+  const rows =
+    db.kind === "sqlite"
+      ? db.db
+          .select({
+            patternKey: db.schema.monitorEvents.patternKey,
+            polarity: db.schema.monitorEvents.polarity,
+            onlineEvaluatorId: db.schema.monitorEvents.onlineEvaluatorId,
+            customEvaluatorId: db.schema.monitorEvents.customEvaluatorId,
+            createdAt: db.schema.monitorEvents.createdAt,
+          })
+          .from(db.schema.monitorEvents)
+          .where(cond)
+          .limit(100_000)
+          .all()
+      : await db.db
+          .select({
+            patternKey: db.schema.monitorEvents.patternKey,
+            polarity: db.schema.monitorEvents.polarity,
+            onlineEvaluatorId: db.schema.monitorEvents.onlineEvaluatorId,
+            customEvaluatorId: db.schema.monitorEvents.customEvaluatorId,
+            createdAt: db.schema.monitorEvents.createdAt,
+          })
+          .from(db.schema.monitorEvents)
+          .where(cond)
+          .limit(100_000);
+  return rows as KpiTallyRow[];
+}
+
 // Judge-call spend since `since`, counted in SQL - the daily budget seed used to materialize
 // EVERY monitor event since midnight (justifications included) inside the serialized
 // reservation chain, blocking concurrent ingests behind one giant allocation at day's end.
@@ -372,7 +409,7 @@ function emptyCounts(): WindowedCounts {
   return { total: 0, healthy: 0, failing: 0, operationalFailing: 0, scorerFailing: 0, toolFailing: 0 };
 }
 
-function tallyEvent(counts: WindowedCounts, row: EventRow): void {
+function tallyEvent(counts: WindowedCounts, row: KpiTallyRow): void {
   // Score-kind rows (online evaluators, scorer groups and their member verdicts) are ratings of
   // a trace, not run outcomes - counting them inflated totalRuns per scorer that sampled a run.
   if (row.onlineEvaluatorId || row.customEvaluatorId || row.polarity === "score") {
@@ -458,7 +495,7 @@ export async function getKpis(db: Db, range: MonitoringRange): Promise<Monitorin
   // One query covering the current range and the equal-length span immediately before it
   // (needed for `deltas`), split in JS - same "fetch a set, compute in memory" style already used
   // throughout core/evaluate and core/monitor rather than dialect-specific SQL aggregation.
-  const allEvents = await listEventsSince(db, new Date(sinceMs - spanMs));
+  const allEvents = await listKpiTallyRowsSince(db, new Date(sinceMs - spanMs));
 
   const current = emptyCounts();
   const previous = emptyCounts();

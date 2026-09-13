@@ -4,7 +4,6 @@ import type { Request, Response } from "express";
 import { asyncRouter } from "./asyncRouter.js";
 import { scopedDb } from "../auth/apiKey.js";
 import {
-  EXPORT_BATCH,
   EXPORT_ENTITIES,
   countExportRows,
   exportKeyName,
@@ -126,7 +125,10 @@ exportRouter.get("/:entity", async (req: Request, res: Response) => {
           }
         }
       }
-      if (batch.length < EXPORT_BATCH) {
+      // Only an EMPTY batch means done: a store may return a short-but-not-final page (e.g. a
+      // filtered read under the hood), and stopping on `< EXPORT_BATCH` silently truncated the
+      // backup. The keyset cursor always advances, so this terminates.
+      if (batch.length === 0) {
         break;
       }
       // Keyed on the entity's cursor column - evaluation-analyses has no `id`, and a cursor of

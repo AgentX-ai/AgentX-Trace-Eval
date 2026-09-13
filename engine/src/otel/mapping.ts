@@ -26,9 +26,13 @@ function numAttr(v: unknown): number | undefined {
   if (typeof v === "number" && Number.isFinite(v) && v >= 0) {
     return v;
   }
-  // Some exporters send counts as stringValue attributes - a string of digits is still a number.
-  if (typeof v === "string" && /^\d+$/.test(v)) {
-    return Number(v);
+  // Some exporters send counts as stringValue attributes - parse with Number() so decimal and
+  // exponent forms count too, under the same finite non-negative rule as the number branch.
+  if (typeof v === "string" && v.trim() !== "") {
+    const parsed = Number(v);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
   }
   return undefined;
 }
@@ -233,8 +237,13 @@ export function otelSpanToIngestInput(span: NormalizedSpan): IngestTraceInput {
     numAttr(attrs["llm.token_count.completion"]);
   // Semconv names for prompt-caching usage - subsets of inputTokens above, same posture as the
   // Python SDK's own per-integration extraction (see core/trace/ingest.ts's ingestTraceSchema).
-  const cacheReadTokens = numAttr(attrs["gen_ai.usage.cache_read_input_tokens"]);
-  const cacheWriteTokens = numAttr(attrs["gen_ai.usage.cache_creation_input_tokens"]);
+  // OpenInference fallbacks last, mirroring the prompt/completion chains above.
+  const cacheReadTokens =
+    numAttr(attrs["gen_ai.usage.cache_read_input_tokens"]) ??
+    numAttr(attrs["llm.token_count.prompt_details.cache_read"]);
+  const cacheWriteTokens =
+    numAttr(attrs["gen_ai.usage.cache_creation_input_tokens"]) ??
+    numAttr(attrs["llm.token_count.prompt_details.cache_write"]);
 
   // The span kind, as STATED by whoever instrumented this. We were already reading
   // gen_ai.tool.name and mlflow.spanType to reconstruct tool_calls, then throwing the
@@ -333,8 +342,26 @@ export function reconstructParentToolCalls(candidates: IngestTraceInput[]): void
     if (candidate.tool_calls && candidate.tool_calls.length > 0) toolSpanIds.add(candidate.span_id);
   }
   const isToolSpan = (s: IngestTraceInput | undefined): boolean => Boolean(s?.span_id && toolSpanIds.has(s.span_id));
-  for (const candidate of candidates) {
-    if (!candidate.span_id || !toolSpanIds.has(candidate.span_id) || !candidate.parent_span_id) continue;
+  const startNanos = (s: IngestTraceInput): bigint => {
+    try {
+      return s.started_at_unix_nano ? BigInt(s.started_at_unix_nano) : 0n;
+    } catch {
+      return 0n;
+    }
+  };
+  // Fold in start-time order, not OTLP batch arrival order: strict trajectory matching compares
+  // the folded tool_calls sequence positionally, and exporters make no ordering promise within a
+  // batch. Stable sort keeps batch order for spans without a usable timestamp.
+  const toolCandidates = candidates
+    .filter(c => c.span_id && toolSpanIds.has(c.span_id) && c.parent_span_id)
+    .sort((a, b) => {
+      const av = startNanos(a);
+      const bv = startNanos(b);
+      return av < bv ? -1 : av > bv ? 1 : 0;
+    });
+  for (const candidate of toolCandidates) {
+    // Re-checked only to narrow the optional fields for TS - the filter above guarantees both.
+    if (!candidate.span_id || !candidate.parent_span_id) continue;
     // Walk to the topmost ancestor reachable within the batch, cycle-guarded; a missing parent
     // ends the walk at the highest span that did arrive. Along the way, remember the NEAREST
     // non-tool ancestor: when the topmost reachable ancestor is itself a tool span (a tool

@@ -20,13 +20,25 @@ import {
 // the permanent version history - a stamp that used to be entirely client-asserted (any caller
 // could invent a verdict, or validate criteria X and publish criteria Y under X's verdict).
 // validate now mints an HMAC token binding (evaluatorId, sha256 of the exact candidate
-// package, verdict, gain); publish verifies it against what is actually being published.
-// Per-boot key on purpose: a token is a freshness claim about a validation run, not a
-// long-lived credential - after a restart, re-validate.
+// package, verdict, gain) plus an issued-at claim; publish verifies it against what is
+// actually being published and rejects tokens older than the TTL. The key derives from the
+// instance's persisted auth secret rather than per-boot randomBytes: a per-boot key made
+// validate-then-publish impossible across replicas behind a load balancer (and across a
+// deploy), with a "provenance" error pointing at the wrong cause. Freshness is the TTL's job.
 // ---------------------------------------------------------------------------------------------
-import { createHmac, createHash, randomBytes } from "node:crypto";
+import { createHmac, createHash } from "node:crypto";
+import { resolveAuthSecret } from "../../auth/betterAuth.js";
 
-const VALIDATION_SIGNING_KEY = randomBytes(32);
+const VALIDATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+let signingKeyPromise: Promise<Buffer> | null = null;
+function getSigningKey(db: Db): Promise<Buffer> {
+  if (!signingKeyPromise) {
+    signingKeyPromise = resolveAuthSecret(db).then(secret =>
+      createHash("sha256").update(`tuning-validation:${secret}`).digest()
+    );
+  }
+  return signingKeyPromise;
+}
 
 export type TuningCriteriaPackage = {
   acceptanceCriteria: string;
@@ -49,34 +61,40 @@ function criteriaHash(evaluatorId: string, criteria: TuningCriteriaPackage): str
     .digest("hex");
 }
 
-export function signTuningValidation(
+export async function signTuningValidation(
+  db: Db,
   evaluatorId: string,
   criteria: TuningCriteriaPackage,
   verdict: string,
   netAgreementGain: number | null
-): string {
+): Promise<string> {
   const payload = Buffer.from(
-    JSON.stringify({ h: criteriaHash(evaluatorId, criteria), v: verdict, g: netAgreementGain })
+    JSON.stringify({ h: criteriaHash(evaluatorId, criteria), v: verdict, g: netAgreementGain, iat: Date.now() })
   ).toString("base64url");
-  const mac = createHmac("sha256", VALIDATION_SIGNING_KEY).update(payload).digest("base64url");
+  const mac = createHmac("sha256", await getSigningKey(db)).update(payload).digest("base64url");
   return `${payload}.${mac}`;
 }
 
-export function verifyTuningValidation(
+export async function verifyTuningValidation(
+  db: Db,
   token: string,
   evaluatorId: string,
   criteria: TuningCriteriaPackage
-): { verdict: string; netAgreementGain: number | null } | null {
+): Promise<{ verdict: string; netAgreementGain: number | null } | "expired" | null> {
   const [payload, mac] = token.split(".");
   if (!payload || !mac) return null;
-  const expected = createHmac("sha256", VALIDATION_SIGNING_KEY).update(payload).digest("base64url");
+  const expected = createHmac("sha256", await getSigningKey(db)).update(payload).digest("base64url");
   if (mac.length !== expected.length || !timingSafeEqualStr(mac, expected)) return null;
   try {
     const parsed = JSON.parse(Buffer.from(payload, "base64url").toString()) as {
       h?: string;
       v?: string;
       g?: number | null;
+      iat?: number;
     };
+    // A validation is a freshness claim - past the TTL the caller should re-validate, and the
+    // error must say "expired", not accuse the criteria of provenance mismatch.
+    if (typeof parsed.iat === "number" && Date.now() - parsed.iat > VALIDATION_TOKEN_TTL_MS) return "expired";
     if (parsed.h !== criteriaHash(evaluatorId, criteria) || typeof parsed.v !== "string") return null;
     return { verdict: parsed.v, netAgreementGain: typeof parsed.g === "number" ? parsed.g : null };
   } catch {

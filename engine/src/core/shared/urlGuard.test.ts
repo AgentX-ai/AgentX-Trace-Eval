@@ -30,6 +30,10 @@ describe("outboundUrlProblem - every deployment shape", () => {
     expect(outboundUrlProblem("http://2852039166/latest/meta-data/")).not.toBeNull();
     expect(outboundUrlProblem("http://[::ffff:169.254.169.254]/latest/meta-data/")).not.toBeNull();
     expect(outboundUrlProblem("http://[fd00:ec2::254]/latest/meta-data/")).not.toBeNull();
+    // Alibaba and Oracle metadata literals, refused on every deployment shape.
+    expect(outboundUrlProblem("http://100.100.100.200/latest/meta-data/")).not.toBeNull();
+    expect(outboundUrlProblem("http://192.0.0.192/latest/")).not.toBeNull();
+    expect(outboundUrlProblem("http://[::ffff:100.100.100.200]/latest/meta-data/")).not.toBeNull();
   });
 
   it("allows loopback and RFC1918 targets on single-tenant self-host", () => {
@@ -50,6 +54,9 @@ describe("outboundUrlProblem - multi-tenant", () => {
       "http://192.168.1.20/hook",
       "http://172.16.0.1/hook",
       "http://172.31.255.255/hook",
+      // CGNAT 100.64.0.0/10 - private in the same sense on a cloud box.
+      "http://100.64.0.1/hook",
+      "http://100.127.255.254/hook",
     ]) {
       expect(outboundUrlProblem(url), url).not.toBeNull();
     }

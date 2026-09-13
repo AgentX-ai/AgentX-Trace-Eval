@@ -266,6 +266,18 @@ export function normalizeModelId(model: string): string {
 // traces.cacheReadTokens's comment in schema.sqlite.ts), priced separately when the model has its
 // own cache rates configured. Unconfigured cache rates fall back to the regular input rate, so a
 // model that hasn't opted into cache pricing produces byte-identical cost to before this feature.
+// Cache tokens arrive in two shapes: OpenAI-style (a SUBSET of inputTokens - subtract to get
+// the uncached remainder) and Anthropic-style (ADDITIVE - input_tokens already excludes them;
+// OTel's gen_ai.usage.cache_* attributes carry this shape). The trace row does not record
+// which family wrote it, so the shapes are told apart structurally: cache tokens exceeding
+// the input count cannot be a subset. The old unconditional subtraction floored an Anthropic
+// span's 500 real input tokens to $0 the moment a 20k-token cache read appeared.
+export function regularInputTokens(inputTokens: number, cacheRead: number, cacheWrite: number): number {
+  const cached = cacheRead + cacheWrite;
+  if (cached > inputTokens) return inputTokens; // additive shape - input is already uncached
+  return inputTokens - cached; // subset shape
+}
+
 export function estimateCostUSD(
   model: PortabilityModel | null,
   inputTokens: number | null,
@@ -278,7 +290,7 @@ export function estimateCostUSD(
   }
   const cacheRead = cacheReadTokens ?? 0;
   const cacheWrite = cacheWriteTokens ?? 0;
-  const regularInput = Math.max(0, inputTokens - cacheRead - cacheWrite);
+  const regularInput = regularInputTokens(inputTokens, cacheRead, cacheWrite);
   const cacheReadRate = model.pricePerMCacheReadTokens ?? model.pricePerMInputTokens;
   const cacheWriteRate = model.pricePerMCacheWriteTokens ?? model.pricePerMInputTokens;
   return (

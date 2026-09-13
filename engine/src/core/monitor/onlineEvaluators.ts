@@ -288,7 +288,7 @@ export async function deleteOnlineEvaluator(db: Db, id: string): Promise<boolean
 // trace's metadata.retrievalContext - a string, or an array of chunk strings joined with
 // separators. Anything else (absent, wrong shape) means "no context", which the prompt states
 // explicitly rather than judging against an empty string.
-function extractRetrievalContext(metadata: unknown): string | undefined {
+export function extractRetrievalContext(metadata: unknown): string | undefined {
   if (!metadata || typeof metadata !== "object") return undefined;
   const raw = (metadata as { retrievalContext?: unknown }).retrievalContext;
   if (typeof raw === "string" && raw.trim()) return raw;

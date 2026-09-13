@@ -185,6 +185,15 @@ export type CaseEmbeddingResult = {
 // boundary, and caching that as permanent would exclude those cases forever - adding a key later
 // would not recover them. Instead the no-key case short-circuits before any call, so nothing
 // retries in a doomed loop, and a real failure just stays pending until next time.
+// Cases whose text the embeddings API refused repeatedly (typically an expectedResults blob
+// past the model's token limit). Without a marker they count as "pending" forever - the probe
+// answers "warming" for eternity and every request re-burns one of the per-request embedding
+// slots on a doomed input. In-process on purpose: a restart retrying a handful of cases is
+// harmless; the map exists to stop the steady-state loop.
+const EMBED_FAILURE_LIMIT = 3;
+const embedFailures = new Map<string, number>();
+const embedFailureKey = (datasetId: string, caseKey: string) => `${datasetId}:${caseKey}`;
+
 export async function attachCaseEmbeddings(db: Db, cases: DatasetCase[]): Promise<CaseEmbeddingResult> {
   const datasetIds = Array.from(new Set(cases.map(c => c.datasetId)));
   const cache = await readCache(db, datasetIds);
@@ -196,7 +205,11 @@ export async function attachCaseEmbeddings(db: Db, cases: DatasetCase[]): Promis
     if (cached) {
       item.embedding = Array.isArray(cached.embedding) ? (cached.embedding as number[]) : null;
       item.embeddingFull = Array.isArray(cached.embeddingFull) ? (cached.embeddingFull as number[]) : null;
-    } else if (canEmbed && uncached.length < MAX_NEW_EMBEDDINGS_PER_REQUEST) {
+    } else if (
+      canEmbed &&
+      uncached.length < MAX_NEW_EMBEDDINGS_PER_REQUEST &&
+      (embedFailures.get(embedFailureKey(item.datasetId, item.caseKey)) ?? 0) < EMBED_FAILURE_LIMIT
+    ) {
       uncached.push(item);
     }
   }
@@ -230,6 +243,7 @@ export async function attachCaseEmbeddings(db: Db, cases: DatasetCase[]): Promis
       // Both or neither: a case with one usable vector is scoreable in one space and silently
       // absent from the other, which reads as a coverage gap that isn't one.
       if (query && full) {
+        embedFailures.delete(embedFailureKey(entry.item.datasetId, entry.item.caseKey));
         entry.item.embedding = query;
         entry.item.embeddingFull = full;
         fresh.push({
@@ -241,6 +255,13 @@ export async function attachCaseEmbeddings(db: Db, cases: DatasetCase[]): Promis
         });
       }
     }
+    for (const entry of wanted) {
+      if (!vectors[entry.query] || !vectors[entry.full]) {
+        const key = embedFailureKey(entry.item.datasetId, entry.item.caseKey);
+        if (embedFailures.size > 5000) embedFailures.clear();
+        embedFailures.set(key, (embedFailures.get(key) ?? 0) + 1);
+      }
+    }
     await writeCache(db, fresh);
   }
 
@@ -249,7 +270,9 @@ export async function attachCaseEmbeddings(db: Db, cases: DatasetCase[]): Promis
   for (const item of cases) {
     if (item.embedding && item.embeddingFull) {
       embedded = true;
-    } else {
+    } else if ((embedFailures.get(embedFailureKey(item.datasetId, item.caseKey)) ?? 0) < EMBED_FAILURE_LIMIT) {
+      // Only cases that can still warm count as pending - a permanently refused text must not
+      // keep the probe answering "warming" forever.
       pending++;
     }
   }

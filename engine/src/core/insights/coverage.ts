@@ -712,9 +712,11 @@ export async function curateCasesFromTraces(
     if (added >= options.limit || considered >= maxConsidered) break;
     if (!row.traceId || seen.has(row.traceId)) continue;
     seen.add(row.traceId);
+    // Count the candidate before previewing - an unpreviewable trace still spends work, and
+    // skipping the increment would let a run of bad rows walk past the maxConsidered bound.
+    considered++;
     const preview = await previewCaseFromTrace(db, row.traceId);
     if (!preview) continue;
-    considered++;
     const result = await addCaseToDataset(db, options.datasetId, preview.case);
     if (result.ok) added++;
     else if ("duplicate" in result && result.duplicate) duplicates++;

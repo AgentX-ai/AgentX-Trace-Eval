@@ -69,6 +69,9 @@ function isPrivateHost(host: string): boolean {
     if (/^10\./.test(ip4)) return true;
     if (/^192\.168\./.test(ip4)) return true;
     if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip4)) return true;
+    // CGNAT 100.64.0.0/10 - cloud-internal service ranges (e.g. VPC endpoints) live here, and
+    // on multi-tenant boxes it is as reachable-and-private as RFC1918.
+    if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip4)) return true;
   }
   return false;
 }
@@ -88,7 +91,9 @@ export function outboundUrlProblem(raw: string): string | null {
   // The link-local check runs on the canonical IPv4 so 169.254.169.254 spelled as a decimal
   // literal or a v4-mapped IPv6 host is refused the same as the dotted form.
   const ip4 = effectiveIpv4(host);
-  if (METADATA_HOSTS.has(host) || /^169\.254\./.test(ip4 ?? host)) {
+  // Beyond link-local: Alibaba Cloud and Oracle Cloud serve instance metadata from fixed
+  // non-link-local IPv4 literals, checked against the canonical form like 169.254/16 is.
+  if (METADATA_HOSTS.has(host) || /^169\.254\./.test(ip4 ?? host) || ip4 === "100.100.100.200" || ip4 === "192.0.0.192") {
     return "cloud metadata endpoints are never a valid target";
   }
   if (isMultiTenant() && process.env.AGENTX_EGRESS_ALLOW_PRIVATE !== "1" && isPrivateHost(host)) {

@@ -1339,7 +1339,8 @@ agentMonitoringDashboardRouter.post(
       const verdictForToken = (result as { verdict?: string; netAgreementGain?: number }).verdict;
       const validationToken =
         typeof verdictForToken === "string"
-          ? signTuningValidation(
+          ? await signTuningValidation(
+              scopedDb(req),
               req.params.evaluatorId!,
               {
                 acceptanceCriteria: body.acceptanceCriteria,
@@ -1391,7 +1392,7 @@ agentMonitoringDashboardRouter.post(
     const token = (validation as { token?: string } | undefined)?.token;
     let verified: { verdict: string; netAgreementGain: number | null } | null = null;
     if (typeof token === "string" && token) {
-      verified = verifyTuningValidation(token, req.params.evaluatorId!, {
+      const outcome = await verifyTuningValidation(scopedDb(req), token, req.params.evaluatorId!, {
         acceptanceCriteria: body.acceptanceCriteria,
         rejectionCriteria: body.rejectionCriteria,
         evaluationCriteria: body.evaluationCriteria,
@@ -1399,6 +1400,13 @@ agentMonitoringDashboardRouter.post(
         // or a validated blank judgePrompt fails token verification on publish.
         judgePrompt: typeof body.judgePrompt === "string" ? body.judgePrompt : undefined,
       });
+      if (outcome === "expired") {
+        res.status(409).json({
+          error: "The validation is older than 24 hours - re-run POST .../tune/validate on this package.",
+        });
+        return;
+      }
+      verified = outcome;
       if (!verified) {
         res.status(409).json({
           error:

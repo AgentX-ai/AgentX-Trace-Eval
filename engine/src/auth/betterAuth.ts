@@ -350,8 +350,15 @@ export async function resolveAuthSecret(db: Db): Promise<string> {
     else await db.db.update(db.schema.appSettings).set({ authSecret: secret }).where(cond);
   } else {
     const row = { id: "default", openaiApiKey: null, anthropicApiKey: null, geminiApiKey: null, authSecret: secret, updatedAt: new Date() };
-    if (db.kind === "sqlite") await db.db.insert(db.schema.appSettings).values(row);
-    else await db.db.insert(db.schema.appSettings).values(row);
+    // Two processes fresh-booting at once both reach this insert; the loser must adopt the
+    // winner's secret, not throw on the primary key or overwrite it with its own.
+    if (db.kind === "sqlite") await db.db.insert(db.schema.appSettings).values(row).onConflictDoNothing();
+    else await db.db.insert(db.schema.appSettings).values(row).onConflictDoNothing();
+    const stored =
+      db.kind === "sqlite"
+        ? db.db.select().from(db.schema.appSettings).where(eq(db.schema.appSettings.id, "default")).limit(1).all()[0]
+        : (await db.db.select().from(db.schema.appSettings).where(eq(db.schema.appSettings.id, "default")).limit(1))[0];
+    if (stored?.authSecret) return stored.authSecret as string;
   }
   return secret;
 }

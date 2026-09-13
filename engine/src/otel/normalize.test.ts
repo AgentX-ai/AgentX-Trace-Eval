@@ -49,13 +49,21 @@ describe("normalizeExportRequest", () => {
           scope_spans: [
             {
               scope: { name: "s" },
-              spans: [{ name: "n", trace_id: b64("aa"), span_id: b64("bb"), start_time_unix_nano: "5", end_time_unix_nano: "9" }],
+              spans: [
+                {
+                  name: "n",
+                  trace_id: b64("0123456789abcdef0123456789abcdef"),
+                  span_id: b64("0123456789abcdef"),
+                  start_time_unix_nano: "5",
+                  end_time_unix_nano: "9",
+                },
+              ],
             },
           ],
         },
       ],
     });
-    expect(span!.traceIdHex).toBe("aa");
+    expect(span!.traceIdHex).toBe("0123456789abcdef0123456789abcdef");
     expect(span!.startTimeUnixNano).toBe(5n);
   });
 
@@ -108,5 +116,16 @@ describe("normalizeExportRequest", () => {
 
   it("does not throw when a span entry is null", () => {
     expect(() => normalizeExportRequest({ resourceSpans: [{ scopeSpans: [{ spans: [null] }] }] })).not.toThrow();
+  });
+
+  it("rejects base64 ids that decode to the wrong byte length", () => {
+    // Valid base64, wrong id sizes: 1 byte for a trace id, 4 bytes for a span id. The hex branch
+    // already enforces 32/16-char shapes, so the base64 branch must apply the same rule.
+    const [span] = normalizeExportRequest(
+      wrap({ name: "n", traceId: b64("aa"), spanId: b64("01234567"), parentSpanId: b64("ff") })
+    );
+    expect(span!.traceIdHex).toBe("");
+    expect(span!.spanIdHex).toBe("");
+    expect(span!.parentSpanIdHex).toBeNull();
   });
 });

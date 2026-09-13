@@ -183,6 +183,12 @@ async function resolveModelRouting(model: string): Promise<ModelRouting> {
       isCustom: true,
     };
   }
+  // Google's own canonical resource form ("models/gemini-2.5-pro") contains a slash but is
+  // NOT OpenRouter's namespace - route it to Gemini before the slash rule can demand an
+  // OpenRouter key that was never needed.
+  if (/^models\/gemini/i.test(model)) {
+    model = model.slice("models/".length);
+  }
   // Slash-form ids are OpenRouter's namespace, whatever provider label the catalog row
   // carries - "anthropic/claude-sonnet-4" sent to the native Anthropic API 404s. Only a
   // custom-provider row (own baseUrl, handled above) may claim a slashed id for itself.
@@ -239,6 +245,19 @@ async function resolveModelRouting(model: string): Promise<ModelRouting> {
     isGemini: false,
     isCustom: false,
   };
+}
+
+// Prefix-based provider LABEL for display/snapshot surfaces (analysis metrics' modelSnapshot).
+// Mirrors resolveModelRouting's branch ORDER but constructs no client and skips the async
+// catalog-row check, so it is a label, not a routing decision - a catalog row whose stored
+// provider contradicts its id's prefix will route by the row and label by the prefix.
+export function providerLabelForModel(model: string): "anthropic" | "openai" | "google" | "openrouter" {
+  // Google's canonical resource form ("models/gemini-2.5-pro") is Gemini, not OpenRouter.
+  const normalized = /^models\/gemini/i.test(model) ? model.slice("models/".length) : model;
+  if (normalized.includes("/")) return "openrouter";
+  if (normalized.startsWith("gemini-")) return "google";
+  if (normalized.startsWith("claude-")) return "anthropic";
+  return "openai";
 }
 
 export type JudgeCriteria = {
@@ -333,9 +352,20 @@ ${criteria.evaluationCriteria ? `**Evaluation Criteria:** ${criteria.evaluationC
   if (!Number.isFinite(rating)) {
     throw new JudgeFailedError("parseError");
   }
+  // Out-of-range means the judge used a different SCALE (a compat endpoint answering a
+  // percent-form 85) - clamping turned a B-grade 85/100 into a flawless 10/10, the single
+  // most dangerous silent transform a gate can suffer. Small float noise still clamps.
+  if (rating < -0.01 || rating > 10.5) {
+    throw new JudgeFailedError("parseError");
+  }
   return {
     rating: Math.max(0, Math.min(10, rating)),
-    justification: typeof payload.justification === "string" ? payload.justification : "",
+    justification:
+      typeof payload.justification === "string"
+        ? payload.justification
+        : payload.justification != null && typeof payload.justification === "object"
+          ? JSON.stringify(payload.justification)
+          : "",
   };
 }
 

@@ -123,6 +123,24 @@ describe("otelSpanToIngestInput", () => {
       .toMatchObject({ input_tokens: 7, output_tokens: 2 });
   });
 
+  it("reads cache token usage from the gen_ai.usage.* names and the OpenInference fallbacks", () => {
+    expect(
+      otelSpanToIngestInput(
+        span({ attributes: { "gen_ai.usage.cache_read_input_tokens": 128, "gen_ai.usage.cache_creation_input_tokens": 64 } })
+      )
+    ).toMatchObject({ cache_read_tokens: 128, cache_write_tokens: 64 });
+    expect(
+      otelSpanToIngestInput(
+        span({
+          attributes: {
+            "llm.token_count.prompt_details.cache_read": 128,
+            "llm.token_count.prompt_details.cache_write": 64,
+          },
+        })
+      )
+    ).toMatchObject({ cache_read_tokens: 128, cache_write_tokens: 64 });
+  });
+
   it("records an error from the span status and from an exception event", () => {
     expect(otelSpanToIngestInput(span({ statusCode: "STATUS_CODE_ERROR", statusMessage: "rate limited" })).error).toBe("rate limited");
     expect(otelSpanToIngestInput(span({ statusCode: "STATUS_CODE_ERROR" })).error).toBe("error");
@@ -256,6 +274,31 @@ describe("reconstructParentToolCalls", () => {
     const tool: IngestTraceInput = { name: "t", span_id: "t", parent_span_id: "t", tool_calls: call("t") };
     expect(() => reconstructParentToolCalls([tool])).not.toThrow();
     expect(tool.tool_calls).toEqual(call("t"));
+  });
+
+  it("folds tool calls in start-time order, not batch arrival order", () => {
+    // Exporters make no ordering promise within an OTLP batch, but strict trajectory matching
+    // compares the folded sequence positionally - the later-starting tool must fold second even
+    // when it arrives first.
+    const root: IngestTraceInput = { name: "agent", span_id: "root" };
+    const second: IngestTraceInput = {
+      name: "second",
+      span_id: "b",
+      parent_span_id: "root",
+      tool_calls: call("second"),
+      started_at_unix_nano: "1700000002000000000",
+    };
+    const first: IngestTraceInput = {
+      name: "first",
+      span_id: "a",
+      parent_span_id: "root",
+      tool_calls: call("first"),
+      started_at_unix_nano: "1700000001000000000",
+    };
+
+    reconstructParentToolCalls([root, second, first]);
+
+    expect(root.tool_calls).toEqual([...call("first"), ...call("second")]);
   });
 
   it("is a no-op for a batch with no tool spans", () => {

@@ -444,6 +444,8 @@ export const insightsProbeBatchResponseSchema = z
         adjacent: z.number(),
         gap: z.number(),
         untestedAndUnasked: z.number(),
+        // Batches probed while cases are still embedding land here, not in the four buckets above.
+        warming: z.number(),
       })
       .strict(),
     degraded: z.boolean(),
