@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { getRunRowFull, getRunResults, type RunResultRow } from "./runs.js";
-import { resolvePlatformModel, callJudgeJson } from "./judge.js";
+import { resolvePlatformModel, callJudgeJson, providerLabelForModel } from "./judge.js";
 import { mapWithConcurrency } from "../shared/concurrency.js";
 import { analysisNarrativeSchemaProperties, type AnalysisNarrative } from "@agentx/judge-core";
 
@@ -475,9 +475,6 @@ export async function getEvaluationAnalysisStatus(db: Db, evaluationId: string) 
   };
 }
 
-function modelProvider(model: string): "anthropic" | "openai" {
-  return model.startsWith("claude-") ? "anthropic" : "openai";
-}
 
 export async function getEvaluationAnalysisMetrics(db: Db, evaluationId: string) {
   const row = await getEvaluationAnalysisRow(db, evaluationId);
@@ -491,7 +488,7 @@ export async function getEvaluationAnalysisMetrics(db: Db, evaluationId: string)
   judgeModels.slice(0, MAX_JUDGES).forEach((model, i) => {
     const key = slotKeys[i];
     if (key) {
-      modelSnapshot[key] = { model, provider: modelProvider(model) };
+      modelSnapshot[key] = { model, provider: providerLabelForModel(model) };
     }
   });
 

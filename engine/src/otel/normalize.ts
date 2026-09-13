@@ -47,6 +47,11 @@ function idToHex(value: unknown): string | null {
     return null;
   }
   const hex = Buffer.from(standard, "base64").toString("hex");
+  // Same shape rule the hex branch enforces: a valid id decodes to exactly 16 bytes (trace) or
+  // 8 bytes (span) - anything else is a malformed id, not an id.
+  if (!/^[0-9a-f]{32}$|^[0-9a-f]{16}$/.test(hex)) {
+    return null;
+  }
   return /^0+$/.test(hex) ? null : hex;
 }
 

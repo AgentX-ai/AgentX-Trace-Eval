@@ -44,6 +44,16 @@ const TRANSIENT_MARKERS = [
   "/mcp-oauth",
 ];
 
+// Anchored at the END of the path, not substring-matched: an entity whose id or slug happened to
+// contain a marker (".../signals/estimate-abc") must not slip out of the audit trail. A marker
+// ending in "-" is an open family (/suggest-human-feedback, /suggest-expected, ...) and matches
+// as a prefix of the path's final segment instead.
+function isTransientPath(path: string): boolean {
+  const clean = path.split("?")[0] ?? path;
+  const lastSegment = clean.slice(clean.lastIndexOf("/"));
+  return TRANSIENT_MARKERS.some(m => (m.endsWith("-") ? lastSegment.startsWith(m) : clean.endsWith(m)));
+}
+
 const VERB: Record<string, string> = { POST: "create", PUT: "update", PATCH: "update", DELETE: "delete" };
 
 // Wire path segment -> audit noun. Falls back to the segment itself so new routes are audited
@@ -74,7 +84,7 @@ export function classifyControlPlane(method: string, path: string): Classified |
   if (DATA_PLANE_PREFIXES.some(p => path === p || path.startsWith(`${p}/`))) {
     return null;
   }
-  if (TRANSIENT_MARKERS.some(m => path.includes(m))) {
+  if (isTransientPath(path)) {
     return null;
   }
 
@@ -134,7 +144,7 @@ function safeSummary(body: unknown): Record<string, unknown> | null {
   return summary;
 }
 
-async function resolveActor(req: Request): Promise<{ actor: string; actorType: AuditActorType }> {
+async function resolveActor(req: Request, statusCode?: number): Promise<{ actor: string; actorType: AuditActorType }> {
   const adminToken = process.env.AGENTX_ADMIN_TOKEN;
   if (adminToken && secretEquals(req.header("x-admin-token"), adminToken)) {
     return { actor: "admin", actorType: "admin" };
@@ -142,9 +152,11 @@ async function resolveActor(req: Request): Promise<{ actor: string; actorType: A
   if (req.projectId) {
     return { actor: `project:${req.projectId}`, actorType: "project-key" };
   }
-  // /projects handlers resolve the key themselves rather than through requireApiKey.
+  // /projects handlers resolve the key themselves rather than through requireApiKey. Skipped
+  // when auth already failed (401/403): the request's key was rejected, and hashing every junk
+  // key an unauthenticated scanner sends would turn the audit tap into a bcrypt amplifier.
   const key = req.header("x-api-key");
-  if (key) {
+  if (key && statusCode !== 401 && statusCode !== 403) {
     const project = await resolveProjectByApiKey(getDb(), key).catch(() => null);
     if (project) {
       return { actor: `project:${project.id}`, actorType: "project-key" };
@@ -168,7 +180,7 @@ export function auditControlPlaneTap(req: Request, res: Response, next: NextFunc
   const summary = req.method === "GET" ? null : safeSummary(req.body);
   res.on("finish", () => {
     void (async () => {
-      const { actor, actorType } = await resolveActor(req);
+      const { actor, actorType } = await resolveActor(req, res.statusCode);
       await recordAuditEvent(getDb(), {
         actor,
         actorType,

@@ -93,7 +93,27 @@ async function listMemberRows(db: Db, groupId: string): Promise<MemberRow[]> {
   return rows.sort((a, b) => b.addedAt.getTime() - a.addedAt.getTime());
 }
 
-async function ensureCollectingGroup(db: Db): Promise<GroupRow> {
+// Serialized per project: captureConfirmedFailure fires fire-and-forget per confirmed verdict,
+// and two concurrent calls both finding no collecting group would each create one - splitting
+// one incident's evidence across two batches. Same promise-chain shape as the review queue's
+// writes.
+const ensureChains = new Map<string, Promise<GroupRow>>();
+
+function ensureCollectingGroup(db: Db): Promise<GroupRow> {
+  const chainKey = db.projectId ?? "";
+  const previous = ensureChains.get(chainKey) ?? Promise.resolve(null as unknown as GroupRow);
+  const run = previous.then(
+    () => ensureCollectingGroupSerialized(db),
+    () => ensureCollectingGroupSerialized(db)
+  );
+  ensureChains.set(chainKey, run);
+  void run.finally(() => {
+    if (ensureChains.get(chainKey) === run) ensureChains.delete(chainKey);
+  });
+  return run;
+}
+
+async function ensureCollectingGroupSerialized(db: Db): Promise<GroupRow> {
   // Status, not name, identifies the accumulator: sealed batches keep a timestamped variant of
   // the default name, and only ever one group is collecting.
   const existing = (await listGroupRows(db)).find(group => group.status === "collecting");

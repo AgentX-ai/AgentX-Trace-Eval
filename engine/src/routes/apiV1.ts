@@ -186,6 +186,14 @@ export function registerApiV1(app: Express, deps: ApiV1Deps): void {
       res.status(401).json({ error: "Provide a valid project API key (printed at engine startup)" });
       return;
     }
+    // DELIBERATE in disabled-auth mode: every project's key comes back in cleartext. The
+    // dashboard's project switcher stores them and swaps x-api-key locally on switch
+    // (ProjectProvider - no per-switch network call), and the Example-project flow reads its
+    // key from this listing. That makes any one valid key equivalent to all of them - which is
+    // the documented single-operator posture of AGENTX_AUTH=disabled (the cross-project DELETE
+    // refusal below is a guard against accidents, not an isolation boundary). Multi-operator
+    // isolation is what enabled-auth mode is for; do NOT strip sibling keys here without
+    // redesigning project switching.
     const projects = await listProjectsWire(getDb());
     res.status(200).json({ projects });
   }));

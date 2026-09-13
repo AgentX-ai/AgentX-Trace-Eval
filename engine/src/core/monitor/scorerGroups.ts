@@ -12,6 +12,8 @@ import { passesSampleRate } from "./routing.js";
 import { recordEvent } from "./events.js";
 import { upsertSignal } from "./signals.js";
 import { getProfileRow } from "./profiles.js";
+import { renderTraceTrajectory, renderUsedToolDefinitions, getTraceRetrievalContext } from "../trace/trajectory.js";
+import { extractRetrievalContext } from "./onlineEvaluators.js";
 import { notifyWebhooks, extractWebhookUrls } from "./webhooks.js";
 import { reserveOnlineJudgeCall } from "./onlineEvaluators.js";
 import { logger } from "../../log.js";
@@ -337,6 +339,14 @@ export type GroupScoringContent = {
   expected?: string;
   traceId?: string | null;
   toolCalls?: unknown;
+  // The same judging context a standalone scorer gets (rendered once by the caller): moving a
+  // judge into a group must not silently strip the trajectory/context its criteria were
+  // written about. Each judge member still gates trajectory/toolDefinitions on its OWN
+  // toolContext below.
+  judgeGuideline?: string;
+  context?: string;
+  trajectory?: string;
+  toolDefinitions?: string;
 };
 
 // Scores every member of a group against one piece of content (an eval-run result, or a live
@@ -389,7 +399,17 @@ async function scoreJudgeMember(
         judgePrompt: (settings.judgePrompt ?? "").trim() || DEFAULT_JUDGE_PROMPT,
         judgeModel: settings.judgeModel ?? DEFAULT_JUDGE_MODEL,
       },
-      { input: content.input, output: content.output, expected: content.expected }
+      {
+        input: content.input,
+        output: content.output,
+        expected: content.expected,
+        judgeGuideline: content.judgeGuideline,
+        context: content.context,
+        // Same gating as every standalone judging path: "none" strips the trajectory,
+        // definitions only for "detailed".
+        trajectory: (settings.toolContext ?? "simple") !== "none" ? content.trajectory : undefined,
+        toolDefinitions: settings.toolContext === "detailed" ? content.toolDefinitions : undefined,
+      }
     );
     const clamped = Math.max(0, Math.min(10, rating));
     return { ...base, name, goodness: clamped / 10, detail: `${clamped}/10 (${justification.slice(0, 140)})` };
@@ -509,7 +529,7 @@ export async function scoreCustomMember(db: Db, member: ScorerGroupMember, conte
 // `scorer-group:<id>` keys the events, so history survives member edits.
 export async function runScorerGroupsOnline(
   db: Db,
-  trace: { input: unknown; output: unknown; toolCalls?: unknown },
+  trace: { input: unknown; output: unknown; toolCalls?: unknown; metadata?: unknown },
   ctx: { agentId: string | null; traceId: string | null }
 ): Promise<void> {
   // Session-scoped groups are the idle-session sweep's job (sessionSweep.ts) - scoring them
@@ -520,6 +540,29 @@ export async function runScorerGroupsOnline(
   if (groups.length === 0) return;
   const inputText = typeof trace.input === "string" ? trace.input : JSON.stringify(trace.input ?? "");
   const outputText = typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output ?? "");
+  // Trace context for judge members, rendered lazily and at most once however many groups
+  // score this trace - same memoized-getter shape as runOnlineEvaluators. Render failures
+  // degrade to output-only judging rather than skipping the group.
+  let trajectoryPromise: Promise<string | null> | null = null;
+  const getTrajectory = () => {
+    if (!ctx.traceId) return Promise.resolve(null);
+    if (!trajectoryPromise) trajectoryPromise = renderTraceTrajectory(db, ctx.traceId).catch(() => null);
+    return trajectoryPromise;
+  };
+  let toolDefinitionsPromise: Promise<string | null> | null = null;
+  const getToolDefinitions = () => {
+    if (!ctx.traceId) return Promise.resolve(null);
+    if (!toolDefinitionsPromise) toolDefinitionsPromise = renderUsedToolDefinitions(db, ctx.traceId).catch(() => null);
+    return toolDefinitionsPromise;
+  };
+  const explicitContext = extractRetrievalContext(trace.metadata);
+  let recordedContextPromise: Promise<string | null> | null = null;
+  const getContext = () => {
+    if (explicitContext) return Promise.resolve(explicitContext);
+    if (!ctx.traceId) return Promise.resolve(null);
+    if (!recordedContextPromise) recordedContextPromise = getTraceRetrievalContext(db, ctx.traceId).catch(() => null);
+    return recordedContextPromise;
+  };
   // Same webhook fan-out low online-evaluator scores get - a below-threshold group score is a
   // failure detection, and it pages the same channels.
   const alertProfile = ctx.agentId ? await getProfileRow(db, ctx.agentId) : null;
@@ -538,6 +581,12 @@ export async function runScorerGroupsOnline(
           output: outputText,
           traceId: ctx.traceId,
           toolCalls: trace.toolCalls,
+          // Same trace context standalone online evaluators judge with (rendered once per
+          // trace, shared across groups) - a judge moved into a group must not silently
+          // lose the trajectory its criteria were written about.
+          context: (await getContext()) ?? undefined,
+          trajectory: (await getTrajectory()) ?? undefined,
+          toolDefinitions: (await getToolDefinitions()) ?? undefined,
         },
         { reserveOnlineBudget: true }
       );

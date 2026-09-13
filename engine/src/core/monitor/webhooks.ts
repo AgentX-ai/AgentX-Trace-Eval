@@ -86,8 +86,13 @@ export function postWebhooks(urls: string[], payload: Record<string, unknown>): 
     const problem = outboundUrlProblem(url);
     if (problem) {
       if (!warnedBlockedUrls.has(url)) {
+        // Cap the dedupe set: rules can synthesize unbounded distinct URLs, and this set lives
+        // for the whole process. Clearing re-warns old targets, which is the cheap failure mode.
+        if (warnedBlockedUrls.size > 500) warnedBlockedUrls.clear();
         warnedBlockedUrls.add(url);
-        logger.warn(`Monitor webhook target skipped (${url}): ${problem}`);
+        // Same posture as the delivery-failure logs below: the URL IS the credential for
+        // Slack/Teams-style hooks, so log host plus masked tail, never the whole thing.
+        logger.warn({ host: safeHost(url), url: maskSecret(url) }, `Monitor webhook target skipped: ${problem}`);
       }
       continue;
     }

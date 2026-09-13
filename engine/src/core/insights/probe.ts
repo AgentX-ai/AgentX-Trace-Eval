@@ -106,13 +106,14 @@ type ProbeContext = {
   // Cases whose embeddings are still warming - invisible to similarity scoring, so any
   // negative verdict while this is non-zero is a floor, not a fact.
   pendingCases: number;
+  canEmbed: boolean;
 };
 
 async function loadContext(db: Db, window: MonitoringWindow, datasetIds?: string[]): Promise<ProbeContext> {
   const { days } = windowConfig(window);
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const [rows, cases] = await Promise.all([listClassificationsSince(db, since), listDatasetCases(db, datasetIds)]);
-  const { embedded, pending } = await attachCaseEmbeddings(db, cases);
+  const { embedded, pending, canEmbed } = await attachCaseEmbeddings(db, cases);
   // Same floor the coverage sweep applies. Without it a single stray classification is enough to
   // turn "nobody asks this" into a fabricated real gap - the one verdict the probe exists to avoid
   // handing out.
@@ -120,7 +121,7 @@ async function loadContext(db: Db, window: MonitoringWindow, datasetIds?: string
   // Denominator over the SAME filtered groups the sweep uses, not every classified row - otherwise
   // one topic reports two different traffic shares depending on which screen you read it from.
   const totalTraces = groups.reduce((sum, g) => sum + g.rows.length, 0);
-  return { cases, groups, totalTraces, embeddedCases: embedded, pendingCases: pending };
+  return { cases, groups, totalTraces, embeddedCases: embedded, pendingCases: pending, canEmbed };
 }
 
 async function scorerFor(query: string, ctx: ProbeContext): Promise<Scorer> {
@@ -190,7 +191,10 @@ function probeWith(query: string, ctx: ProbeContext, scorer: Scorer): ProbeResul
   // A cold embedding cache hides real cases from the scorer - asserting "gap" then sends a
   // team to write a duplicate test for a query case #200 already covers. Positive verdicts
   // stand (a found cover is a found cover); negative ones downgrade to "warming".
-  const blind = !scorer.degraded && ctx.pendingCases > 0;
+  // "Warming" is only an honest answer while the cache CAN warm: pending>0 with no usable
+  // embeddings key (rotated away after a partial warm) used to freeze every negative verdict
+  // at "probe again later" forever.
+  const blind = !scorer.degraded && ctx.pendingCases > 0 && ctx.canEmbed;
   const verdict: ProbeVerdict =
     best >= scorer.bands.covered
       ? "covered"
@@ -226,7 +230,14 @@ export async function probe(
 
 export type ProbeBatchResult = {
   results: ProbeResult[];
-  rollup: { total: number; covered: number; adjacent: number; gap: number; untestedAndUnasked: number };
+  rollup: {
+    total: number;
+    covered: number;
+    adjacent: number;
+    gap: number;
+    untestedAndUnasked: number;
+    warming: number;
+  };
   degraded: boolean;
 };
 
@@ -254,6 +265,8 @@ export async function probeBatch(
       adjacent: results.filter(r => r.verdict === "adjacent").length,
       gap: results.filter(r => r.verdict === "gap").length,
       untestedAndUnasked: results.filter(r => r.verdict === "untested-and-unasked").length,
+      // Without this bucket a warming batch reads total:N with every other count 0.
+      warming: results.filter(r => r.verdict === "warming").length,
     },
     degraded: results.some(r => r.degraded),
   };

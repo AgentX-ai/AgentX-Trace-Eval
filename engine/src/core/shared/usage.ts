@@ -43,18 +43,25 @@ export function traceQuota(): number | null {
   return raw > 0 ? raw : null;
 }
 
-// `scope` null = whole instance (single-tenant); otherwise the count is confined to that
-// organization's rows - and an orgless multi-tenant request (a bare project key with no
-// organization) counts only the other orgless rows via IS NULL, rather than omitting the
-// predicate and metering one project's traffic against every tenant's combined spend.
-async function countJudgeCallsToday(db: Db, scope: { organizationId: string | null } | null): Promise<number> {
+// Multi-tenant: the count is confined to the organization's rows - and an orgless
+// multi-tenant request (a bare project key with no organization) counts only the other
+// orgless rows via IS NULL, rather than omitting the predicate and metering one project's
+// traffic against every tenant's combined spend. Single-tenant: scoped per PROJECT - an
+// instance-wide pool let one project's 500-case run zero every other project's judge budget
+// for the day, the same shape as the tenant-usage bug the session sweep fixed.
+async function countJudgeCallsToday(
+  db: Db,
+  scope: { organizationId: string | null } | { projectId: string | null } | null
+): Promise<number> {
   const conditions = [eq(db.schema.usageEvents.kind, "judge_call"), gte(db.schema.usageEvents.createdAt, dayStart())];
-  if (scope) {
+  if (scope && "organizationId" in scope) {
     conditions.push(
       scope.organizationId
         ? eq(db.schema.usageEvents.organizationId, scope.organizationId)
         : isNull(db.schema.usageEvents.organizationId)
     );
+  } else if (scope && "projectId" in scope && scope.projectId) {
+    conditions.push(eq(db.schema.usageEvents.projectId, scope.projectId));
   }
   const cond = and(...conditions);
   const rows =
@@ -89,11 +96,11 @@ export async function checkAndRecordJudgeCall(model: string | null): Promise<voi
   const quota = judgeQuota();
   if (quota !== null) {
     const multiTenant = isMultiTenant();
-    const used = await countJudgeCallsToday(db, multiTenant ? { organizationId } : null);
+    const used = await countJudgeCallsToday(db, multiTenant ? { organizationId } : { projectId });
     if (used >= quota) {
       // Orgless multi-tenant requests are counted against the orgless bucket, not the whole
       // instance - so the message says "project", not "organization".
-      const scopeNote = multiTenant ? (organizationId ? " for this organization" : " for this project") : "";
+      const scopeNote = multiTenant ? (organizationId ? " for this organization" : " for this project") : " for this project";
       throw new QuotaExceededError(
         `Daily judge-call quota reached (${quota}/day${scopeNote}). ` +
           "Quota resets at midnight UTC; raise AGENTX_QUOTA_JUDGE_CALLS_PER_DAY to change the ceiling."
@@ -137,7 +144,9 @@ export async function getUsageAndLimits(db: Db): Promise<UsageAndLimits> {
   const [tracesUsed, onlineUsed, judgeUsed] = await Promise.all([
     traceStoreFor(db).countRoots(start),
     countJudgeSpendSince(db, start),
-    countJudgeCallsToday(db, multiTenant ? { organizationId } : null),
+    // Same scope as the enforcer in checkAndRecordJudgeCall - the card must agree with the
+    // limiter it explains. db.projectId is the caller's project on this route.
+    countJudgeCallsToday(db, multiTenant ? { organizationId } : { projectId: db.projectId }),
   ]);
   return {
     day: start.toISOString().slice(0, 10),

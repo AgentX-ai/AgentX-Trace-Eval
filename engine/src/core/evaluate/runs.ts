@@ -219,7 +219,7 @@ export async function initRun(
   const additionalScorerIds = [...new Set(input.additionalScorerIds ?? [])]
     .filter(scorerId => scorerId && scorerId !== input.evaluationSettingsId)
     .slice(0, 4);
-  const smokeTestVariants = await generateSmokeTestVariantsForDataset(dataset.questions);
+  const smokeTestVariants = await generateSmokeTestVariantsForDataset(dataset.questions, input.split?.trim() || null);
   const subject =
     input.split && input.split.trim()
       ? { ...((input.evaluationSubject as Record<string, unknown> | null) ?? {}), split: input.split.trim() }
@@ -266,12 +266,22 @@ type SmokeTestQuestion = {
 // no question requests it, matching AgentX-Python's EvaluationRun.smoke_test_variants being
 // Optional/absent rather than an empty list in that case.
 async function generateSmokeTestVariantsForDataset(
-  questions: unknown
+  questions: unknown,
+  // A split run executes only its tagged cases - generating (and paying judge calls for)
+  // variants of every other case burned quota on groups the run discards. Indexes stay the
+  // ORIGINAL dataset positions either way (map before filter).
+  split: string | null = null
 ): Promise<{ questionIndex: number; variants: string[] }[] | null> {
-  const typed = (questions as SmokeTestQuestion[] | undefined) ?? [];
+  const typed = (questions as (SmokeTestQuestion & { main_question?: { splits?: unknown } })[] | undefined) ?? [];
   const requests = typed
-    .map((q, questionIndex) => ({ questionIndex, smokeTest: q.main_question?.smokeTest, query: q.main_question?.query }))
-    .filter(r => r.smokeTest?.enabled && (r.smokeTest?.count ?? 0) > 0 && r.query);
+    .map((q, questionIndex) => ({
+      questionIndex,
+      smokeTest: q.main_question?.smokeTest,
+      query: q.main_question?.query,
+      splits: Array.isArray(q.main_question?.splits) ? (q.main_question!.splits as unknown[]).map(String) : [],
+    }))
+    .filter(r => r.smokeTest?.enabled && (r.smokeTest?.count ?? 0) > 0 && r.query)
+    .filter(r => !split || r.splits.includes(split));
   if (requests.length === 0) {
     return null;
   }
@@ -465,8 +475,11 @@ async function scoreOneResult(
     bleuScore,
     rougeScore,
   };
+  // Dataset code scorers run regardless of the grader: they are the dataset's own
+  // deterministic checks (JSON validity, format bars), and a scorer group replacing the JUDGE
+  // must not silently switch them off while the same config's similarity metrics keep running.
   const codeScorerResults = await Promise.all(
-    (scorerGroup ? [] : config.codeScorers).map(scorer =>
+    config.codeScorers.map(scorer =>
       runCodeScorer(scorer, { input: item.input?.query || "", output: actual || "", expected, toolCalls, scores })
     )
   );
@@ -481,6 +494,12 @@ async function scoreOneResult(
       expected,
       traceId: item.traceId ?? null,
       toolCalls,
+      // The same per-item context a standalone judge got - already rendered above; each judge
+      // member gates trajectory/definitions on its OWN toolContext inside scoreJudgeMember.
+      judgeGuideline: mainQ?.judgeGuideline,
+      context: retrievalContext ?? undefined,
+      trajectory: trajectory ?? undefined,
+      toolDefinitions: itemToolDefinitions ?? undefined,
     });
     judged.rating = groupResult.score;
     judged.justification = describeGroupScore(groupResult, groupResult.members);
@@ -522,6 +541,16 @@ async function scoreOneResult(
   // trace called any - silently skipping it made the SDK's expected_tools=[] a false promise.
   // A list of BLANK entries is neither: an editor serializing one empty input row as [""]
   // must not silently become the calls-no-tools assertion - it declared nothing.
+  if (rawExpectedTools && rawExpectedTools.length > 0 && expectedTools.length === 0) {
+    // Declared but content-free (an editor serializing one empty input row as [""]): neither a
+    // real assertion nor absent - every other unscoreable trajectory path emits a row, and a
+    // silently-missing scorer row reads as "passed".
+    codeScorerResults.push({
+      name: "Trajectory match",
+      score: null,
+      error: "Expected tools list contained only blank entries - nothing to assert",
+    });
+  }
   if (rawExpectedTools && (rawExpectedTools.length === 0 || expectedTools.length > 0)) {
     const mode = (["strict", "unordered", "subset", "superset"] as const).includes(
       expectedTrajectory?.mode as TrajectoryMatchMode
@@ -659,7 +688,9 @@ export async function appendResults(
   }[] = [];
 
   for (const item of results) {
-    if (!item.idempotencyKey || (!item.output?.text && !item.error)) {
+    // output.text === "" is a real (and important) answer to score - an agent that returned
+    // nothing must land as a 0-rated row, not vanish from the run.
+    if (!item.idempotencyKey || (typeof item.output?.text !== "string" && !item.error)) {
       failedValidation++;
       continue;
     }
@@ -881,16 +912,26 @@ export async function computeLiveStatistics(db: Db, runId: string) {
   const results = (
     db.kind === "sqlite"
       ? db.db
-          .select({ rating: db.schema.evaluationRunResults.rating, status: db.schema.evaluationRunResults.status })
+          .select({
+            rating: db.schema.evaluationRunResults.rating,
+            status: db.schema.evaluationRunResults.status,
+            isSmokeTestVariant: db.schema.evaluationRunResults.isSmokeTestVariant,
+          })
           .from(db.schema.evaluationRunResults)
           .where(cond)
           .all()
       : await db.db
-          .select({ rating: db.schema.evaluationRunResults.rating, status: db.schema.evaluationRunResults.status })
+          .select({
+            rating: db.schema.evaluationRunResults.rating,
+            status: db.schema.evaluationRunResults.status,
+            isSmokeTestVariant: db.schema.evaluationRunResults.isSmokeTestVariant,
+          })
           .from(db.schema.evaluationRunResults)
           .where(cond)
-  ) as { rating: number | null; status: string | null }[];
-  const rated = results.filter(r => r.rating != null).map(r => r.rating as number);
+  ) as { rating: number | null; status: string | null; isSmokeTestVariant?: boolean | number | null }[];
+  // Same variant exclusion as getRun's aggregate - see the comment there.
+  const nonVariant = results.filter(r => !r.isSmokeTestVariant);
+  const rated = nonVariant.filter(r => r.rating != null).map(r => r.rating as number);
   return {
     averageRating: rated.length ? rated.reduce((a, b) => a + b, 0) / rated.length : null,
     minRating: rated.length ? rated.reduce((a, b) => (b < a ? b : a)) : null,
@@ -899,8 +940,8 @@ export async function computeLiveStatistics(db: Db, runId: string) {
     // A run with 30 judge-skipped rows used to be indistinguishable on the wire from a run with
     // 30 fewer cases. skipped = judge could not score (failure/no reference); failed = the
     // submitted result itself carried an error.
-    skippedCount: results.filter(r => r.status === "skipped").length,
-    failedCount: results.filter(r => r.status === "failed").length,
+    skippedCount: nonVariant.filter(r => r.status === "skipped").length,
+    failedCount: nonVariant.filter(r => r.status === "failed").length,
   };
 }
 
@@ -1066,14 +1107,21 @@ export async function getRun(db: Db, runId: string) {
       ? db.db.select().from(db.schema.evaluationRunResults).where(cond).all()
       : await db.db.select().from(db.schema.evaluationRunResults).where(cond);
 
-  const rated = (results as { rating: number | null }[]).filter(r => r.rating != null).map(r => r.rating as number);
+  // Smoke-test variants are robustness probes of a question, not extra cases - including them
+  // let a 3-variant case weigh 4x its neighbors in the average (and therefore in the CI gate),
+  // while computeCaseStatistics and compareRuns already exclude them for exactly that reason.
+  const nonVariant = (results as { rating: number | null; status?: string | null; isSmokeTestVariant?: boolean | number | null }[]).filter(
+    r => !r.isSmokeTestVariant
+  );
+  const rated = nonVariant.filter(r => r.rating != null).map(r => r.rating as number);
   const averageRating = rated.length ? rated.reduce((a, b) => a + b, 0) / rated.length : null;
 
   // Per-scorer aggregate: the primary scorer's average (the rating column) plus one row per
   // additional judge, averaged from the verdicts embedded in judgeScorerResults - so a run
   // scored on N dimensions reports N numbers, not one blended one.
   const additionalAgg = new Map<string, { name: string; sum: number; scored: number }>();
-  for (const row of results as Array<{ judgeScorerResults?: AdditionalJudgeResult[] | null }>) {
+  for (const row of results as Array<{ judgeScorerResults?: AdditionalJudgeResult[] | null; isSmokeTestVariant?: boolean }>) {
+    if (row.isSmokeTestVariant) continue; // same exclusion as the primary average above
     for (const verdict of row.judgeScorerResults ?? []) {
       if (verdict.rating == null) continue;
       const agg = additionalAgg.get(verdict.scorerId) ?? { name: verdict.name, sum: 0, scored: 0 };
@@ -1162,8 +1210,8 @@ export async function getRun(db: Db, runId: string) {
       minRating: rated.length ? rated.reduce((a, b) => (b < a ? b : a)) : null,
       maxRating: rated.length ? rated.reduce((a, b) => (b > a ? b : a)) : null,
       ratedCount: rated.length,
-      skippedCount: (results as { status?: string | null }[]).filter(r => r.status === "skipped").length,
-      failedCount: (results as { status?: string | null }[]).filter(r => r.status === "failed").length,
+      skippedCount: (nonVariant as { status?: string | null }[]).filter(r => r.status === "skipped").length,
+      failedCount: (nonVariant as { status?: string | null }[]).filter(r => r.status === "failed").length,
     },
     // Per-case repetition spread (only cases with 2+ rated rows) - see computeCaseStatistics.
     caseStatistics: computeCaseStatistics(
@@ -1241,12 +1289,39 @@ export async function computeRunGate(
       db.kind === "sqlite"
         ? db.db.select().from(db.schema.evaluationRuns).where(cond).all()
         : await db.db.select().from(db.schema.evaluationRuns).where(cond)
-    ) as { id: string; status: string | null; createdAt: Date; runSource: string | null }[];
+    ) as {
+      id: string;
+      status: string | null;
+      createdAt: Date;
+      runSource: string | null;
+      evaluationSettingsId: string | null;
+      scorerGroupId?: string | null;
+      evaluationSubject: unknown;
+    }[];
+    // A baseline is only meaningful when it measured the SAME thing: same grading identity
+    // (config vs scorer group) and same split. A 3-case smoke-split run averaging 9.4 must not
+    // become the bar a full 50-case run "regressed" from, and a group-graded blend must not
+    // baseline a single-judge run.
+    const splitOf = (subject: unknown): string | null => {
+      const split = (subject as { split?: unknown } | null)?.split;
+      return typeof split === "string" && split ? split : null;
+    };
+    const runIdentity = {
+      settings: runRow.evaluationSettingsId ?? null,
+      group: (runRow as { scorerGroupId?: string | null }).scorerGroupId ?? null,
+      split: splitOf(runRow.evaluationSubject),
+    };
     const candidates = rows
       // Single-trace evaluations (POST /ingest/traces/:id/evaluate) share the dataset id when
       // the target is a dataset twin - a 1-case score must never become the no_regression
       // baseline for a full run.
       .filter(r => r.id !== runId && r.status === "completed" && r.runSource !== "trace-eval" && r.createdAt < runRow.createdAt)
+      .filter(
+        r =>
+          (r.evaluationSettingsId ?? null) === runIdentity.settings &&
+          ((r as { scorerGroupId?: string | null }).scorerGroupId ?? null) === runIdentity.group &&
+          splitOf(r.evaluationSubject) === runIdentity.split
+      )
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .slice(0, 5);
     for (const candidate of candidates) {
@@ -1628,13 +1703,17 @@ export async function getVersionComparison(db: Db, datasetId: string): Promise<V
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.evaluationRuns).where(runsCond).all()
       : await db.db.select().from(db.schema.evaluationRuns).where(runsCond)
-  ) as { id: string; version: string | null; createdAt: Date }[];
+  ) as { id: string; version: string | null; createdAt: Date; runSource?: string | null }[];
 
-  if (runs.length === 0) {
+  // Same exclusion as the CI gate's baseline walk: a single-trace evaluation is one score, not
+  // a run - letting it into the version buckets made the "(unversioned)" baseline drift with
+  // every ad-hoc production-trace check.
+  const comparableRuns = runs.filter(r => r.runSource !== "trace-eval");
+  if (comparableRuns.length === 0) {
     return { versions: [], comparison: null };
   }
 
-  const runIds = runs.map(r => r.id);
+  const runIds = comparableRuns.map(r => r.id);
   const resultsCond = and(
     inArray(db.schema.evaluationRunResults.runId, runIds),
     eq(db.schema.evaluationRunResults.projectId, db.projectId)
@@ -1645,7 +1724,7 @@ export async function getVersionComparison(db: Db, datasetId: string): Promise<V
       : await db.db.select().from(db.schema.evaluationRunResults).where(resultsCond)
   ) as { runId: string; rating: number | null }[];
 
-  const versionByRunId = new Map(runs.map(r => [r.id, r.version?.trim() || UNVERSIONED]));
+  const versionByRunId = new Map(comparableRuns.map(r => [r.id, r.version?.trim() || UNVERSIONED]));
 
   type Bucket = { runIds: Set<string>; ratedSum: number; ratedCount: number; lastRunAt: Date; latestRunId: string };
   const buckets = new Map<string, Bucket>();

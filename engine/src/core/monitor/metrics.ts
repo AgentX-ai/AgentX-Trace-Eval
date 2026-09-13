@@ -2,7 +2,7 @@ import { resolveSpanKind, toolCallList } from "../trace/spanKind.js";
 import { traceStoreFor } from "../trace/store/index.js";
 import { SPAN_CLASSIFIER_VERSION, percentileFromHistogram, readRollups, LATENCY_BUCKET_COUNT, type ModelTokens, type RollupRow } from "./rollups.js";
 import type { Db } from "../../storage/db.js";
-import { listPortabilityModels, normalizeModelId, type PortabilityModel } from "../evaluate/models.js";
+import { regularInputTokens, listPortabilityModels, normalizeModelId, type PortabilityModel } from "../evaluate/models.js";
 
 
 // The Monitor metrics grid (claude.design Monitor.dc.html): one bucketed pass over the window's
@@ -322,7 +322,8 @@ export async function getMonitorMetrics(
       if (pricing) {
         const cacheRead = row.cacheReadTokens ?? 0;
         const cacheWrite = row.cacheWriteTokens ?? 0;
-        const regularInput = Math.max(0, (row.inputTokens ?? 0) - cacheRead - cacheWrite);
+        // Shared shape-aware subtraction - see regularInputTokens in evaluate/models.ts.
+        const regularInput = regularInputTokens(row.inputTokens ?? 0, cacheRead, cacheWrite);
         const cacheReadRate = pricing.pricePerMCacheReadTokens ?? pricing.pricePerMInputTokens;
         const cacheWriteRate = pricing.pricePerMCacheWriteTokens ?? pricing.pricePerMInputTokens;
         const cachedCost = (cacheRead / 1e6) * cacheReadRate;
@@ -528,7 +529,7 @@ async function metricsFromRollups(
   const costOf = (model: string, tokens: ModelTokens): { prompt: number; cached: number; completion: number } => {
     const pricing = priceOf(model);
     if (!pricing) return { prompt: 0, cached: 0, completion: 0 };
-    const regularInput = Math.max(0, tokens.inTok - tokens.cacheRead - tokens.cacheWrite);
+    const regularInput = regularInputTokens(tokens.inTok, tokens.cacheRead, tokens.cacheWrite);
     const cacheReadRate = pricing.pricePerMCacheReadTokens ?? pricing.pricePerMInputTokens;
     const cacheWriteRate = pricing.pricePerMCacheWriteTokens ?? pricing.pricePerMInputTokens;
     return {

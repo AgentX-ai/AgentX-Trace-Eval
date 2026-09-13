@@ -25,21 +25,26 @@ function redactClassificationRow(row: Record<string, unknown>): Record<string, u
   return rest;
 }
 
-function redactConnectorRow(row: Record<string, unknown>): Record<string, unknown> {
-  // Credentials live in the URL as often as in headers (https://user:pass@host, ?api_key=...):
-  // strip userinfo and mask every query value, keeping the shape so the export stays useful.
-  let url = row.url;
-  if (typeof url === "string") {
-    try {
-      const parsed = new URL(url);
-      parsed.username = "";
-      parsed.password = "";
-      for (const key of [...parsed.searchParams.keys()]) parsed.searchParams.set(key, "***redacted***");
-      url = parsed.toString();
-    } catch {
-      // Not parseable as a URL - leave as stored; nothing to redact structurally.
-    }
+// Credentials live in the URL as often as in headers (https://user:pass@host, ?api_key=...):
+// strip userinfo and mask every query value, keeping the shape - and the PATH - so the export
+// stays restorable. Path-tail masking is only for webhook-shaped URLs (redactUrlString below),
+// where the tail IS the secret; here the path is a legitimate route the restore must keep.
+function redactUrlCredentials(url: unknown): unknown {
+  if (typeof url !== "string") return url;
+  try {
+    const parsed = new URL(url);
+    parsed.username = "";
+    parsed.password = "";
+    for (const key of [...parsed.searchParams.keys()]) parsed.searchParams.set(key, "***redacted***");
+    return parsed.toString();
+  } catch {
+    // Not parseable as a URL - leave as stored; nothing to redact structurally.
+    return url;
   }
+}
+
+function redactConnectorRow(row: Record<string, unknown>): Record<string, unknown> {
+  const url = redactUrlCredentials(row.url);
   const headers = row.headers;
   const redactedHeaders =
     headers && typeof headers === "object"
@@ -48,9 +53,9 @@ function redactConnectorRow(row: Record<string, unknown>): Record<string, unknow
   return { ...row, url, headers: redactedHeaders };
 }
 
-// Same redaction for any field that IS a URL-shaped credential: Slack/Teams incoming-webhook
-// URLs are the secret (webhooks.ts masks them in logs for exactly that reason), and custom
-// evaluators routinely carry ?api_key=.
+// For fields that ARE a URL-shaped credential: Slack/Teams incoming-webhook URLs are the secret
+// (webhooks.ts masks them in logs for exactly that reason), so the path tail is masked on top of
+// the userinfo/query redaction above.
 function redactUrlString(url: unknown): unknown {
   if (typeof url !== "string") return url;
   try {
@@ -68,7 +73,9 @@ function redactUrlString(url: unknown): unknown {
 }
 
 function redactCustomEvaluatorRow(row: Record<string, unknown>): Record<string, unknown> {
-  return { ...row, url: redactUrlString(row.url) };
+  // Not redactUrlString: a custom evaluator's URL path is the scorer's route (/score/v2), not a
+  // webhook secret - masking the tail corrupted the URL for restore.
+  return { ...row, url: redactUrlCredentials(row.url) };
 }
 
 function redactRuleRow(row: Record<string, unknown>): Record<string, unknown> {
