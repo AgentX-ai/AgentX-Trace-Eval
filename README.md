@@ -2,6 +2,7 @@
 
 [![Release](https://img.shields.io/github/v/release/AgentX-ai/AgentX-trace-eval)](https://github.com/AgentX-ai/AgentX-trace-eval/releases/latest)
 [![License](https://img.shields.io/badge/license-Elastic--2.0-blue)](LICENSE)
+[![Built By AgentX](https://img.shields.io/badge/built_by-AgentX-blue)](https://agentx.so)
 
 A portable, self-hostable build of AgentX's Governance layer - **Trace**, **Evaluate**, and
 **Monitor** for AI agents - as a single local install. No account, no multi-tenant billing, bring
