@@ -110,6 +110,14 @@ describe("channelProblem", () => {
     expect(channelProblem({ kind: "slack", target: "ftp://hooks" })).toContain("URL");
     expect(channelProblem({ kind: "webhook", target: "http://169.254.169.254/latest" })).not.toBeNull();
     expect(channelProblem({ kind: "email", target: "oncall@example.com" })).toBeNull();
+    expect(channelProblem({ kind: "email", target: "a@b" })).not.toBeNull();
+    expect(channelProblem({ kind: "email", target: "a@b." })).not.toBeNull();
+    expect(channelProblem({ kind: "email", target: "a@@b.c" })).not.toBeNull();
+    expect(channelProblem({ kind: "email", target: "on call@b.c" })).not.toBeNull();
+    // The CodeQL case: the old regex backtracked polynomially on this shape; must stay instant.
+    const started = Date.now();
+    expect(channelProblem({ kind: "email", target: "!@!." + "!.".repeat(20_000) })).not.toBeNull();
+    expect(Date.now() - started).toBeLessThan(200);
     expect(channelProblem({ kind: "pagerduty", target: "R0123456789abcdef0123456789abcdef" })).toBeNull();
   });
 });

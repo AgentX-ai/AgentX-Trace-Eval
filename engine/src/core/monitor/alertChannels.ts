@@ -56,7 +56,18 @@ export type AlertDelivery = {
 const DELIVERY_TIMEOUT_MS = 8000;
 const PAGERDUTY_EVENTS_URL = "https://events.pagerduty.com/v2/enqueue";
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// A structural address check without a regex: the usual `^[^\s@]+@[^\s@]+\.[^\s@]+$` has two
+// adjacent unbounded classes that overlap on ".", which backtracks polynomially on crafted input
+// (CodeQL flags it). Exactly one "@", a non-empty local part, and a domain with a dot that is
+// neither first nor last - the same acceptance set, in linear time.
+function isPlausibleEmail(value: string): boolean {
+  if (value.length > 320 || /\s/.test(value)) return false;
+  const at = value.indexOf("@");
+  if (at <= 0 || at !== value.lastIndexOf("@")) return false;
+  const domain = value.slice(at + 1);
+  const dot = domain.indexOf(".");
+  return dot > 0 && dot < domain.length - 1;
+}
 
 // Validation shared by the routes (refuse at the door) and, defensively, by delivery.
 export function channelProblem(channel: AlertChannel): string | null {
@@ -70,7 +81,7 @@ export function channelProblem(channel: AlertChannel): string | null {
       return problem ? `${channel.kind} URL ${problem}` : null;
     }
     case "email":
-      return EMAIL_RE.test(target) ? null : "email target is not a valid address";
+      return isPlausibleEmail(target) ? null : "email target is not a valid address";
     case "pagerduty":
       // Events API v2 integration keys are 32 characters; be lenient on length, strict on shape.
       return /^[A-Za-z0-9_-]{16,64}$/.test(target) ? null : "pagerduty target must be an Events API v2 routing key";
