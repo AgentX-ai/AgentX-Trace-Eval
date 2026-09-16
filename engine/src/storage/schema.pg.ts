@@ -491,6 +491,42 @@ export const sweepLeases = pgTable("sweep_leases", {
   expiresAt: timestamp("expires_at", { mode: "date" }).notNull(),
 });
 
+// See schema.sqlite.ts's alertRules for the full comment.
+export const alertRules = pgTable("alert_rules", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  name: text("name").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  metric: text("metric").notNull(),
+  operator: text("operator").notNull(),
+  threshold: doublePrecision("threshold").notNull(),
+  windowMinutes: integer("window_minutes").notNull(),
+  agentId: text("agent_id"),
+  severity: text("severity").notNull().default("high"),
+  channels: jsonb("channels").notNull(),
+  cooldownMinutes: integer("cooldown_minutes").notNull().default(60),
+  state: text("state").notNull().default("ok"),
+  lastValue: doublePrecision("last_value"),
+  lastEvaluatedAt: timestamp("last_evaluated_at", { mode: "date" }),
+  lastFiredAt: timestamp("last_fired_at", { mode: "date" }),
+  lastNotifiedAt: timestamp("last_notified_at", { mode: "date" }),
+  firedCount: integer("fired_count").notNull().default(0),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
+});
+
+// See schema.sqlite.ts's alertEvents for the full comment.
+export const alertEvents = pgTable("alert_events", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  ruleId: text("rule_id").notNull(),
+  kind: text("kind").notNull(),
+  value: doublePrecision("value"),
+  threshold: doublePrecision("threshold").notNull(),
+  deliveries: jsonb("deliveries").notNull(),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+});
+
 // See schema.sqlite.ts's sessionScores for the full comment.
 export const sessionScores = pgTable("session_scores", {
   id: text("id").primaryKey(),

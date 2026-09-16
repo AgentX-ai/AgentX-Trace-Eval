@@ -36,6 +36,7 @@ const TRANSIENT_MARKERS = [
   "/suggest-",
   "/estimate",
   "/test-connection",
+  "/alert-rules/preview",
   // Deliberately narrow: "/tune" alone would also swallow /tune/publish - the one tuning call
   // that permanently rewrites a production rubric and MUST land in the audit trail.
   "/tune/validate",
@@ -66,6 +67,7 @@ const NOUN: Record<string, string> = {
   signals: "signal",
   projects: "project",
   "portability/models": "model-endpoint",
+  "alert-rules": "alert-rule",
 };
 
 type Classified = { action: string; entityType: string | null; entityId: string | null };

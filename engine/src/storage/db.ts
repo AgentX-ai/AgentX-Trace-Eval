@@ -867,6 +867,41 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
       expires_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS alert_rules (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      name TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      metric TEXT NOT NULL,
+      operator TEXT NOT NULL,
+      threshold REAL NOT NULL,
+      window_minutes INTEGER NOT NULL,
+      agent_id TEXT,
+      severity TEXT NOT NULL DEFAULT 'high',
+      channels TEXT NOT NULL,
+      cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+      state TEXT NOT NULL DEFAULT 'ok',
+      last_value REAL,
+      last_evaluated_at INTEGER,
+      last_fired_at INTEGER,
+      last_notified_at INTEGER,
+      fired_count INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS alert_events (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      rule_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      value REAL,
+      threshold REAL NOT NULL,
+      deliveries TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_alert_events_rule ON alert_events(rule_id, created_at);
+
     CREATE TABLE IF NOT EXISTS audit_events (
       id TEXT PRIMARY KEY,
       created_at INTEGER NOT NULL,
@@ -2236,6 +2271,41 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
       holder TEXT NOT NULL,
       expires_at TIMESTAMP NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS alert_rules (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      name TEXT NOT NULL,
+      enabled BOOLEAN NOT NULL DEFAULT true,
+      metric TEXT NOT NULL,
+      operator TEXT NOT NULL,
+      threshold DOUBLE PRECISION NOT NULL,
+      window_minutes INTEGER NOT NULL,
+      agent_id TEXT,
+      severity TEXT NOT NULL DEFAULT 'high',
+      channels JSONB NOT NULL,
+      cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+      state TEXT NOT NULL DEFAULT 'ok',
+      last_value DOUBLE PRECISION,
+      last_evaluated_at TIMESTAMP,
+      last_fired_at TIMESTAMP,
+      last_notified_at TIMESTAMP,
+      fired_count INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS alert_events (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      rule_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      value DOUBLE PRECISION,
+      threshold DOUBLE PRECISION NOT NULL,
+      deliveries JSONB NOT NULL,
+      created_at TIMESTAMP NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_alert_events_rule ON alert_events(rule_id, created_at);
 
     CREATE TABLE IF NOT EXISTS audit_events (
       id TEXT PRIMARY KEY,
