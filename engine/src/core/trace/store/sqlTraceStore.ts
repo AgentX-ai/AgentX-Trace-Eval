@@ -285,6 +285,7 @@ export class SqlTraceStore implements TraceStore {
     if (filter.scorableOnly) {
       conditions.push(isNull(t.parentSpanId), isNotNull(t.output), ne(t.output, ""));
     }
+    if (filter.agentId) conditions.push(eq(t.agentId, filter.agentId));
     const where = and(...conditions);
     // The mild duplication below is the codebase's dialect idiom: drizzle's sqlite and pg
     // builders don't share a supertype, so each branch stays fully narrowed.

@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startEngine, postJson, type TestEngine } from "./server.js";
 import {
   agentsListSchema,
+  alertEventsResponseSchema,
+  alertRulesResponseSchema,
   exportManifestSchema,
   insightsCoverageResponseSchema,
   insightsProbeBatchResponseSchema,
@@ -161,6 +163,38 @@ describe("wire contract", () => {
     expect(res.status).toBe(200);
     const parsed = agentsListSchema.parse(res.body);
     expect(parsed.agents.some(agent => agent.name === "contract-registered-agent")).toBe(true);
+  });
+
+  it("GET /agent-monitoring/alert-rules and its events match the contract after a test page", async () => {
+    const created = await api(
+      "/agent-monitoring/alert-rules",
+      postJson({
+        name: "contract latency",
+        metric: "p95LatencyMs",
+        operator: "gt",
+        threshold: 2000,
+        windowMinutes: 15,
+        // A mailer is never configured here, so the delivery is recorded as a refusal - which
+        // is exactly the populated `error` branch the schema has to admit.
+        channels: [{ kind: "email", target: "oncall@example.com" }],
+      })
+    );
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const id = (created.body as { rule: { _id: string } }).rule._id;
+    const sent = await api(`/agent-monitoring/alert-rules/${id}/test`, postJson({}));
+    expect(sent.status).toBe(200);
+
+    const list = await api("/agent-monitoring/alert-rules");
+    expect(list.status).toBe(200);
+    const rules = alertRulesResponseSchema.parse(list.body);
+    expect(rules.rules.some(r => r._id === id && r.lastValueLabel.length > 0)).toBe(true);
+    expect(rules.summary.total).toBe(rules.rules.length);
+
+    const events = await api(`/agent-monitoring/alert-rules/${id}/events`);
+    expect(events.status).toBe(200);
+    const parsed = alertEventsResponseSchema.parse(events.body);
+    expect(parsed.events[0]).toMatchObject({ kind: "test", ruleId: id });
+    expect(parsed.events[0]!.deliveries[0]).toMatchObject({ kind: "email", ok: false });
   });
 
   it("GET /export matches the contract and lists every entity", async () => {

@@ -142,6 +142,9 @@ export const traceListItemSchema = z
               rating: z.number(),
               threshold: z.number().nullable(),
               failing: z.boolean(),
+              // Present (true) on a scorer-group verdict - events.ts sets it so the Score chip can
+              // separate group verdicts from single-judge ones.
+              isGroup: z.boolean().optional(),
             })
             .strict()
         ),
@@ -262,6 +265,73 @@ export const ruleSchema = z
   .strict();
 
 export const rulesResponseSchema = z.object({ rules: z.array(ruleSchema) }).strict();
+
+// ---- GET /agent-monitoring/alert-rules ---------------------------------------------------------
+
+export const alertChannelSchema = z
+  .object({
+    kind: z.enum(["slack", "teams", "pagerduty", "email", "webhook"]),
+    // A PagerDuty routing key reads back masked; every other target is the stored value.
+    target: z.string(),
+  })
+  .strict();
+
+export const alertRuleSchema = z
+  .object({
+    _id: z.string(),
+    name: z.string(),
+    enabled: z.boolean(),
+    metric: z.enum(["failureRate", "toolFailureRate", "p95LatencyMs", "estimatedCostUsd", "judgeFailures", "traceCount"]),
+    operator: z.enum(["gt", "lt"]),
+    threshold: z.number(),
+    windowMinutes: z.number(),
+    agentId: z.string().nullable(),
+    severity: z.enum(["low", "medium", "high", "critical"]),
+    channels: z.array(alertChannelSchema),
+    cooldownMinutes: z.number(),
+    state: z.enum(["ok", "firing"]),
+    lastValue: z.number().nullable(),
+    lastValueLabel: z.string(),
+    lastEvaluatedAt: isoDate.nullable(),
+    lastFiredAt: isoDate.nullable(),
+    lastNotifiedAt: isoDate.nullable(),
+    firedCount: z.number(),
+    createdAt: isoDate,
+    updatedAt: isoDate,
+  })
+  .strict();
+
+export const alertRulesResponseSchema = z
+  .object({
+    rules: z.array(alertRuleSchema),
+    summary: z.object({ total: z.number(), enabled: z.number(), firing: z.number() }).strict(),
+  })
+  .strict();
+
+export const alertEventSchema = z
+  .object({
+    _id: z.string(),
+    ruleId: z.string(),
+    kind: z.enum(["triggered", "repeat", "resolved", "test"]),
+    value: z.number().nullable(),
+    threshold: z.number(),
+    deliveries: z.array(
+      z
+        .object({
+          kind: alertChannelSchema.shape.kind,
+          // Host or mask only - never the hook path or the routing key.
+          target: z.string(),
+          ok: z.boolean(),
+          status: z.number().optional(),
+          error: z.string().optional(),
+        })
+        .strict()
+    ),
+    createdAt: isoDate,
+  })
+  .strict();
+
+export const alertEventsResponseSchema = z.object({ events: z.array(alertEventSchema) }).strict();
 
 export const reviewQueueResponseSchema = z
   .object({ items: z.array(reviewQueueItemSchema), pending: z.number(), cap: z.number() })
@@ -888,6 +958,20 @@ export const WIRE_CONTRACT = [
     summary: "Automation rules: filter + sample + route",
     response: rulesResponseSchema,
     name: "RulesResponse",
+  },
+  {
+    method: "get" as const,
+    path: "/agent-monitoring/alert-rules",
+    summary: "KPI alert rules with their firing state and a project summary",
+    response: alertRulesResponseSchema,
+    name: "AlertRulesResponse",
+  },
+  {
+    method: "get" as const,
+    path: "/agent-monitoring/alert-rules/:id/events",
+    summary: "One alert rule's notification history with per-channel delivery results",
+    response: alertEventsResponseSchema,
+    name: "AlertEventsResponse",
   },
   {
     method: "get" as const,

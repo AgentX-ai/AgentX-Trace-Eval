@@ -48,6 +48,9 @@ export type SpanWindowFilter = {
   rootsOnly?: boolean;
   withSessionOnly?: boolean;
   scorableOnly?: boolean;
+  // Narrow to one agent's spans in the store, not in JS - alert rules scoped per agent would
+  // otherwise materialize the whole project window once per agent.
+  agentId?: string;
   orderDesc?: boolean;
   limit?: number;
 };

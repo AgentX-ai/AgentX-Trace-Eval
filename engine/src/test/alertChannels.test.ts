@@ -23,6 +23,7 @@ const notification = (over: Partial<AlertNotification> = {}): AlertNotification 
   windowLabel: "15m",
   agentId: "agent-1",
   agentName: "Support bot",
+  incidentKey: "agentx-alert-rule-1-1757962800000",
   condition: "p95 latency above 2000 ms over the last 15m for agent Support bot",
   title: "[AgentX Alert] FIRING: Latency page",
   summary: "p95 latency above 2000 ms over the last 15m for agent Support bot - currently 3100 ms.",
@@ -51,7 +52,7 @@ afterEach(() => {
 describe("PagerDuty channel", () => {
   const channel = { kind: "pagerduty" as const, target: "R0123456789abcdef0123456789abcdef" };
 
-  it("triggers on firing and resolves on recovery under the rule's dedup key", async () => {
+  it("triggers on firing and resolves on recovery under the incident's dedup key", async () => {
     const sent = interceptFetch();
     const fired = await deliverAlert(channel, notification());
     expect(fired).toMatchObject({ kind: "pagerduty", ok: true, status: 202 });
@@ -59,7 +60,7 @@ describe("PagerDuty channel", () => {
     const resolved = await deliverAlert(channel, notification({ kind: "resolved", status: "RESOLVED" }));
     expect(resolved.ok).toBe(true);
     expect(sent.map(s => s.body.event_action)).toEqual(["trigger", "resolve"]);
-    expect(sent.map(s => s.body.dedup_key)).toEqual(["agentx-alert-rule-1", "agentx-alert-rule-1"]);
+    expect(sent.map(s => s.body.dedup_key)).toEqual(["agentx-alert-rule-1-1757962800000", "agentx-alert-rule-1-1757962800000"]);
     expect(sent[0]!.url).toBe("https://events.pagerduty.com/v2/enqueue");
     const payload = sent[0]!.body.payload as Record<string, unknown>;
     expect(payload.severity).toBe("error");
@@ -74,6 +75,15 @@ describe("PagerDuty channel", () => {
     expect(sent.map(s => s.body.event_action)).toEqual(["trigger", "resolve"]);
     expect(sent[0]!.body.dedup_key).toBe(sent[1]!.body.dedup_key);
     expect(String(sent[0]!.body.dedup_key)).toMatch(/^agentx-alert-rule-1-test-/);
+  });
+
+  it("records the refusing status only, never the response body", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("<html>internal host banner: build 42</html>", { status: 500 }))
+    );
+    const result = await deliverAlert({ kind: "webhook", target: "http://10.0.0.8/hook" }, notification());
+    expect(result).toMatchObject({ ok: false, status: 500, error: "HTTP 500" });
   });
 
   it("reports a refused event instead of throwing", async () => {

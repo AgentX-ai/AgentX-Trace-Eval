@@ -900,7 +900,8 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
       deliveries TEXT NOT NULL,
       created_at INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_alert_events_rule ON alert_events(rule_id, created_at);
+    DROP INDEX IF EXISTS idx_alert_events_rule;
+    CREATE INDEX IF NOT EXISTS alert_events_rule_id_created_at ON alert_events (rule_id, created_at);
 
     CREATE TABLE IF NOT EXISTS audit_events (
       id TEXT PRIMARY KEY,
@@ -2305,7 +2306,8 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
       deliveries JSONB NOT NULL,
       created_at TIMESTAMP NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_alert_events_rule ON alert_events(rule_id, created_at);
+    DROP INDEX IF EXISTS idx_alert_events_rule;
+    CREATE INDEX IF NOT EXISTS alert_events_rule_id_created_at ON alert_events (rule_id, created_at);
 
     CREATE TABLE IF NOT EXISTS audit_events (
       id TEXT PRIMARY KEY,

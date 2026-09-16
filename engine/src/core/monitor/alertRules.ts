@@ -1,9 +1,9 @@
-import { and, desc, eq, gte, inArray, isNull, or } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { Db } from "../../storage/db.js";
 import { logger } from "../../log.js";
 import { traceStoreFor } from "../trace/store/index.js";
-import { estimateCostUSD, listPortabilityModels, normalizeModelId } from "../evaluate/models.js";
+import { estimateCostUSD, listPortabilityModels, normalizeModelId, type PortabilityModel } from "../evaluate/models.js";
 import { isMaskedSecret, maskSecret } from "../shared/maskSecret.js";
 import { getAgentRow } from "./agents.js";
 import { deliverAlert, type AlertChannel, type AlertDelivery, type AlertNotification } from "./alertChannels.js";
@@ -43,11 +43,16 @@ export type AlertOperator = "gt" | "lt";
 export type AlertSeverity = "low" | "medium" | "high" | "critical";
 export type AlertState = "ok" | "firing";
 
-export const MAX_ALERT_RULES_PER_PROJECT = 50;
+const MAX_ALERT_RULES_PER_PROJECT = 50;
 export const MAX_ALERT_CHANNELS = 5;
 export const MAX_ALERT_WINDOW_MINUTES = 7 * 24 * 60;
 // History kept per rule; older rows are pruned on insert so a flapping rule can't grow unbounded.
 const MAX_EVENTS_PER_RULE = 200;
+// Root spans materialized per (window, agent) per tick - the same bound core/monitor/metrics.ts
+// puts on its raw window scan: a 7-day window on a busy install is millions of full rows, and
+// the engine shares one process with ingest. Newest rows win when the cap bites, so a rate or
+// percentile still describes the most recent traffic rather than the oldest.
+const MAX_TRACES_PER_WINDOW = 200_000;
 
 type AlertRuleRow = {
   id: string;
@@ -110,6 +115,20 @@ export function formatMetricValue(metric: AlertMetric, value: number | null): st
     case "traceCount":
       return `${Math.round(value)}`;
   }
+}
+
+// Threshold sanity per metric, shared by the routes: a count metric with a fractional
+// threshold would page with text that contradicts itself ("above 3 - currently 3" for 2.5), and
+// a rate is a fraction of 1 - "above 500%" can never fire and reads as configured.
+export function thresholdProblem(metric: AlertMetric, threshold: number): string | null {
+  if (!Number.isFinite(threshold) || threshold < 0) return "threshold must be a non-negative number";
+  if ((metric === "judgeFailures" || metric === "traceCount") && !Number.isInteger(threshold)) {
+    return `${METRIC_LABELS[metric]} is a count - threshold must be a whole number`;
+  }
+  if ((metric === "failureRate" || metric === "toolFailureRate") && threshold > 1) {
+    return `${METRIC_LABELS[metric]} is a fraction of 1 (0.1 = 10%) - threshold must be between 0 and 1`;
+  }
+  return null;
 }
 
 export function formatWindow(minutes: number): string {
@@ -179,8 +198,11 @@ export type AlertEventWire = ReturnType<typeof eventToWire>;
 // Storage
 // ---------------------------------------------------------------------------
 
+// Every row is written with the creating project's id (createAlertRule), so unlike the older
+// monitor_rules table there is no pre-multi-project legacy shape to admit here - a strict match,
+// used by every read AND every mutation below.
 function projectCond(db: Db) {
-  return or(eq(db.schema.alertRules.projectId, db.projectId), isNull(db.schema.alertRules.projectId));
+  return eq(db.schema.alertRules.projectId, db.projectId);
 }
 
 // Two-branch selects throughout (not one shared query object): drizzle's sqlite|pg union types
@@ -204,7 +226,12 @@ async function getRow(db: Db, id: string): Promise<AlertRuleRow | undefined> {
 }
 
 async function countRows(db: Db): Promise<number> {
-  return (await listRows(db)).length;
+  const cond = projectCond(db);
+  const rows =
+    db.kind === "sqlite"
+      ? db.db.select({ id: db.schema.alertRules.id }).from(db.schema.alertRules).where(cond).all()
+      : await db.db.select({ id: db.schema.alertRules.id }).from(db.schema.alertRules).where(cond);
+  return rows.length;
 }
 
 export async function listAlertRules(db: Db): Promise<AlertRuleWire[]> {
@@ -272,12 +299,17 @@ export async function createAlertRule(db: Db, input: CreateAlertRuleInput): Prom
 export type UpdateAlertRuleInput = Partial<CreateAlertRuleInput>;
 
 // A PUT that echoes a masked PagerDuty key back is "keep the stored one" - the mask must never
-// be stored as the key (isMaskedSecret is the shared contract with the LLM-key settings).
+// be stored as the key (isMaskedSecret is the shared contract with the LLM-key settings). A mask
+// is resolved by MATCHING it against the stored keys' masks, never by array position: a rule
+// with two PagerDuty channels that the operator reorders or partially removes must keep each
+// routing key on its own channel, or the next incident pages the wrong on-call. A mask that
+// matches nothing stored is left as-is and refused by the caller.
 function mergeChannels(incoming: AlertChannel[], stored: AlertChannel[]): AlertChannel[] {
-  return incoming.map((ch, index) => {
+  const storedKeys = stored.filter(s => s.kind === "pagerduty").map(s => s.target);
+  return incoming.map(ch => {
     if (ch.kind !== "pagerduty" || !isMaskedSecret(ch.target)) return ch;
-    const previous = stored[index]?.kind === "pagerduty" ? stored[index] : stored.find(s => s.kind === "pagerduty");
-    return previous ? { ...ch, target: previous.target } : ch;
+    const match = storedKeys.find(key => maskSecret(key) === ch.target);
+    return match ? { ...ch, target: match } : ch;
   });
 }
 
@@ -298,39 +330,50 @@ export async function updateAlertRule(db: Db, id: string, patch: UpdateAlertRule
   if (mergedChannels?.some(ch => ch.kind === "pagerduty" && isMaskedSecret(ch.target))) {
     throw new AlertRuleValidationError("A masked PagerDuty key was sent but this rule has no stored key to keep - send the real routing key");
   }
-  // Pausing resets the lifecycle: a paused rule must not sit "firing" and skip the triggered
-  // page when it is enabled again mid-incident (the resolve is owed by the operator, as on
-  // delete - documented on the route).
+  // Pausing resets the lifecycle too: a paused rule must not sit "firing" and skip the
+  // triggered page when it is enabled again mid-incident.
   const paused = patch.enabled === false && existing.enabled;
-  const updated: AlertRuleRow = {
-    ...existing,
-    name: patch.name?.trim() ?? existing.name,
-    enabled: patch.enabled ?? existing.enabled,
-    metric: patch.metric ?? existing.metric,
-    operator: patch.operator ?? existing.operator,
-    threshold: patch.threshold ?? existing.threshold,
-    windowMinutes: patch.windowMinutes ?? existing.windowMinutes,
-    agentId: patch.agentId === undefined ? existing.agentId : patch.agentId,
-    severity: patch.severity ?? existing.severity,
-    channels: mergedChannels ?? existing.channels,
-    cooldownMinutes: patch.cooldownMinutes ?? existing.cooldownMinutes,
-    ...(definitionChanged || paused ? { state: "ok", lastValue: null, lastNotifiedAt: null } : {}),
-    updatedAt: new Date(),
-  };
-  const cond = eq(db.schema.alertRules.id, id);
-  if (db.kind === "sqlite") {
-    await db.db.update(db.schema.alertRules).set(updated).where(cond);
-  } else {
-    await db.db.update(db.schema.alertRules).set(updated).where(cond);
+  const resets = definitionChanged || paused;
+  // A firing rule that is reset owes its channels a resolve NOW - the incident PagerDuty holds
+  // open under this rule's key would otherwise stay open (and swallow the next trigger by
+  // dedup), and a Slack channel would never hear the all-clear.
+  if (resets && existing.state === "firing") {
+    await notify(db, existing, "resolved", null, definitionChanged ? "the rule was changed" : "the rule was paused");
   }
-  return toWire(updated);
+  // Sparse write: only the fields this call changes. The lifecycle columns (state, lastValue,
+  // lastFiredAt, lastNotifiedAt, firedCount, lastEvaluatedAt) belong to the sweep, which may
+  // have advanced them between this read and this write - a full-row write from the stale read
+  // would silently undo a transition and re-page on the next tick.
+  const changes: Partial<AlertRuleRow> = { updatedAt: new Date() };
+  if (patch.name !== undefined) changes.name = patch.name.trim();
+  if (patch.enabled !== undefined) changes.enabled = patch.enabled;
+  if (patch.metric !== undefined) changes.metric = patch.metric;
+  if (patch.operator !== undefined) changes.operator = patch.operator;
+  if (patch.threshold !== undefined) changes.threshold = patch.threshold;
+  if (patch.windowMinutes !== undefined) changes.windowMinutes = patch.windowMinutes;
+  if (patch.agentId !== undefined) changes.agentId = patch.agentId;
+  if (patch.severity !== undefined) changes.severity = patch.severity;
+  if (mergedChannels) changes.channels = mergedChannels;
+  if (patch.cooldownMinutes !== undefined) changes.cooldownMinutes = patch.cooldownMinutes;
+  if (resets) Object.assign(changes, { state: "ok", lastValue: null, lastEvaluatedAt: null, lastNotifiedAt: null });
+  const cond = and(eq(db.schema.alertRules.id, id), projectCond(db));
+  if (db.kind === "sqlite") {
+    await db.db.update(db.schema.alertRules).set(changes).where(cond);
+  } else {
+    await db.db.update(db.schema.alertRules).set(changes).where(cond);
+  }
+  return toWire({ ...existing, ...changes });
 }
 
 export async function deleteAlertRule(db: Db, id: string): Promise<boolean> {
   const existing = await getRow(db, id);
   if (!existing) return false;
-  const eventsCond = eq(db.schema.alertEvents.ruleId, id);
-  const ruleCond = eq(db.schema.alertRules.id, id);
+  // Close the incident before the rule that opened it disappears (see updateAlertRule).
+  if (existing.state === "firing") {
+    await notify(db, existing, "resolved", null, "the rule was deleted");
+  }
+  const eventsCond = and(eq(db.schema.alertEvents.ruleId, id), eq(db.schema.alertEvents.projectId, db.projectId));
+  const ruleCond = and(eq(db.schema.alertRules.id, id), projectCond(db));
   if (db.kind === "sqlite") {
     await db.db.delete(db.schema.alertEvents).where(eventsCond);
     await db.db.delete(db.schema.alertRules).where(ruleCond);
@@ -346,8 +389,19 @@ export async function listAlertEvents(db: Db, ruleId: string, limit = 50): Promi
   const take = Math.max(1, Math.min(limit, MAX_EVENTS_PER_RULE));
   const rows =
     db.kind === "sqlite"
-      ? db.db.select().from(db.schema.alertEvents).where(cond).orderBy(desc(db.schema.alertEvents.createdAt)).limit(take).all()
-      : await db.db.select().from(db.schema.alertEvents).where(cond).orderBy(desc(db.schema.alertEvents.createdAt)).limit(take);
+      ? db.db
+          .select()
+          .from(db.schema.alertEvents)
+          .where(cond)
+          .orderBy(desc(db.schema.alertEvents.createdAt), desc(db.schema.alertEvents.id))
+          .limit(take)
+          .all()
+      : await db.db
+          .select()
+          .from(db.schema.alertEvents)
+          .where(cond)
+          .orderBy(desc(db.schema.alertEvents.createdAt), desc(db.schema.alertEvents.id))
+          .limit(take);
   return (rows as AlertEventRow[]).map(eventToWire);
 }
 
@@ -370,7 +424,9 @@ async function recordAlertEvent(
   };
   // Bounded history: drop everything past the newest MAX_EVENTS_PER_RULE rows. Read a bounded
   // window (SQLite has no OFFSET without LIMIT) and delete what falls past the cap - pruning
-  // runs on every insert, so the overflow is normally a single row.
+  // runs on every insert, so the overflow is normally a single row. Ordered with an id
+  // tiebreak (the codebase's keyset convention): two events in the same millisecond must not
+  // let the prune pick the newer one as "oldest".
   const byRule = eq(db.schema.alertEvents.ruleId, rule.id);
   const take = MAX_EVENTS_PER_RULE + 50;
   let newest: { id: string }[];
@@ -380,7 +436,7 @@ async function recordAlertEvent(
       .select({ id: db.schema.alertEvents.id })
       .from(db.schema.alertEvents)
       .where(byRule)
-      .orderBy(desc(db.schema.alertEvents.createdAt))
+      .orderBy(desc(db.schema.alertEvents.createdAt), desc(db.schema.alertEvents.id))
       .limit(take)
       .all();
   } else {
@@ -389,7 +445,7 @@ async function recordAlertEvent(
       .select({ id: db.schema.alertEvents.id })
       .from(db.schema.alertEvents)
       .where(byRule)
-      .orderBy(desc(db.schema.alertEvents.createdAt))
+      .orderBy(desc(db.schema.alertEvents.createdAt), desc(db.schema.alertEvents.id))
       .limit(take);
   }
   const overflow = newest.slice(MAX_EVENTS_PER_RULE).map(r => r.id);
@@ -449,10 +505,17 @@ async function loadMetricInputs(db: Db, windowMinutes: number, agentId: string |
   ) as MetricEventRow[];
   // Root spans only, production only: a nightly eval run's latencies and spend are not the
   // fleet's, and a child LLM span's latency is already inside its root's. Read through the
-  // trace store so the ClickHouse tier is covered identically to SQLite/Postgres.
-  const traceRows = await traceStoreFor(db).queryWindow({ since, productionOnly: true, rootsOnly: true });
-  const traces = (traceRows as unknown as MetricTraceRow[]).filter(t => !agentId || t.agentId === agentId);
-  return { events, traces };
+  // trace store so the ClickHouse tier is covered identically to SQLite/Postgres; the agent
+  // filter is pushed into the store rather than applied in JS.
+  const traceRows = await traceStoreFor(db).queryWindow({
+    since,
+    productionOnly: true,
+    rootsOnly: true,
+    ...(agentId ? { agentId } : {}),
+    orderDesc: true,
+    limit: MAX_TRACES_PER_WINDOW,
+  });
+  return { events, traces: traceRows as unknown as MetricTraceRow[] };
 }
 
 function percentile(values: number[], p: number): number | null {
@@ -461,16 +524,17 @@ function percentile(values: number[], p: number): number | null {
   return sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))]!;
 }
 
-// Same run-outcome classification the KPI cards use (events.ts's tallyEvent): score-kind rows
-// are ratings, not outcomes; "healthy-response" is a healthy run; failure polarity is a failing
-// run. Kept in lockstep so the alert and the dashboard card never disagree on the same window.
+// The same run-outcome classification the KPI cards use - a transcription of events.ts's
+// tallyEvent, which cannot be imported as-is (it tallies into a different shape): score-kind
+// rows (online/custom evaluator verdicts, judge failures, group member verdicts all carry
+// polarity "score") are ratings, not outcomes; "healthy-response" is a healthy run; failure
+// polarity is a failing run. Change tallyEvent and change this together.
 function outcomeCounts(events: MetricEventRow[]): { total: number; failing: number; toolFailing: number } {
   let total = 0;
   let failing = 0;
   let toolFailing = 0;
   for (const row of events) {
     if (row.onlineEvaluatorId || row.customEvaluatorId || row.polarity === "score") continue;
-    if (row.type === "online_eval_judge_failure") continue;
     total++;
     if (row.patternKey === "healthy-response" || row.polarity !== "failure") continue;
     failing++;
@@ -479,7 +543,11 @@ function outcomeCounts(events: MetricEventRow[]): { total: number; failing: numb
   return { total, failing, toolFailing };
 }
 
-async function computeMetric(db: Db, metric: AlertMetric, inputs: MetricInputs): Promise<number | null> {
+async function computeMetric(
+  metric: AlertMetric,
+  inputs: MetricInputs,
+  pricing: () => Promise<PortabilityModel[]>
+): Promise<number | null> {
   switch (metric) {
     case "failureRate": {
       const { total, failing } = outcomeCounts(inputs.events);
@@ -501,8 +569,7 @@ async function computeMetric(db: Db, metric: AlertMetric, inputs: MetricInputs):
     case "estimatedCostUsd": {
       // Unpriced models contribute $0, the same posture as the Overview's cost total - an alert
       // on spend can only see what the pricing catalog can price.
-      const pricing = await listPortabilityModels(db);
-      const byModel = new Map(pricing.map(m => [m.id, m]));
+      const byModel = new Map((await pricing()).map(m => [m.id, m]));
       let total = 0;
       for (const t of inputs.traces) {
         if (!t.model) continue;
@@ -516,11 +583,12 @@ async function computeMetric(db: Db, metric: AlertMetric, inputs: MetricInputs):
   }
 }
 
-// Exported for the dashboard's "current value" preview and for the SDK: one function computes
-// a metric for a live rule and for a draft, so what the editor shows is what the sweep will see.
+// Exported for the dashboard's "current value" preview (and the SDK's preview() on top of it):
+// one function computes a metric for a live rule and for a draft, so what the editor shows is
+// what the sweep will see.
 export async function evaluateMetric(db: Db, query: MetricQuery): Promise<number | null> {
   const inputs = await loadMetricInputs(db, query.windowMinutes, query.agentId);
-  return computeMetric(db, query.metric, inputs);
+  return computeMetric(query.metric, inputs, () => listPortabilityModels(db));
 }
 
 export function breaches(operator: AlertOperator, value: number | null, threshold: number): boolean {
@@ -532,7 +600,13 @@ export function breaches(operator: AlertOperator, value: number | null, threshol
 // Sweep: evaluate every enabled rule and drive the firing/resolved lifecycle
 // ---------------------------------------------------------------------------
 
-function notificationFor(rule: AlertRuleRow, kind: AlertEventKind, value: number | null, agentName: string | null): AlertNotification {
+function notificationFor(
+  rule: AlertRuleRow,
+  kind: AlertEventKind,
+  value: number | null,
+  agentName: string | null,
+  resetReason: string | null
+): AlertNotification {
   const metric = rule.metric as AlertMetric;
   const comparison = rule.operator === "gt" ? "above" : "below";
   // The page names the agent the way the dashboard does; the id still rides in `agentId`.
@@ -557,18 +631,30 @@ function notificationFor(rule: AlertRuleRow, kind: AlertEventKind, value: number
     agentId: rule.agentId,
     agentName,
     condition,
+    // One PagerDuty incident per firing episode: the trigger, its repeats, and its resolve share
+    // the key, and the NEXT episode (after a resolve, a re-threshold, or a pause) gets a fresh
+    // one - a per-rule key would let PagerDuty dedupe a new incident into an old open one.
+    incidentKey: `agentx-alert-${rule.id}-${rule.lastFiredAt ? rule.lastFiredAt.getTime() : 0}`,
     title: `[AgentX Alert] ${status}: ${rule.name}`,
     summary:
       kind === "resolved"
-        ? `${condition} - back to ${formatMetricValue(metric, value)}.`
+        ? resetReason
+          ? `${condition} - ${resetReason}; incident closed.`
+          : `${condition} - back to ${formatMetricValue(metric, value)}.`
         : `${condition} - currently ${formatMetricValue(metric, value)}.`,
     at: new Date().toISOString(),
   };
 }
 
-async function notify(db: Db, rule: AlertRuleRow, kind: AlertEventKind, value: number | null): Promise<AlertEventWire> {
+async function notify(
+  db: Db,
+  rule: AlertRuleRow,
+  kind: AlertEventKind,
+  value: number | null,
+  resetReason: string | null = null
+): Promise<AlertEventWire> {
   const agentName = rule.agentId ? ((await getAgentRow(db, rule.agentId))?.name ?? null) : null;
-  const notification = notificationFor(rule, kind, value, agentName);
+  const notification = notificationFor(rule, kind, value, agentName, resetReason);
   const channels = parseChannels(rule.channels).slice(0, MAX_ALERT_CHANNELS);
   const deliveries = await Promise.all(channels.map(channel => deliverAlert(channel, notification)));
   const failed = deliveries.filter(d => !d.ok);
@@ -605,15 +691,20 @@ async function evaluateRule(db: Db, rule: AlertRuleRow, value: number | null, no
 
   // State is committed BEFORE the page goes out: a delivery that hangs to its timeout, or a
   // crash mid-notify, must not leave the rule "ok" and re-trigger on the next tick. The write is
-  // a compare-and-set on the state this evaluation read: the manual sweep route bypasses the
-  // cross-replica lease, so a manual sweep landing on the same tick as the timer must not let
-  // both transition ok->firing and page twice - whichever commits first owns the notification.
-  const cond = and(eq(db.schema.alertRules.id, rule.id), eq(db.schema.alertRules.state, rule.state));
+  // a compare-and-set on the state AND the notification clock this evaluation read: the manual
+  // sweep route bypasses the cross-replica lease, so two evaluations landing on the same tick
+  // must not both transition ok->firing, nor both send the same cooldown repeat - whichever
+  // commits first owns the notification.
+  const lastNotifiedCond = rule.lastNotifiedAt
+    ? eq(db.schema.alertRules.lastNotifiedAt, rule.lastNotifiedAt)
+    : isNull(db.schema.alertRules.lastNotifiedAt);
+  const cond = and(eq(db.schema.alertRules.id, rule.id), eq(db.schema.alertRules.state, rule.state), lastNotifiedCond);
   const won =
     db.kind === "sqlite"
       ? db.db.update(db.schema.alertRules).set(patch).where(cond).returning({ id: db.schema.alertRules.id }).all()
       : await db.db.update(db.schema.alertRules).set(patch).where(cond).returning({ id: db.schema.alertRules.id });
   if (won.length === 0) {
+    logger.debug({ ruleId: rule.id }, "Alert rule evaluation lost the race to a concurrent sweep; skipped");
     return { ruleId: rule.id, value, state: rule.state as AlertState, notified: null };
   }
   if (notified) {
@@ -626,8 +717,10 @@ async function evaluateRule(db: Db, rule: AlertRuleRow, value: number | null, no
 export async function evaluateAlertRulesOnce(db: Db): Promise<RuleEvaluation[]> {
   const rules = (await listRows(db)).filter(r => r.enabled);
   if (rules.length === 0) return [];
-  const now = new Date();
   const inputsByScope = new Map<string, Promise<MetricInputs>>();
+  // The pricing catalog is read at most once per pass, however many cost rules there are.
+  let pricingPromise: Promise<PortabilityModel[]> | null = null;
+  const pricing = () => (pricingPromise ??= listPortabilityModels(db));
   const results: RuleEvaluation[] = [];
   for (const rule of rules) {
     const scopeKey = `${rule.windowMinutes}|${rule.agentId ?? ""}`;
@@ -637,8 +730,10 @@ export async function evaluateAlertRulesOnce(db: Db): Promise<RuleEvaluation[]> 
       inputsByScope.set(scopeKey, inputs);
     }
     try {
-      const value = await computeMetric(db, rule.metric as AlertMetric, await inputs);
-      results.push(await evaluateRule(db, rule, value, now));
+      const value = await computeMetric(rule.metric as AlertMetric, await inputs, pricing);
+      // Clocked per rule: a pass with many firing rules spends up to 8s per channel delivery, and
+      // the last rule's cooldown and lastEvaluatedAt must not read minutes stale.
+      results.push(await evaluateRule(db, rule, value, new Date()));
     } catch (err) {
       // One broken rule (a metric query failing on this tier, a channel throwing) must not stop
       // the rest of the project's rules from being evaluated this tick.
