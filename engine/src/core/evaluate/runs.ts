@@ -1729,7 +1729,7 @@ export async function getVersionComparison(db: Db, datasetId: string): Promise<V
   type Bucket = { runIds: Set<string>; ratedSum: number; ratedCount: number; lastRunAt: Date; latestRunId: string };
   const buckets = new Map<string, Bucket>();
 
-  for (const run of runs) {
+  for (const run of comparableRuns) {
     const version = versionByRunId.get(run.id)!;
     const bucket =
       buckets.get(version) ??

@@ -69,7 +69,7 @@ const REQUEST_SURFACES: Record<string, RequestSurface> = {
   },
   "get /ingest/traces": {
     parameters: [
-      q("limit", "Page size (max 200)", { type: "integer" }),
+      q("limit", "Page size (max 100)", { type: "integer" }),
       q("cursor", "Opaque cursor from the previous page"),
       q("search", "Database-side LIKE across name/input/output/model/error/ids"),
       q("framework", "Comma-separated framework keys"),

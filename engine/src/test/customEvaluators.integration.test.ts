@@ -86,6 +86,14 @@ describe("custom evaluator dry run", () => {
     expect(res.body).toMatchObject({ ok: true, response: { matches: true, reason: "policy breach", score: 0.9 } });
   });
 
+  it("sends the synthetic sample with real span kinds - the root is agent, never the retired span", async () => {
+    calls.length = 0;
+    await engine.json("/api/v1/agent-monitoring/custom-evaluators/dry-run", post({ url: `${base}/matches` }));
+    const request = JSON.parse(calls.at(-1)!.body) as { spans: { type: string; parent_span_id: string | null }[] };
+    expect(request.spans.map(s => s.type)).toEqual(["agent", "llm"]);
+    expect(request.spans[0]!.parent_span_id).toBeNull();
+  });
+
   it("reports a non-2xx endpoint as not ok rather than erroring the route", async () => {
     const res = await engine.json("/api/v1/agent-monitoring/custom-evaluators/dry-run", post({ url: `${base}/boom` }));
     expect(res.status).toBe(200);

@@ -73,8 +73,15 @@ export type EvaluationAnalysisRow = {
   createdAt: Date;
 };
 
-function computeStatistics(results: RunResultRow[]): EvaluationAnalysisStatistics {
-  const ratings = results.map(r => r.rating).filter((r): r is number => r != null);
+// Exported for its unit test; the analyze route is the only production caller.
+export function computeStatistics(results: RunResultRow[]): EvaluationAnalysisStatistics {
+  // Smoke-test variants are robustness probes of a question, not extra cases - excluded here
+  // exactly as getRun's averageRating/liveStatistics and lowScoringCases exclude them, so the
+  // report's numbers agree with the run's.
+  const ratings = results
+    .filter(r => !(r as { isSmokeTestVariant?: boolean | number | null }).isSmokeTestVariant)
+    .map(r => r.rating)
+    .filter((r): r is number => r != null);
   const numberOfRuns = ratings.length;
   const averageRating = numberOfRuns ? ratings.reduce((a, b) => a + b, 0) / numberOfRuns : 0;
   const variance = numberOfRuns

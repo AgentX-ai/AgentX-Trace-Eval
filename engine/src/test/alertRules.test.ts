@@ -39,6 +39,18 @@ describe("breaches", () => {
   });
 });
 
+describe("thresholdProblem", () => {
+  it("refuses fractional counts and rates above 1, accepts everything else", async () => {
+    const { thresholdProblem } = await import("../core/monitor/alertRules.js");
+    expect(thresholdProblem("judgeFailures", 2.5)).toMatch(/whole number/);
+    expect(thresholdProblem("traceCount", 0)).toBeNull();
+    expect(thresholdProblem("failureRate", 1.5)).toMatch(/between 0 and 1/);
+    expect(thresholdProblem("toolFailureRate", 1)).toBeNull();
+    expect(thresholdProblem("p95LatencyMs", 2000.5)).toBeNull();
+    expect(thresholdProblem("estimatedCostUsd", -1)).toMatch(/non-negative/);
+  });
+});
+
 describe("formatMetricValue", () => {
   it("renders each metric in its own unit", async () => {
     const { formatMetricValue, formatWindow } = await import("../core/monitor/alertRules.js");
@@ -108,5 +120,107 @@ describe("alert rule storage", () => {
     const rethresholded = await updateAlertRule(db, rule._id, { threshold: 9000 });
     expect(rethresholded!.state).toBe("ok");
     expect(rethresholded!.lastValue).toBeNull();
+  });
+
+  it("resolves a firing rule's incident when it is re-thresholded, paused, or deleted", async () => {
+    const { createAlertRule, updateAlertRule, deleteAlertRule, listAlertEvents } = await import("../core/monitor/alertRules.js");
+    const { deliverAlert } = await import("../core/monitor/alertChannels.js");
+    const delivered = vi.mocked(deliverAlert);
+    const fire = async (id: string) => {
+      const cond = (await import("drizzle-orm")).eq(db.schema.alertRules.id, id);
+      const patch = { state: "firing" as const, lastValue: 5000, lastFiredAt: new Date(), lastNotifiedAt: new Date() };
+      if (db.kind === "sqlite") {
+        await db.db.update(db.schema.alertRules).set(patch).where(cond);
+      } else {
+        await db.db.update(db.schema.alertRules).set(patch).where(cond);
+      }
+    };
+    const rule = await createAlertRule(db, {
+      name: "resolve on change",
+      metric: "p95LatencyMs",
+      operator: "gt",
+      threshold: 1000,
+      windowMinutes: 15,
+      channels: [{ kind: "slack", target: "https://hooks.slack.com/services/T/B/x" }],
+    });
+
+    await fire(rule._id);
+    delivered.mockClear();
+    expect((await updateAlertRule(db, rule._id, { threshold: 9000 }))!.state).toBe("ok");
+    expect(delivered).toHaveBeenCalledTimes(1);
+    expect(delivered.mock.calls[0]![1]).toMatchObject({ kind: "resolved", status: "RESOLVED" });
+    expect(delivered.mock.calls[0]![1].summary).toContain("the rule was changed");
+
+    await fire(rule._id);
+    delivered.mockClear();
+    await updateAlertRule(db, rule._id, { enabled: false });
+    expect(delivered.mock.calls[0]![1].summary).toContain("the rule was paused");
+    // A pause of an "ok" rule owes nothing.
+    delivered.mockClear();
+    await updateAlertRule(db, rule._id, { enabled: true });
+    await updateAlertRule(db, rule._id, { enabled: false });
+    expect(delivered).not.toHaveBeenCalled();
+    expect((await listAlertEvents(db, rule._id, 10)).map(e => e.kind)).toEqual(["resolved", "resolved"]);
+
+    await updateAlertRule(db, rule._id, { enabled: true });
+    await fire(rule._id);
+    delivered.mockClear();
+    expect(await deleteAlertRule(db, rule._id)).toBe(true);
+    expect(delivered.mock.calls[0]![1].summary).toContain("the rule was deleted");
+  });
+
+  it("writes only the fields an update names, so a sweep transition landing in between survives", async () => {
+    const { createAlertRule, updateAlertRule, getAlertRule } = await import("../core/monitor/alertRules.js");
+    const rule = await createAlertRule(db, {
+      name: "sparse",
+      metric: "traceCount",
+      operator: "lt",
+      threshold: 1,
+      windowMinutes: 5,
+      channels: [{ kind: "webhook", target: "https://example.com/hook" }],
+    });
+    // The sweep advances the lifecycle after the editor read the rule but before it saves.
+    const cond = (await import("drizzle-orm")).eq(db.schema.alertRules.id, rule._id);
+    const advanced = { state: "firing" as const, lastValue: 0, firedCount: 4, lastFiredAt: new Date("2026-09-15T10:00:00Z") };
+    if (db.kind === "sqlite") {
+      await db.db.update(db.schema.alertRules).set(advanced).where(cond);
+    } else {
+      await db.db.update(db.schema.alertRules).set(advanced).where(cond);
+    }
+    const renamed = await updateAlertRule(db, rule._id, { name: "sparse (renamed)" });
+    expect(renamed!.name).toBe("sparse (renamed)");
+    const stored = (await getAlertRule(db, rule._id))!;
+    expect(stored.state).toBe("firing");
+    expect(stored.firedCount).toBe(4);
+    expect(stored.lastFiredAt).toBe("2026-09-15T10:00:00.000Z");
+  });
+
+  it("matches an echoed PagerDuty mask to its own stored key, not to a position", async () => {
+    const { createAlertRule, updateAlertRule, getAlertRule } = await import("../core/monitor/alertRules.js");
+    const { deliverAlert } = await import("../core/monitor/alertChannels.js");
+    const primary = "Rprimary0123456789abcdef01234567";
+    const secondary = "Rsecondary123456789abcdef0123456";
+    const rule = await createAlertRule(db, {
+      name: "two on-calls",
+      metric: "traceCount",
+      operator: "lt",
+      threshold: 1,
+      windowMinutes: 5,
+      channels: [
+        { kind: "pagerduty", target: primary },
+        { kind: "pagerduty", target: secondary },
+      ],
+    });
+    const [maskedPrimary, maskedSecondary] = rule.channels.map(c => c.target);
+    // The operator drops the primary and keeps the secondary - at position 0 now.
+    const kept = await updateAlertRule(db, rule._id, { channels: [{ kind: "pagerduty", target: maskedSecondary! }] });
+    expect(kept!.channels).toEqual([{ kind: "pagerduty", target: maskedSecondary }]);
+    // What is stored behind the mask is the secondary key: the delivery stub sees it.
+    const delivered = vi.mocked(deliverAlert);
+    delivered.mockClear();
+    const { sendAlertRuleTest } = await import("../core/monitor/alertRules.js");
+    await sendAlertRuleTest(db, rule._id);
+    expect(delivered.mock.calls[0]![0]).toEqual({ kind: "pagerduty", target: secondary });
+    expect((await getAlertRule(db, rule._id))!.channels[0]!.target).not.toBe(maskedPrimary);
   });
 });

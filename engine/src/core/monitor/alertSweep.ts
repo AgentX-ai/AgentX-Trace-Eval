@@ -15,6 +15,9 @@ const LEASE_TTL_MS = 5 * 60_000;
 
 let sweepTimer: NodeJS.Timeout | null = null;
 let sweeping = false;
+// Manual (route-triggered) sweeps in flight, by project: the route bypasses the cross-replica
+// lease on purpose, but a burst of POSTs must not run the same project's pass concurrently.
+const manualSweeps = new Set<string>();
 
 export async function sweepAlertRulesOnce(options: { projectId?: string | null } = {}): Promise<RuleEvaluation[]> {
   const baseDb = getDb();
@@ -30,6 +33,20 @@ export async function sweepAlertRulesOnce(options: { projectId?: string | null }
     }
   }
   return results;
+}
+
+// The manual route's entry point: one pass for the caller's project, serialized per project.
+export async function runManualAlertSweep(projectId: string): Promise<{ evaluated: number; results: RuleEvaluation[]; skipped?: true }> {
+  if (manualSweeps.has(projectId)) {
+    return { evaluated: 0, results: [], skipped: true };
+  }
+  manualSweeps.add(projectId);
+  try {
+    const results = await sweepAlertRulesOnce({ projectId });
+    return { evaluated: results.length, results };
+  } finally {
+    manualSweeps.delete(projectId);
+  }
 }
 
 export function startAlertSweep(): void {
@@ -57,4 +74,6 @@ export function stopAlertSweep(): void {
     clearInterval(sweepTimer);
     sweepTimer = null;
   }
+  // A stop mid-pass must not leave the guard set, or a later start() would never sweep again.
+  sweeping = false;
 }

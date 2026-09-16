@@ -38,6 +38,8 @@ export type AlertNotification = {
   windowLabel: string;
   agentId: string | null;
   agentName: string | null;
+  // Stable across one firing episode (trigger, repeats, resolve); fresh for the next one.
+  incidentKey: string;
   condition: string;
   title: string;
   summary: string;
@@ -206,7 +208,7 @@ function pagerdutyPayload(n: AlertNotification, routingKey: string, action: "tri
 
 // The generic-webhook body: every structured field, plus a top-level `text` so a receiver
 // that only reads Slack-style bodies still shows something readable.
-export function webhookPayload(n: AlertNotification): Record<string, unknown> {
+function webhookPayload(n: AlertNotification): Record<string, unknown> {
   return { text: `${n.title} - ${n.summary}`, event: "alert_rule", ...n };
 }
 
@@ -237,8 +239,10 @@ async function postJson(url: string, body: Record<string, unknown>): Promise<{ o
     redirect: "manual",
   });
   if (res.ok) return { ok: true, status: res.status };
-  const text = await res.text().catch(() => "");
-  return { ok: false, status: res.status, error: `HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ""}` };
+  // Status only - never the response body. A stored channel URL may point inside the operator's
+  // own network (single-tenant allows loopback/RFC1918), and echoing what that host answered
+  // into the alert history would turn a blind outbound POST into a readable one.
+  return { ok: false, status: res.status, error: `HTTP ${res.status}` };
 }
 
 export async function deliverAlert(channel: AlertChannel, notification: AlertNotification): Promise<AlertDelivery> {
@@ -273,7 +277,7 @@ export async function deliverAlert(channel: AlertChannel, notification: AlertNot
           return { kind: channel.kind, target, ...resolved };
         }
         const action = notification.status === "RESOLVED" ? "resolve" : "trigger";
-        const r = await postJson(PAGERDUTY_EVENTS_URL, pagerdutyPayload(notification, routingKey, action, `agentx-alert-${notification.ruleId}`));
+        const r = await postJson(PAGERDUTY_EVENTS_URL, pagerdutyPayload(notification, routingKey, action, notification.incidentKey));
         return { kind: channel.kind, target, ...r };
       }
       case "email": {

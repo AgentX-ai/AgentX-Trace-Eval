@@ -120,6 +120,7 @@ import {
   ALERT_METRICS,
   AlertRuleLimitError,
   AlertRuleValidationError,
+  thresholdProblem,
   MAX_ALERT_CHANNELS,
   MAX_ALERT_WINDOW_MINUTES,
   alertRuleStateSummary,
@@ -134,7 +135,7 @@ import {
   updateAlertRule,
 } from "../core/monitor/alertRules.js";
 import { ALERT_CHANNEL_KINDS, channelProblem } from "../core/monitor/alertChannels.js";
-import { sweepAlertRulesOnce } from "../core/monitor/alertSweep.js";
+import { runManualAlertSweep } from "../core/monitor/alertSweep.js";
 import {
   REVIEW_QUEUE_PENDING_CAP,
   deleteReviewItem,
@@ -330,7 +331,7 @@ agentMonitoringDashboardRouter.get("/alert-rules", async (req: Request, res: Res
 
 agentMonitoringDashboardRouter.post("/alert-rules", validateBody(createAlertRuleSchema), async (req: Request, res: Response) => {
   const body = req.body as z.infer<typeof createAlertRuleSchema>;
-  const channelError = alertChannelsError(body.channels, false);
+  const channelError = alertChannelsError(body.channels, false) ?? thresholdProblem(body.metric as Parameters<typeof thresholdProblem>[0], body.threshold);
   if (channelError) {
     res.status(400).json({ error: channelError });
     return;
@@ -356,8 +357,7 @@ agentMonitoringDashboardRouter.post("/alert-rules/preview", validateBody(alertPr
 });
 
 agentMonitoringDashboardRouter.post("/alert-rules/sweep/run", validateBody(emptyBodySchema), async (req: Request, res: Response) => {
-  const results = await sweepAlertRulesOnce({ projectId: scopedDb(req).projectId });
-  res.status(200).json({ evaluated: results.length, results });
+  res.status(200).json(await runManualAlertSweep(scopedDb(req).projectId));
 });
 
 agentMonitoringDashboardRouter.get("/alert-rules/:id", async (req: Request, res: Response) => {
@@ -376,6 +376,17 @@ agentMonitoringDashboardRouter.put("/alert-rules/:id", validateBody(updateAlertR
     res.status(400).json({ error: channelError });
     return;
   }
+  const existing = await getAlertRule(scopedDb(req), req.params.id!);
+  if (!existing) {
+    res.status(404).json({ error: "Alert rule not found" });
+    return;
+  }
+  // The threshold rule is checked against the metric the rule will have AFTER this patch.
+  const thresholdError = thresholdProblem((body.metric ?? existing.metric) as Parameters<typeof thresholdProblem>[0], body.threshold ?? existing.threshold);
+  if (thresholdError) {
+    res.status(400).json({ error: thresholdError });
+    return;
+  }
   try {
     const rule = await updateAlertRule(scopedDb(req), req.params.id!, body as Parameters<typeof updateAlertRule>[2]);
     if (!rule) {
@@ -392,9 +403,8 @@ agentMonitoringDashboardRouter.put("/alert-rules/:id", validateBody(updateAlertR
   }
 });
 
-// Deleting a rule drops its history with it. A PagerDuty incident it opened is NOT resolved by
-// the delete (there is no rule left to send the resolve) - close it in PagerDuty. Pausing
-// (enabled: false) likewise resets the lifecycle without sending a resolve.
+// Deleting a rule sends a resolve for any incident it holds open (as does pausing it or changing
+// its definition), then drops the rule and its history.
 agentMonitoringDashboardRouter.delete("/alert-rules/:id", async (req: Request, res: Response) => {
   const deleted = await deleteAlertRule(scopedDb(req), req.params.id!);
   if (!deleted) {
@@ -1762,7 +1772,7 @@ agentMonitoringDashboardRouter.post("/custom-evaluators/dry-run", async (req: Re
       span_id: "dry-root",
       parent_span_id: null,
       name: "dry-run-agent",
-      type: "span",
+      type: "agent",
       input: sampleInput,
       output: sampleOutput,
       error: null,

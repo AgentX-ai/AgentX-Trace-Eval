@@ -379,10 +379,15 @@ export class ClickHouseTraceStore implements TraceStore {
         "gen_ai_output_messages != ''",
         `gen_ai_output_messages != '\"\"'`
       );
+    const params: Record<string, unknown> = {};
+    if (filter.agentId) {
+      conds.push("gen_ai_agent_id = {agentId:String}");
+      params.agentId = filter.agentId;
+    }
     let query = `SELECT * FROM ${TABLE} WHERE ${conds.join(" AND ")}`;
     if (filter.orderDesc) query += " ORDER BY created_at DESC";
     if (filter.limit != null) query += ` LIMIT ${Math.floor(filter.limit)}`;
-    const rows = await this.rows(query);
+    const rows = await this.rows(query, params);
     return rows.map(fromStored);
   }
 

@@ -205,7 +205,16 @@ async function runLifecycle(engine: TestEngine, prefix: string) {
   }
   expect((await t.preview("traceCount")).value).toBe(13);
   expect((await t.preview("p95LatencyMs")).value).toBe(40);
-  return { t, ruleId };
+
+  // An agent-scoped window is filtered in the store, on every tier: the traced agent sees its
+  // own count, an unrelated agent sees no data.
+  const agents = ((await t.api("/agent-monitoring/agents")).body as { agents: { _id: string; name: string }[] }).agents;
+  const traced = agents.find(a => a.name === "alert-agent")!;
+  const scoped = await t.api("/agent-monitoring/alert-rules/preview", postJson({ metric: "traceCount", windowMinutes: 60, agentId: traced._id }));
+  expect((scoped.body as { value: number | null }).value).toBe(13);
+  const unrelated = await t.api("/agent-monitoring/alert-rules/preview", postJson({ metric: "traceCount", windowMinutes: 60, agentId: "no-such-agent" }));
+  expect((unrelated.body as { value: number | null }).value).toBe(0);
+  return { t, ruleId, key };
 }
 
 describe("alert rules (sqlite)", () => {
@@ -236,6 +245,17 @@ describe("alert rules (sqlite)", () => {
     const badKey = await t.api("/agent-monitoring/alert-rules", postJson({ ...base, channels: [{ kind: "pagerduty", target: "short" }] }));
     expect(badKey.status).toBe(400);
     expect((badKey.body as { error: string }).error).toContain("routing key");
+    // Threshold sanity per metric, on create and on update against the resulting metric.
+    const fractional = await t.api("/agent-monitoring/alert-rules", postJson({ ...base, metric: "judgeFailures", threshold: 2.5, channels: [{ kind: "slack", target: `${hookBase}/slack` }] }));
+    expect(fractional.status).toBe(400);
+    expect((fractional.body as { error: string }).error).toContain("whole number");
+    const ok = await t.api("/agent-monitoring/alert-rules", postJson({ ...base, channels: [{ kind: "slack", target: `${hookBase}/slack` }] }));
+    expect(ok.status).toBe(201);
+    const okId = (ok.body as { rule: AlertRule }).rule._id;
+    const overRate = await t.api(`/agent-monitoring/alert-rules/${okId}`, t.put({ metric: "failureRate", threshold: 50 }));
+    expect(overRate.status).toBe(400);
+    expect((overRate.body as { error: string }).error).toContain("between 0 and 1");
+    await t.api(`/agent-monitoring/alert-rules/${okId}`, { method: "DELETE" });
     const badMetric = await t.api("/agent-monitoring/alert-rules", postJson({ ...base, metric: "vibes", channels: [{ kind: "slack", target: `${hookBase}/slack` }] }));
     expect(badMetric.status).toBe(400);
     const badWindow = await t.api("/agent-monitoring/alert-rules", postJson({ ...base, windowMinutes: 0, channels: [{ kind: "slack", target: `${hookBase}/slack` }] }));
@@ -310,7 +330,7 @@ describe("alert rules (sqlite)", () => {
   }, 60_000);
 
   it("runs the full firing -> holding -> resolved lifecycle with typed channel deliveries", async () => {
-    const { t: flow, ruleId } = await runLifecycle(engine, "sq");
+    const { t: flow, ruleId, key: flowKey } = await runLifecycle(engine, "sq");
 
     // Send test: delivers with the live value, recorded as a `test` event, firing state untouched.
     const test = await flow.api(`/agent-monitoring/alert-rules/${ruleId}/test`, postJson({}));
@@ -329,6 +349,9 @@ describe("alert rules (sqlite)", () => {
     expect((await flow.rule(ruleId)).state).toBe("firing");
     await flow.api(`/agent-monitoring/alert-rules/${ruleId}`, flow.put({ enabled: false }));
     expect((await flow.rule(ruleId)).state).toBe("ok");
+    // The pause closed the incident on every channel - the all-clear names the reason.
+    expect((await flow.events(ruleId))[0]).toMatchObject({ kind: "resolved" });
+    expect(received.filter(r => r.path === "/slack").at(-1)!.body.text).toContain("the rule was paused");
     expect((await flow.sweep()).evaluated).toBe(0);
     await flow.api(`/agent-monitoring/alert-rules/${ruleId}`, flow.put({ enabled: true }));
     await flow.sweep();
@@ -343,9 +366,27 @@ describe("alert rules (sqlite)", () => {
     expect((await flow.events(ruleId)).filter(e => e.kind === "triggered")).toHaveLength(before + 1);
     await flow.api(`/agent-monitoring/alert-rules/${ruleId}`, flow.put({ enabled: false }));
 
-    // Alert rules ride along in backups, with hook URLs redacted.
-    const exported = await engine.request("/api/v1/export/alert-rules", { apiKey: flow ? key : key });
+    // Alert rules ride along in backups with the credential tail of a hook URL masked (the
+    // path after the first segment is the secret on Slack/Teams-style incoming webhooks).
+    const secretHook = await flow.api(
+      "/agent-monitoring/alert-rules",
+      postJson({ name: "export shape", metric: "traceCount", operator: "lt", threshold: 1, windowMinutes: 5, channels: [{ kind: "slack", target: `${hookBase}/services/T0/B0/hushhush` }] })
+    );
+    const secretHookId = (secretHook.body as { rule: AlertRule }).rule._id;
+    const exported = await engine.request("/api/v1/export/alert-rules", { apiKey: flowKey });
     expect(exported.status).toBe(200);
+    const text = await exported.text();
+    expect(text).not.toContain("hushhush");
+    const lines = text
+      .trim()
+      .split("\n")
+      .map(l => JSON.parse(l) as { id: string; channels: { kind: string; target: string }[] });
+    expect(lines.map(l => l.id)).toContain(ruleId);
+    expect(lines.find(l => l.id === secretHookId)!.channels[0]!.target).toBe(`${hookBase}/services/***redacted***`);
+    await flow.api(`/agent-monitoring/alert-rules/${secretHookId}`, { method: "DELETE" });
+    // The delivery record of the broken hook carries the status only, never what the host said.
+    const broken = (await flow.events(ruleId)).find(e => e.kind === "triggered")!.deliveries.find(d => d.kind === "webhook")!;
+    expect(broken.error).toBe("HTTP 500");
   }, 60_000);
 
   it("scopes rules to the project that owns them", async () => {
