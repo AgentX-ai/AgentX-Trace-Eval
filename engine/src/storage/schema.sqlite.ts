@@ -771,6 +771,60 @@ export const sweepLeases = sqliteTable("sweep_leases", {
   expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
 });
 
+// KPI alert rules (core/monitor/alertRules.ts): "notify me when <metric> over the last <window>
+// is <above|below> <threshold>". Distinct from automation rules (per-trace routing) and from
+// scorer alert thresholds (per-verdict): an alert rule watches an AGGREGATE - failure rate, p95
+// latency, spend, judge failures, traffic volume - and pages through typed channels (Slack,
+// Teams, PagerDuty, email, generic webhook) with a firing/resolved lifecycle, so an ops team
+// stops re-deriving these from raw webhook payloads.
+export const alertRules = sqliteTable("alert_rules", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  name: text("name").notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  // "failureRate" | "toolFailureRate" | "p95LatencyMs" | "estimatedCostUsd" | "judgeFailures" | "traceCount"
+  metric: text("metric").notNull(),
+  // "gt" | "lt"
+  operator: text("operator").notNull(),
+  threshold: real("threshold").notNull(),
+  windowMinutes: integer("window_minutes").notNull(),
+  // null = every agent in the project; an agent id narrows the metric to that agent's traffic.
+  agentId: text("agent_id"),
+  // "low" | "medium" | "high" | "critical" - carried onto the page (PagerDuty severity, message tone).
+  severity: text("severity").notNull().default("high"),
+  // [{ kind: "slack"|"teams"|"pagerduty"|"email"|"webhook", target }] - target is a URL, an
+  // email address, or a PagerDuty routing key depending on kind.
+  channels: text("channels", { mode: "json" }).notNull(),
+  // Minimum gap between repeat notifications while the rule keeps breaching.
+  cooldownMinutes: integer("cooldown_minutes").notNull().default(60),
+  // "ok" | "firing" - the Alertmanager-style lifecycle: notify on ok->firing, repeat every
+  // cooldown while firing, notify again on firing->ok.
+  state: text("state").notNull().default("ok"),
+  lastValue: real("last_value"),
+  lastEvaluatedAt: integer("last_evaluated_at", { mode: "timestamp_ms" }),
+  lastFiredAt: integer("last_fired_at", { mode: "timestamp_ms" }),
+  lastNotifiedAt: integer("last_notified_at", { mode: "timestamp_ms" }),
+  // Incidents (ok->firing transitions), not deliveries - repeats don't inflate it.
+  firedCount: integer("fired_count").notNull().default(0),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+// Per-rule notification history: what fired, at what value, and whether each channel accepted
+// it - the answer to "did the page actually go out?" that a fire-and-forget webhook can't give.
+export const alertEvents = sqliteTable("alert_events", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id"),
+  ruleId: text("rule_id").notNull(),
+  // "triggered" | "repeat" | "resolved" | "test"
+  kind: text("kind").notNull(),
+  value: real("value"),
+  threshold: real("threshold").notNull(),
+  // [{ kind, target (masked), ok, status?, error? }]
+  deliveries: text("deliveries", { mode: "json" }).notNull(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+});
+
 export const sessionScores = sqliteTable("session_scores", {
   id: text("id").primaryKey(),
   sessionId: text("session_id").notNull(),

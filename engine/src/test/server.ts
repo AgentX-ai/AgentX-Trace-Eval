@@ -118,6 +118,7 @@ export async function startEngine(
         // keys and no need for them, and their logs drown out the failure being investigated.
         AGENTX_SESSION_SWEEP: "false",
         AGENTX_IMPROVEMENT_SWEEP: "false",
+        AGENTX_ALERT_SWEEP: "false",
         NODE_ENV: "test",
         ...(database ? { AGENTX_DB_URL: database.url } : {}),
         ...env,

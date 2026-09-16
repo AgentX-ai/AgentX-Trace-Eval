@@ -1,6 +1,7 @@
 import { and, asc, count, eq, gt, gte, type SQL } from "drizzle-orm";
 import { traceStoreFor } from "../trace/store/index.js";
 import type { Db } from "../../storage/db.js";
+import { maskSecret } from "../shared/maskSecret.js";
 
 // Bulk data egress (P2.1 of the enterprise improvement plan): every project-scoped table an
 // operator needs to back up, migrate, or walk out the door with, streamed as NDJSON by
@@ -86,6 +87,25 @@ function redactRuleRow(row: Record<string, unknown>): Record<string, unknown> {
   return row;
 }
 
+// Alert-rule channels: hook URLs lose their credential path (same as webhook URLs elsewhere),
+// PagerDuty routing keys are masked outright, email addresses are not a secret and stay.
+function redactAlertRuleRow(row: Record<string, unknown>): Record<string, unknown> {
+  const channels = row.channels;
+  if (!Array.isArray(channels)) return row;
+  return {
+    ...row,
+    channels: channels.map(ch => {
+      if (!ch || typeof ch !== "object") return ch;
+      const channel = ch as { kind?: string; target?: unknown };
+      if (channel.kind === "pagerduty" && typeof channel.target === "string") {
+        return { ...channel, target: maskSecret(channel.target) };
+      }
+      if (channel.kind === "email") return channel;
+      return { ...channel, target: redactUrlString(channel.target) };
+    }),
+  };
+}
+
 function redactProfileRow(row: Record<string, unknown>): Record<string, unknown> {
   const channels = row.channels;
   if (!Array.isArray(channels)) return row;
@@ -152,6 +172,9 @@ export const EXPORT_ENTITIES = {
   "agent-connectors": { table: "agentConnectors", sinceColumn: "createdAt", redact: redactConnectorRow },
   "playground-runs": { table: "playgroundRuns", sinceColumn: "createdAt" },
   "audit-events": { table: "auditEvents", sinceColumn: "createdAt" },
+  // KPI alert rules and their notification history (core/monitor/alertRules.ts).
+  "alert-rules": { table: "alertRules", sinceColumn: "createdAt", redact: redactAlertRuleRow },
+  "alert-events": { table: "alertEvents", sinceColumn: "createdAt" },
   // Deliberately excluded (derived/ephemeral, cheap to rebuild): monitorRollups,
   // insightCaseEmbeddings, sweepLeases, usage counters. The completeness test names them.
 } as const;

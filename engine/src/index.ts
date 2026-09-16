@@ -20,6 +20,7 @@ import { registerAuthRoutes, registerApiV1 } from "./routes/apiV1.js";
 import { findWebIndexHtml, downloadWebBundle, webBundleCandidates, describeWebBundle } from "./web.js";
 import { startSessionSweep } from "./core/monitor/sessionSweep.js";
 import { startImprovementSweep } from "./core/evaluate/improvementSweep.js";
+import { startAlertSweep } from "./core/monitor/alertSweep.js";
 import { logger } from "./log.js";
 
 const PORT = Number(process.env.PORT || 4700);
@@ -287,6 +288,8 @@ async function main() {
   // unref'd interval, so it never blocks shutdown. AGENTX_SESSION_SWEEP=false disables.
   startSessionSweep();
   startImprovementSweep();
+  // KPI alert rules (core/monitor/alertSweep.ts). AGENTX_ALERT_SWEEP=false disables.
+  startAlertSweep();
   const defaultProject = await getDefaultProject(getDb());
   logger.info(`AgentX self-host engine listening on http://localhost:${PORT}`);
   logger.info(`Default project API key: ${defaultProject?.apiKey}`);

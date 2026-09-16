@@ -111,11 +111,30 @@ import {
   getMonitoringDefaults,
   updateMonitoringDefaults,
 } from "../core/project/projects.js";
-import { maskSecret } from "../core/shared/maskSecret.js";
+import { isMaskedSecret, maskSecret } from "../core/shared/maskSecret.js";
 import { validateSeverityParam } from "../core/shared/severity.js";
 import { z } from "zod";
 import { validateBody } from "./validateBody.js";
 import { createRule, deleteRule, getRule, listRules, updateRule } from "../core/monitor/rules.js";
+import {
+  ALERT_METRICS,
+  AlertRuleLimitError,
+  AlertRuleValidationError,
+  MAX_ALERT_CHANNELS,
+  MAX_ALERT_WINDOW_MINUTES,
+  alertRuleStateSummary,
+  createAlertRule,
+  deleteAlertRule,
+  evaluateMetric,
+  formatMetricValue,
+  getAlertRule,
+  listAlertEvents,
+  listAlertRules,
+  sendAlertRuleTest,
+  updateAlertRule,
+} from "../core/monitor/alertRules.js";
+import { ALERT_CHANNEL_KINDS, channelProblem } from "../core/monitor/alertChannels.js";
+import { sweepAlertRulesOnce } from "../core/monitor/alertSweep.js";
 import {
   REVIEW_QUEUE_PENDING_CAP,
   deleteReviewItem,
@@ -252,6 +271,159 @@ agentMonitoringDashboardRouter.delete("/rules/:id", async (req: Request, res: Re
     return;
   }
   res.status(204).end();
+});
+
+// ---------------------------------------------------------------------------
+// KPI alert rules (core/monitor/alertRules.ts): "page me when <metric> over <window> is
+// <above|below> <threshold>" with typed Slack/Teams/PagerDuty/email/webhook channels and a
+// firing/resolved lifecycle. Evaluated by the alert sweep every minute; the manual sweep route
+// is project-scoped and bypasses the lease (tests, demos).
+// ---------------------------------------------------------------------------
+const alertChannelSchema = z
+  .object({
+    kind: z.enum(ALERT_CHANNEL_KINDS as [string, ...string[]]),
+    target: z.string().min(1).max(2048),
+  })
+  .strip();
+
+const alertRuleShape = {
+  name: z.string().min(1).max(120),
+  enabled: z.boolean().optional(),
+  metric: z.enum(ALERT_METRICS as [string, ...string[]]),
+  operator: z.enum(["gt", "lt"]),
+  threshold: z.number().finite().min(0),
+  windowMinutes: z.number().int().min(1).max(MAX_ALERT_WINDOW_MINUTES),
+  agentId: z.string().min(1).nullable().optional(),
+  severity: z.enum(["low", "medium", "high", "critical"]).optional(),
+  channels: z.array(alertChannelSchema).min(1).max(MAX_ALERT_CHANNELS),
+  cooldownMinutes: z.number().int().min(1).max(MAX_ALERT_WINDOW_MINUTES).optional(),
+};
+const createAlertRuleSchema = z.object(alertRuleShape).strip();
+// Action POSTs carry no parameters; an empty schema keeps them under validateBody like every
+// other route (a stray body is dropped, never interpreted).
+const emptyBodySchema = z.object({}).strip();
+const updateAlertRuleSchema = z.object(alertRuleShape).partial().strip();
+const alertPreviewSchema = z
+  .object({
+    metric: alertRuleShape.metric,
+    windowMinutes: alertRuleShape.windowMinutes,
+    agentId: alertRuleShape.agentId,
+  })
+  .strip();
+
+// A channel that can never deliver (a blocked URL, a malformed address) is refused at the door,
+// never stored to fail silently on the first real incident. A masked PagerDuty key is the "keep
+// the stored key" round-trip and is only admitted on UPDATE, where a stored key can exist.
+function alertChannelsError(channels: { kind: string; target: string }[] | undefined, allowMasked: boolean): string | null {
+  for (const channel of channels ?? []) {
+    if (allowMasked && channel.kind === "pagerduty" && isMaskedSecret(channel.target)) continue;
+    const problem = channelProblem(channel as Parameters<typeof channelProblem>[0]);
+    if (problem) return problem;
+  }
+  return null;
+}
+
+agentMonitoringDashboardRouter.get("/alert-rules", async (req: Request, res: Response) => {
+  const rules = await listAlertRules(scopedDb(req));
+  res.status(200).json({ rules, summary: alertRuleStateSummary(rules) });
+});
+
+agentMonitoringDashboardRouter.post("/alert-rules", validateBody(createAlertRuleSchema), async (req: Request, res: Response) => {
+  const body = req.body as z.infer<typeof createAlertRuleSchema>;
+  const channelError = alertChannelsError(body.channels, false);
+  if (channelError) {
+    res.status(400).json({ error: channelError });
+    return;
+  }
+  try {
+    res.status(201).json({ rule: await createAlertRule(scopedDb(req), body as Parameters<typeof createAlertRule>[1]) });
+  } catch (err) {
+    if (err instanceof AlertRuleLimitError) {
+      res.status(409).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
+});
+
+// The editor's "current value" affordance: what the metric reads right now for a draft rule,
+// through the same function the sweep uses.
+agentMonitoringDashboardRouter.post("/alert-rules/preview", validateBody(alertPreviewSchema), async (req: Request, res: Response) => {
+  const body = req.body as z.infer<typeof alertPreviewSchema>;
+  const query = { metric: body.metric, windowMinutes: body.windowMinutes, agentId: body.agentId ?? null } as Parameters<typeof evaluateMetric>[1];
+  const value = await evaluateMetric(scopedDb(req), query);
+  res.status(200).json({ metric: body.metric, windowMinutes: body.windowMinutes, agentId: query.agentId, value, valueLabel: formatMetricValue(query.metric, value) });
+});
+
+agentMonitoringDashboardRouter.post("/alert-rules/sweep/run", validateBody(emptyBodySchema), async (req: Request, res: Response) => {
+  const results = await sweepAlertRulesOnce({ projectId: scopedDb(req).projectId });
+  res.status(200).json({ evaluated: results.length, results });
+});
+
+agentMonitoringDashboardRouter.get("/alert-rules/:id", async (req: Request, res: Response) => {
+  const rule = await getAlertRule(scopedDb(req), req.params.id!);
+  if (!rule) {
+    res.status(404).json({ error: "Alert rule not found" });
+    return;
+  }
+  res.status(200).json({ rule });
+});
+
+agentMonitoringDashboardRouter.put("/alert-rules/:id", validateBody(updateAlertRuleSchema), async (req: Request, res: Response) => {
+  const body = req.body as z.infer<typeof updateAlertRuleSchema>;
+  const channelError = alertChannelsError(body.channels, true);
+  if (channelError) {
+    res.status(400).json({ error: channelError });
+    return;
+  }
+  try {
+    const rule = await updateAlertRule(scopedDb(req), req.params.id!, body as Parameters<typeof updateAlertRule>[2]);
+    if (!rule) {
+      res.status(404).json({ error: "Alert rule not found" });
+      return;
+    }
+    res.status(200).json({ rule });
+  } catch (err) {
+    if (err instanceof AlertRuleValidationError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
+});
+
+// Deleting a rule drops its history with it. A PagerDuty incident it opened is NOT resolved by
+// the delete (there is no rule left to send the resolve) - close it in PagerDuty. Pausing
+// (enabled: false) likewise resets the lifecycle without sending a resolve.
+agentMonitoringDashboardRouter.delete("/alert-rules/:id", async (req: Request, res: Response) => {
+  const deleted = await deleteAlertRule(scopedDb(req), req.params.id!);
+  if (!deleted) {
+    res.status(404).json({ error: "Alert rule not found" });
+    return;
+  }
+  res.status(204).end();
+});
+
+agentMonitoringDashboardRouter.get("/alert-rules/:id/events", async (req: Request, res: Response) => {
+  const rule = await getAlertRule(scopedDb(req), req.params.id!);
+  if (!rule) {
+    res.status(404).json({ error: "Alert rule not found" });
+    return;
+  }
+  const limit = Number(req.query.limit ?? 50);
+  res.status(200).json({ events: await listAlertEvents(scopedDb(req), req.params.id!, Number.isFinite(limit) ? limit : 50) });
+});
+
+// Delivers a TEST notification to the rule's channels with the metric's live value; the recorded
+// event's per-channel results are the response, so a misconfigured hook shows up here rather
+// than during a real incident.
+agentMonitoringDashboardRouter.post("/alert-rules/:id/test", validateBody(emptyBodySchema), async (req: Request, res: Response) => {
+  const event = await sendAlertRuleTest(scopedDb(req), req.params.id!);
+  if (!event) {
+    res.status(404).json({ error: "Alert rule not found" });
+    return;
+  }
+  res.status(200).json({ event, delivered: event.deliveries.every(d => d.ok) });
 });
 
 // ---------------------------------------------------------------------------
