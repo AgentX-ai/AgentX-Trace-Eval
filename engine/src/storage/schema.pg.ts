@@ -326,7 +326,30 @@ export const monitorClassifications = pgTable("monitor_classifications", {
   // See schema.sqlite.ts's embedding column for the full comment.
   embedding: jsonb("embedding"),
   inputEmbedding: jsonb("input_embedding"),
+  topicId: text("topic_id"),
 });
+
+// See schema.sqlite.ts's monitorTopics for the full comment.
+export const monitorTopics = pgTable(
+  "monitor_topics",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id"),
+    label: text("label").notNull(),
+    normalizedLabel: text("normalized_label").notNull(),
+    description: text("description"),
+    status: text("status").notNull().default("candidate"),
+    aliases: jsonb("aliases"),
+    centroidSum: jsonb("centroid_sum"),
+    memberCount: integer("member_count").notNull().default(0),
+    embeddedMemberCount: integer("embedded_member_count").notNull().default(0),
+    firstSeenAt: timestamp("first_seen_at", { mode: "date" }).notNull(),
+    lastSeenAt: timestamp("last_seen_at", { mode: "date" }).notNull(),
+  },
+  table => ({
+    projectLabel: uniqueIndex("monitor_topics_project_label").on(table.projectId, table.normalizedLabel),
+  })
+);
 
 
 // See schema.sqlite.ts's insightCaseEmbeddings for the full comment.

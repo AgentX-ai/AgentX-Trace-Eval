@@ -715,6 +715,23 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
 
     CREATE INDEX IF NOT EXISTS monitor_classifications_created_at ON monitor_classifications (created_at);
 
+    CREATE TABLE IF NOT EXISTS monitor_topics (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      label TEXT NOT NULL,
+      normalized_label TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'candidate',
+      aliases TEXT,
+      centroid_sum TEXT,
+      member_count INTEGER NOT NULL DEFAULT 0,
+      embedded_member_count INTEGER NOT NULL DEFAULT 0,
+      first_seen_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS monitor_topics_project_label ON monitor_topics (project_id, normalized_label);
+
     CREATE TABLE IF NOT EXISTS insight_case_embeddings (
       id TEXT PRIMARY KEY,
       project_id TEXT,
@@ -1144,6 +1161,10 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
     ["pairwise_comparisons", "ALTER TABLE pairwise_comparisons ADD COLUMN both_orders INTEGER NOT NULL DEFAULT 0"],
     ["evaluation_runs", "ALTER TABLE evaluation_runs ADD COLUMN questions_snapshot TEXT"],
     ["monitor_classifications", "ALTER TABLE monitor_classifications ADD COLUMN input_embedding TEXT"],
+    // The topic registry link (see schema.sqlite.ts's monitorTopics). Nullable with no default:
+    // rows classified before the registry existed keep their free-text `intent` and nothing else,
+    // which is exactly what every reader already falls back to.
+    ["monitor_classifications", "ALTER TABLE monitor_classifications ADD COLUMN topic_id TEXT"],
     ["monitor_signal_feedback", "ALTER TABLE monitor_signal_feedback ADD COLUMN event_id TEXT"],
     ["monitor_profiles", "ALTER TABLE monitor_profiles ADD COLUMN topics_enabled INTEGER NOT NULL DEFAULT 0"],
     ["traces", "ALTER TABLE traces ADD COLUMN span_id TEXT"],
@@ -2123,6 +2144,23 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
 
     CREATE INDEX IF NOT EXISTS monitor_classifications_created_at ON monitor_classifications (created_at);
 
+    CREATE TABLE IF NOT EXISTS monitor_topics (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      label TEXT NOT NULL,
+      normalized_label TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'candidate',
+      aliases JSONB,
+      centroid_sum JSONB,
+      member_count INTEGER NOT NULL DEFAULT 0,
+      embedded_member_count INTEGER NOT NULL DEFAULT 0,
+      first_seen_at TIMESTAMP NOT NULL,
+      last_seen_at TIMESTAMP NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS monitor_topics_project_label ON monitor_topics (project_id, normalized_label);
+
     CREATE TABLE IF NOT EXISTS insight_case_embeddings (
       id TEXT PRIMARY KEY,
       project_id TEXT,
@@ -2499,6 +2537,7 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
     ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS questions_snapshot JSONB;
     ALTER TABLE evaluation_runs ADD COLUMN IF NOT EXISTS scorer_group_id TEXT;
     ALTER TABLE monitor_classifications ADD COLUMN IF NOT EXISTS input_embedding JSONB;
+    ALTER TABLE monitor_classifications ADD COLUMN IF NOT EXISTS topic_id TEXT;
     ALTER TABLE monitor_profiles ADD COLUMN IF NOT EXISTS channels JSONB;
     ALTER TABLE monitor_signals ADD COLUMN IF NOT EXISTS review_status TEXT;
     ALTER TABLE monitor_signals ADD COLUMN IF NOT EXISTS resolution_reason TEXT;
@@ -2835,6 +2874,7 @@ const PROJECT_SCOPED_TABLES = [
   "monitor_signal_feedback",
   "monitor_events",
   "monitor_classifications",
+  "monitor_topics",
   "insight_case_embeddings",
   "monitor_online_evaluators",
   "prompts",

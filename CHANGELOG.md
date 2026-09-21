@@ -981,3 +981,59 @@ Python SDK stays permissively licensed (it ships inside customer applications). 
 OpenTelemetry proto schema keeps its upstream Apache-2.0 notice. Applied to LICENSE, the README
 badge and License section, CONTRIBUTING's contribution terms, and the workspace package.json
 license fields (SPDX id `Elastic-2.0`).
+
+## Topic registry: stable topic identities, resolved at write time
+
+Topics classified a trace into `{intent, sentiment, issueType}`, where `intent` was free text and the
+prompt *asked* the model to reuse an existing label verbatim when one fitted. That is a request, not
+a constraint, and Insights had already paid for the difference: `coverage.ts` grew a read-time merge
+because a real install carried both "Refund request" (covered) and "Request a refund" (**missing**) -
+one topic counted twice, half of it a phantom gap.
+
+`monitor_topics` makes the vocabulary a table instead of a query. Every classification now resolves
+its label to a stable `topic_id` at write time - exact normalized label, then a recorded alias, then
+a new candidate - and `intent` is left exactly as the model wrote it, so every existing reader and
+every historical row is unaffected.
+
+Two decisions worth recording, because the obvious version of each is wrong:
+
+**The merge runs at promotion, not at creation.** The tempting design embeds the incoming trace and
+merges it into the nearest topic centroid above 0.87. But 0.87 was calibrated centroid-to-centroid
+(0.909/0.902 for synonyms against 0.822/0.813 for distinct neighbours), and a single member sits
+further from a centroid than two centroids sit from each other - a centroid has averaged the noise
+out and one trace has not. Comparing a lone vector against that threshold would refuse merges it
+should make, and lowering it to compensate would start merging "order tracking" into "missing
+package". So a new label is held as a `candidate` for three sightings, and the merge check runs when
+it has enough members for the comparison the constant was actually measured for. The staging state
+was going to exist anyway to stop one strange trace minting permanent vocabulary; it turns out to
+buy the merge evidence too.
+
+**The centroid column stores a running sum, not a mean.** Cosine is scale-invariant, so a sum
+compares identically to the unit centroid `shared/vector.ts`'s `centroid()` would build from the same
+members - and unlike a mean, a sum stays exact under incremental accumulation, so a topic never has
+to re-read its members.
+
+The 0.87 constant moved to `core/monitor/topicRegistry.ts` and `coverage.ts` imports it: two merges
+keyed on one number must read it from one place, or an install ends up disagreeing with itself about
+how many topics it has. The classifier's reuse-candidate list now comes from the registry's active
+topics rather than a 30-day `GROUP BY` re-run on every classified trace - bounded instead of growing
+with traffic, and it survives a topic going quiet for a month.
+
+Caught by the existing `exportCompleteness` guard rather than by review: a new project-scoped table
+that nothing exports would have silently vanished from every backup, leaving every restored
+classification's `topic_id` dangling and the merged-away synonyms (which survive only as aliases)
+unrecoverable. `lastSeenAt` is the incremental cursor, not a creation stamp - resolution touches it
+on every sighting, so any topic a newly exported classification references falls in the same window.
+
+Ten integration tests with injected unit-circle vectors, where cosine is exactly cos(angle
+difference) so the threshold assertions are arithmetic rather than a guess about what an embedding
+model does that day: casing/whitespace identity, candidate promotion, synonym merge at 0.87,
+non-merge below it, alias lookup without cosine, classification re-pointing when a topic is merged
+away, degradation to label-only matching with no embeddings at all, late-arriving embeddings, empty
+labels, and project isolation.
+
+The registry is also the precondition for classifying with a System One model (typed, calibrated
+choice over a fixed option set, no generated text) and calling an LLM only to name what the
+vocabulary has no word for - designed in
+[docs/topic-registry-and-system-one-classification.md](docs/topic-registry-and-system-one-classification.md),
+not implemented here.

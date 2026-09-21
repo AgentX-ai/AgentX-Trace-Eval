@@ -4,6 +4,7 @@ import { and, desc, eq, gte, lt } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { resolvePlatformModel, callJudgeJson, computeEmbedding, DEFAULT_JUDGE_MODEL } from "../evaluate/judge.js";
 import { passesSampleRate } from "./routing.js";
+import { listActiveTopics, resolveTopic } from "./topicRegistry.js";
 import { getMonitoringDefaults } from "../project/projects.js";
 import { resolveRange, type MonitoringRange, type MonitoringWindow } from "./events.js";
 import { logger } from "../../log.js";
@@ -40,6 +41,10 @@ export type ClassificationRow = {
   // production and a dataset case embeds identically here). Null for historical rows; the
   // coverage map backfills lazily (coverageMap.ts).
   inputEmbedding: number[] | null;
+  // The registry topic this row resolved to (core/monitor/topicRegistry.ts). Null for rows
+  // classified before the registry existed and whenever resolution failed, so `intent` above
+  // remains the field every reader can always count on.
+  topicId: string | null;
 };
 
 const ISSUE_TYPES = ["none", "refusal", "hallucination", "off_topic", "incomplete", "other"] as const;
@@ -64,13 +69,10 @@ const classificationSchema = {
   required: ["intent", "sentiment", "issueType"],
 };
 
-// How many of the most common recent intents to show the judge as reuse candidates, and how far
-// back to look for them. Capped rather than "all distinct intents ever" so the prompt stays small
-// and the candidates stay relevant - an intent that hasn't recurred in 30 days isn't worth biasing
-// toward. Deliberately global (not scoped to ctx.agentId), matching getTopIntents' existing
-// cross-agent aggregation used by the Topics view itself.
-const INTENT_CANDIDATE_WINDOW: MonitoringWindow = "30d";
-const INTENT_CANDIDATE_LIMIT = 30;
+// The reuse-candidate list and its cap now live on the registry (topicRegistry.ts's
+// listActiveTopics / TOPIC_CANDIDATE_LIMIT), which replaced the 30-day intent GROUP BY this file
+// used to run per classified trace. Still deliberately global rather than scoped to ctx.agentId,
+// matching the cross-agent aggregation the Topics view itself reads.
 
 async function recordClassification(
   db: Db,
@@ -82,6 +84,7 @@ async function recordClassification(
     issueType: string;
     embedding: number[] | null;
     inputEmbedding: number[] | null;
+    topicId: string | null;
   }
 ): Promise<void> {
   const row: ClassificationRow = {
@@ -95,6 +98,7 @@ async function recordClassification(
     createdAt: new Date(),
     embedding: input.embedding,
     inputEmbedding: input.inputEmbedding,
+    topicId: input.topicId,
   };
   if (db.kind === "sqlite") {
     await db.db.insert(db.schema.monitorClassifications).values(row);
@@ -160,12 +164,24 @@ export async function runClassification(
   const outputText = typeof trace.output === "string" ? trace.output : JSON.stringify(trace.output ?? "");
 
   // Steer the judge toward reusing an existing label instead of coining a near-duplicate (e.g.
-  // "requested refund" vs "refund request") - see this file's top comment on why real clustering
-  // isn't done instead. Candidates come from the same aggregation the Topics view itself reads.
-  const candidates = await getTopIntents(db, INTENT_CANDIDATE_WINDOW, INTENT_CANDIDATE_LIMIT);
+  // "requested refund" vs "refund request"). Candidates are the registry's ACTIVE topics
+  // (core/monitor/topicRegistry.ts), not the old 30-day GROUP BY over every classification:
+  //
+  // - a bounded read. The old candidate list scanned the whole 30-day classification window on
+  //   every classified trace, which grows with traffic; the registry is one row per topic.
+  // - a vocabulary that survives a quiet month. An intent that stopped recurring simply fell out
+  //   of a rolling window and got re-coined under a new name; an active topic stays active.
+  // - it is the same list a closed-set classifier would be given as its options, so the two
+  //   stages can never be offered different vocabularies (see the design doc).
+  //
+  // On an install upgrading with history but an empty registry this list starts short, and the
+  // model drifts for a few traces. That is self-healing rather than permanent: each label becomes
+  // a candidate topic, and promoteOrMerge folds the synonyms back together on the centroid
+  // evidence once they recur.
+  const candidates = await listActiveTopics(db);
   const existingIntentsBlock = candidates.length
     ? `\n\nExisting intent labels already in use - if one of these fits this interaction, return it verbatim ` +
-      `instead of writing a new one:\n${candidates.map(c => `- ${c.intent}`).join("\n")}`
+      `instead of writing a new one:\n${candidates.map(c => `- ${c.label}`).join("\n")}`
     : "";
 
   try {
@@ -188,6 +204,12 @@ export async function runClassification(
     if (!payload?.intent || !payload.sentiment || !payload.issueType) {
       return;
     }
+    // Resolve the free-text label to a stable identity before the row is written, so the topic
+    // exists by the time anything can read the classification. `embedding` (input+output) is the
+    // vector coverage.ts already groups by - passing the query-only twin instead would compare
+    // centroids built in a different space against a threshold calibrated in this one. A null
+    // topic is not an error: resolveTopic never throws, and `intent` below is unaffected.
+    const topic = await resolveTopic(db, { label: payload.intent, embedding });
     await recordClassification(db, {
       traceId: ctx.traceId,
       agentId: ctx.agentId,
@@ -196,6 +218,7 @@ export async function runClassification(
       issueType: payload.issueType,
       embedding,
       inputEmbedding,
+      topicId: topic?.id ?? null,
     });
   } catch (err) {
     logger.error({ err: err instanceof Error ? err.message : err }, "Trace classification failed:");

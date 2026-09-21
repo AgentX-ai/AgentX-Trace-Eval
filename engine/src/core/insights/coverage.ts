@@ -1,6 +1,7 @@
 import type { Db } from "../../storage/db.js";
 import { traceStoreFor } from "../trace/store/index.js";
 import { listClassificationsSince, type ClassificationRow } from "../monitor/topics.js";
+import { TOPIC_MERGE_THRESHOLD } from "../monitor/topicRegistry.js";
 import { resolveRange, type MonitoringRange } from "../monitor/events.js";
 import { extractText, type MonitoringWindow } from "../monitor/events.js";
 import { SIMILARITY_BANDS, addCaseToDataset, previewCaseFromTrace } from "../evaluate/curation.js";
@@ -169,13 +170,10 @@ export type TopicGroup = {
   words: Set<string>;
 };
 
-// Deliberately not curation.ts's 0.75: that compares two query strings, this compares centroids of
-// averaged input+output embeddings, which run higher. Measured on a real install - synonyms at
-// 0.909/0.902 ("refund request"/"request a refund", "reset password"/"reset forgotten password")
-// against distinct neighbours at 0.822/0.813 ("order tracking"/"missing package", "refund policy
-// inquiry"/"request a refund"). 0.87 splits them with ~0.05 either side; 0.75 would have merged
-// questions with different correct answers. Recalibrate if the embedding model changes.
-const TOPIC_MERGE_THRESHOLD = 0.87;
+// The merge threshold moved to core/monitor/topicRegistry.ts, which carries the calibration table
+// and now applies the SAME constant at write time. Two merges keyed on one number must read it
+// from one place: a registry that merged at 0.87 while this read-time pass merged at anything else
+// would disagree with itself about how many topics an install has.
 
 // Group by normalized intent, keep the most common original casing as the display label. The
 // classifier is already steered toward reusing labels verbatim (see topics.ts's

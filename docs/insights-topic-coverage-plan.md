@@ -100,6 +100,14 @@ space. That is the whole design.
 ("refund request" vs "requested refund"). Joining coverage on strings would be brittle
 and would silently split a topic in half.
 
+> **Superseded in part.** The table described below now exists as `monitor_topics`, written at
+> CLASSIFICATION time rather than by a post-hoc sweep - see
+> [topic-registry-and-system-one-classification.md](./topic-registry-and-system-one-classification.md).
+> Same entity (stable id, label, aliases, centroid, counts), populated at the only point where a
+> duplicate can be prevented instead of repaired. The clustering itself, per-topic radius/spread and
+> soft assignment (§3.2) are still design, and `mergeSynonymousTopics` below stays: it is the only
+> thing that can help rows classified before the registry existed.
+
 A **topic consolidation sweep** clusters classification embeddings (agglomerative,
 cosine, average-linkage; HDBSCAN if we want noise handling) and writes `insight_topics`
 rows carrying:
@@ -122,7 +130,8 @@ of it inventing a gap that did not exist, its traffic share split between the tw
 trace centroids are close, using embeddings **already stored** on `monitor_classifications` - no
 new API calls, and it works with no LLM key at all.
 
-The threshold is **0.87**, and deliberately not curation.ts's 0.75: that constant compares two
+The threshold is **0.87** (now `TOPIC_MERGE_THRESHOLD` in `core/monitor/topicRegistry.ts`, shared
+with the write-time merge so the two cannot drift apart), and deliberately not curation.ts's 0.75: that constant compares two
 single query strings, this compares centroids of *averaged* input+output embeddings, which run
 much higher. Measured on that install:
 

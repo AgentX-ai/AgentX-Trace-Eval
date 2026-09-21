@@ -505,7 +505,66 @@ export const monitorClassifications = sqliteTable("monitor_classifications", {
   // Query-only embedding (the trace INPUT alone) - the coverage map's question space, where an
   // identical question from production and a dataset lands in the same spot. Backfilled lazily.
   inputEmbedding: text("input_embedding", { mode: "json" }),
+  // The registry topic this classification resolved to (monitor_topics.id), written at
+  // classification time by core/monitor/topicRegistry.ts. `intent` above stays exactly as the
+  // classifier wrote it - this column is the STABLE identity for the same subject matter, so
+  // "refund request" and "request a refund" share a topicId even though their intent strings
+  // differ. Null for rows classified before the registry existed, and for any row whose
+  // resolution failed; every reader must therefore still fall back to `intent`.
+  topicId: text("topic_id"),
 });
+
+// The topic registry: one row per distinct subject the classifier has seen, and the vocabulary a
+// closed-set classifier picks from. Before this table, "topics" were the distinct `intent` strings
+// in monitor_classifications, re-derived by a 30-day GROUP BY on every read - which is why
+// core/insights/coverage.ts has to merge synonymous labels at READ time (its own comment records
+// an install reporting "Refund request" covered and "Request a refund" missing: one topic counted
+// twice, half of it a phantom gap). Resolving to a row HERE, once, at write time, is the same fix
+// applied at the only point where it can actually prevent the duplicate instead of papering over
+// it afterward. See docs/topic-registry-and-system-one-classification.md.
+export const monitorTopics = sqliteTable(
+  "monitor_topics",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id"),
+    // What the UI shows: the label as the classifier first wrote it, casing and all.
+    label: text("label").notNull(),
+    // normalizeText(label) - the exact-match key, and what the unique index below is on. Two
+    // classifications differing only in casing or whitespace must never mint two topics.
+    normalizedLabel: text("normalized_label").notNull(),
+    // Free text describing what belongs here, for a future closed-set classifier that needs per
+    // option instructions rather than a bare label (see the design doc's stage-one questions).
+    // Null until something writes one; nothing reads it yet.
+    description: text("description"),
+    // "candidate" until the topic has been seen TOPIC_PROMOTION_SIGHTINGS times, then "active";
+    // "retired" is set by hand to drop a topic out of the vocabulary without deleting its
+    // history. Only active topics are offered as reuse candidates, so one strange trace cannot
+    // mint a permanent topic - see core/monitor/topicRegistry.ts.
+    status: text("status").notNull().default("candidate"),
+    // JSON-encoded string[]: the other intent labels that resolved here. Kept so a label that
+    // merged in once resolves by exact lookup next time, without recomputing cosines.
+    aliases: text("aliases", { mode: "json" }),
+    // JSON-encoded number[]: the running SUM of member classification embeddings, not the mean.
+    // Cosine is scale-invariant, so a sum compares identically to the unit centroid that
+    // shared/vector.ts's centroid() would produce over the same members - and a sum is what an
+    // incremental accumulator can maintain exactly, one row at a time, without re-reading every
+    // member. Null while no member has ever carried an embedding (no OPENAI_API_KEY).
+    centroidSum: text("centroid_sum", { mode: "json" }),
+    // Members total, and how many of them contributed to centroidSum. They differ whenever
+    // embeddings were unavailable for part of the traffic, so neither can be derived from the
+    // other: promotion counts sightings, the centroid divides by its own.
+    memberCount: integer("member_count").notNull().default(0),
+    embeddedMemberCount: integer("embedded_member_count").notNull().default(0),
+    firstSeenAt: integer("first_seen_at", { mode: "timestamp_ms" }).notNull(),
+    lastSeenAt: integer("last_seen_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  table => ({
+    // Project-scoped: the same label in two projects is two topics. This is also the concurrency
+    // guard - two traces classified at once both coining "refund request" race to insert, and the
+    // loser re-reads the winner's row instead of creating a duplicate.
+    projectLabel: uniqueIndex("monitor_topics_project_label").on(table.projectId, table.normalizedLabel),
+  })
+);
 
 // core/insights/: one cached embedding per distinct dataset case query. Keyed by a content hash
 // of the query text, not by the case's position in the dataset's `questions` JSON array - editing

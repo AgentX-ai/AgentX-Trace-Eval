@@ -125,6 +125,12 @@ export const EXPORT_ENTITIES = {
   rules: { table: "monitorRules", sinceColumn: "createdAt", redact: redactRuleRow },
   events: { table: "monitorEvents", sinceColumn: "createdAt" },
   classifications: { table: "monitorClassifications", sinceColumn: "createdAt", redact: redactClassificationRow },
+  // The topic vocabulary every classification's topicId points at. Restoring classifications
+  // without it would leave every one of those ids dangling, and the labels themselves are not
+  // rebuildable - a merged-away synonym survives only as an alias here. `lastSeenAt` is the right
+  // incremental cursor rather than a creation stamp: resolveTopic touches it on every sighting, so
+  // any topic a newly exported classification references is guaranteed to fall in the same window.
+  topics: { table: "monitorTopics", sinceColumn: "lastSeenAt" },
   runs: { table: "evaluationRuns", sinceColumn: "createdAt" },
   "run-results": { table: "evaluationRunResults", sinceColumn: "createdAt" },
   "gate-results": { table: "gateResults", sinceColumn: "createdAt" },
