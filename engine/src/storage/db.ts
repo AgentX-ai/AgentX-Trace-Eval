@@ -1246,6 +1246,7 @@ export function bootstrapSqlite(sqlite: SqliteHandle): { freshInstall: boolean }
     ["evaluation_run_results", "ALTER TABLE evaluation_run_results ADD COLUMN judge_scorer_results TEXT"],
     ["tool_schemas", "ALTER TABLE tool_schemas ADD COLUMN test_endpoint_url TEXT"],
     ["tool_schemas", "ALTER TABLE tool_schemas ADD COLUMN resolved_evidence TEXT"],
+    ["tool_schemas", "ALTER TABLE tool_schemas ADD COLUMN price_per_call_usd REAL"],
     ["playground_runs", "ALTER TABLE playground_runs ADD COLUMN kind TEXT"],
   ];
   for (const [, statement] of columnMigrations) {
@@ -2611,6 +2612,7 @@ export async function bootstrapPostgres(pool: Pool): Promise<{ freshInstall: boo
     ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS metric_pack_version INTEGER;
     ALTER TABLE tool_schemas ADD COLUMN IF NOT EXISTS test_endpoint_url TEXT;
     ALTER TABLE tool_schemas ADD COLUMN IF NOT EXISTS resolved_evidence JSONB;
+    ALTER TABLE tool_schemas ADD COLUMN IF NOT EXISTS price_per_call_usd DOUBLE PRECISION;
     ALTER TABLE playground_runs ADD COLUMN IF NOT EXISTS kind TEXT;
 
     -- One-way Topics migration, see bootstrapSqlite's equivalent for the full comment (copy any

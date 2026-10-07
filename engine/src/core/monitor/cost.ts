@@ -3,6 +3,7 @@ import { traceStoreFor } from "../trace/store/index.js";
 import { listPortabilityModels, estimateCostUSD, normalizeModelId } from "../evaluate/models.js";
 import { resolveRange, type MonitoringRange, type MonitoringWindow } from "./events.js";
 import { EVAL_RUN_SOURCE } from "../trace/evalTraffic.js";
+import { getToolPricesByName, priceToolCalls } from "../evaluate/toolSchemas.js";
 
 // Overview's "Total LLM cost" chart (Braintrust-style stacked bar, but stacked by model rather
 // than token type - self-host doesn't track cache-read/cache-write tokens per trace today, and
@@ -25,7 +26,14 @@ function windowConfig(window: MonitoringWindow): { days: number; bucketHours: nu
   }
 }
 
-type CostTraceRow = { model: string | null; inputTokens: number | null; outputTokens: number | null; createdAt: Date; source: string | null };
+type CostTraceRow = {
+  model: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  toolCalls: unknown;
+  createdAt: Date;
+  source: string | null;
+};
 
 async function listCostTracesSince(db: Db, since: Date, until?: Date): Promise<CostTraceRow[]> {
   // Every row in the window, not just root spans: an OTel multi-span session's individual
@@ -36,6 +44,10 @@ async function listCostTracesSince(db: Db, since: Date, until?: Date): Promise<C
 // The reserved stack key for spend from eval-run traffic. Eval spend is real money, so the
 // chart INCLUDES it - split into its own segment - where the monitor KPIs exclude it entirely.
 export const EVAL_COST_KEY = "eval runs";
+// The reserved stack key for priced tool calls (Tools & MCPs registry rows with a per-call
+// price): an external API billed per request is spend the model's bar would otherwise hide.
+// Eval-run tool calls stay in the eval segment - they are evaluation spend, whatever bills them.
+export const TOOL_COST_KEY = "tool calls";
 
 export type CostTrendPoint = {
   label: string;
@@ -50,6 +62,9 @@ export type CostTrendResponse = {
   // frontend uses this order both for stack-segment order and the legend rows below the chart.
   models: string[];
   totalsByModel: Record<string, number>;
+  // The "tool calls" segment split per registered tool (production traffic only), cost
+  // descending - the legend's sub-rows under that segment.
+  totalsByTool: Record<string, number>;
   totalCost: number;
 };
 
@@ -95,17 +110,31 @@ export async function getCostTrend(db: Db, range: MonitoringRange): Promise<Cost
   const bucketCount = Math.ceil(spanMs / bucketMs);
   const bucketStartMs = untilMs - bucketCount * bucketMs;
 
-  const [rows, pricingModels] = await Promise.all([
+  const [rows, pricingModels, toolPrices] = await Promise.all([
     listCostTracesSince(db, new Date(bucketStartMs), new Date(untilMs)),
     listPortabilityModels(db),
+    getToolPricesByName(db),
   ]);
   const pricingByModel = new Map(pricingModels.map(model => [model.id, model]));
 
   const buckets: Record<string, number>[] = Array.from({ length: bucketCount }, () => ({}));
   const totalsByModel: Record<string, number> = {};
+  const totalsByTool: Record<string, number> = {};
   let totalCost = 0;
 
   for (const row of rows) {
+    const index = Math.floor((row.createdAt.getTime() - bucketStartMs) / bucketMs);
+    if (index < 0 || index >= bucketCount) {
+      continue;
+    }
+    const isEval = row.source === EVAL_RUN_SOURCE;
+    for (const [tool, toolCost] of priceToolCalls(row.toolCalls, toolPrices)) {
+      const key = isEval ? EVAL_COST_KEY : TOOL_COST_KEY;
+      buckets[index]![key] = (buckets[index]![key] ?? 0) + toolCost;
+      totalsByModel[key] = (totalsByModel[key] ?? 0) + toolCost;
+      if (!isEval) totalsByTool[tool] = (totalsByTool[tool] ?? 0) + toolCost;
+      totalCost += toolCost;
+    }
     if (!row.model) {
       continue;
     }
@@ -120,15 +149,11 @@ export async function getCostTrend(db: Db, range: MonitoringRange): Promise<Cost
     if (!cost) {
       continue;
     }
-    const index = Math.floor((row.createdAt.getTime() - bucketStartMs) / bucketMs);
-    if (index < 0 || index >= bucketCount) {
-      continue;
-    }
     const bucket = buckets[index]!;
     // Eval-run spend goes into its own segment rather than the model's: the question this chart
     // answers is "what is production costing me, and what is evaluation costing me" - folding
     // eval spend into gpt-4o-mini's bar would hide the second answer inside the first.
-    const key = row.source === EVAL_RUN_SOURCE ? EVAL_COST_KEY : matchedId;
+    const key = isEval ? EVAL_COST_KEY : matchedId;
     bucket[key] = (bucket[key] ?? 0) + cost;
     totalsByModel[key] = (totalsByModel[key] ?? 0) + cost;
     totalCost += cost;
@@ -143,5 +168,5 @@ export async function getCostTrend(db: Db, range: MonitoringRange): Promise<Cost
     return { label: new Date(ts).toISOString(), ts, byModel };
   });
 
-  return { window: windowLabel, points, models, totalsByModel, totalCost };
+  return { window: windowLabel, points, models, totalsByModel, totalsByTool, totalCost };
 }

@@ -32,6 +32,7 @@ type CostTrend = {
   points: { ts: number; label: string; byModel: Record<string, number> }[];
   models: string[];
   totalsByModel: Record<string, number>;
+  totalsByTool: Record<string, number>;
   totalCost: number;
 };
 
@@ -113,6 +114,68 @@ describe("cost trend", () => {
     }
   });
 
+  it("charges registered tools per recorded call, as their own segment, failed calls included", async () => {
+    // Register a $0.25-per-call tool (a paid geocoding API, say) and a free one.
+    const priced = await engine.json(
+      "/api/v1/evaluate/tool-schemas",
+      post({ name: "geocode", definition: JSON.stringify({ name: "geocode" }), pricePerCallUsd: 0.25 }, key)
+    );
+    expect(priced.status, JSON.stringify(priced.body)).toBe(201);
+    expect((priced.body as { pricePerCallUsd: number }).pricePerCallUsd).toBe(0.25);
+    const free = await engine.json("/api/v1/evaluate/tool-schemas", post({ name: "clock", definition: JSON.stringify({ name: "clock" }) }, key));
+    expect((free.body as { pricePerCallUsd: number | null }).pricePerCallUsd).toBeNull();
+
+    // Two geocode calls (one failed - the API still billed it), one free call, one unregistered.
+    await ingest({
+      name: "cost-agent",
+      span_id: "cost-tools-1",
+      input: "q",
+      output: "a",
+      started_at_unix_nano: nanos(40),
+      tool_calls: [
+        { name: "geocode", success: true },
+        { name: "geocode", success: false, error: "429" },
+        { name: "clock", success: true },
+        { name: "mystery", success: true },
+      ],
+    });
+    const trend = await costTrend();
+    expect(trend.totalsByModel["tool calls"]).toBeCloseTo(0.5, 9);
+    expect(trend.totalsByTool).toEqual({ geocode: 0.5 });
+    expect(trend.totalCost).toBeCloseTo(4.0, 9);
+    // The segment sits in the stack order like any model, by spend.
+    expect(trend.models).toEqual([MODEL_ID, "tool calls"]);
+    const bucket = trend.points[trend.points.length - 1]!;
+    expect(bucket.byModel["tool calls"]).toBeCloseTo(0.5, 9);
+
+    // Clearing the price (null) removes the spend from the next read; nothing is stored as $0.
+    const id = (priced.body as { _id: string })._id;
+    const cleared = await engine.json(`/api/v1/evaluate/tool-schemas/${id}`, { ...post({ pricePerCallUsd: null }, key), method: "PATCH" });
+    expect(cleared.status).toBe(200);
+    const after = await costTrend();
+    expect(after.totalsByModel["tool calls"]).toBeUndefined();
+    expect(after.totalsByTool).toEqual({});
+    expect(after.totalCost).toBeCloseTo(3.5, 9);
+  });
+
+  it("files eval-run tool calls under eval spend, not under the production tool segment", async () => {
+    const tool = await engine.json("/api/v1/evaluate/tool-schemas", post({ name: "paid_eval_tool", definition: "{}", pricePerCallUsd: 0.1 }, key));
+    expect(tool.status).toBe(201);
+    await ingest({ name: "cost-agent", span_id: "cost-tools-eval", input: "q", output: "a", source: "eval-run", started_at_unix_nano: nanos(50), tool_calls: [{ name: "paid_eval_tool", success: true }] });
+    const trend = await costTrend();
+    expect(trend.totalsByModel["eval runs"]).toBeCloseTo(0.1, 9);
+    expect(trend.totalsByTool.paid_eval_tool).toBeUndefined();
+    await engine.json(`/api/v1/evaluate/tool-schemas/${(tool.body as { _id: string })._id}`, { method: "DELETE", apiKey: key });
+  });
+
+  it("refuses a tool price that is not a non-negative number", async () => {
+    const negative = await engine.json("/api/v1/evaluate/tool-schemas", post({ name: "neg", definition: "{}", pricePerCallUsd: -1 }, key));
+    expect(negative.status).toBe(400);
+    const text = await engine.json("/api/v1/evaluate/tool-schemas", post({ name: "txt", definition: "{}", pricePerCallUsd: "0.25" }, key));
+    expect(text.status).toBe(400);
+    expect((text.body as { error: string }).error).toContain("pricePerCallUsd");
+  });
+
   it("lists a token-bearing unpriced model so the spend is visible rather than silently zero", async () => {
     const res = await engine.json("/api/v1/agent-monitoring/portability/models/unpriced", { apiKey: key });
     expect(res.status).toBe(200);
@@ -191,4 +254,42 @@ describe("model pricing catalog", () => {
     expect(serialized, "a provider key was echoed back in full").not.toContain("sk-super-secret-value-12345");
     expect(serialized).toContain("...");
   });
+});
+
+// ClickHouse telemetry tier: tool calls live in the agentx_tool_calls JSON column there, so the
+// per-call pricing has to survive that round trip too. Opt-in like every other CH suite.
+const CH_URL = process.env.AGENTX_TEST_CLICKHOUSE_URL;
+describe.skipIf(!CH_URL)("cost trend with ClickHouse telemetry", () => {
+  let chEngine: TestEngine;
+  let chKey: string;
+  beforeAll(async () => {
+    chEngine = await startEngine({ AGENTX_TELEMETRY_URL: CH_URL! });
+    const project = await chEngine.json("/api/v1/projects", post({ name: "Cost project (CH)" }, null));
+    chKey = (project.body as { project: { apiKey: string } }).project.apiKey;
+  }, 90_000);
+  afterAll(async () => {
+    await chEngine?.stop();
+  });
+
+  it("prices registered tool calls read back from ClickHouse spans", async () => {
+    expect(chEngine.log()).toContain("Telemetry store: ClickHouse");
+    const tool = await chEngine.json("/api/v1/evaluate/tool-schemas", post({ name: "ch_geocode", definition: "{}", pricePerCallUsd: 0.3 }, chKey));
+    expect(tool.status, JSON.stringify(tool.body)).toBe(201);
+    const res = await chEngine.json(
+      "/api/v1/ingest/traces",
+      post({ name: "ch-cost-agent", span_id: "ch-cost-1", input: "q", output: "a", started_at_unix_nano: nanos(60), tool_calls: [{ name: "ch_geocode", success: true }, { name: "ch_geocode", success: false }] }, chKey)
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const deadline = Date.now() + 10_000;
+    let trend: CostTrend;
+    do {
+      const read = await chEngine.json("/api/v1/agent-monitoring/cost-trend?window=7d", { apiKey: chKey });
+      expect(read.status).toBe(200);
+      trend = read.body as CostTrend;
+      if ((trend.totalsByTool.ch_geocode ?? 0) > 0) break;
+      await new Promise(r => setTimeout(r, 200));
+    } while (Date.now() < deadline);
+    expect(trend.totalsByModel["tool calls"]).toBeCloseTo(0.6, 9);
+    expect(trend.totalsByTool).toEqual({ ch_geocode: 0.6 });
+  }, 60_000);
 });

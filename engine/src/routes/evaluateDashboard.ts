@@ -74,6 +74,7 @@ import {
   deleteToolSchema,
   updateToolSchemaTestEndpoint,
   updateToolSchemaMeta,
+  toolPriceProblem,
 } from "../core/evaluate/toolSchemas.js";
 import { runPlayground, extractPlaygroundTools, callPlaygroundTool } from "../core/evaluate/playground.js";
 import { getScorerGroup } from "../core/monitor/scorerGroups.js";
@@ -924,7 +925,7 @@ evaluateDashboardRouter.get("/tool-schemas", async (req: Request, res: Response)
 });
 
 evaluateDashboardRouter.post("/tool-schemas", async (req: Request, res: Response) => {
-  const { name, definition, description, testEndpointUrl } = req.body ?? {};
+  const { name, definition, description, testEndpointUrl, pricePerCallUsd } = req.body ?? {};
   if (typeof name !== "string" || !name.trim()) {
     res.status(400).json({ error: "name is required (must match the traced tool-call name exactly)" });
     return;
@@ -937,22 +938,36 @@ evaluateDashboardRouter.post("/tool-schemas", async (req: Request, res: Response
     res.status(400).json({ error: "testEndpointUrl must be an http(s) URL" });
     return;
   }
+  const priceError = pricePerCallUsd === undefined ? null : toolPriceProblem(pricePerCallUsd);
+  if (priceError) {
+    res.status(400).json({ error: priceError });
+    return;
+  }
   const toolSchema = await createToolSchema(scopedDb(req), {
     name: name.trim(),
     definition,
     description,
     testEndpointUrl: typeof testEndpointUrl === "string" ? testEndpointUrl : undefined,
+    pricePerCallUsd: typeof pricePerCallUsd === "number" ? pricePerCallUsd : undefined,
   });
   res.status(201).json(toolSchema);
 });
 
 // Set or clear a registered tool's Playground test endpoint - the one mutable field outside the
 // versioned definition. Null/empty clears it.
-// Metadata edits (description / test endpoint) from the tool detail dialog - never touches the
-// version log; definition changes go through POST /tool-schemas/:id/versions.
+// Metadata edits (description / test endpoint / per-call price) from the tool detail dialog -
+// never touches the version log; definition changes go through POST /tool-schemas/:id/versions.
 evaluateDashboardRouter.patch("/tool-schemas/:id", async (req: Request, res: Response) => {
   const body = req.body ?? {};
-  const input: { description?: string | null; testEndpointUrl?: string | null } = {};
+  const input: { description?: string | null; testEndpointUrl?: string | null; pricePerCallUsd?: number | null } = {};
+  if ("pricePerCallUsd" in body) {
+    const priceError = toolPriceProblem(body.pricePerCallUsd);
+    if (priceError) {
+      res.status(400).json({ error: priceError });
+      return;
+    }
+    input.pricePerCallUsd = body.pricePerCallUsd as number | null;
+  }
   if ("description" in body) {
     input.description = typeof body.description === "string" ? body.description : null;
   }

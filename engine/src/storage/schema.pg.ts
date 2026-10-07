@@ -548,6 +548,7 @@ export const toolSchemas = pgTable("tool_schemas", {
   name: text("name").notNull(),
   description: text("description"),
   testEndpointUrl: text("test_endpoint_url"),
+  pricePerCallUsd: doublePrecision("price_per_call_usd"),
   resolvedEvidence: jsonb("resolved_evidence"),
   currentVersion: integer("current_version").notNull().default(1),
   createdAt: timestamp("created_at", { mode: "date" }).notNull(),

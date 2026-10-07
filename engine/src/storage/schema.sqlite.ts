@@ -863,6 +863,9 @@ export const toolSchemas = sqliteTable("tool_schemas", {
   // tool's endpointUrl default. NEVER called by the engine outside a Playground/simulation run -
   // the registry itself stays execution-free (production tools run in the agent's own code).
   testEndpointUrl: text("test_endpoint_url"),
+  // USD charged per recorded call of this tool (an external API billed per request). Null =
+  // unpriced: the call costs nothing in the cost chart, the same posture as an unpriced model.
+  pricePerCallUsd: real("price_per_call_usd"),
   // Evidence example ids already addressed by an adopted proposal (JSON string[]) - filtered
   // out of future Suggest-improvement evidence (core/evaluate/toolSchemas.ts).
   resolvedEvidence: text("resolved_evidence", { mode: "json" }),

@@ -3,6 +3,7 @@ import { traceStoreFor } from "../trace/store/index.js";
 import { SPAN_CLASSIFIER_VERSION, percentileFromHistogram, readRollups, LATENCY_BUCKET_COUNT, type ModelTokens, type RollupRow } from "./rollups.js";
 import type { Db } from "../../storage/db.js";
 import { regularInputTokens, listPortabilityModels, normalizeModelId, type PortabilityModel } from "../evaluate/models.js";
+import { getToolPricesByName } from "../evaluate/toolSchemas.js";
 
 
 // The Monitor metrics grid (claude.design Monitor.dc.html): one bucketed pass over the window's
@@ -83,6 +84,8 @@ export type MonitorMetricsBucket = {
   /** Cache-read spend - the discounted reuse of cached prefix tokens. */
   costCached: number;
   costCompletion: number;
+  /** Priced tool-call spend: registered tools with a per-call price, every recorded call. */
+  costTools: number;
   toolCalls: number;
   toolFailures: number;
   /** Executions per tool this bucket, limited to the window's top tools (rest under "other"). */
@@ -119,6 +122,7 @@ export type MonitorMetricsResponse = {
     costPrompt: number;
     costCached: number;
     costCompletion: number;
+    costTools: number;
     toolCalls: number;
     toolFailures: number;
   };
@@ -230,7 +234,7 @@ export async function getMonitorMetrics(
     });
   }
 
-  const pricingModels = await listPortabilityModels(db);
+  const [pricingModels, toolPrices] = await Promise.all([listPortabilityModels(db), getToolPricesByName(db)]);
   const pricingById = new Map<string, PortabilityModel>();
   for (const model of pricingModels) pricingById.set(model.id, model);
   const priceOf = (model: string | null): PortabilityModel | null =>
@@ -252,6 +256,7 @@ export async function getMonitorMetrics(
     costPrompt: 0,
     costCached: 0,
     costCompletion: 0,
+    costTools: 0,
     toolCalls: 0,
     toolFailures: 0,
     byTool: {},
@@ -347,6 +352,8 @@ export async function getMonitorMetrics(
       if (filters.tool && tc.name !== filters.tool) continue;
       bucket.toolCalls++;
       if (tc.failed) bucket.toolFailures++;
+      // Every recorded call is charged, failed ones included: an external API bills the request.
+      bucket.costTools += toolPrices.get(tc.name) ?? 0;
       const totals = toolTotals.get(tc.name) ?? { count: 0, failed: 0 };
       totals.count++;
       if (tc.failed) totals.failed++;
@@ -424,6 +431,7 @@ export async function getMonitorMetrics(
     costPrompt: buckets.reduce((n, b) => n + b.costPrompt, 0),
     costCached: buckets.reduce((n, b) => n + b.costCached, 0),
     costCompletion: buckets.reduce((n, b) => n + b.costCompletion, 0),
+    costTools: buckets.reduce((n, b) => n + b.costTools, 0),
     toolCalls: buckets.reduce((n, b) => n + b.toolCalls, 0),
     toolFailures: buckets.reduce((n, b) => n + b.toolFailures, 0),
   };
@@ -500,6 +508,7 @@ async function metricsFromRollups(
     costPrompt: 0,
     costCached: 0,
     costCompletion: 0,
+    costTools: 0,
     toolCalls: 0,
     toolFailures: 0,
     byTool: {},
@@ -507,7 +516,7 @@ async function metricsFromRollups(
     byFramework: {},
   }));
 
-  const pricingModels = await listPortabilityModels(db);
+  const [pricingModels, toolPrices] = await Promise.all([listPortabilityModels(db), getToolPricesByName(db)]);
   const pricingById = new Map<string, PortabilityModel>();
   for (const model of pricingModels) pricingById.set(model.id, model);
   const priceOf = (model: string): PortabilityModel | null =>
@@ -566,6 +575,8 @@ async function metricsFromRollups(
       bucketModels[idx]!.set(model, m);
     }
     for (const [tool, stats] of Object.entries(roll.byTool)) {
+      // Per-minute call counts make the rollup path's tool spend exact, not an estimate.
+      bucket.costTools += stats.count * (toolPrices.get(tool) ?? 0);
       const totals = toolTotals.get(tool) ?? { count: 0, failed: 0 };
       totals.count += stats.count;
       totals.failed += stats.failed;
@@ -664,6 +675,7 @@ async function metricsFromRollups(
     costPrompt: buckets.reduce((n, b) => n + b.costPrompt, 0),
     costCached: buckets.reduce((n, b) => n + b.costCached, 0),
     costCompletion: buckets.reduce((n, b) => n + b.costCompletion, 0),
+    costTools: buckets.reduce((n, b) => n + b.costTools, 0),
     toolCalls: buckets.reduce((n, b) => n + b.toolCalls, 0),
     toolFailures: buckets.reduce((n, b) => n + b.toolFailures, 0),
   };

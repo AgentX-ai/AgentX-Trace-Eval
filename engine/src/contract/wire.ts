@@ -33,6 +33,7 @@ export const monitorMetricsBucketSchema = z
     costPrompt: z.number(),
     costCached: z.number(),
     costCompletion: z.number(),
+    costTools: z.number().describe("Priced tool-call spend: registered tools with a per-call price (Tools & MCPs), every recorded call"),
     toolCalls: z.number(),
     toolFailures: z.number(),
     byTool: z.record(z.number()),
