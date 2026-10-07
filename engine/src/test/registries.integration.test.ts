@@ -169,6 +169,28 @@ describe("tool schema registry", () => {
     return res.body as { _id?: string; id?: string; currentVersion: number };
   }
 
+  it("stores a per-call price as metadata and edits it without touching the version log", async () => {
+    const created = await engine.json(
+      "/api/v1/evaluate/tool-schemas",
+      body({ name: "paid_lookup", definition: definitionFor("paid_lookup"), pricePerCallUsd: 0.002 })
+    );
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const id = idOf(created.body as { _id?: string; id?: string });
+    const listed = ((await engine.json("/api/v1/evaluate/tool-schemas", get())).body as { toolSchemas: { _id: string; pricePerCallUsd: number | null }[] }).toolSchemas;
+    expect(listed.find(t => t._id === id)?.pricePerCallUsd).toBe(0.002);
+
+    const repriced = await engine.json(`/api/v1/evaluate/tool-schemas/${id}`, { ...body({ pricePerCallUsd: 0.01 }), method: "PATCH" });
+    expect(repriced.status).toBe(200);
+    const detail = (await engine.json(`/api/v1/evaluate/tool-schemas/${id}`, get())).body as { pricePerCallUsd: number | null; currentVersion: number; versions: unknown[] };
+    expect(detail.pricePerCallUsd).toBe(0.01);
+    expect(detail.currentVersion).toBe(1);
+    expect(detail.versions).toHaveLength(1);
+
+    const bad = await engine.json(`/api/v1/evaluate/tool-schemas/${id}`, { ...body({ pricePerCallUsd: -0.5 }), method: "PATCH" });
+    expect(bad.status).toBe(400);
+    expect((bad.body as { error: string }).error).toContain("negative");
+  });
+
   it("creates a tool schema at version 1 and serves it back", async () => {
     const tool = await createToolSchema("lookup_order");
     expect(tool.currentVersion).toBe(1);

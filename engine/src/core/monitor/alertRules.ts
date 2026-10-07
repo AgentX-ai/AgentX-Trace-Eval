@@ -4,6 +4,7 @@ import type { Db } from "../../storage/db.js";
 import { logger } from "../../log.js";
 import { traceStoreFor } from "../trace/store/index.js";
 import { estimateCostUSD, listPortabilityModels, normalizeModelId, type PortabilityModel } from "../evaluate/models.js";
+import { getToolPricesByName, priceToolCalls } from "../evaluate/toolSchemas.js";
 import { isMaskedSecret, maskSecret } from "../shared/maskSecret.js";
 import { getAgentRow } from "./agents.js";
 import { deliverAlert, type AlertChannel, type AlertDelivery, type AlertNotification } from "./alertChannels.js";
@@ -483,7 +484,12 @@ type MetricTraceRow = {
   outputTokens: number | null;
   cacheReadTokens: number | null;
   cacheWriteTokens: number | null;
+  toolCalls: unknown;
 };
+
+// The two price lists a spend metric reads: the model catalog and the registered tools'
+// per-call prices. Loaded once per sweep pass (see evaluateAlertRulesOnce), not per rule.
+type Pricing = { models: PortabilityModel[]; tools: Map<string, number> };
 
 // The per-window inputs every metric is computed from - fetched once per distinct
 // (window, agent) inside a sweep tick, then shared by however many rules watch that window,
@@ -543,11 +549,7 @@ function outcomeCounts(events: MetricEventRow[]): { total: number; failing: numb
   return { total, failing, toolFailing };
 }
 
-async function computeMetric(
-  metric: AlertMetric,
-  inputs: MetricInputs,
-  pricing: () => Promise<PortabilityModel[]>
-): Promise<number | null> {
+async function computeMetric(metric: AlertMetric, inputs: MetricInputs, pricing: () => Promise<Pricing>): Promise<number | null> {
   switch (metric) {
     case "failureRate": {
       const { total, failing } = outcomeCounts(inputs.events);
@@ -567,11 +569,13 @@ async function computeMetric(
     case "traceCount":
       return inputs.traces.length;
     case "estimatedCostUsd": {
-      // Unpriced models contribute $0, the same posture as the Overview's cost total - an alert
-      // on spend can only see what the pricing catalog can price.
-      const byModel = new Map((await pricing()).map(m => [m.id, m]));
+      // Unpriced models and unpriced tools contribute $0, the same posture as the Overview's
+      // cost total - an alert on spend can only see what the two price lists can price.
+      const { models, tools } = await pricing();
+      const byModel = new Map(models.map(m => [m.id, m]));
       let total = 0;
       for (const t of inputs.traces) {
+        for (const toolCost of priceToolCalls(t.toolCalls, tools).values()) total += toolCost;
         if (!t.model) continue;
         const model = byModel.get(t.model) ?? byModel.get(normalizeModelId(t.model)) ?? null;
         if (!model) continue;
@@ -588,7 +592,12 @@ async function computeMetric(
 // what the sweep will see.
 export async function evaluateMetric(db: Db, query: MetricQuery): Promise<number | null> {
   const inputs = await loadMetricInputs(db, query.windowMinutes, query.agentId);
-  return computeMetric(query.metric, inputs, () => listPortabilityModels(db));
+  return computeMetric(query.metric, inputs, () => loadPricing(db));
+}
+
+async function loadPricing(db: Db): Promise<Pricing> {
+  const [models, tools] = await Promise.all([listPortabilityModels(db), getToolPricesByName(db)]);
+  return { models, tools };
 }
 
 export function breaches(operator: AlertOperator, value: number | null, threshold: number): boolean {
@@ -718,9 +727,9 @@ export async function evaluateAlertRulesOnce(db: Db): Promise<RuleEvaluation[]> 
   const rules = (await listRows(db)).filter(r => r.enabled);
   if (rules.length === 0) return [];
   const inputsByScope = new Map<string, Promise<MetricInputs>>();
-  // The pricing catalog is read at most once per pass, however many cost rules there are.
-  let pricingPromise: Promise<PortabilityModel[]> | null = null;
-  const pricing = () => (pricingPromise ??= listPortabilityModels(db));
+  // The price lists are read at most once per pass, however many cost rules there are.
+  let pricingPromise: Promise<Pricing> | null = null;
+  const pricing = () => (pricingPromise ??= loadPricing(db));
   const results: RuleEvaluation[] = [];
   for (const rule of rules) {
     const scopeKey = `${rule.windowMinutes}|${rule.agentId ?? ""}`;

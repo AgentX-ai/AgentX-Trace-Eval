@@ -23,6 +23,8 @@ export type ToolSchemaRow = {
   // Playground-only test endpoint default (see schema.sqlite.ts) - the engine never calls it
   // outside a Playground/simulation run.
   testEndpointUrl: string | null;
+  // USD per recorded call (see schema.sqlite.ts); null = unpriced.
+  pricePerCallUsd: number | null;
   // Evidence example ids addressed by an adopted proposal (string[] JSON) - filtered out of
   // future Suggest-improvement evidence below.
   resolvedEvidence: unknown;
@@ -49,10 +51,20 @@ function toolSchemaToWire(row: ToolSchemaRow) {
     name: row.name,
     description: row.description,
     testEndpointUrl: row.testEndpointUrl ?? undefined,
+    pricePerCallUsd: row.pricePerCallUsd ?? null,
     currentVersion: row.currentVersion,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+// Why a per-call price cannot be stored, or null when it can. Shared by the create and the
+// metadata-patch routes so the two never disagree; null clears the price.
+export function toolPriceProblem(value: unknown): string | null {
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) return "pricePerCallUsd must be a number (USD per call) or null";
+  if (value < 0) return "pricePerCallUsd must not be negative";
+  return null;
 }
 
 function versionToWire(row: ToolSchemaVersionRow) {
@@ -69,7 +81,7 @@ function versionToWire(row: ToolSchemaVersionRow) {
 
 export async function createToolSchema(
   db: Db,
-  input: { name: string; definition: string; description?: string; testEndpointUrl?: string }
+  input: { name: string; definition: string; description?: string; testEndpointUrl?: string; pricePerCallUsd?: number | null }
 ) {
   const now = new Date();
   const schemaRow: ToolSchemaRow = {
@@ -78,6 +90,7 @@ export async function createToolSchema(
     name: input.name,
     description: input.description ?? null,
     testEndpointUrl: input.testEndpointUrl?.trim() || null,
+    pricePerCallUsd: input.pricePerCallUsd ?? null,
     resolvedEvidence: null,
     currentVersion: 1,
     createdAt: now,
@@ -110,12 +123,12 @@ function resolvedEvidenceIds(schema: ToolSchemaRow): string[] {
     : [];
 }
 
-// Description / test endpoint edits from the tool detail dialog - metadata only, never touches
-// the version log (definition changes go through publishToolSchemaVersion).
+// Description / test endpoint / per-call price edits from the tool detail dialog - metadata
+// only, never touches the version log (definition changes go through publishToolSchemaVersion).
 export async function updateToolSchemaMeta(
   db: Db,
   id: string,
-  input: { description?: string | null; testEndpointUrl?: string | null }
+  input: { description?: string | null; testEndpointUrl?: string | null; pricePerCallUsd?: number | null }
 ): Promise<boolean> {
   const schema = await getToolSchemaRow(db, id);
   if (!schema) return false;
@@ -125,6 +138,9 @@ export async function updateToolSchemaMeta(
   }
   if (input.testEndpointUrl !== undefined) {
     patch.testEndpointUrl = input.testEndpointUrl?.trim() || null;
+  }
+  if (input.pricePerCallUsd !== undefined) {
+    patch.pricePerCallUsd = input.pricePerCallUsd;
   }
   const cond = and(eq(db.schema.toolSchemas.id, id), eq(db.schema.toolSchemas.projectId, db.projectId));
   if (db.kind === "sqlite") {
@@ -758,6 +774,40 @@ Rewrite the definition to prevent these failures. Where an example shows the arg
 // renderUsedToolDefinitions): definitions only for tools the agent actually CALLED, which is
 // what makes reaching into the project-wide registry safe - a lookup keyed by used names can
 // never inject another agent's tools into the judge prompt.
+// The per-call price of every priced registered tool, keyed by the traced tool-call name - the
+// join the cost chart, the Monitor cost card, and the spend alert all use to price tool calls.
+// Unpriced tools are absent, so a lookup miss means "costs nothing", never "unknown tool".
+export async function getToolPricesByName(db: Db): Promise<Map<string, number>> {
+  const cond = eq(db.schema.toolSchemas.projectId, db.projectId);
+  const rows = (
+    db.kind === "sqlite"
+      ? db.db.select({ name: db.schema.toolSchemas.name, pricePerCallUsd: db.schema.toolSchemas.pricePerCallUsd }).from(db.schema.toolSchemas).where(cond).all()
+      : await db.db.select({ name: db.schema.toolSchemas.name, pricePerCallUsd: db.schema.toolSchemas.pricePerCallUsd }).from(db.schema.toolSchemas).where(cond)
+  ) as { name: string; pricePerCallUsd: number | null }[];
+  const prices = new Map<string, number>();
+  for (const row of rows) {
+    if (row.pricePerCallUsd != null && row.pricePerCallUsd > 0) prices.set(row.name, row.pricePerCallUsd);
+  }
+  return prices;
+}
+
+// Priced spend of one trace row's recorded tool calls, per tool. Every recorded call is
+// charged, failed ones included - an external API bills the request, not the outcome - and a
+// call with no name or no price contributes nothing.
+export function priceToolCalls(toolCalls: unknown, prices: Map<string, number>): Map<string, number> {
+  const byTool = new Map<string, number>();
+  if (prices.size === 0 || !Array.isArray(toolCalls)) return byTool;
+  for (const raw of toolCalls) {
+    if (!raw || typeof raw !== "object") continue;
+    const name = (raw as { name?: unknown }).name;
+    if (typeof name !== "string") continue;
+    const price = prices.get(name);
+    if (price === undefined) continue;
+    byTool.set(name, (byTool.get(name) ?? 0) + price);
+  }
+  return byTool;
+}
+
 export async function getRegistryToolsByName(
   db: Db,
   names: string[]

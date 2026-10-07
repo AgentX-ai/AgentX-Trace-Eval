@@ -316,6 +316,17 @@ describe("alert rules (sqlite)", () => {
     await t.api(`/agent-monitoring/alert-rules/${id}`, { method: "DELETE" });
   });
 
+  it("counts priced tool calls in the spend metric", async () => {
+    const tool = await t.api("/evaluate/tool-schemas", postJson({ name: "paid_api", definition: "{}", pricePerCallUsd: 0.4 }));
+    expect(tool.status, JSON.stringify(tool.body)).toBe(201);
+    const before = (await t.preview("estimatedCostUsd")).value ?? 0;
+    await t.ingest("spend-tools-1", { tool_calls: [{ name: "paid_api", success: true }, { name: "paid_api", success: false }, { name: "free_api", success: true }] });
+    const after = await t.waitFor(() => t.preview("estimatedCostUsd"), p => (p.value ?? 0) > before);
+    expect(after.value! - before).toBeCloseTo(0.8, 9);
+    expect(after.valueLabel).toBe(`$${(after.value!).toFixed(after.value! < 1 ? 4 : 2)}`);
+    await t.api(`/evaluate/tool-schemas/${(tool.body as { _id: string })._id}`, { method: "DELETE" });
+  });
+
   it("caps rules per project with a 409, not a silent drop", async () => {
     const channels = [{ kind: "webhook", target: `${hookBase}/cap` }];
     const ids: string[] = [];
