@@ -1,0 +1,1468 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AgentX Governance Tour</title>
+<meta name="description" content="A walkthrough of the self-hosted AgentX governance layer: traceability, observability and evaluations.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&display=swap">
+<style>
+:root{color-scheme:light}
+html{font-size:16px}
+body{margin:0}
+img,svg{max-width:100%}
+[hidden]{display:none!important}
+/* AgentX self-host design system, transcribed from AgentX-eval-front/src/index.css (.self-host-theme)
+   and src/components/ui/surfaces.ts. Token roles are fixed; their RGB flips in dark mode. */
+:root{
+--n25:#FAF9F6;--n50:#F4F3F0;--n100:#EBE8E2;--n200:#E6E3DD;--n300:#D3CFC7;--n400:#9E9990;
+--n500:#7A756C;--n600:#5F5B54;--n700:#4A4740;--n750:#3D3A35;--n800:#322F2A;--n900:#1B1A18;--n950:#12110F;
+--page:#F4F3F0;--ink:#1B1A18;
+--acc:#8B8175;--acc-h:#7A7168;--acc-50:#F6F4F2;--acc-200:#D9D2CA;--on-acc:#fff;
+--ok:#4F7350;--ok-bg:#E6EDE2;--pend:#8A6A1F;--pend-bg:#F2EBD8;--err:#9C4331;--err-bg:#F3E3DE;
+--info:#3D6491;--info-bg:#E8EEF3;
+--prod:#4f83f1;--data:#f59532;
+--sev-info:#146B34;--sev-low:#2F6FBF;--sev-med:#B07B00;--sev-high:#CC5A17;--sev-crit:#F91C28;
+--m1:#4f46e5;--m2:#a855f7;--m3:#f59e0b;--m4:#14b8a6;--m5:#ec4899;--m6:#22c55e;
+--sans:"Inter Tight",-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;
+--mono:Menlo,ui-monospace,SFMono-Regular,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+--n25:#1A1816;--n50:#171513;--n100:#1F1D1A;--n200:#2A2723;--n300:#3A3630;--n400:#6C665C;
+--n500:#8F887D;--n600:#B0A99E;--n700:#C8C2B8;--n750:#B0A99E;--n800:#D8D3CA;--n900:#E8E4DC;--n950:#F5F2EC;
+--page:#141210;--ink:#EEEAE3;
+--acc:#B0A08C;--acc-h:#C8BBA8;--acc-50:#2A2622;--acc-200:#4B443C;--on-acc:#171513;
+--ok:#8CB58D;--ok-bg:#202C21;--pend:#D6AD5A;--pend-bg:#342C18;--err:#D67862;--err-bg:#3A231E;
+--info:#82A7D1;--info-bg:#1C2630;color-scheme:dark;}}
+:root[data-theme="dark"]{
+--n25:#1A1816;--n50:#171513;--n100:#1F1D1A;--n200:#2A2723;--n300:#3A3630;--n400:#6C665C;
+--n500:#8F887D;--n600:#B0A99E;--n700:#C8C2B8;--n750:#B0A99E;--n800:#D8D3CA;--n900:#E8E4DC;--n950:#F5F2EC;
+--page:#141210;--ink:#EEEAE3;
+--acc:#B0A08C;--acc-h:#C8BBA8;--acc-50:#2A2622;--acc-200:#4B443C;--on-acc:#171513;
+--ok:#8CB58D;--ok-bg:#202C21;--pend:#D6AD5A;--pend-bg:#342C18;--err:#D67862;--err-bg:#3A231E;
+--info:#82A7D1;--info-bg:#1C2630;color-scheme:dark;}
+
+body{background:var(--page);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
+h1,h2,h3,h4{margin:0;font-weight:600;line-height:1.2;text-wrap:balance;color:var(--n900)}
+p{margin:0}
+.doc{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0 64px;max-width:1280px;margin:0 auto}
+
+/* ---------- document furniture ---------- */
+.cover{padding-block:56px 30px;display:flex;flex-direction:column;gap:18px;border-bottom:1px solid var(--n200)}
+.kicker{font-size:11px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--acc)}
+.cover h1{font-size:clamp(32px,6vw,50px);font-weight:700;letter-spacing:-.025em}
+.cover .sub{font-size:clamp(16px,2.3vw,19px);color:var(--n600);max-width:none}
+.meta{display:flex;flex-wrap:wrap;gap:4px 26px;font-family:var(--mono);font-size:11px;color:var(--n500);padding-top:4px}
+.meta b{color:var(--n700);font-weight:500}
+.callout{background:var(--info-bg);border-left:3px solid var(--info);padding:13px 16px;font-size:13.5px;color:var(--n700)}
+.callout b{color:var(--n900)}
+.toc{border:1px solid var(--n200);border-radius:12px;background:var(--n25);padding:20px 22px;margin-top:26px}
+.toc h2{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--n500);margin-bottom:14px}
+.toc ol{margin:0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:7px 26px}
+.toc li{font-size:13.5px;display:flex;gap:10px;min-width:0}
+.toc .n{font-family:var(--mono);font-size:10.5px;color:var(--n400);padding-top:4px}
+.toc li.toc-p{grid-column:1/-1;margin-top:11px;padding-top:10px;border-top:1px solid var(--n200)}
+.toc li.toc-p:first-child{margin-top:0;padding-top:0;border-top:0}
+.toc li.toc-p a{font-size:11px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--n900)}
+.toc a{color:var(--n700);text-decoration:none}
+.toc a:hover{color:var(--acc-h);text-decoration:underline}
+.part{border-top:1px solid var(--n300);padding-top:9px;margin-top:4px}
+.part .pn{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--n500)}
+
+/* Pillar opener. Always ink ground with paper text, so it inverts with the theme as one block;
+   everything inside tints from currentColor rather than the mid scale, which would go muddy. */
+.pillar{background:var(--n900);color:var(--n25);border-radius:14px;padding:26px 28px;display:flex;flex-direction:column;gap:10px}
+.pillar-h{display:flex;align-items:baseline;gap:13px;flex-wrap:wrap}
+.pillar-k{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;opacity:.55}
+.pillar h2{font-size:clamp(25px,4.2vw,36px);font-weight:700;letter-spacing:-.022em;color:inherit}
+.pillar-b{font-size:16px;opacity:.78;max-width:none}
+.pillar-i{font-family:var(--mono);font-size:11px;opacity:.55;border-top:1px solid;border-color:color-mix(in oklab, currentColor 28%, transparent);padding-top:12px;margin-top:2px}
+.sec{display:flex;flex-direction:column;gap:15px}
+.sec .eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--acc)}
+.sec h3{font-size:clamp(20px,3vw,26px)}
+.lede{font-size:15.5px;color:var(--n600);max-width:none}
+.note{font-size:13.5px;color:var(--n500);border-left:2px solid var(--n200);padding-left:14px;max-width:none}
+.note b{color:var(--n800);font-weight:600}
+.stack{display:flex;flex-direction:column;gap:42px;padding-block:38px 0}
+code{font-family:var(--mono);font-size:.86em;background:var(--n100);border:1px solid var(--n200);border-radius:4px;padding:1px 5px}
+
+
+/* ---------- pillar zones ----------
+   Each pillar is one tinted field; the tint is mixed into the page ground so it follows the theme.
+   Hues stay clear of the status colours used by chips inside the mockups. */
+:root{--zt:#4A6A8C;--zo:#7A5C86;--ze:#3E7A72;
+  --zt-band:#2F4256;--zo-band:#45354D;--ze-band:#264A45;--zband-ink:#F5F2EC;
+  --zt-ink:#3F5F80;--zo-ink:#6E5079;--ze-ink:#356B63}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --zt-band:#34495F;--zo-band:#4B3B54;--ze-band:#2C534D;--zt-ink:#93B2D2;--zo-ink:#BFA3CA;--ze-ink:#83C2B8}}
+:root[data-theme="dark"]{--zt-band:#34495F;--zo-band:#4B3B54;--ze-band:#2C534D;--zt-ink:#93B2D2;--zo-ink:#BFA3CA;--ze-ink:#83C2B8}
+.zone{border-radius:18px;padding:22px 22px 34px;display:flex;flex-direction:column;gap:42px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.zone-trace{background:color-mix(in oklab, var(--page) 91%, var(--zt))}
+.zone-obs{background:color-mix(in oklab, var(--page) 91%, var(--zo))}
+.zone-eval{background:color-mix(in oklab, var(--page) 91%, var(--ze))}
+.zone .pillar{color:var(--zband-ink)}
+.zone-trace .pillar{background:var(--zt-band)}
+.zone-obs .pillar{background:var(--zo-band)}
+.zone-eval .pillar{background:var(--ze-band)}
+.zone-trace .sec .eyebrow{color:var(--zt-ink)}
+.zone-obs .sec .eyebrow{color:var(--zo-ink)}
+.zone-eval .sec .eyebrow{color:var(--ze-ink)}
+.zone-trace .part{border-top-color:color-mix(in oklab, var(--zt) 40%, transparent)}
+.zone-obs .part{border-top-color:color-mix(in oklab, var(--zo) 40%, transparent)}
+.zone-eval .part{border-top-color:color-mix(in oklab, var(--ze) 40%, transparent)}
+.zone > .part{margin-bottom:-24px}
+.toc li.toc-p a::before{content:"";display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:8px;vertical-align:0}
+.toc li.toc-trace a::before{background:var(--zt)}
+.toc li.toc-obs a::before{background:var(--zo)}
+.toc li.toc-eval a::before{background:var(--ze)}
+@media(max-width:620px){.zone{padding:14px 12px 24px;border-radius:14px}}
+
+/* ---------- product chrome ---------- */
+.app{border:1px solid var(--n200);border-radius:12px;overflow:hidden;background:var(--n50);display:grid;grid-template-columns:220px 1fr}
+.app.nonav{grid-template-columns:1fr}
+.side{background:var(--n50);border-right:1px solid var(--n200);padding:14px 10px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.brand{font-weight:700;letter-spacing:.14em;font-size:13px;color:var(--n900);padding:2px 8px 12px}
+.proj{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--n700);border:1px solid var(--n200);border-radius:8px;padding:5px 9px;margin-bottom:10px;background:var(--n25)}
+.navsec{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--n400);padding:14px 10px 6px}
+.nav{display:flex;align-items:center;gap:10px;font-size:14px;color:var(--n600);padding:7px 10px;border-radius:8px}
+.nav.on{background:var(--n100);color:var(--n900);font-weight:600}
+.nav .step{margin-left:auto;font-size:10px;font-weight:700;color:var(--n400)}
+.nav .cbadge{margin-left:auto;font-size:10px;font-weight:600;background:var(--err);color:var(--n50);border-radius:4px;padding:0 5px;font-variant-numeric:tabular-nums}
+.ic{width:15px;height:15px;flex:none;opacity:.72}
+.nav.on .ic{opacity:1}
+.pavatar{width:17px;height:17px;border-radius:5px;background:var(--acc);color:var(--on-acc);font-size:9.5px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none}
+.proj .chev{margin-left:auto;opacity:.5}
+.dot{width:15px;height:15px;border-radius:4px;border:1.5px solid currentColor;opacity:.45;flex:none}
+.themesel{margin-top:auto;display:flex;gap:3px;padding:12px 6px 0}
+.tsel{font-size:10.5px;color:var(--n500);border-radius:6px;padding:3px 9px}
+.tsel.on{background:var(--n100);color:var(--n900);font-weight:600}
+.main{min-width:0;display:flex;flex-direction:column}
+.crumb{font-size:15px;color:var(--n400);padding:14px 18px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.crumb .sep{color:var(--n300)}
+.crumb b{color:var(--n900);font-weight:600}
+.crumb .right{margin-left:auto;font-size:11.5px;color:var(--n500)}
+.tabs{display:flex;gap:20px;padding:12px 18px 0;border-bottom:1px solid var(--n200);flex-wrap:wrap}
+.tab{font-size:14px;color:var(--n500);padding-bottom:10px;border-bottom:2px solid transparent;white-space:nowrap;display:flex;gap:6px;align-items:center}
+.tab.on{color:var(--n900);font-weight:600;border-bottom-color:var(--n900)}
+.tab .c{font-size:12px;color:var(--n400)}
+.body{padding:16px 18px;display:flex;flex-direction:column;gap:14px;min-width:0}
+.hrow{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap}
+.blurb{font-size:12px;color:var(--n500);max-width:680px;min-width:0}
+.hctl{margin-left:auto;display:flex;gap:7px;flex-wrap:wrap}
+.ctl{font-size:11.5px;color:var(--n600);border:1px solid var(--n200);border-radius:7px;padding:4px 10px;background:var(--n25);white-space:nowrap}
+.ctl.on{border-color:var(--n900);background:var(--n100);color:var(--n900);font-weight:600}
+
+/* ---------- surfaces ---------- */
+.panel{border:1px solid var(--n200);border-radius:12px;background:var(--n50);min-width:0;display:flex;flex-direction:column}
+.panel.raised{border-radius:10px;background:var(--n25)}
+.phead{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--n200);flex-wrap:wrap}
+.ptitle{font-size:14px;font-weight:600;color:var(--n900)}
+.psub{font-size:11px;color:var(--n500);font-family:var(--mono)}
+.sec > .psub{max-width:none}
+.pbody{padding:14px}
+.pbody.flush{padding:0}
+.ptabs{display:flex;gap:16px;padding:10px 14px 0;border-bottom:1px solid var(--n200);align-items:center;flex-wrap:wrap}
+.ptab{font-size:12.5px;color:var(--n500);padding-bottom:9px;border-bottom:2px solid transparent;display:flex;gap:6px;align-items:center;white-space:nowrap}
+.ptab.on{color:var(--n900);font-weight:600;border-bottom-color:var(--n900)}
+.cnt{font-size:10px;background:var(--n100);color:var(--n500);border-radius:20px;padding:1px 6px;font-variant-numeric:tabular-nums}
+.cols{display:flex;gap:14px;align-items:stretch;flex-wrap:wrap}
+.lcol{flex:1 1 620px;min-width:0;display:flex;flex-direction:column;gap:14px}
+.rcol{flex:1 1 340px;min-width:300px;display:flex;flex-direction:column;gap:14px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+
+/* ---------- tables ---------- */
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.04em;color:var(--n500);text-align:left;padding:9px 14px;border-bottom:1px solid var(--n200);white-space:nowrap}
+td{padding:9px 14px;border-bottom:1px solid var(--n100);color:var(--n700);white-space:nowrap;font-variant-numeric:tabular-nums}
+tr:last-child td{border-bottom:0}
+th.r,td.r{text-align:right}
+td.k{color:var(--n900)}
+td.w{white-space:normal;min-width:180px;font-variant-numeric:normal}
+table.tg td{min-width:0;white-space:normal;vertical-align:top}
+td.mono,.mono{font-family:var(--mono)}
+.muted{color:var(--n400)}
+.t-err{color:var(--err)}.t-pend{color:var(--pend)}.t-ok{color:var(--ok)}
+
+/* ---------- chips ---------- */
+.badge{display:inline-block;font-size:10.5px;font-weight:600;border-radius:4px;padding:2px 7px;white-space:nowrap}
+.b-ok{background:var(--ok-bg);color:var(--ok)}
+.b-pend{background:var(--pend-bg);color:var(--pend)}
+.b-err{background:var(--err-bg);color:var(--err)}
+.b-info{background:var(--info-bg);color:var(--info)}
+.b-neu{background:var(--n100);color:var(--n500)}
+.sdot{width:7px;height:7px;border-radius:99px;flex:none;display:inline-block}
+
+/* ---------- kpi ---------- */
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.kpis.k3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.kpis.k5{grid-template-columns:repeat(5,minmax(0,1fr))}
+.kpis.k6{grid-template-columns:repeat(6,minmax(0,1fr))}
+@media(max-width:900px){.kpis,.kpis.k3,.kpis.k5,.kpis.k6{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:480px){.kpis,.kpis.k3,.kpis.k5,.kpis.k6{grid-template-columns:1fr}}
+.kpi{border:1px solid var(--n200);border-radius:8px;background:var(--n50);padding:12px 14px;display:flex;flex-direction:column;min-width:0}
+.kpi.big-tile{border-radius:10px;background:var(--n25);padding:14px 16px}
+.lab{font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--n400)}
+.lab.s{font-size:10px;letter-spacing:.06em;color:var(--n500)}
+.kv{display:flex;align-items:baseline;gap:7px;margin-top:6px;flex-wrap:wrap}
+.val{font-size:23px;font-weight:700;letter-spacing:-.01em;line-height:1;font-variant-numeric:tabular-nums;color:var(--n900)}
+.val.xl{font-size:30px;font-weight:600;letter-spacing:-.02em}
+.val.err{color:var(--err)}.val.mut{color:var(--n400)}
+.qual{font-size:12px;color:var(--n500);min-width:0}
+.qual .of{font-size:14px;color:var(--n400);font-variant-numeric:tabular-nums}
+.foot{font-size:11px;color:var(--n500);margin-top:7px;line-height:1.45}
+.track{position:relative;height:6px;border-radius:99px;background:var(--n200);overflow:hidden;margin-top:10px}
+.fill{position:absolute;inset:0 auto 0 0;border-radius:99px}
+.tick{position:absolute;top:0;bottom:0;width:1.5px;background:var(--n400)}
+.seg{display:flex;gap:3px;height:6px;margin-top:10px}
+.seg>div{border-radius:99px}
+.minibar{width:64px;height:5px;border-radius:99px;background:var(--n200);overflow:hidden;flex:none}
+.minibar>div{height:5px;border-radius:99px}
+.covcell{display:flex;align-items:center;gap:8px}
+
+.tmgrid{display:grid;grid-template-columns:220px minmax(0,1fr);gap:14px;align-items:start}
+@media(max-width:760px){.tmgrid{grid-template-columns:1fr}}
+.tmleg .pbody{display:flex;flex-direction:column;gap:7px}
+.tmrow{display:grid;grid-template-columns:10px 46px minmax(0,1fr);gap:8px;align-items:center;font-size:12.5px;color:var(--n600)}
+.tmrow b{color:var(--n900);font-weight:600;font-variant-numeric:tabular-nums}
+
+/* ---------- empty state ---------- */
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;border:1px dashed var(--n200);border-radius:8px;background:var(--n50);padding:26px 16px;gap:4px}
+.empty .t{font-size:14px;font-weight:500;color:var(--n800)}
+.empty .b{font-size:13.5px;color:var(--n500);max-width:46ch}
+
+/* ---------- buttons ---------- */
+.btn{font-size:12px;font-weight:500;border:1px solid var(--n200);border-radius:6px;padding:5px 11px;color:var(--n700);background:var(--n25);white-space:nowrap}
+.btn.pri{background:var(--acc);color:var(--on-acc);border-color:var(--acc);font-weight:600}
+.btn.on{border-color:var(--n900);background:var(--n100);color:var(--n900);font-weight:600}
+
+/* ---------- charts ---------- */
+.plot{border:1px solid var(--n200);border-radius:9px;background:var(--n25);overflow:hidden}
+.key{display:flex;gap:13px;align-items:center;font-size:11px;color:var(--n500);flex-wrap:wrap}
+.key span{display:flex;gap:6px;align-items:center}
+.kd{width:10px;height:10px;border-radius:99px;flex:none}
+.pills{display:flex;gap:6px;flex-wrap:wrap}
+.pill{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--n600);border:1px solid var(--n200);border-radius:99px;padding:2px 9px;background:var(--n50)}
+.pill .pc{font-variant-numeric:tabular-nums;color:var(--prod)}
+.pill .dc{font-variant-numeric:tabular-nums;color:var(--data)}
+.pill .dc.none{color:var(--err);font-weight:600}
+.pill .sep{color:var(--n300)}
+.pill.dash{border-style:dashed;color:var(--n500)}
+.bars{display:flex;flex-direction:column;gap:9px}
+.bar-row{display:grid;grid-template-columns:minmax(90px,165px) 1fr auto;gap:13px;align-items:center}
+.bar-label{font-size:13px;color:var(--n600);min-width:0}
+.bar-track{background:var(--n200);height:10px;border-radius:3px;min-width:0}
+.bar-fill{height:10px;border-radius:0 3px 3px 0;background:var(--acc)}
+.bar-val{font-size:11.5px;color:var(--n500);font-variant-numeric:tabular-nums}
+.axis{display:flex;justify-content:space-between;font-size:10px;color:var(--n400);border-top:1px solid var(--n200);padding-top:5px;margin-top:4px;font-family:var(--mono)}
+
+@media(max-width:620px){
+ .app{grid-template-columns:1fr}
+ .side{display:none}
+ .bar-row{grid-template-columns:1fr auto}
+ .bar-row .bar-track{grid-column:1/-1}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+@media print{
+ :root{--page:#fff;--n25:#FFFDFA;--n50:#F7F6F3;--n100:#EFEDE8;--n200:#E2DED8;--ink:#1B1A18;color-scheme:light}
+ @page{margin:12mm 10mm;size:A4 landscape}
+ body{background:#fff;font-size:9.5pt}
+ .doc{padding-block:0;max-width:none}
+ .stack{gap:24px;padding-block:20px 0}
+ .app,.panel,.cols,.lcol,.rcol,.grid2{break-inside:auto}
+ .kpis.k6{grid-template-columns:repeat(3,minmax(0,1fr))}
+ .kpi,.toc,.phead,.ptabs,.kpis,.bar-row,.empty{break-inside:avoid}
+ tr{break-inside:avoid}
+ .sec .eyebrow,.sec h3{break-after:avoid}
+ .lede,.note{orphans:2;widows:2}
+ .zone{break-before:page}
+ .pillar{break-after:avoid;break-inside:avoid}
+ .part{break-before:auto;break-after:avoid}
+ .toc{break-after:page}
+ .scroll{overflow:visible}
+ table{font-size:8.2pt}
+ th{font-size:6.8pt;padding:6px 8px}
+ td{padding:6px 8px;white-space:normal;overflow-wrap:anywhere}
+ th.r,td.r{white-space:nowrap}
+ .badge{font-size:6.6pt;padding:1px 5px}
+ a{color:var(--ink);text-decoration:none}
+}
+
+</style>
+</head>
+<body>
+<div class="doc">
+
+<header class="cover">
+  <div class="kicker">AgentX &middot; Self-hosted governance for AI agents</div>
+  <h1>Trace, Evaluate, Monitor</h1>
+  <p class="sub">A walkthrough of the self-hosted AgentX governance layer, surface by surface, grouped into the three things it does: traceability, observability and evaluations. Every screen is the product&rsquo;s own UI, populated with demo data.</p>
+</header>
+
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li class="toc-p toc-trace"><a href="#pillar-traceability">Traceability</a></li>
+    <li><span class="n">01</span><a href="#traces">Live Traces</a></li>
+    <li><span class="n">02</span><a href="#sessions">Sessions</a></li>
+    <li><span class="n">03</span><a href="#detail">Trace detail &amp; timeline</a></li>
+    <li class="toc-p toc-obs"><a href="#pillar-observability">Observability</a></li>
+    <li><span class="n">04</span><a href="#overview">Overview</a></li>
+    <li><span class="n">05</span><a href="#monitor">Monitor</a></li>
+    <li><span class="n">06</span><a href="#topics">Topics</a></li>
+    <li><span class="n">07</span><a href="#review">Review queue</a></li>
+    <li><span class="n">08</span><a href="#scorers">Scorers</a></li>
+    <li><span class="n">09</span><a href="#rules">Rules</a></li>
+    <li class="toc-p toc-eval"><a href="#pillar-evaluations">Evaluations</a></li>
+    <li><span class="n">10</span><a href="#datasets">Datasets</a></li>
+    <li><span class="n">11</span><a href="#cases">The case editor</a></li>
+    <li><span class="n">12</span><a href="#runs">Evaluation runs</a></li>
+    <li><span class="n">13</span><a href="#analysis">AI Analysis</a></li>
+    <li><span class="n">14</span><a href="#playground">Playground</a></li>
+    <li><span class="n">15</span><a href="#simulate">Conversation simulation</a></li>
+    <li><span class="n">16</span><a href="#portability">Model Portability</a></li>
+    <li><span class="n">17</span><a href="#coverage">Dataset coverage</a></li>
+    <li><span class="n">18</span><a href="#map">The coverage map</a></li>
+    <li><span class="n">19</span><a href="#probe">The coverage probe</a></li>
+    <li><span class="n">20</span><a href="#registries">Prompt &amp; tool registries</a></li>
+    <li><span class="n">21</span><a href="#suggestions">Improvement proposals</a></li>
+    <li><span class="n">22</span><a href="#ci">CI Gates</a></li>
+    <li><span class="n">23</span><a href="#deploy">Install &amp; scale</a></li>
+  </ol>
+</nav>
+
+<div class="stack">
+
+<section class="sec">
+  <p class="lede">The product splits into three pillars. <b>Traceability</b> records what every run did, down to the individual span. <b>Observability</b> watches that record in aggregate and surfaces what needs a person. <b>Evaluations</b> test the agent against datasets, measure whether those datasets still resemble production, and validate a change before it ships.</p>
+</section>
+
+<div class="zone zone-trace">
+
+<div class="pillar" id="pillar-traceability"><div class="pillar-h"><span class="pillar-k">Pillar</span><h2>Traceability</h2></div><p class="pillar-b">Recording what each run did &mdash; the call, the conversation it belonged to, and every span inside it.</p><p class="pillar-i">Live Traces &middot; Sessions &middot; Trace detail &amp; timeline</p></div>
+
+<section class="sec" id="traces">
+  <span class="eyebrow">01 &middot; Traceability</span>
+  <h3>Every run, with its tools, tokens and score</h3>
+  <p class="lede">Trace ingests runs from the AgentX Python SDK or any OpenTelemetry exporter. One span becomes one row, carrying latency, token counts, estimated cost, tool outcomes and, where a scorer sampled it, a quality score. Status filters narrow the list to errors, tool failures or slow runs.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Observe &middot; Live Traces</b></div>
+      <div class="tabs"><span class="tab on">Live Traces</span><span class="tab">Sessions</span></div>
+      <div class="body">
+        <div class="hrow">
+          <div class="hctl" style="margin:0"><span class="ctl on">All 31.3k</span><span class="ctl">Errors 751</span><span class="ctl">Tool failures 284</span><span class="ctl">High latency 96</span></div>
+          <div class="hctl"><span class="ctl">Production</span><span class="ctl">Eval runs</span><span class="ctl on">All</span><span class="ctl">Search traces - text, source, model, id</span></div>
+        </div>
+        <div class="panel"><div class="pbody flush"><div class="scroll"><table style="min-width:980px">
+          <thead><tr><th style="width:96px">Time</th><th>Trace</th><th style="width:180px">Source</th><th style="width:124px">Tool quality</th><th style="width:74px">Score</th><th class="r" style="width:88px">In tokens</th><th class="r" style="width:92px">Out tokens</th><th class="r" style="width:82px">Latency</th></tr></thead>
+          <tbody>
+            <tr><td>14:32:08<div class="muted" style="font-size:11px">2m ago</div></td><td class="w k">Can I get a refund on invoice 48812?<div class="muted" style="font-weight:400">&#8627; That charge is inside the 30-day window, so a refund&hellip;</div></td><td class="w">support-triage<div class="muted" style="font-size:11px">gpt-4o-mini &middot; AgentX</div></td><td><span class="badge b-ok">pass 2</span></td><td><span class="badge b-ok">8.4</span></td><td class="r">2,100</td><td class="r">318</td><td class="r">1.24s</td></tr>
+            <tr><td>14:31:52<div class="muted" style="font-size:11px">2m ago</div></td><td class="w k">Why was I charged twice in EUR?<div class="muted" style="font-weight:400">&#8627; I can see two charges on the account&hellip;</div></td><td class="w">billing-copilot<div class="muted" style="font-size:11px">claude-sonnet-4-5 &middot; LangChain</div></td><td><span class="badge b-err">fail 1</span></td><td><span class="badge b-err">5.1</span></td><td class="r">4,400</td><td class="r">712</td><td class="r">3.98s</td></tr>
+            <tr><td>14:31:40<div class="muted" style="font-size:11px">3m ago</div></td><td class="w k">Where do I find the API rate limits?<div class="muted" style="font-weight:400">&#8627; Rate limits are documented per plan tier&hellip;</div></td><td class="w">docs-answerer<div class="muted" style="font-size:11px">gemini-2.5-flash &middot; AgentX</div></td><td class="muted">&ndash;</td><td><span class="badge b-ok">9.0</span></td><td class="r">1,700</td><td class="r">206</td><td class="r">0.87s</td></tr>
+            <tr><td>14:31:19<div class="muted" style="font-size:11px">3m ago</div></td><td class="w k">Cancel my plan and refund this month<div class="muted" style="font-weight:400">&#8627; I can start the cancellation now&hellip;</div></td><td class="w">support-triage<div class="muted" style="font-size:11px">gpt-4o-mini &middot; AgentX</div></td><td><span class="badge b-ok">pass 3</span></td><td><span class="badge b-ok">7.8</span></td><td class="r">2,400</td><td class="r">344</td><td class="r">1.51s</td></tr>
+            <tr><td>14:30:58<div class="muted" style="font-size:11px">4m ago</div></td><td class="w k">Send a VAT invoice for September<div class="muted" style="font-weight:400">&#8627; Here is the September invoice with VAT&hellip;</div></td><td class="w">billing-copilot<div class="muted" style="font-size:11px">claude-sonnet-4-5 &middot; LangChain</div></td><td><span class="badge b-ok">pass 2</span></td><td><span class="muted" style="font-style:italic">no score</span></td><td class="r">3,600</td><td class="r">487</td><td class="r">2.31s</td></tr>
+          </tbody></table></div></div>
+          <div class="phead" style="border-bottom:0;border-top:1px solid var(--n200)"><span class="psub">Rows per page 25 &middot; 1&ndash;25 of 31,284</span><span class="psub" style="margin-left:auto">First &middot; Previous &middot; Next</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>An unscored run is labelled, not assumed.</b> Where no scorer sampled a trace the Score column reads <code>no score</code>, rather than a blank that could be read as a pass.</p>
+</section>
+
+<section class="sec" id="sessions">
+  <span class="eyebrow">02 &middot; Traceability</span>
+  <h3>Conversations scored as a whole</h3>
+  <p class="lede">Traces sharing a session id group into one row with a turn count, duration and a conversation-level score. Scope filters separate multi-turn conversations from single interactions, and sessions carrying failed spans.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Observe &middot; Sessions</b></div>
+      <div class="tabs"><span class="tab">Live Traces</span><span class="tab on">Sessions</span></div>
+      <div class="body">
+        <div class="kpis">
+          <div class="kpi"><div class="lab">Sessions</div><div class="kv"><span class="val">1,204</span></div><div class="foot">in past 24 hours</div></div>
+          <div class="kpi"><div class="lab">Multi-turn</div><div class="kv"><span class="val">862</span></div><div class="foot">conversations</div></div>
+          <div class="kpi"><div class="lab">Below bar</div><div class="kv"><span class="val err">37</span></div><div class="foot">of 1,204 judged</div></div>
+          <div class="kpi"><div class="lab">With errors</div><div class="kv"><span class="val" style="color:var(--pend)">28</span></div><div class="foot">spans failed</div></div>
+        </div>
+        <div class="hrow"><div class="hctl" style="margin:0"><span class="ctl on">Conversations 862</span><span class="ctl">All sessions 1,204</span><span class="ctl">With errors 28</span><span class="ctl">Below bar</span></div></div>
+        <div class="panel"><div class="pbody flush"><div class="scroll"><table style="min-width:760px">
+          <thead><tr><th>Session</th><th style="width:118px">Turns</th><th class="r" style="width:92px">Duration</th><th class="r" style="width:116px">Last activity</th><th style="width:170px">Session score</th></tr></thead>
+          <tbody>
+            <tr><td class="w"><span class="mono k">ses_9f2c&hellip;a41</span><div class="muted" style="font-size:11px">billing-copilot</div></td><td>6</td><td class="r">4m 12s</td><td class="r muted">2 min ago</td><td><span class="k">7.9/10</span> <span class="muted" style="font-size:11px">2 judges</span></td></tr>
+            <tr><td class="w"><span class="mono k">ses_7b18&hellip;e07</span><div class="muted" style="font-size:11px">support-triage</div></td><td>3</td><td class="r">1m 38s</td><td class="r muted">11 min ago</td><td><span class="k">9.1/10</span> <span class="muted" style="font-size:11px">2 judges</span></td></tr>
+            <tr><td class="w"><span class="mono k">ses_4d55&hellip;b93</span><div class="muted" style="font-size:11px">billing-copilot <span class="badge b-pend" style="margin-left:4px">2 errors</span></div></td><td>11</td><td class="r">12m 05s</td><td class="r muted">23 min ago</td><td><span class="k t-err">4.6/10</span> <span class="muted" style="font-size:11px">2 judges</span></td></tr>
+            <tr><td class="w"><span class="mono k">ses_2a90&hellip;c14</span><div class="muted" style="font-size:11px">docs-answerer</div></td><td>2</td><td class="r">52s</td><td class="r muted">31 min ago</td><td><span class="k">8.8/10</span> <span class="muted" style="font-size:11px">1 judge</span></td></tr>
+          </tbody></table></div></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sec" id="detail">
+  <span class="eyebrow">03 &middot; Traceability</span>
+  <h3>The full execution timeline of a run</h3>
+  <p class="lede">Each run opens to its spans, nested by parent and laid out on a waterfall, with the arguments and result of every tool call. Kind filters narrow the tree, and the same data is available as a graph or as raw JSON.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Trace Details</b> <span class="mono psub">tr_9c41e8&hellip;7f</span><span class="right">Add to dataset</span></div>
+      <div class="body">
+        <div class="kpis k5">
+          <div class="kpi"><div class="lab">Duration</div><div class="kv"><span class="val">3.98s</span></div></div>
+          <div class="kpi"><div class="lab">In tokens</div><div class="kv"><span class="val">4,400</span></div></div>
+          <div class="kpi"><div class="lab">Out tokens</div><div class="kv"><span class="val">712</span></div></div>
+          <div class="kpi"><div class="lab">Est. cost</div><div class="kv"><span class="val">$0.0239</span></div></div>
+          <div class="kpi"><div class="lab">Vector similarity</div><div class="kv"><span class="val">0.68</span></div></div>
+        </div>
+        <div class="panel"><div class="phead"><span class="ptitle">Trajectory</span><span class="psub">5 steps &middot; 2 tool calls &middot; 1 failed &middot; 0 repeated</span></div></div>
+        <div class="panel"><div class="phead"><span class="ptitle">Execution Timeline</span><span class="psub">5 spans</span>
+          <span class="hctl" style="margin-left:auto"><span class="ctl on">Timeline</span><span class="ctl">Graph</span><span class="ctl">JSON</span></span></div>
+          <div class="pbody">
+            <div class="hctl" style="margin:0 0 12px"><span class="ctl on">All 5</span><span class="ctl">Tool 2</span><span class="ctl">Step 2</span><span class="ctl">Retrieval 1</span></div>
+            <div class="bars">
+              <div class="bar-row"><span class="bar-label mono" style="font-size:11.5px">agent.run</span><div class="bar-track" style="position:relative;height:15px"><div style="position:absolute;left:0;width:100%;height:15px;border-radius:3px;background:var(--acc)"></div></div><span class="bar-val">3,980 ms</span></div>
+              <div class="bar-row"><span class="bar-label mono" style="font-size:11.5px;padding-left:14px">&#8627; lookup_account</span><div class="bar-track" style="position:relative;height:15px"><div style="position:absolute;left:3%;width:4.5%;height:15px;border-radius:3px;background:var(--n400)"></div></div><span class="bar-val">180 ms</span></div>
+              <div class="bar-row"><span class="bar-label mono" style="font-size:11.5px;padding-left:14px">&#8627; retrieve_invoice</span><div class="bar-track" style="position:relative;height:15px"><div style="position:absolute;left:7.8%;width:10.6%;height:15px;border-radius:3px;background:var(--err)"></div></div><span class="bar-val">420 ms</span></div>
+              <div class="bar-row"><span class="bar-label mono" style="font-size:11.5px;padding-left:14px">&#8627; llm.completion</span><div class="bar-track" style="position:relative;height:15px"><div style="position:absolute;left:19.1%;width:74.9%;height:15px;border-radius:3px;background:var(--acc)"></div></div><span class="bar-val">2,980 ms</span></div>
+              <div class="bar-row"><span class="bar-label mono" style="font-size:11.5px;padding-left:14px">&#8627; policy.check</span><div class="bar-track" style="position:relative;height:15px"><div style="position:absolute;left:94.2%;width:5.3%;height:15px;border-radius:3px;background:var(--n300)"></div></div><span class="bar-val">210 ms</span></div>
+            </div>
+            <div class="key" style="margin-top:12px"><span><span class="kd" style="background:var(--err)"></span><code>retrieve_invoice</code> returned 502 &mdash; the agent answered anyway, and the judge scored it 5.1</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<div class="zone zone-obs">
+
+<div class="pillar" id="pillar-observability"><div class="pillar-h"><span class="pillar-k">Pillar</span><h2>Observability</h2></div><p class="pillar-b">Watching that record in aggregate: production health, what the traffic is about, what got flagged, and what does the flagging.</p><p class="pillar-i">Overview &middot; Monitor &middot; Topics &middot; Review queue &middot; Scorers &middot; Rules</p></div>
+
+<div class="part"><span class="pn">Production health</span></div>
+
+<section class="sec" id="overview">
+  <span class="eyebrow">04 &middot; Observability</span>
+  <h3>Live KPIs, trend and triage in one screen</h3>
+  <p class="lede">Six production KPIs over the selected window, the healthy-rate trend against the previous period, cost by model, a model comparison, judge calibration, and the open signals needing attention. Each card loads on its own query.</p>
+
+  <div class="app">
+    <div class="side">
+      <div class="brand">AGENTX</div>
+      <div class="proj"><span class="pavatar">N</span>Northwind Support<svg class="ic chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></svg></div>
+      <div class="nav on"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="1.3"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.3"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.3"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.3"/></svg>Overview</div>
+      <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.2 12S5.8 5.6 12 5.6 21.8 12 21.8 12 18.2 18.4 12 18.4 2.2 12 2.2 12Z"/><circle cx="12" cy="12" r="2.6"/></svg>Observe<span class="step">1</span></div>
+      <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="12.5" rx="1.8"/><path d="M8.5 20.5h7M12 16.5v4"/></svg>Monitor<span class="step">2</span></div>
+      <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4h11l-2 3.6L16 11H5"/></svg>Review<span class="cbadge">12</span></div>
+      <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg>Scorers</div>
+      <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.6 11.4V4.6a1 1 0 0 1 1-1h6.8a1 1 0 0 1 .7.3l8 8a1 1 0 0 1 0 1.4l-6.8 6.8a1 1 0 0 1-1.4 0l-8-8a1 1 0 0 1-.3-.7Z"/><circle cx="7.9" cy="7.9" r="1.3"/></svg>Topics</div>
+      <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.2 12.2 2.6 2.6 5-5.4"/></svg>Evaluate<span class="step">3</span></div>
+      <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 20.5h17"/><path d="M7 20.5v-6M12 20.5V6.5M17 20.5v-9"/></svg>Insights<span class="step">4</span></div>
+      <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m10.2 8.6 5.2 3.4-5.2 3.4V8.6Z"/></svg>Playground</div>
+      <div class="navsec">Manage</div>
+      <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5.8" rx="7.4" ry="2.8"/><path d="M4.6 5.8v12.4c0 1.5 3.3 2.8 7.4 2.8s7.4-1.3 7.4-2.8V5.8"/><path d="M4.6 12c0 1.5 3.3 2.8 7.4 2.8s7.4-1.3 7.4-2.8"/></svg>Datasets</div>
+      <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16.4 3.6a2.1 2.1 0 0 1 3 3L8 18l-4.1 1.1L5 15 16.4 3.6Z"/></svg>Prompts</div>
+      <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20.4 7.6a5 5 0 0 1-6.6 6.6L7 21a2.1 2.1 0 0 1-3-3l6.8-6.8a5 5 0 0 1 6.6-6.6l-3 3 2 2 3-3Z"/></svg>Tools &amp; MCPs</div>
+      <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.6 5h16.8l-6.5 7.5V19l-3.8 2v-8.5L3.6 5Z"/></svg>Rules</div>
+      <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.1"/><path d="M12 2.4v2.4M12 19.2v2.4M2.4 12h2.4M19.2 12h2.4M5.2 5.2l1.7 1.7M17.1 17.1l1.7 1.7M18.8 5.2l-1.7 1.7M6.9 17.1l-1.7 1.7"/></svg>Settings</div>
+      <div class="navsec">Automations</div>
+      <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.6" cy="5.6" r="2.3"/><circle cx="6.6" cy="18.4" r="2.3"/><circle cx="17.4" cy="7" r="2.3"/><path d="M6.6 7.9v8.2"/><path d="M15.2 8.8c-1.5 2.9-4.2 4.5-8.1 4.8"/></svg>CI Gates</div>
+      <div class="nav"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4.4c-1.6 0-2.9 1-3.3 2.5a2.9 2.9 0 0 0-1.5 2.5c0 .8.3 1.5.9 2a2.9 2.9 0 0 0 1.5 4.9c.4 1.5 1.7 2.5 3.3 2.5.8 0 1.1-.4 1.1-1.1V5.8c0-.8-.3-1.4-2-1.4Z"/><path d="M14 4.4c1.6 0 2.9 1 3.3 2.5a2.9 2.9 0 0 1 1.5 2.5c0 .8-.3 1.5-.9 2a2.9 2.9 0 0 1-1.5 4.9c-.4 1.5-1.7 2.5-3.3 2.5-.8 0-1.1-.4-1.1-1.1V5.8c0-.8.3-1.4 2-1.4Z"/></svg>Agent Skill</div>
+      <div class="themesel"><span class="tsel on">Light</span><span class="tsel">Dark</span><span class="tsel">Auto</span></div>
+    </div>
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Overview</b><span class="right">Docs</span></div>
+      <div class="body">
+        <div class="hrow">
+          <p class="blurb">Live production KPIs, the healthy-rate trend, and what needs your attention.</p>
+          <div class="hctl"><span class="ctl">Past 7 days</span></div>
+        </div>
+
+        <div class="kpis k6">
+          <div class="kpi"><div class="lab">Total runs</div><div class="kv"><span class="val">31.3k</span></div><div class="foot">past 7 days</div></div>
+          <div class="kpi"><div class="lab">Healthy rate</div><div class="kv"><span class="val">94.2%</span></div><div class="foot t-ok">+0.018 pts</div></div>
+          <div class="kpi"><div class="lab">Failure rate</div><div class="kv"><span class="val">2.4%</span></div><div class="foot t-ok">-0.005 pts</div></div>
+          <div class="kpi"><div class="lab">Downvote rate</div><div class="kv"><span class="val">8.5%</span></div><div class="foot t-err">+0.012 pts</div></div>
+          <div class="kpi"><div class="lab">Tool failure</div><div class="kv"><span class="val">3.8%</span></div><div class="foot t-ok">-0.004 pts</div></div>
+          <div class="kpi"><div class="lab">p95 latency</div><div class="kv"><span class="val">2.31s</span></div><div class="foot">95th percentile</div></div>
+        </div>
+
+        <div class="panel"><div class="phead"><span class="ptitle">Recent failures</span><span class="psub" style="margin-left:auto">View all signals (12 open)</span></div>
+          <div class="pbody flush"><div class="scroll"><table>
+            <tbody>
+              <tr><td style="width:84px"><span class="badge b-err">high</span></td><td class="w k">PII in response &mdash; email address returned in a billing reply</td><td class="muted" style="width:70px">3&times;</td><td class="muted r" style="width:90px">12m ago</td></tr>
+              <tr><td><span class="badge b-err">high</span></td><td class="w k">Policy adherence &mdash; refund promised without citing a clause</td><td class="muted">9&times;</td><td class="muted r">41m ago</td></tr>
+              <tr><td><span class="badge b-pend">medium</span></td><td class="w k">Malformed JSON response from billing-copilot</td><td class="muted">7&times;</td><td class="muted r">1h ago</td></tr>
+              <tr><td><span class="badge b-err">high</span></td><td class="w k">Prompt injection echo &mdash; system prompt partially disclosed</td><td class="muted"></td><td class="muted r">3h ago</td></tr>
+              <tr><td><span class="badge b-neu">low</span></td><td class="w k">Session coherence below 5 on an 11-turn conversation</td><td class="muted"></td><td class="muted r">5h ago</td></tr>
+            </tbody></table></div></div>
+        </div>
+
+        <div class="cols">
+          <div class="lcol">
+            <div class="panel"><div class="phead"><span class="ptitle">Healthy rate trend</span><span class="psub">&middot; past 7 days</span></div>
+              <div class="pbody">
+                <div class="kv" style="margin-top:0"><span class="val" style="font-size:28px">94.2%</span><span class="qual t-ok">+0.018 pts</span><span class="qual">vs the prior period</span></div>
+                <svg viewBox="0 0 300 100" width="100%" style="max-width:100%;height:auto;margin-top:10px" role="img" aria-label="Healthy rate trend over seven days, rising from 92.6 percent to 94.2 percent, with the prior period shown as a dashed line below it.">
+                  <line x1="26" y1="14" x2="296" y2="14" stroke="var(--n200)" stroke-width="1"/>
+                  <line x1="26" y1="47" x2="296" y2="47" stroke="var(--n200)" stroke-width="1"/>
+                  <line x1="26" y1="80" x2="296" y2="80" stroke="var(--n300)" stroke-width="1"/>
+                  <text x="22" y="17" text-anchor="end" fill="var(--n400)" font-size="8" font-family="Menlo,monospace">96%</text>
+                  <text x="22" y="50" text-anchor="end" fill="var(--n400)" font-size="8" font-family="Menlo,monospace">94%</text>
+                  <text x="22" y="83" text-anchor="end" fill="var(--n400)" font-size="8" font-family="Menlo,monospace">92%</text>
+                  <path d="M36,70 L79,63 L122,67 L165,52 L208,39 L251,44 L294,33 L294,80 L36,80 Z" fill="var(--n100)"/>
+                  <polyline points="36,70 79,63 122,67 165,52 208,39 251,44 294,33" fill="none" stroke="var(--n900)" stroke-width="2" stroke-linejoin="round"/>
+                  <polyline points="36,77 79,74 122,78 165,70 208,66 251,69 294,61" fill="none" stroke="var(--n400)" stroke-width="1.5" stroke-dasharray="4 3"/>
+                  <circle cx="294" cy="33" r="3.5" fill="var(--n900)"/>
+                </svg>
+                <div class="key" style="margin-top:8px"><span><span class="kd" style="background:var(--n900)"></span>This 7d &middot; Oct 16 &ndash; Oct 23</span><span><span class="kd" style="background:var(--n400)"></span>Prior 7d &middot; Oct 9 &ndash; Oct 16</span></div>
+                <div class="lab" style="margin-top:14px">Run outcomes <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">&middot; 31.3k runs</span></div>
+                <div class="seg" style="height:10px;margin-top:8px"><div style="flex:942;background:var(--ok)"></div><div style="flex:24;background:var(--err)"></div><div style="flex:34;background:var(--pend)"></div></div>
+                <div class="key" style="margin-top:8px"><span><span class="kd" style="background:var(--ok)"></span>Healthy 29,471</span><span><span class="kd" style="background:var(--err)"></span>Operational failures 751</span><span><span class="kd" style="background:var(--pend)"></span>Scorer detections 1,062</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="rcol">
+            <div class="panel"><div class="phead"><span class="ptitle">Top failing</span></div>
+              <div class="pbody">
+                <div class="hctl" style="margin:0 0 10px"><span class="ctl on">Agents 3</span><span class="ctl">Tools 4</span><span class="ctl">Scorers 6</span></div>
+                <div class="scroll"><table><tbody>
+                  <tr><td class="k w">billing-copilot</td><td class="r t-err">6.1%</td></tr>
+                  <tr><td class="k w">support-triage</td><td class="r t-pend">1.8%</td></tr>
+                  <tr><td class="k w">docs-answerer</td><td class="r">0.9%</td></tr>
+                </tbody></table></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel"><div class="phead"><span class="ptitle">Total LLM cost</span><span class="psub" style="margin-left:auto">Manage pricing</span></div>
+          <div class="pbody">
+            <svg viewBox="0 0 700 180" width="100%" style="max-width:100%;height:auto" role="img" aria-label="Stacked daily LLM cost by model over seven days, totalling 293 dollars 02 cents, peaking at about 48 dollars on October 21.">
+              <line x1="0" y1="150" x2="700" y2="150" stroke="var(--n300)" stroke-width="1"/>
+              <g>
+                <rect x="24" y="96" width="62" height="28" fill="var(--m1)"/><rect x="24" y="124" width="62" height="18" fill="var(--m2)"/><rect x="24" y="142" width="62" height="8" fill="var(--m3)"/>
+                <rect x="118" y="88" width="62" height="32" fill="var(--m1)"/><rect x="118" y="120" width="62" height="22" fill="var(--m2)"/><rect x="118" y="142" width="62" height="8" fill="var(--m3)"/>
+                <rect x="212" y="92" width="62" height="30" fill="var(--m1)"/><rect x="212" y="122" width="62" height="20" fill="var(--m2)"/><rect x="212" y="142" width="62" height="8" fill="var(--m3)"/>
+                <rect x="306" y="72" width="62" height="40" fill="var(--m1)"/><rect x="306" y="112" width="62" height="30" fill="var(--m2)"/><rect x="306" y="142" width="62" height="8" fill="var(--m3)"/>
+                <rect x="400" y="58" width="62" height="46" fill="var(--m1)"/><rect x="400" y="104" width="62" height="38" fill="var(--m2)"/><rect x="400" y="142" width="62" height="8" fill="var(--m3)"/>
+                <rect x="494" y="78" width="62" height="38" fill="var(--m1)"/><rect x="494" y="116" width="62" height="26" fill="var(--m2)"/><rect x="494" y="142" width="62" height="8" fill="var(--m3)"/>
+                <rect x="588" y="84" width="62" height="34" fill="var(--m1)"/><rect x="588" y="118" width="62" height="24" fill="var(--m2)"/><rect x="588" y="142" width="62" height="8" fill="var(--m3)"/>
+              </g>
+              <g fill="var(--n400)" font-size="10" font-family="Menlo,monospace" text-anchor="middle">
+                <text x="55" y="166">Oct 17</text><text x="149" y="166">Oct 18</text><text x="243" y="166">Oct 19</text><text x="337" y="166">Oct 20</text><text x="431" y="166">Oct 21</text><text x="525" y="166">Oct 22</text><text x="619" y="166">Oct 23</text>
+              </g>
+            </svg>
+            <div class="key" style="margin-top:10px">
+              <span><span class="kd" style="background:var(--n400)"></span>Total <b style="color:var(--n900);margin-left:4px">$293.02</b></span>
+              <span><span class="kd" style="background:var(--m1)"></span>claude-sonnet-4-5 $186.40</span>
+              <span><span class="kd" style="background:var(--m2)"></span>gemini-2.5-flash $81.22</span>
+              <span><span class="kd" style="background:var(--m3)"></span>gpt-4o-mini $25.40</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="cols">
+          <div class="lcol">
+            <div class="panel"><div class="phead"><span class="ptitle">Model comparison</span></div>
+              <div class="pbody flush"><div class="scroll"><table>
+                <thead><tr><th>Model</th><th class="r">Traces</th><th class="r">Health</th><th class="r">Failure</th><th class="r">p95 latency</th><th class="r">Cost</th></tr></thead>
+                <tbody>
+                  <tr><td class="k mono">gpt-4o-mini</td><td class="r">18.3k</td><td class="r">95.1%</td><td class="r">1.9%</td><td class="r">1.54s</td><td class="r">$25.40</td></tr>
+                  <tr><td class="k mono">claude-sonnet-4-5</td><td class="r">7.5k</td><td class="r">92.8%</td><td class="r t-pend">4.1%</td><td class="r">3.02s</td><td class="r">$186.40</td></tr>
+                  <tr><td class="k mono">gemini-2.5-flash</td><td class="r">5.5k</td><td class="r">94.0%</td><td class="r">2.2%</td><td class="r">0.88s</td><td class="r">$81.22</td></tr>
+                </tbody></table></div></div>
+            </div>
+          </div>
+          <div class="rcol">
+            <div class="panel"><div class="phead"><span class="ptitle">Judge calibration</span></div>
+              <div class="pbody">
+                <div class="kv" style="margin-top:0"><span class="val" style="font-size:26px">78.3%</span></div>
+                <div class="foot" style="margin-top:4px">agreement with reported outcomes</div>
+                <div class="scroll" style="margin-top:10px"><table><tbody>
+                  <tr><td class="w">False positive rate</td><td class="r k">14.8%</td></tr>
+                  <tr><td class="w">False negative rate</td><td class="r k">6.8%</td></tr>
+                  <tr><td class="w">Chance-corrected (&alpha;)</td><td class="r k">0.54 (moderate)</td></tr>
+                </tbody></table></div>
+                <div class="foot">412 of 486 reported outcomes compared against an AgentX verdict (74 had none yet). Compared against ops outcomes, user votes, and review labels.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel"><div class="phead"><span class="ptitle">Needs attention</span><span class="psub">12 open signals &middot; 207 occurrences</span><span class="psub" style="margin-left:auto">View all signals &rarr;</span></div>
+          <div class="pbody flush"><div class="scroll"><table>
+            <tbody>
+              <tr><td style="width:58px" class="k t-err">4.2</td><td style="width:78px"><span class="badge b-err">High</span></td><td class="w k">Refund promised without a policy clause cited</td><td class="muted r" style="width:120px">61 hits &middot; up 18</td><td class="r" style="width:74px"><span class="btn">Triage</span></td></tr>
+              <tr><td class="k t-pend">5.6</td><td><span class="badge b-pend">Medium</span></td><td class="w k">Response not parseable as JSON</td><td class="muted r">38 hits &middot; flat</td><td class="r"><span class="btn">Triage</span></td></tr>
+              <tr><td class="k t-err">2.9</td><td><span class="badge b-err">High</span></td><td class="w k">Customer email echoed in the reply body</td><td class="muted r">23 hits &middot; up 9</td><td class="r"><span class="btn">Triage</span></td></tr>
+            </tbody></table></div></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <p class="note"><b>Run outcomes are split three ways rather than summed.</b> <b>Healthy</b>, <b>Operational failures</b> (the agent or a tool broke) and <b>Scorer detections</b> (the run completed and a scorer objected) are separate conditions with separate owners.</p>
+</section>
+
+<section class="sec" id="monitor">
+  <span class="eyebrow">05 &middot; Observability</span>
+  <h3>Nine metrics on one window</h3>
+  <p class="lede">A metrics grid covering signals, scores, latency, tool executions, spans, platforms, cost, tokens and topics. All nine share the window and the filter set, so a cost spike, a latency climb and a run of tool failures line up on the same bucket.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Monitor</b></div>
+      <div class="body">
+        <div class="hrow">
+          <div class="hctl" style="margin:0"><span class="ctl">Past 7 days</span><span class="ctl">Add filter - agent, model, tool, framework, status:error</span></div>
+          <div class="hctl"><span class="ctl">Open Review (12)</span><span class="ctl muted">Updated 4s ago</span></div>
+        </div>
+        <div class="grid2">
+          <div class="panel"><div class="phead"><span class="ptitle">Signals raised</span></div><div class="pbody">
+            <svg viewBox="0 0 260 72" width="100%" style="height:auto" role="img" aria-label="Daily signals raised, peaking at 41 on October 21."><g fill="var(--err)">
+            <rect x="6" y="46" width="26" height="22"/><rect x="42" y="40" width="26" height="28"/><rect x="78" y="50" width="26" height="18"/><rect x="114" y="30" width="26" height="38"/><rect x="150" y="26" width="26" height="42"/><rect x="186" y="38" width="26" height="30"/><rect x="222" y="44" width="26" height="24"/></g>
+            <line x1="0" y1="68" x2="260" y2="68" stroke="var(--n300)"/></svg>
+            <div class="key" style="margin-top:9px"><span>Occurrences <b style="color:var(--n900)">207</b></span><span>Open signals <b style="color:var(--n900)">12</b></span></div>
+          </div></div>
+          <div class="panel"><div class="phead"><span class="ptitle">Scores</span></div><div class="pbody">
+            <svg viewBox="0 0 260 72" width="100%" style="height:auto" role="img" aria-label="Average judge score over seven days, holding between 8.0 and 8.4 out of 10.">
+            <line x1="0" y1="8" x2="260" y2="8" stroke="var(--n200)"/><line x1="0" y1="38" x2="260" y2="38" stroke="var(--n200)"/><line x1="0" y1="68" x2="260" y2="68" stroke="var(--n300)"/>
+            <text x="2" y="6" font-size="7" fill="var(--n400)" font-family="Menlo,monospace">10</text><text x="2" y="36" font-size="7" fill="var(--n400)" font-family="Menlo,monospace">5</text>
+            <polyline points="18,22 54,20 90,24 126,18 162,16 198,21 234,19" fill="none" stroke="var(--acc)" stroke-width="2"/>
+            <circle cx="234" cy="19" r="3" fill="var(--acc)"/></svg>
+            <div class="key" style="margin-top:9px"><span>Average across 4 live judges <b style="color:var(--n900)">8.2/10</b></span><span>Checks <b style="color:var(--n900)">18.4k</b></span></div>
+          </div></div>
+          <div class="panel"><div class="phead"><span class="ptitle">Latency</span><span class="badge b-err" style="margin-left:auto">p95 over 4s</span></div><div class="pbody">
+            <svg viewBox="0 0 260 72" width="100%" style="height:auto" role="img" aria-label="p95 and p50 latency over seven days; p95 rises to 4.1 seconds on October 21.">
+            <line x1="0" y1="68" x2="260" y2="68" stroke="var(--n300)"/>
+            <polyline points="18,36 54,34 90,38 126,26 162,16 198,28 234,30" fill="none" stroke="var(--err)" stroke-width="2"/>
+            <polyline points="18,56 54,55 90,57 126,52 162,48 198,53 234,54" fill="none" stroke="var(--n400)" stroke-width="2"/></svg>
+            <div class="key" style="margin-top:9px"><span><span class="kd" style="background:var(--err)"></span>p95 <b style="color:var(--n900)">2.31s</b></span><span><span class="kd" style="background:var(--n400)"></span>p50 <b style="color:var(--n900)">0.94s</b></span></div>
+          </div></div>
+          <div class="panel"><div class="phead"><span class="ptitle">Tool executions</span><span class="badge b-err" style="margin-left:auto">284 failures</span></div><div class="pbody">
+            <svg viewBox="0 0 260 72" width="100%" style="height:auto" role="img" aria-label="Daily tool executions with an error-rate line overlaid, the rate peaking near 6 percent.">
+            <g fill="var(--acc)"><rect x="6" y="34" width="26" height="34"/><rect x="42" y="30" width="26" height="38"/><rect x="78" y="36" width="26" height="32"/><rect x="114" y="24" width="26" height="44"/><rect x="150" y="20" width="26" height="48"/><rect x="186" y="28" width="26" height="40"/><rect x="222" y="32" width="26" height="36"/></g>
+            <polyline points="19,58 55,56 91,59 127,50 163,44 199,53 235,55" fill="none" stroke="var(--err)" stroke-width="2"/>
+            <line x1="0" y1="68" x2="260" y2="68" stroke="var(--n300)"/></svg>
+            <div class="key" style="margin-top:9px"><span>Total <b style="color:var(--n900)">7,412</b></span><span><code>retrieve_invoice</code> 1,204 (96 failed)</span><span><span class="kd" style="background:var(--err)"></span>Error rate 3.8%</span></div>
+          </div></div>
+          <div class="panel"><div class="phead"><span class="ptitle">Platforms</span></div><div class="pbody">
+            <div class="bars">
+              <div class="bar-row"><span class="bar-label">AgentX</span><div class="bar-track"><div class="bar-fill" style="width:100%"></div></div><span class="bar-val">16.9k</span></div>
+              <div class="bar-row"><span class="bar-label">LangChain</span><div class="bar-track"><div class="bar-fill" style="width:39%"></div></div><span class="bar-val">6.6k</span></div>
+              <div class="bar-row"><span class="bar-label">OpenInference</span><div class="bar-track"><div class="bar-fill" style="width:26%"></div></div><span class="bar-val">4.4k</span></div>
+              <div class="bar-row"><span class="bar-label">CrewAI</span><div class="bar-track"><div class="bar-fill" style="width:13%"></div></div><span class="bar-val">2.2k</span></div>
+              <div class="bar-row"><span class="bar-label muted">Other / custom</span><div class="bar-track"><div class="bar-fill" style="width:7%;background:var(--n400)"></div></div><span class="bar-val">1.2k</span></div>
+            </div>
+          </div></div>
+          <div class="panel"><div class="phead"><span class="ptitle">Token count</span></div><div class="pbody">
+            <svg viewBox="0 0 260 72" width="100%" style="height:auto" role="img" aria-label="Daily token counts split into input and output, totalling 96.4 million.">
+            <g><rect x="6" y="30" width="26" height="26" fill="var(--acc)"/><rect x="6" y="56" width="26" height="12" fill="var(--acc-200)"/>
+            <rect x="42" y="26" width="26" height="30" fill="var(--acc)"/><rect x="42" y="56" width="26" height="12" fill="var(--acc-200)"/>
+            <rect x="78" y="32" width="26" height="24" fill="var(--acc)"/><rect x="78" y="56" width="26" height="12" fill="var(--acc-200)"/>
+            <rect x="114" y="20" width="26" height="36" fill="var(--acc)"/><rect x="114" y="56" width="26" height="12" fill="var(--acc-200)"/>
+            <rect x="150" y="16" width="26" height="40" fill="var(--acc)"/><rect x="150" y="56" width="26" height="12" fill="var(--acc-200)"/>
+            <rect x="186" y="24" width="26" height="32" fill="var(--acc)"/><rect x="186" y="56" width="26" height="12" fill="var(--acc-200)"/>
+            <rect x="222" y="28" width="26" height="28" fill="var(--acc)"/><rect x="222" y="56" width="26" height="12" fill="var(--acc-200)"/></g>
+            <line x1="0" y1="68" x2="260" y2="68" stroke="var(--n300)"/></svg>
+            <div class="key" style="margin-top:9px"><span>Total <b style="color:var(--n900)">96.4M</b></span><span><span class="kd" style="background:var(--acc)"></span>Input 81.2M</span><span><span class="kd" style="background:var(--acc-200)"></span>Output 15.2M</span></div>
+          </div></div>
+        </div>
+        <p class="psub" style="padding-top:2px">Also on this grid: <b style="color:var(--n700)">Spans</b> (tool / LLM / retrieval / other), <b style="color:var(--n700)">Total LLM cost</b> with a type-or-model toggle, and <b style="color:var(--n700)">Topics</b> with a sentiment-or-use-case toggle.</p>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>An empty card states its cause.</b> With no live judge running, the Scores card reports that quality is unmeasured on this traffic and links to the scorer that would change it, rather than drawing an empty axis.</p>
+</section>
+
+<section class="sec" id="topics">
+  <span class="eyebrow">06 &middot; Observability</span>
+  <h3>What the traffic is actually about</h3>
+  <p class="lede">Classification labels each sampled trace by intent, sentiment and issue type, with no scorer required first. The Trend view charts sentiment over time alongside top intents and issue types; the Map view places each classified trace in a projection where clusters are directly visible.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Topics</b></div>
+      <div class="body">
+        <div class="hrow">
+          <p class="blurb">Sampled traces classified by intent, sentiment, and issue type - no scorer needed first.</p>
+          <div class="hctl"><span class="ctl">Classifies</span><span class="ctl on">25%</span><span class="ctl">of traffic</span><span class="ctl">Topics classification</span></div>
+        </div>
+        <div class="hctl" style="margin:0"><span class="ctl on">Trend</span><span class="ctl">Map</span><span class="ctl">Past 7 days</span></div>
+        <div class="cols">
+          <div class="lcol">
+            <div class="panel"><div class="phead"><span class="ptitle">Sentiment over time</span><span class="psub">31,284 traces classified in this window</span></div><div class="pbody">
+              <svg viewBox="0 0 420 130" width="100%" style="max-width:100%;height:auto" role="img" aria-label="Sentiment over seven days: positive around 70 percent, neutral around 22 percent, negative rising from 6 to 9 percent.">
+                <line x1="0" y1="118" x2="420" y2="118" stroke="var(--n300)"/>
+                <polyline points="24,32 90,28 156,34 222,30 288,26 354,31 412,29" fill="none" stroke="#1f8a5f" stroke-width="2"/>
+                <polyline points="24,80 90,82 156,78 222,81 288,83 354,80 412,82" fill="none" stroke="#8a8781" stroke-width="2"/>
+                <polyline points="24,104 90,103 156,106 222,100 288,96 354,101 412,98" fill="none" stroke="#c43d3d" stroke-width="2"/>
+                <circle cx="412" cy="29" r="2.5" fill="#1f8a5f"/><circle cx="412" cy="82" r="2.5" fill="#8a8781"/><circle cx="412" cy="98" r="2.5" fill="#c43d3d"/>
+              </svg>
+              <div class="key" style="margin-top:9px"><span><span class="kd" style="background:#1f8a5f"></span>Positive 69.4%</span><span><span class="kd" style="background:#8a8781"></span>Neutral 21.8%</span><span><span class="kd" style="background:#c43d3d"></span>Negative 8.8%</span></div>
+            </div></div>
+          </div>
+          <div class="rcol">
+            <div class="panel"><div class="phead"><span class="ptitle">Top intents</span></div><div class="pbody flush"><div class="scroll"><table><tbody>
+              <tr><td class="w k">Refund eligibility</td><td class="r">7,321</td></tr>
+              <tr><td class="w k">Invoice copies</td><td class="r">5,662</td></tr>
+              <tr><td class="w k">Subscription changes</td><td class="r">4,599</td></tr>
+              <tr><td class="w k">Payment failures</td><td class="r">3,504</td></tr>
+            </tbody></table></div></div></div>
+            <div class="panel"><div class="phead"><span class="ptitle">Issue types</span></div><div class="pbody flush"><div class="scroll"><table><tbody>
+              <tr><td class="w k">Incomplete</td><td class="r t-err">612</td></tr>
+              <tr><td class="w k">Refusal</td><td class="r t-err">388</td></tr>
+              <tr><td class="w k">Hallucination</td><td class="r t-err">147</td></tr>
+              <tr><td class="w k">Off-topic</td><td class="r t-err">94</td></tr>
+            </tbody></table></div></div></div>
+          </div>
+        </div>
+        <div class="hctl" style="margin:8px 0 0"><span class="ctl">Trend</span><span class="ctl on">Map</span><span class="ctl">Past 7 days</span></div>
+        <div class="tmgrid">
+          <div class="panel tmleg"><div class="phead"><span class="lab">9 use case topics</span></div><div class="pbody"><div class="tmrow"><span class="kd" style="background:#4f46e5"></span><b>23.4%</b><span>Refund eligibility</span></div><div class="tmrow"><span class="kd" style="background:#a855f7"></span><b>18.1%</b><span>Invoice copies</span></div><div class="tmrow"><span class="kd" style="background:#f59e0b"></span><b>14.7%</b><span>Subscription changes</span></div><div class="tmrow"><span class="kd" style="background:#14b8a6"></span><b>11.2%</b><span>Payment failures</span></div><div class="tmrow"><span class="kd" style="background:#ec4899"></span><b>7.9%</b><span>Tax & VAT questions</span></div><div class="tmrow"><span class="kd" style="background:#22c55e"></span><b>6.3%</b><span>Account access</span></div><div class="tmrow"><span class="kd" style="background:#0ea5e9"></span><b>4.1%</b><span>Chargeback disputes</span></div><div class="tmrow"><span class="kd" style="background:#ef4444"></span><b>2.9%</b><span>Plan downgrades</span></div><div class="tmrow"><span class="kd" style="background:#a1a1aa"></span><b>11.4%</b><span>Other (6)</span></div></div></div>
+          <div class="plot"><svg viewBox="0 0 760 360" width="100%" style="max-width:100%;height:auto;display:block" role="img" aria-label="Topics map: one dot per classified production trace, coloured by intent, forming eight clusters with diffuse unclustered traffic between them."><line x1="95.0" y1="0" x2="95.0" y2="360" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="190.0" y1="0" x2="190.0" y2="360" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="285.0" y1="0" x2="285.0" y2="360" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="380.0" y1="0" x2="380.0" y2="360" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="475.0" y1="0" x2="475.0" y2="360" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="570.0" y1="0" x2="570.0" y2="360" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="665.0" y1="0" x2="665.0" y2="360" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="0" y1="90.0" x2="760" y2="90.0" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="0" y1="180.0" x2="760" y2="180.0" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="0" y1="270.0" x2="760" y2="270.0" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><circle cx="221.1" cy="101.4" r="5" fill="#4f46e5"/><circle cx="235.7" cy="130.5" r="5" fill="#4f46e5"/><circle cx="115.9" cy="111.2" r="5" fill="#4f46e5"/><circle cx="146.0" cy="100.6" r="5" fill="#4f46e5"/><circle cx="153.0" cy="92.9" r="5" fill="#4f46e5"/><circle cx="178.8" cy="112.8" r="5" fill="#4f46e5"/><circle cx="221.0" cy="118.2" r="5" fill="#4f46e5"/><circle cx="270.0" cy="107.9" r="5" fill="#4f46e5"/><circle cx="170.6" cy="101.3" r="5" fill="#4f46e5"/><circle cx="217.8" cy="114.0" r="5" fill="#4f46e5"/><circle cx="150.1" cy="123.3" r="5" fill="#4f46e5"/><circle cx="183.6" cy="98.8" r="5" fill="#4f46e5"/><circle cx="181.0" cy="135.6" r="5" fill="#4f46e5"/><circle cx="178.3" cy="116.9" r="5" fill="#4f46e5"/><circle cx="155.4" cy="150.5" r="5" fill="#4f46e5"/><circle cx="127.3" cy="105.5" r="5" fill="#4f46e5"/><circle cx="167.9" cy="105.7" r="5" fill="#4f46e5"/><circle cx="164.4" cy="97.7" r="5" fill="#4f46e5"/><circle cx="91.8" cy="104.0" r="5" fill="#4f46e5"/><circle cx="141.8" cy="124.2" r="5" fill="#4f46e5"/><circle cx="226.9" cy="89.2" r="5" fill="#4f46e5"/><circle cx="170.6" cy="112.4" r="5" fill="#4f46e5"/><circle cx="135.0" cy="121.5" r="5" fill="#4f46e5"/><circle cx="191.8" cy="95.2" r="5" fill="#4f46e5"/><circle cx="126.3" cy="114.6" r="5" fill="#4f46e5"/><circle cx="175.7" cy="111.3" r="5" fill="#4f46e5"/><circle cx="185.1" cy="142.5" r="5" fill="#4f46e5"/><circle cx="219.8" cy="87.7" r="5" fill="#4f46e5"/><circle cx="223.5" cy="129.9" r="5" fill="#4f46e5"/><circle cx="186.0" cy="130.7" r="5" fill="#4f46e5"/><circle cx="198.5" cy="114.1" r="5" fill="#4f46e5"/><circle cx="200.9" cy="127.2" r="5" fill="#4f46e5"/><circle cx="151.3" cy="106.3" r="5" fill="#4f46e5"/><circle cx="139.9" cy="146.6" r="5" fill="#4f46e5"/><circle cx="160.5" cy="135.8" r="5" fill="#4f46e5"/><circle cx="174.1" cy="149.8" r="5" fill="#4f46e5"/><circle cx="149.8" cy="117.8" r="5" fill="#4f46e5"/><circle cx="211.1" cy="103.8" r="5" fill="#4f46e5"/><circle cx="146.1" cy="134.9" r="5" fill="#4f46e5"/><circle cx="190.6" cy="95.7" r="5" fill="#4f46e5"/><circle cx="166.5" cy="92.0" r="5" fill="#4f46e5"/><circle cx="201.8" cy="113.5" r="5" fill="#4f46e5"/><circle cx="127.7" cy="96.6" r="5" fill="#4f46e5"/><circle cx="174.3" cy="92.4" r="5" fill="#4f46e5"/><circle cx="163.8" cy="118.0" r="5" fill="#4f46e5"/><circle cx="170.5" cy="117.0" r="5" fill="#4f46e5"/><circle cx="181.5" cy="138.9" r="5" fill="#4f46e5"/><circle cx="200.8" cy="133.9" r="5" fill="#4f46e5"/><circle cx="172.2" cy="130.9" r="5" fill="#4f46e5"/><circle cx="127.4" cy="137.9" r="5" fill="#4f46e5"/><circle cx="189.9" cy="101.4" r="5" fill="#4f46e5"/><circle cx="159.1" cy="115.1" r="5" fill="#4f46e5"/><circle cx="185.7" cy="108.7" r="5" fill="#4f46e5"/><circle cx="182.9" cy="101.1" r="5" fill="#4f46e5"/><circle cx="208.7" cy="113.5" r="5" fill="#4f46e5"/><circle cx="179.1" cy="83.9" r="5" fill="#4f46e5"/><circle cx="209.3" cy="135.6" r="5" fill="#4f46e5"/><circle cx="214.9" cy="115.8" r="5" fill="#4f46e5"/><circle cx="476.5" cy="75.8" r="5" fill="#a855f7"/><circle cx="436.8" cy="111.7" r="5" fill="#a855f7"/><circle cx="542.0" cy="100.4" r="5" fill="#a855f7"/><circle cx="446.2" cy="98.2" r="5" fill="#a855f7"/><circle cx="503.5" cy="68.2" r="5" fill="#a855f7"/><circle cx="512.1" cy="64.9" r="5" fill="#a855f7"/><circle cx="527.0" cy="88.6" r="5" fill="#a855f7"/><circle cx="544.8" cy="77.2" r="5" fill="#a855f7"/><circle cx="498.0" cy="118.1" r="5" fill="#a855f7"/><circle cx="395.3" cy="104.8" r="5" fill="#a855f7"/><circle cx="409.0" cy="89.2" r="5" fill="#a855f7"/><circle cx="476.4" cy="77.2" r="5" fill="#a855f7"/><circle cx="501.6" cy="77.8" r="5" fill="#a855f7"/><circle cx="455.1" cy="106.5" r="5" fill="#a855f7"/><circle cx="481.5" cy="122.0" r="5" fill="#a855f7"/><circle cx="469.6" cy="78.6" r="5" fill="#a855f7"/><circle cx="521.3" cy="67.9" r="5" fill="#a855f7"/><circle cx="501.5" cy="92.3" r="5" fill="#a855f7"/><circle cx="566.4" cy="64.9" r="5" fill="#a855f7"/><circle cx="443.7" cy="73.4" r="5" fill="#a855f7"/><circle cx="466.1" cy="66.8" r="5" fill="#a855f7"/><circle cx="512.5" cy="83.1" r="5" fill="#a855f7"/><circle cx="432.7" cy="85.4" r="5" fill="#a855f7"/><circle cx="414.9" cy="81.1" r="5" fill="#a855f7"/><circle cx="464.9" cy="78.7" r="5" fill="#a855f7"/><circle cx="523.4" cy="80.8" r="5" fill="#a855f7"/><circle cx="571.0" cy="75.8" r="5" fill="#a855f7"/><circle cx="510.8" cy="59.7" r="5" fill="#a855f7"/><circle cx="510.2" cy="66.3" r="5" fill="#a855f7"/><circle cx="491.0" cy="79.7" r="5" fill="#a855f7"/><circle cx="459.4" cy="65.1" r="5" fill="#a855f7"/><circle cx="492.6" cy="76.0" r="5" fill="#a855f7"/><circle cx="477.9" cy="69.3" r="5" fill="#a855f7"/><circle cx="491.4" cy="86.7" r="5" fill="#a855f7"/><circle cx="443.2" cy="97.5" r="5" fill="#a855f7"/><circle cx="518.2" cy="99.8" r="5" fill="#a855f7"/><circle cx="443.2" cy="136.7" r="5" fill="#a855f7"/><circle cx="536.2" cy="100.6" r="5" fill="#a855f7"/><circle cx="476.6" cy="90.7" r="5" fill="#a855f7"/><circle cx="486.4" cy="91.7" r="5" fill="#a855f7"/><circle cx="514.8" cy="65.8" r="5" fill="#a855f7"/><circle cx="489.9" cy="98.2" r="5" fill="#a855f7"/><circle cx="509.6" cy="106.0" r="5" fill="#a855f7"/><circle cx="471.3" cy="73.3" r="5" fill="#a855f7"/><circle cx="454.5" cy="90.2" r="5" fill="#a855f7"/><circle cx="329.3" cy="193.6" r="5" fill="#f59e0b"/><circle cx="371.3" cy="215.2" r="5" fill="#f59e0b"/><circle cx="301.3" cy="170.2" r="5" fill="#f59e0b"/><circle cx="326.6" cy="201.8" r="5" fill="#f59e0b"/><circle cx="351.8" cy="192.6" r="5" fill="#f59e0b"/><circle cx="374.0" cy="185.1" r="5" fill="#f59e0b"/><circle cx="354.7" cy="214.4" r="5" fill="#f59e0b"/><circle cx="281.9" cy="155.4" r="5" fill="#f59e0b"/><circle cx="340.8" cy="197.2" r="5" fill="#f59e0b"/><circle cx="318.3" cy="193.1" r="5" fill="#f59e0b"/><circle cx="364.9" cy="188.8" r="5" fill="#f59e0b"/><circle cx="366.7" cy="193.8" r="5" fill="#f59e0b"/><circle cx="365.7" cy="184.0" r="5" fill="#f59e0b"/><circle cx="350.5" cy="202.6" r="5" fill="#f59e0b"/><circle cx="345.5" cy="219.4" r="5" fill="#f59e0b"/><circle cx="333.5" cy="195.9" r="5" fill="#f59e0b"/><circle cx="440.1" cy="186.5" r="5" fill="#f59e0b"/><circle cx="340.0" cy="205.8" r="5" fill="#f59e0b"/><circle cx="390.0" cy="226.1" r="5" fill="#f59e0b"/><circle cx="318.9" cy="170.9" r="5" fill="#f59e0b"/><circle cx="365.1" cy="208.9" r="5" fill="#f59e0b"/><circle cx="271.8" cy="185.2" r="5" fill="#f59e0b"/><circle cx="321.2" cy="206.5" r="5" fill="#f59e0b"/><circle cx="353.9" cy="205.5" r="5" fill="#f59e0b"/><circle cx="366.7" cy="192.6" r="5" fill="#f59e0b"/><circle cx="353.6" cy="200.7" r="5" fill="#f59e0b"/><circle cx="424.5" cy="187.5" r="5" fill="#f59e0b"/><circle cx="408.2" cy="210.1" r="5" fill="#f59e0b"/><circle cx="350.7" cy="159.1" r="5" fill="#f59e0b"/><circle cx="369.4" cy="205.5" r="5" fill="#f59e0b"/><circle cx="278.3" cy="188.9" r="5" fill="#f59e0b"/><circle cx="314.4" cy="194.4" r="5" fill="#f59e0b"/><circle cx="345.1" cy="167.5" r="5" fill="#f59e0b"/><circle cx="361.7" cy="165.4" r="5" fill="#f59e0b"/><circle cx="272.8" cy="176.9" r="5" fill="#f59e0b"/><circle cx="342.7" cy="200.0" r="5" fill="#f59e0b"/><circle cx="326.7" cy="191.6" r="5" fill="#f59e0b"/><circle cx="148.4" cy="233.7" r="5" fill="#14b8a6"/><circle cx="163.1" cy="243.9" r="5" fill="#14b8a6"/><circle cx="127.2" cy="246.7" r="5" fill="#14b8a6"/><circle cx="87.3" cy="234.2" r="5" fill="#14b8a6"/><circle cx="94.8" cy="222.5" r="5" fill="#14b8a6"/><circle cx="115.6" cy="215.4" r="5" fill="#14b8a6"/><circle cx="181.6" cy="229.3" r="5" fill="#14b8a6"/><circle cx="115.2" cy="232.9" r="5" fill="#14b8a6"/><circle cx="121.9" cy="211.2" r="5" fill="#14b8a6"/><circle cx="143.6" cy="217.9" r="5" fill="#14b8a6"/><circle cx="140.5" cy="238.3" r="5" fill="#14b8a6"/><circle cx="116.9" cy="227.6" r="5" fill="#14b8a6"/><circle cx="147.9" cy="228.4" r="5" fill="#14b8a6"/><circle cx="163.4" cy="235.2" r="5" fill="#14b8a6"/><circle cx="103.0" cy="217.5" r="5" fill="#14b8a6"/><circle cx="172.0" cy="211.9" r="5" fill="#14b8a6"/><circle cx="152.8" cy="230.8" r="5" fill="#14b8a6"/><circle cx="125.4" cy="222.6" r="5" fill="#14b8a6"/><circle cx="153.5" cy="221.8" r="5" fill="#14b8a6"/><circle cx="164.1" cy="223.9" r="5" fill="#14b8a6"/><circle cx="171.0" cy="228.2" r="5" fill="#14b8a6"/><circle cx="121.1" cy="245.6" r="5" fill="#14b8a6"/><circle cx="150.6" cy="224.2" r="5" fill="#14b8a6"/><circle cx="112.7" cy="225.5" r="5" fill="#14b8a6"/><circle cx="166.3" cy="237.0" r="5" fill="#14b8a6"/><circle cx="93.7" cy="243.1" r="5" fill="#14b8a6"/><circle cx="126.5" cy="204.7" r="5" fill="#14b8a6"/><circle cx="97.7" cy="225.3" r="5" fill="#14b8a6"/><circle cx="583.9" cy="242.5" r="5" fill="#ec4899"/><circle cx="613.6" cy="227.7" r="5" fill="#ec4899"/><circle cx="655.5" cy="203.9" r="5" fill="#ec4899"/><circle cx="627.9" cy="188.4" r="5" fill="#ec4899"/><circle cx="623.2" cy="212.9" r="5" fill="#ec4899"/><circle cx="630.4" cy="229.6" r="5" fill="#ec4899"/><circle cx="588.8" cy="201.7" r="5" fill="#ec4899"/><circle cx="595.7" cy="191.6" r="5" fill="#ec4899"/><circle cx="609.1" cy="230.3" r="5" fill="#ec4899"/><circle cx="621.3" cy="200.1" r="5" fill="#ec4899"/><circle cx="654.1" cy="230.8" r="5" fill="#ec4899"/><circle cx="569.4" cy="212.0" r="5" fill="#ec4899"/><circle cx="623.3" cy="195.8" r="5" fill="#ec4899"/><circle cx="600.3" cy="204.1" r="5" fill="#ec4899"/><circle cx="545.0" cy="209.6" r="5" fill="#ec4899"/><circle cx="541.8" cy="215.4" r="5" fill="#ec4899"/><circle cx="577.0" cy="199.1" r="5" fill="#ec4899"/><circle cx="609.7" cy="188.2" r="5" fill="#ec4899"/><circle cx="566.4" cy="216.4" r="5" fill="#ec4899"/><circle cx="595.4" cy="214.4" r="5" fill="#ec4899"/><circle cx="311.9" cy="302.2" r="5" fill="#22c55e"/><circle cx="279.6" cy="292.2" r="5" fill="#22c55e"/><circle cx="293.3" cy="299.0" r="5" fill="#22c55e"/><circle cx="296.9" cy="300.4" r="5" fill="#22c55e"/><circle cx="277.9" cy="294.5" r="5" fill="#22c55e"/><circle cx="293.2" cy="290.5" r="5" fill="#22c55e"/><circle cx="279.2" cy="310.9" r="5" fill="#22c55e"/><circle cx="275.0" cy="306.5" r="5" fill="#22c55e"/><circle cx="255.3" cy="293.4" r="5" fill="#22c55e"/><circle cx="272.3" cy="280.5" r="5" fill="#22c55e"/><circle cx="312.7" cy="284.1" r="5" fill="#22c55e"/><circle cx="268.1" cy="280.8" r="5" fill="#22c55e"/><circle cx="303.5" cy="298.8" r="5" fill="#22c55e"/><circle cx="277.7" cy="306.8" r="5" fill="#22c55e"/><circle cx="326.9" cy="303.4" r="5" fill="#22c55e"/><circle cx="295.7" cy="299.5" r="5" fill="#22c55e"/><circle cx="495.5" cy="313.5" r="5" fill="#0ea5e9"/><circle cx="519.4" cy="297.5" r="5" fill="#0ea5e9"/><circle cx="538.6" cy="306.3" r="5" fill="#0ea5e9"/><circle cx="533.6" cy="294.5" r="5" fill="#0ea5e9"/><circle cx="497.6" cy="287.1" r="5" fill="#0ea5e9"/><circle cx="526.2" cy="303.8" r="5" fill="#0ea5e9"/><circle cx="507.4" cy="303.6" r="5" fill="#0ea5e9"/><circle cx="554.1" cy="309.0" r="5" fill="#0ea5e9"/><circle cx="526.2" cy="319.3" r="5" fill="#0ea5e9"/><circle cx="526.7" cy="282.9" r="5" fill="#0ea5e9"/><circle cx="643.2" cy="127.6" r="5" fill="#ef4444"/><circle cx="648.4" cy="112.4" r="5" fill="#ef4444"/><circle cx="650.3" cy="117.3" r="5" fill="#ef4444"/><circle cx="657.7" cy="115.9" r="5" fill="#ef4444"/><circle cx="700.1" cy="124.3" r="5" fill="#ef4444"/><circle cx="646.1" cy="136.4" r="5" fill="#ef4444"/><circle cx="662.0" cy="130.9" r="5" fill="#ef4444"/><circle cx="462.6" cy="322.0" r="5" fill="#a1a1aa"/><circle cx="56.2" cy="148.6" r="5" fill="#a1a1aa"/><circle cx="336.4" cy="217.6" r="5" fill="#a1a1aa"/><circle cx="650.7" cy="307.7" r="5" fill="#a1a1aa"/><circle cx="72.4" cy="309.6" r="5" fill="#a1a1aa"/><circle cx="389.7" cy="76.2" r="5" fill="#a1a1aa"/><circle cx="264.9" cy="256.0" r="5" fill="#a1a1aa"/><circle cx="449.3" cy="223.9" r="5" fill="#a1a1aa"/><circle cx="405.8" cy="211.6" r="5" fill="#a1a1aa"/><circle cx="513.3" cy="69.5" r="5" fill="#a1a1aa"/><circle cx="603.7" cy="43.1" r="5" fill="#a1a1aa"/><circle cx="191.4" cy="66.9" r="5" fill="#a1a1aa"/><circle cx="668.1" cy="60.3" r="5" fill="#a1a1aa"/><circle cx="258.0" cy="135.4" r="5" fill="#a1a1aa"/><circle cx="79.3" cy="154.9" r="5" fill="#a1a1aa"/><circle cx="619.9" cy="281.4" r="5" fill="#a1a1aa"/><circle cx="220.9" cy="279.1" r="5" fill="#a1a1aa"/><circle cx="222.2" cy="148.0" r="5" fill="#a1a1aa"/><circle cx="297.9" cy="231.1" r="5" fill="#a1a1aa"/><circle cx="263.6" cy="253.8" r="5" fill="#a1a1aa"/><circle cx="178.4" cy="295.6" r="5" fill="#a1a1aa"/><circle cx="334.6" cy="153.5" r="5" fill="#a1a1aa"/><circle cx="160.4" cy="253.4" r="5" fill="#a1a1aa"/><circle cx="675.0" cy="30.3" r="5" fill="#a1a1aa"/><circle cx="549.4" cy="67.2" r="5" fill="#a1a1aa"/><circle cx="150.9" cy="278.0" r="5" fill="#a1a1aa"/><circle cx="569.6" cy="122.2" r="5" fill="#a1a1aa"/><circle cx="285.8" cy="125.6" r="5" fill="#a1a1aa"/><circle cx="156.3" cy="179.3" r="5" fill="#a1a1aa"/></svg></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note"><b>This is the production-only map; the one in Evaluations is a different chart.</b> Here every dot is a classified trace coloured by its intent, so it shows what the traffic is about. The coverage map in section 18 places dataset cases into the same picture and colours by source instead, so it shows which of that traffic has a test behind it. The Overview embeds this map as its Topic map card.</p>
+</section>
+
+<div class="part"><span class="pn">Triage</span></div>
+
+<section class="sec" id="review">
+  <span class="eyebrow">07 &middot; Observability</span>
+  <h3>A verdict queue for everything flagged</h3>
+  <p class="lede">Detections, low judge scores and user downvotes collect in one queue, grouped by category and ordered worst first. Each carries five verdicts &mdash; Confirm, Fixed, Ignore, Wrong judgement, Add to dataset &mdash; with keyboard shortcuts for working through them.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Review &middot; Review signals</b></div>
+      <div class="tabs"><span class="tab on">Review signals</span><span class="tab">Review samples <span class="c">6</span></span></div>
+      <div class="body">
+        <div class="hrow"><div class="hctl" style="margin:0"><span class="ctl on">Open tasks 12</span><span class="ctl">All 207</span><span class="ctl">Confirmed 48</span><span class="ctl">Fixed 121</span><span class="ctl">Wrongly judged 19</span><span class="ctl">Ignored 7</span></div></div>
+        <div class="cols">
+          <div class="rcol" style="flex:1 1 300px;min-width:260px">
+            <div class="panel"><div class="phead"><span class="ptitle">Queue</span><span class="psub" style="margin-left:auto">4 of 12 triaged</span></div>
+              <div class="pbody flush"><div class="scroll"><table><tbody>
+                <tr><td class="w"><span class="lab s">Response &amp; session quality</span></td><td class="r"><span class="cnt">5</span></td></tr>
+                <tr><td class="w"><span class="lab s">Tool &amp; execution failures</span></td><td class="r"><span class="cnt">4</span></td></tr>
+                <tr><td class="w"><span class="lab s">Sensitive data</span></td><td class="r"><span class="cnt">2</span></td></tr>
+                <tr><td class="w"><span class="lab s">Other signals</span></td><td class="r"><span class="cnt">1</span></td></tr>
+              </tbody></table></div></div>
+            </div>
+          </div>
+          <div class="lcol">
+            <div class="panel"><div class="phead"><span class="badge b-err">High</span><span class="ptitle">Policy adherence</span><span class="psub" style="margin-left:auto">1 of 12</span></div>
+              <div class="pbody">
+                <p style="font-size:14px;color:var(--n900);font-weight:500">Refund promised without a policy clause cited</p>
+                <div class="key" style="margin-top:9px"><span>Agent <b style="color:var(--n900)">billing-copilot</b></span><span>Occurrences <b style="color:var(--n900)">61</b></span><span>Last seen <b style="color:var(--n900)">41m ago</b></span></div>
+                <div class="panel raised" style="margin-top:12px"><div class="pbody">
+                  <div class="lab s">Judge score</div>
+                  <div class="kv"><span class="val xl t-err">4.2</span><span class="qual">of 10 &middot; below 6.0</span></div>
+                  <div class="track"><div class="fill" style="width:42%;background:var(--err)"></div><div class="tick" style="left:60%"></div></div>
+                  <div class="axis"><span>0</span><span>threshold 6.0</span><span>10</span></div>
+                </div></div>
+                <div class="lab s" style="margin-top:14px">Judge rationale</div>
+                <p style="font-size:12.5px;color:var(--n600);margin-top:5px">The reply commits to a refund and a timeline without naming the clause it relied on, and without checking the settlement currency. The policy requires both before any commitment is made.</p>
+                <div class="lab s" style="margin-top:14px">Agent response</div>
+                <p style="font-size:12.5px;color:var(--n600);margin-top:5px">&ldquo;Good news &mdash; I&rsquo;ve approved your refund and you should see it back on your card within 3&ndash;5 business days.&rdquo;</p>
+                <div class="hctl" style="margin:16px 0 0"><span class="btn pri">Confirm <span class="muted" style="color:inherit;opacity:.6">C</span></span><span class="btn">Fixed <span class="muted">X</span></span><span class="btn">Ignore <span class="muted">I</span></span><span class="btn">Wrong judgement <span class="muted">W</span></span><span class="btn">Add to dataset <span class="muted">A</span></span></div>
+                <p class="psub" style="margin-top:10px">j/k move &middot; c confirm &middot; x fixed &middot; i ignore &middot; w wrong &middot; a dataset</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>Wrong judgement is recorded, not discarded.</b> Marking a flag incorrect stores it as correction ground truth, which is what the judge-calibration and judge-tuning surfaces measure against.</p>
+</section>
+
+<section class="sec" id="scorers">
+  <span class="eyebrow">08 &middot; Observability</span>
+  <h3>Five kinds of scorer in one table</h3>
+  <p class="lede">Pattern, LLM judge, code, external and template scorers share one table, each with its own severity, sampling rate and scope. Six safety and reliability templates ship with the engine.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Scorers</b></div>
+      <div class="body">
+        <div class="hctl" style="margin:0"><span class="ctl on">Scorers</span><span class="ctl">Groups</span></div>
+        <div class="kpis">
+          <div class="kpi"><div class="lab">Enabled</div><div class="kv"><span class="val">9</span></div><div class="foot">of 16 scorers</div></div>
+          <div class="kpi"><div class="lab">Firing this week</div><div class="kv"><span class="val">6</span></div><div class="foot">raising signals</div></div>
+          <div class="kpi"><div class="lab">Signals &middot; 7d</div><div class="kv"><span class="val">207</span></div><div class="foot">occurrences</div></div>
+          <div class="kpi"><div class="lab">Off</div><div class="kv"><span class="val mut">7</span></div><div class="foot">available, not running</div></div>
+        </div>
+        <div class="hrow"><div class="hctl" style="margin:0"><span class="ctl on">All 16</span><span class="ctl">Enabled 9</span><span class="ctl">Firing 6</span><span class="ctl">Off 7</span></div><div class="hctl"><span class="ctl">Search scorers</span><span class="ctl">New scorer</span></div></div>
+        <div class="panel"><div class="pbody flush"><div class="scroll"><table style="min-width:860px">
+          <thead><tr><th>Scorer</th><th style="width:104px">Severity</th><th style="width:150px">Kind</th><th style="width:140px">Signals &middot; 7d</th><th class="r" style="width:88px">Enabled</th></tr></thead>
+          <tbody>
+            <tr><td class="w k">Secrets in response <span class="badge b-neu">v1</span><div class="muted" style="font-weight:400">API keys, bearer tokens, JWTs or private-key blocks in a reply.</div></td><td><span class="badge b-err">Critical</span></td><td>Template<div class="muted" style="font-size:11px">regex match</div></td><td class="muted">None yet</td><td class="r">On</td></tr>
+            <tr><td class="w k">PII in response <span class="badge b-neu">v1</span><div class="muted" style="font-weight:400">Emails, phone numbers, SSNs or card numbers in a reply.</div></td><td><span class="badge b-err">High</span></td><td>Template<div class="muted" style="font-size:11px">regex match</div></td><td class="t-err">23</td><td class="r">On</td></tr>
+            <tr><td class="w k">Prompt injection echo <span class="badge b-neu">v1</span><div class="muted" style="font-weight:400">Replies repeating known jailbreak phrasings.</div></td><td><span class="badge b-err">High</span></td><td>Template<div class="muted" style="font-size:11px">phrase match</div></td><td class="t-err">4</td><td class="r">On</td></tr>
+            <tr><td class="w k">Policy adherence <span class="badge b-neu">v3</span><div class="muted" style="font-weight:400">Scores a sample of live traffic with an LLM judge.</div></td><td><span class="badge b-err">High</span></td><td>LLM judge<div class="muted" style="font-size:11px">alert below 6.0</div></td><td class="t-err">61</td><td class="r">On</td></tr>
+            <tr><td class="w k">Session Baseline Judge <span class="badge b-neu">built-in</span><div class="muted" style="font-weight:400">Judges whole conversations once they go idle.</div></td><td><span class="badge b-neu">Low</span></td><td>LLM judge<div class="muted" style="font-size:11px">session scope</div></td><td class="t-pend">37</td><td class="r">On</td></tr>
+            <tr><td class="w k">Refund amount matches ledger <span class="badge b-neu">v2</span><div class="muted" style="font-weight:400">Sandboxed JS check against the quoted figure.</div></td><td><span class="badge b-pend">Medium</span></td><td>Code<div class="muted" style="font-size:11px">alert below 1.00</div></td><td class="t-pend">14</td><td class="r">On</td></tr>
+            <tr><td class="w k">Compliance gate <span class="badge b-neu">v1</span><div class="muted" style="font-weight:400">Hands the verdict to your own endpoint.</div></td><td><span class="badge b-err">High</span></td><td>External<div class="muted" style="font-size:11px">endpoint verdict</div></td><td class="muted">None yet</td><td class="r">On</td></tr>
+            <tr><td class="w k">Malformed JSON response <span class="badge b-neu">v1</span><div class="muted" style="font-weight:400">Flags replies that will not parse as JSON.</div></td><td><span class="badge b-pend">Medium</span></td><td>Template<div class="muted" style="font-size:11px">code check</div></td><td class="t-pend">38</td><td class="r">On</td></tr>
+            <tr><td class="w k muted">Profanity in response</td><td><span class="badge b-pend">Medium</span></td><td class="muted">Template</td><td class="muted">Not running</td><td class="r muted">Off</td></tr>
+          </tbody></table></div></div></div>
+        <p class="psub">New scorer: <b style="color:var(--n700)">Pattern</b> &middot; <b style="color:var(--n700)">LLM judge</b> &middot; <b style="color:var(--n700)">Code</b> &middot; <b style="color:var(--n700)">External</b> &middot; <b style="color:var(--n700)">Template</b>. Each judge carries its own sample rate, alert threshold, severity, and a per-trace or per-session scope.</p>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>Pattern and code scorers make no model call.</b> Regex, phrase and code checks run at zero LLM cost, which is what makes sampling the judge scorers practical.</p>
+</section>
+
+<section class="sec" id="rules">
+  <span class="eyebrow">09 &middot; Observability</span>
+  <h3>Routing traces to review, datasets or webhooks</h3>
+  <p class="lede">A rule matches incoming traces and routes them: into the review queue, into a dataset, or out to a webhook. Sampling is set per rule, and scoring stays a separate concern &mdash; a judge scorer owns its own sampling.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Rules</b></div>
+      <div class="body">
+        <p class="blurb">Rules route traffic: they send matching traces to human review, into a dataset, or out to a webhook. Scoring is a separate job - a judge scorer owns its own sampling, so no rule here changes what a judge costs.</p>
+        <div class="panel"><div class="pbody flush"><div class="scroll"><table style="min-width:680px">
+          <tbody>
+            <tr><td style="width:52px">On</td><td class="w k">Sample support traffic for review</td><td><span class="badge b-info">Send to review</span></td><td class="w muted">10% of matching traces</td><td class="muted r">fired 318x &middot; last 4m ago</td></tr>
+            <tr><td>On</td><td class="w k">Capture billing errors as cases</td><td><span class="badge b-info">Add to dataset</span></td><td class="w muted">100% of errored traces containing &ldquo;refund&rdquo;</td><td class="muted r">fired 46x &middot; last 2h ago</td></tr>
+            <tr><td>On</td><td class="w k">Page on-call for sensitive data</td><td><span class="badge b-info">Post to webhook</span></td><td class="w muted">100% of errored traces</td><td class="muted r">fired 3x &middot; last 1d ago</td></tr>
+            <tr><td class="muted">Off</td><td class="w k muted">Archive long-tail docs questions</td><td><span class="badge b-neu">Add to dataset</span></td><td class="w muted">5% of matching traces on gemini-2.5-flash</td><td class="muted r">never fired</td></tr>
+          </tbody></table></div></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<div class="zone zone-eval">
+
+<div class="pillar" id="pillar-evaluations"><div class="pillar-h"><span class="pillar-k">Pillar</span><h2>Evaluations</h2></div><p class="pillar-b">Testing against datasets, checking those datasets against production, and validating a change before it ships.</p><p class="pillar-i">Datasets &middot; The case editor &middot; Evaluation runs &middot; AI Analysis &middot; Playground &middot; Conversation simulation &middot; Model Portability &middot; Dataset coverage &middot; The coverage map &middot; The coverage probe &middot; Prompt &amp; tool registries &middot; Improvement proposals &middot; CI Gates</p></div>
+
+<div class="part"><span class="pn">Datasets and runs</span></div>
+
+<section class="sec" id="datasets">
+  <span class="eyebrow">10 &middot; Evaluations</span>
+  <h3>Datasets, and where their cases come from</h3>
+  <p class="lede">Cases can be promoted from a trace or a session, generated from source text, or imported from a spreadsheet. The list reports how many cases in each dataset carry scoring checks, and when the dataset last backed a run.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Datasets</b></div>
+      <div class="body">
+        <div class="hrow"><div class="hctl" style="margin:0"><span class="ctl on">All 3</span><span class="ctl">Never run</span><span class="ctl">Multi-version 2</span><span class="ctl">Needs work 1</span></div><div class="hctl"><span class="ctl">Sort: Recently updated</span><span class="ctl">New dataset</span></div></div>
+        <div class="panel"><div class="pbody flush"><div class="scroll"><table style="min-width:820px">
+          <thead><tr><th>Dataset</th><th class="r" style="width:76px">Cases</th><th style="width:170px">Composition</th><th style="width:160px">Last used</th><th style="width:92px">Updated</th></tr></thead>
+          <tbody>
+            <tr><td class="w k">Billing refund golden set <span class="badge b-info">v3</span><div class="muted" style="font-weight:400">Refund eligibility, split payments, closed cards, FX mismatches.</div></td><td class="r">24</td><td><div class="minibar" style="width:96px"><div style="width:79%;background:var(--ok)"></div></div><div class="muted" style="font-size:11px">19 of 24 with checks &middot; 6 follow-ups</div></td><td><span class="sdot" style="background:var(--ok)"></span> <span class="muted">v3 run &middot; 2h ago</span></td><td class="muted">Oct 23</td></tr>
+            <tr><td class="w k">Docs answering regression <span class="badge b-info">v2</span><div class="muted" style="font-weight:400">API, limits and auth questions with cited sources.</div></td><td class="r">58</td><td><div class="minibar" style="width:96px"><div style="width:100%;background:var(--ok)"></div></div><div class="muted" style="font-size:11px">all with checks</div></td><td><span class="sdot" style="background:var(--ok)"></span> <span class="muted">CI run &middot; 5h ago</span></td><td class="muted">Oct 21</td></tr>
+            <tr><td class="w k">Escalation routing <div class="muted" style="font-weight:400">When to hand off to a human.</div></td><td class="r">30</td><td><div class="minibar" style="width:96px"><div style="width:30%;background:var(--pend)"></div></div><div class="muted" style="font-size:11px">9 of 30 with checks</div></td><td class="muted">Never run</td><td class="muted">Oct 14</td></tr>
+          </tbody></table></div></div>
+          <div class="phead" style="border-bottom:0;border-top:1px solid var(--n200)"><span class="psub">3 datasets &middot; 112 cases</span><span class="psub" style="margin-left:auto">1 never used in an eval run</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sec" id="cases">
+  <span class="eyebrow">11 &middot; Evaluations</span>
+  <h3>Four scoring checks per case</h3>
+  <p class="lede">Beyond a question and an expected result, a case can pin the tool calls it should make, the context it should retrieve, a judging guideline specific to it, and a smoke test that rephrases it several ways each run. Cases can carry follow-up turns and be tagged into splits.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> Datasets <span class="sep">&rsaquo;</span> <b>Billing refund golden set</b><span class="right">Publish dataset</span></div>
+      <div class="tabs"><span class="tab on">Cases <span class="c">24</span></span><span class="tab">Import &amp; generate</span></div>
+      <div class="body">
+        <div class="cols">
+          <div class="lcol">
+            <div class="panel"><div class="pbody flush"><div class="scroll"><table style="min-width:620px">
+              <thead><tr><th style="width:36px">#</th><th>Question</th><th>Expected result</th><th class="r" style="width:84px">Followups</th><th style="width:150px">Checks</th></tr></thead>
+              <tbody>
+                <tr><td class="muted">1</td><td class="w k">Refund requested outside the 30-day window</td><td class="w">States the window has passed and offers the exception path.</td><td class="r">&ndash;</td><td><span class="badge b-neu">JUDGE</span> <span class="badge b-neu">TOOLS</span></td></tr>
+                <tr><td class="muted">2</td><td class="w k">Partial refund on a split payment</td><td class="w">Splits the refund across both methods proportionally.</td><td class="r">+2</td><td><span class="badge b-neu">TOOLS</span> <span class="badge b-neu">CTX</span></td></tr>
+                <tr><td class="muted">3</td><td class="w k">Refund to a closed card</td><td class="w">Explains it returns to the original method and may need bank follow-up.</td><td class="r">&ndash;</td><td><span class="badge b-neu">SMOKE</span> <span class="badge b-neu">JUDGE</span></td></tr>
+                <tr><td class="muted">4</td><td class="w k">Currency mismatch, EUR charge refunded in USD</td><td class="w">Quotes the settlement amount after checking the FX rate.</td><td class="r">+1</td><td><span class="badge b-neu">TOOLS</span></td></tr>
+                <tr><td class="muted">5</td><td class="w k">Duplicate charge, same day</td><td class="w muted">No expected result yet</td><td class="r">&ndash;</td><td class="muted">&ndash;</td></tr>
+              </tbody></table></div></div>
+              <div class="phead" style="border-bottom:0;border-top:1px solid var(--n200)"><span class="psub">5 of 24 cases shown</span><span class="psub" style="margin-left:auto">1 case is missing an expected result</span></div>
+            </div>
+          </div>
+          <div class="rcol">
+            <div class="panel"><div class="phead"><span class="ptitle">Case 3</span><span class="badge b-ok">Ready</span></div>
+              <div class="pbody">
+                <div class="lab s">Query</div>
+                <div class="panel raised" style="margin-top:5px"><div class="pbody" style="padding:9px 11px;font-size:12.5px;color:var(--n700)">My card is closed &mdash; where does the refund go?</div></div>
+                <div class="lab s" style="margin-top:12px">Expected result</div>
+                <div class="panel raised" style="margin-top:5px"><div class="pbody" style="padding:9px 11px;font-size:12.5px;color:var(--n700)">Explains the refund returns to the original method and may need bank follow-up. Does not promise a timeline.</div></div>
+                <div class="lab s" style="margin-top:14px">Scoring checks <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">2 of 4 on</span></div>
+                <div class="scroll" style="margin-top:6px"><table><tbody>
+                  <tr><td class="w k">Smoke test<div class="muted" style="font-weight:400">Ask this question several ways each run.</div></td><td class="r"><span class="badge b-ok">3 variants</span></td></tr>
+                  <tr><td class="w k">Judge guideline<div class="muted" style="font-weight:400">Extra instructions just for this question.</div></td><td class="r"><span class="badge b-ok">On</span></td></tr>
+                  <tr><td class="w k muted">Expected tool calls<div class="muted" style="font-weight:400">Pass/fail, no judge call.</div></td><td class="r muted">Off</td></tr>
+                  <tr><td class="w k muted">Expected retrieval context<div class="muted" style="font-weight:400">Deterministic, no judge call.</div></td><td class="r muted">Off</td></tr>
+                </tbody></table></div>
+                <div class="lab s" style="margin-top:12px">Splits</div>
+                <p class="psub" style="margin-top:4px">smoke, regression &mdash; a run scoped to one split only includes cases tagged with it.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>Two of the four checks are deterministic.</b> Expected tool calls are compared against what the agent invoked, and expected retrieval context against what the retriever fetched. Both resolve without a model call.</p>
+</section>
+
+<section class="sec" id="runs">
+  <span class="eyebrow">12 &middot; Evaluations</span>
+  <h3>Per-case results, with repeats and spread</h3>
+  <p class="lede">A run executes the agent against every case and grades the answers with the selected scorers &mdash; up to four judges, four similarity metrics, and any code scorers. Repeating each case reports a spread rather than a single figure.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Evaluate &middot; Runs</b></div>
+      <div class="tabs"><span class="tab on">Runs</span><span class="tab">Datasets</span></div>
+      <div class="body">
+        <div class="panel"><div class="pbody flush"><div class="scroll"><table style="min-width:900px">
+          <thead><tr><th>Source</th><th style="width:96px">Rating</th><th style="width:180px">Dataset</th><th style="width:180px">Scorers</th><th style="width:120px">Created</th><th style="width:130px">Status</th></tr></thead>
+          <tbody>
+            <tr><td class="w k">billing-copilot<div class="muted" style="font-weight:400">LangChain</div></td><td><span class="k">7.5</span><div class="minibar" style="width:56px;margin-top:3px"><div style="width:75%;background:var(--ok)"></div></div></td><td class="w">Billing refund golden set <span class="muted">(v3)</span></td><td class="w">Policy adherence <span class="badge b-neu">+2</span></td><td class="muted">Oct 23<div>14:08</div></td><td><span class="badge b-ok">View details</span> <span class="badge b-ok">CI PASS</span></td></tr>
+            <tr><td class="w k">billing-copilot<div class="muted" style="font-weight:400">LangChain</div></td><td><span class="k t-err">6.8</span><div class="minibar" style="width:56px;margin-top:3px"><div style="width:68%;background:var(--err)"></div></div></td><td class="w">Billing refund golden set <span class="muted">(v3)</span></td><td class="w">Policy adherence <span class="badge b-neu">+2</span></td><td class="muted">Oct 22<div>17:42</div></td><td><span class="badge b-ok">View details</span> <span class="badge b-err">CI FAIL</span></td></tr>
+            <tr><td class="w k">docs-answerer<div class="muted" style="font-weight:400">AgentX</div></td><td><span class="k">8.9</span><div class="minibar" style="width:56px;margin-top:3px"><div style="width:89%;background:var(--ok)"></div></div></td><td class="w">Docs answering regression <span class="muted">(v2)</span></td><td class="w">Grounded answer <span class="badge b-neu">(group)</span></td><td class="muted">Oct 22<div>09:15</div></td><td><span class="badge b-ok">View details</span> <span class="badge b-ok">CI PASS</span></td></tr>
+            <tr><td class="w k">billing-copilot <span class="badge b-info">Live</span><div class="muted" style="font-weight:400">production_trace</div></td><td><span class="muted">63%</span><div class="minibar" style="width:56px;margin-top:3px"><div style="width:63%;background:var(--acc)"></div></div></td><td class="w">Billing refund golden set <span class="muted">(v3)</span></td><td class="w">Policy adherence</td><td class="muted">Oct 23<div>14:31</div></td><td><span class="badge b-pend">In Progress</span></td></tr>
+          </tbody></table></div></div></div>
+
+        <div class="panel"><div class="phead"><span class="ptitle">Billing refund golden set</span><span class="psub">Oct 23, 2026 2:08 PM &middot; Dataset Version: v3 &middot; 24 questions &middot; 3 runs</span><span class="hctl" style="margin-left:auto"><span class="ctl">Compare runs</span><span class="ctl">Analyze</span></span></div>
+          <div class="pbody">
+            <div class="kv" style="margin-top:0"><span class="val xl">7.5</span><span class="qual">average rating across 72 scored results</span></div>
+            <div class="track" style="height:9px"><div class="fill" style="width:75%;background:var(--ok)"></div></div>
+            <div class="hctl" style="margin:12px 0 0"><span class="ctl">Policy adherence 7.2</span><span class="ctl">Tone &amp; clarity 8.4</span><span class="ctl">Refund amount matches ledger 6.9</span></div>
+          </div>
+          <div class="pbody flush"><div class="scroll"><table style="min-width:900px">
+            <thead>
+              <tr><th rowspan="2" style="width:34px">#</th><th rowspan="2">Question</th><th rowspan="2">Expected Response</th><th colspan="3" style="text-align:center;border-left:1px solid var(--n200)">Metrics</th><th rowspan="2" class="r" style="width:70px;border-left:1px solid var(--n200)">Scores</th><th rowspan="2" class="r" style="width:76px">Latency</th></tr>
+              <tr><th style="border-left:1px solid var(--n200)">Cosine</th><th>Jaccard</th><th>BLEU / ROUGE-L</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="muted">1</td><td class="w k">Refund outside the 30-day window</td><td class="w">States the window has passed, offers the exception path.</td><td style="border-left:1px solid var(--n200)">94.0%</td><td>71.0%</td><td>62.0% / 80.0%</td><td class="r" style="border-left:1px solid var(--n200)"><span class="badge b-ok">9.2</span></td><td class="r">1.41s</td></tr>
+              <tr><td class="muted">2</td><td class="w k">Partial refund on a split payment <span class="muted" style="font-weight:400">&middot; 3 runs: 4.8&ndash;6.1 (var 0.42)</span></td><td class="w">Splits the refund across both methods proportionally.</td><td style="border-left:1px solid var(--n200)">68.0%</td><td>41.0%</td><td>29.0% / 47.0%</td><td class="r" style="border-left:1px solid var(--n200)"><span class="badge b-err">5.4</span></td><td class="r">2.880s</td></tr>
+              <tr><td class="muted">3</td><td class="w k">Refund to a closed card <span class="muted" style="font-weight:400">&middot; Smoke test 2/3</span></td><td class="w">Returns to original method, no timeline promised.</td><td style="border-left:1px solid var(--n200)">61.0%</td><td>33.0%</td><td>22.0% / 39.0%</td><td class="r" style="border-left:1px solid var(--n200)"><span class="badge b-err">4.8</span></td><td class="r">1.92s</td></tr>
+              <tr><td class="muted">4</td><td class="w k">Currency mismatch, EUR to USD</td><td class="w">Quotes the settlement amount after checking FX.</td><td style="border-left:1px solid var(--n200)">86.0%</td><td>58.0%</td><td>48.0% / 69.0%</td><td class="r" style="border-left:1px solid var(--n200)"><span class="badge b-ok">7.9</span></td><td class="r">2.04s</td></tr>
+              <tr><td class="muted">5</td><td class="w k">Duplicate charge, same day</td><td class="w muted">&mdash;</td><td style="border-left:1px solid var(--n200)" class="muted">&ndash;</td><td class="muted">&ndash;</td><td class="muted">&ndash;</td><td class="r" style="border-left:1px solid var(--n200)"><span class="badge b-neu">not scored</span></td><td class="r">1.11s</td></tr>
+            </tbody></table></div></div>
+          <div class="phead" style="border-bottom:0;border-top:1px solid var(--n200)"><span class="psub">5 of 24 cases shown &middot; each model ran the full dataset 3 times</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>The spread column reports reliability separately from quality.</b> Three runs of one case returning 4.8&ndash;6.1 states something a single 5.4 does not.</p>
+</section>
+
+<section class="sec" id="analysis">
+  <span class="eyebrow">13 &middot; Evaluations</span>
+  <h3>A judge panel, and its own agreement metrics</h3>
+  <p class="lede">Several judges independently re-rate a sample of the run, and the results reduce through four pipeline levels into a written assessment covering strengths, weaknesses, reasoning, tool usage and suggested instruction changes. Agreement, mean absolute error and kappa report how far the judges agreed with each other.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> Evaluate <span class="sep">&rsaquo;</span> <b>AI Analysis</b></div>
+      <div class="body">
+        <div class="hrow"><div class="hctl" style="margin:0"><span class="ctl">Status <b style="color:var(--n900)">Completed</b></span><span class="ctl">Progress <b style="color:var(--n900)">100%</b></span><span class="ctl">Cost <b style="color:var(--n900)">$0.42</b></span></div><div class="hctl"><span class="ctl">Analysis settings</span><span class="ctl">Re-analyze</span></div></div>
+        <div class="kpis">
+          <div class="kpi"><div class="lab">Agreement</div><div class="kv"><span class="val">86%</span></div><div class="foot">Share of Judge A/B pairs whose scores were within 1.5 points.</div></div>
+          <div class="kpi"><div class="lab">Judge MAE</div><div class="kv"><span class="val">0.74</span></div><div class="foot">Mean absolute error between judges. Lower means tighter agreement.</div></div>
+          <div class="kpi"><div class="lab">Kappa</div><div class="kv"><span class="val">0.61</span></div><div class="foot">Weighted inter-judge agreement beyond chance. Higher is more reliable.</div></div>
+          <div class="kpi"><div class="lab">Human Review</div><div class="kv"><span class="val" style="color:var(--pend)">4</span></div><div class="foot">Items flagged for manual review due to low confidence or disagreement.</div></div>
+        </div>
+        <div class="kpis k5">
+          <div class="kpi"><div class="lab">Runs</div><div class="kv"><span class="val">72</span></div></div>
+          <div class="kpi"><div class="lab">Average Score</div><div class="kv"><span class="val">7.5</span></div></div>
+          <div class="kpi"><div class="lab">Score Range</div><div class="kv"><span class="val">4.2&ndash;9.4</span></div></div>
+          <div class="kpi"><div class="lab">Score Variance</div><div class="kv"><span class="val">1.38</span></div></div>
+          <div class="kpi"><div class="lab">Consistency</div><div class="kv"><span class="val">78%</span></div></div>
+        </div>
+        <div class="grid2">
+          <div class="panel"><div class="phead"><span class="ptitle">Overall Assessment</span><span class="badge b-pend" style="margin-left:auto">Needs attention</span></div><div class="pbody">
+            <div class="lab s">Strengths</div><p style="font-size:12.5px;color:var(--n600);margin:5px 0 11px">Consistently cites the governing policy clause on straightforward refunds, and the tone stays calm when the customer is not.</p>
+            <div class="lab s">Weaknesses</div><p style="font-size:12.5px;color:var(--n600);margin-top:5px">Commits to refund timelines it has not verified, and skips the FX lookup whenever the charge and settlement currencies differ.</p>
+          </div></div>
+          <div class="panel"><div class="phead"><span class="ptitle">Tool Usage</span><span class="badge b-err" style="margin-left:auto">Issues found</span></div><div class="pbody">
+            <div class="lab s">Effectiveness</div><p style="font-size:12.5px;color:var(--n600);margin:5px 0 11px"><code>lookup_account</code> and <code>retrieve_invoice</code> are called reliably and in the right order.</p>
+            <div class="lab s">Issues</div><p style="font-size:12.5px;color:var(--n600);margin-top:5px"><code>lookup_fx_rate</code> was skipped on 9 of 11 multi-currency cases, and called with the charge currency rather than the settlement currency on the remaining two.</p>
+          </div></div>
+        </div>
+        <div class="panel"><div class="phead"><span class="ptitle">LLM Judge Lineup</span></div><div class="pbody flush"><div class="scroll"><table><tbody>
+          <tr><td class="w k">Judge A</td><td class="mono">gpt-4.1</td><td class="muted r">OPENAI</td></tr>
+          <tr><td class="w k">Judge B</td><td class="mono">claude-sonnet-4-5</td><td class="muted r">ANTHROPIC</td></tr>
+          <tr><td class="w k">Judge C</td><td class="mono">gemini-2.5-flash</td><td class="muted r">GOOGLE</td></tr>
+        </tbody></table></div></div></div>
+        <p class="psub">Pipeline: <b style="color:var(--n700)">L1 Judge Scoring</b> &rarr; <b style="color:var(--n700)">L2 Question Reduce</b> &rarr; <b style="color:var(--n700)">L3 Cluster Reduce</b> &rarr; <b style="color:var(--n700)">L4 Final Analysis</b>. Also reported: Instruction Adherence, Response Patterns, Reasoning Analysis, Delegation Analysis, and Suggested Instruction Changes.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="part"><span class="pn">Experiments</span></div>
+
+<section class="sec" id="playground">
+  <span class="eyebrow">14 &middot; Evaluations</span>
+  <h3>Cases by models, with tools attached</h3>
+  <p class="lede">A grid of dataset cases against models. Each cell holds the answer, the tool calls made, latency, cost and score. Tools come from the registry or are defined inline, and a tool with no endpoint returns simulated results &mdash; so tool choice and argument formation can be tested before the tool exists.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Playground</b><span class="right">Edit &middot; History &middot; 7</span></div>
+      <div class="body">
+        <div class="cols">
+          <div class="rcol" style="flex:1 1 280px;min-width:250px">
+            <div class="panel"><div class="phead"><span class="ptitle">Prompt</span><span class="psub" style="margin-left:auto">2 messages</span></div><div class="pbody">
+              <div class="hctl" style="margin:0 0 7px"><span class="ctl on">system</span></div>
+              <div class="panel raised"><div class="pbody" style="padding:9px 11px;font-size:12px;color:var(--n600)">You are a billing agent for Northwind. Always cite the policy clause you relied on. Call lookup_fx_rate whenever the charge currency differs from the settlement currency&hellip;</div></div>
+              <p class="psub" style="margin-top:8px"><b style="color:var(--n700)">User</b> <code>{{ dataset question }}</code> appended automatically on every run</p>
+            </div></div>
+            <div class="panel"><div class="phead"><span class="ptitle">Tools</span><span class="psub" style="margin-left:auto">From Tools &amp; MCPs</span></div><div class="pbody flush"><div class="scroll"><table><tbody>
+              <tr><td class="w k mono">lookup_account</td><td class="r"><span class="badge b-ok">live</span></td></tr>
+              <tr><td class="w k mono">retrieve_invoice</td><td class="r"><span class="badge b-ok">live</span></td></tr>
+              <tr><td class="w k mono">lookup_fx_rate</td><td class="r"><span class="badge b-pend">simulated</span></td></tr>
+              <tr><td class="w k mono">northwind-billing &rsaquo; refund<div class="muted" style="font-weight:400">MCP &middot; connected</div></td><td class="r"><span class="badge b-ok">live</span></td></tr>
+            </tbody></table></div></div>
+              <div class="phead" style="border-bottom:0;border-top:1px solid var(--n200)"><span class="psub">Blank endpoint simulates results</span></div>
+            </div>
+          </div>
+          <div class="lcol">
+            <div class="panel"><div class="phead"><span class="ptitle">Model &amp; case comparison</span><span class="hctl" style="margin-left:auto"><span class="ctl on">Score</span><span class="ctl">Latency</span><span class="ctl">Cost</span></span></div>
+              <div class="pbody flush"><div class="scroll"><table style="min-width:640px">
+                <thead><tr><th style="width:220px">Question</th><th>gpt-4o-mini</th><th>claude-sonnet-4-5</th><th>gemini-2.5-flash</th></tr></thead>
+                <tbody>
+                  <tr><td class="w k">Refund to a closed card<div class="muted" style="font-weight:400">Expected: returns to original method&hellip;</div></td>
+                    <td><span class="val" style="font-size:16px;color:var(--err)">4.8</span><div class="muted mono" style="font-size:10.5px">1 tool &middot; wrong args<br>1.2s &middot; 2.4k tok &middot; $0.000512</div></td>
+                    <td><span class="val" style="font-size:16px;color:var(--ok)">8.6</span><div class="muted mono" style="font-size:10.5px">2 tools &middot; ok<br>3.0s &middot; 5.1k tok &middot; $0.023900</div></td>
+                    <td><span class="val" style="font-size:16px;color:var(--pend)">6.9</span><div class="muted mono" style="font-size:10.5px">1 tool &middot; ok<br>0.9s &middot; 1.9k tok &middot; $0.001020</div></td></tr>
+                  <tr><td class="w k">Partial refund, split payment<div class="muted" style="font-weight:400">Expected: splits proportionally&hellip;</div></td>
+                    <td><span class="val" style="font-size:16px;color:var(--err)">5.4</span><div class="muted mono" style="font-size:10.5px">no tool called<br>1.1s &middot; 2.2k tok &middot; $0.000468</div></td>
+                    <td><span class="val" style="font-size:16px;color:var(--ok)">8.2</span><div class="muted mono" style="font-size:10.5px">2 tools &middot; ok<br>2.8s &middot; 4.9k tok &middot; $0.022100</div></td>
+                    <td><span class="val" style="font-size:16px;color:var(--pend)">6.4</span><div class="muted mono" style="font-size:10.5px">1 tool &middot; ok<br>0.8s &middot; 1.8k tok &middot; $0.000940</div></td></tr>
+                  <tr><td class="w k">Currency mismatch, EUR to USD<div class="muted" style="font-weight:400">Expected: quotes settlement amount&hellip;</div></td>
+                    <td><span class="val" style="font-size:16px;color:var(--ok)">7.9</span><div class="muted mono" style="font-size:10.5px">2 tools &middot; ok<br>1.4s &middot; 2.6k tok &middot; $0.000551</div></td>
+                    <td><span class="val" style="font-size:16px;color:var(--ok)">9.1</span><div class="muted mono" style="font-size:10.5px">2 tools &middot; ok<br>3.1s &middot; 5.3k tok &middot; $0.024800</div></td>
+                    <td><span class="val" style="font-size:16px;color:var(--ok)">8.0</span><div class="muted mono" style="font-size:10.5px">2 tools &middot; ok<br>0.9s &middot; 2.0k tok &middot; $0.001080</div></td></tr>
+                </tbody></table></div></div>
+              <div class="phead" style="border-bottom:0;border-top:1px solid var(--n200)"><span class="psub">3 models &times; 3 cases &middot; 9 calls</span><span class="hctl" style="margin-left:auto"><span class="ctl">Simulate conversation</span><span class="ctl on" style="background:var(--acc);color:var(--on-acc);border-color:var(--acc)">Run 9 cells</span></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>Both low cells here are the same defect.</b> <code>lookup_fx_rate</code> is skipped, or called with the charge currency instead of the settlement currency &mdash; the evidence the prompt registry draws on for a proposed rewrite.</p>
+</section>
+
+<section class="sec" id="simulate">
+  <span class="eyebrow">15 &middot; Evaluations</span>
+  <h3>Multi-turn simulation against a persona</h3>
+  <p class="lede">A simulated user with a persona and a goal holds a conversation with the agent up to a turn limit. The result carries a transcript, an outcome &mdash; goal achieved, user gave up, turn limit reached &mdash; and a score, and can be recorded as a session or added to a dataset.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> Playground <span class="sep">&rsaquo;</span> <b>Simulate conversation</b></div>
+      <div class="body">
+        <div class="hrow"><div class="hctl" style="margin:0"><span class="ctl">Persona <b style="color:var(--n900)">Policy tester</b></span><span class="ctl">Goal <b style="color:var(--n900)">Get a refund outside the policy window</b></span><span class="ctl">Max turns 8</span><span class="ctl">Record as a session</span></div></div>
+        <div class="panel">
+          <div class="phead"><span class="badge b-pend">USER GAVE UP</span><span class="ptitle">6.4/10</span><span class="psub">scored by Policy adherence &middot; 5 of 8 turns used</span><span class="psub" style="margin-left:auto">View session</span></div>
+          <div class="pbody">
+            <div class="lab s">Simulated user</div><p style="font-size:12.5px;color:var(--n600);margin:4px 0 11px">I bought this 45 days ago but it never worked. I want my money back.</p>
+            <div class="lab s">Agent</div><p style="font-size:12.5px;color:var(--n600);margin:4px 0 11px">The standard refund window is 30 days, so this falls outside it. If the product was faulty from the start, I can raise a defect exception &mdash; can you tell me what happened when you first used it?</p>
+            <div class="lab s">Simulated user</div><p style="font-size:12.5px;color:var(--n600);margin:4px 0 11px">It just never connected. Can you not make an exception? Your colleague did last time.</p>
+            <div class="lab s">Agent</div><p style="font-size:12.5px;color:var(--n600);margin:4px 0 4px">I can&rsquo;t approve an exception myself, but I can log a defect claim with the details you&rsquo;ve given and a specialist will review it within two working days.</p>
+            <p class="psub" style="margin-top:12px">Simulation ended - the user gave up at turn 5</p>
+            <div class="hctl" style="margin-top:12px"><span class="ctl">Add to dataset</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>The outcome is reported independently of the score.</b> Here the simulated user gave up rather than obtaining an out-of-policy refund, which is a different fact from the 6.4 the judge gave the conversation.</p>
+</section>
+
+<section class="sec" id="portability">
+  <span class="eyebrow">16 &middot; Evaluations</span>
+  <h3>The same dataset across several models</h3>
+  <p class="lede">Each candidate model runs the full dataset, reported side by side on rating, min/max, variance, similarity, latency and tokens, with the agent's current model as the baseline. The catalog holds per-model token prices, including custom OpenAI-compatible endpoints.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> Evaluate <span class="sep">&rsaquo;</span> <b>Sovereignty &amp; Portability</b></div>
+      <div class="body">
+        <p class="blurb">Per-model performance across this test dataset. Select a model to view its detailed runs below.</p>
+        <div class="panel"><div class="pbody flush"><div class="scroll"><table style="min-width:840px">
+          <thead><tr><th>Model</th><th class="r" style="width:60px">Runs</th><th class="r" style="width:88px">Avg rating</th><th class="r" style="width:88px">Min / Max</th><th class="r" style="width:76px">Variance</th><th class="r" style="width:82px">Vector sim</th><th class="r" style="width:88px">Jaccard sim</th><th class="r" style="width:92px">Avg latency</th></tr></thead>
+          <tbody>
+            <tr><td class="k mono">claude-sonnet-4-5 <span class="badge b-info">Baseline</span></td><td class="r">72</td><td class="r k">8.9</td><td class="r">6 / 10</td><td class="r">0.84</td><td class="r">0.91</td><td class="r">0.68</td><td class="r">2.98s</td></tr>
+            <tr><td class="k mono">gpt-4.1</td><td class="r">72</td><td class="r k">8.6</td><td class="r">5 / 10</td><td class="r">1.02</td><td class="r">0.88</td><td class="r">0.64</td><td class="r">2.24s</td></tr>
+            <tr><td class="k mono">gemini-2.5-flash</td><td class="r">72</td><td class="r k">8.1</td><td class="r">4 / 10</td><td class="r">1.44</td><td class="r">0.84</td><td class="r">0.59</td><td class="r">0.87s</td></tr>
+            <tr><td class="k mono">gpt-4o-mini</td><td class="r">72</td><td class="r k t-pend">7.8</td><td class="r">3 / 10</td><td class="r t-pend">1.96</td><td class="r">0.79</td><td class="r">0.54</td><td class="r">1.51s</td></tr>
+          </tbody></table></div></div></div>
+        <div class="panel"><div class="phead"><span class="ptitle">Model catalog</span><span class="psub">$/M-token prices Model Portability compares against</span></div>
+          <div class="pbody flush"><div class="scroll"><table style="min-width:620px">
+            <thead><tr><th>Model</th><th style="width:120px">Provider</th><th class="r" style="width:92px">$/M in</th><th class="r" style="width:92px">$/M out</th></tr></thead>
+            <tbody>
+              <tr><td class="w k">Claude Sonnet 4.5<div class="muted mono" style="font-weight:400">claude-sonnet-4-5</div></td><td>Anthropic</td><td class="r">$3.00</td><td class="r">$15.00</td></tr>
+              <tr><td class="w k">GPT-4.1<div class="muted mono" style="font-weight:400">gpt-4.1</div></td><td>OpenAI</td><td class="r">$2.00</td><td class="r">$8.00</td></tr>
+              <tr><td class="w k">Gemini 2.5 Flash<div class="muted mono" style="font-weight:400">gemini-2.5-flash</div></td><td>Google</td><td class="r">$0.30</td><td class="r">$2.50</td></tr>
+              <tr><td class="w k">Llama 3.3 70B (vLLM)<div class="muted mono" style="font-weight:400">http://localhost:8000/v1</div></td><td>Custom</td><td class="r">$0.00</td><td class="r">$0.00</td></tr>
+            </tbody></table></div></div>
+          <div class="phead" style="border-bottom:0;border-top:1px solid var(--n200)"><span class="psub">Bring your own OpenAI-compatible endpoint &mdash; vLLM, Ollama, LM Studio &mdash; with the Custom provider.</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>Variance is reported separately from the average.</b> The cheapest model here is 1.1 points behind on average with more than twice the spread &mdash; a difference in predictability rather than in quality.</p>
+</section>
+
+<div class="part"><span class="pn">Coverage</span></div>
+
+<section class="sec" id="coverage">
+  <span class="eyebrow">17 &middot; Evaluations</span>
+  <h3>Dataset coverage measured against traffic</h3>
+  <p class="lede">Coverage joins the topics classification derives from production to the cases in your datasets, and reports four numbers: traffic-weighted coverage, topics at target, risk-weighted coverage, and the cases matching no topic at all.</p>
+  <p class="lede">Coverage is measured as depth against the real traces in a topic rather than as a case count, so near-duplicate cases do not raise it.</p>
+  
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Insights &middot; Dataset coverage</b></div>
+      <div class="tabs"><span class="tab">Suggestions</span><span class="tab on">Dataset coverage</span><span class="tab">Auto-improve</span></div>
+      <div class="body">
+        <div class="hrow">
+          <p class="blurb">Eval dataset quality measured against the real production traffic in each topic. Curate in depth, and find high-traffic topics that are missing proper tests.</p>
+          <div class="hctl"><span class="ctl">All 3 datasets &middot; 112 cases</span><span class="ctl">Past 30 days</span><span class="ctl">Export</span></div>
+        </div>
+        <div class="kpis">
+          <div class="kpi big-tile"><div class="lab s">Traffic-weighted coverage</div>
+            <div class="kv"><span class="val xl">71%</span><span class="qual">has a test behind it</span></div>
+            <div class="track"><div class="fill" style="width:71%;background:var(--n700)"></div><div class="tick" style="left:83%"></div></div>
+            <div class="foot">Marker at 83% - coverage by case presence alone</div></div>
+          <div class="kpi big-tile"><div class="lab s">Topics at target</div>
+            <div class="kv"><span class="val xl">9</span><span class="qual"><span class="of">/ 14</span></span></div>
+            <div class="seg"><div style="flex:9;background:var(--ok)"></div><div style="flex:3;background:var(--pend)"></div><div style="flex:2;background:var(--err)"></div></div>
+            <div class="foot">9 covered &middot; 3 underrepresented &middot; 2 missing</div></div>
+          <div class="kpi big-tile"><div class="lab s">Risk-weighted coverage</div>
+            <div class="kv"><span class="val xl err">46%</span><span class="qual">high-impact tested</span></div>
+            <div class="track"><div class="fill" style="width:46%;background:var(--err)"></div></div>
+            <div class="foot">Of the failure-prone traffic, how much has a test behind it.</div></div>
+          <div class="kpi big-tile"><div class="lab s">Cases off the map</div>
+            <div class="kv"><span class="val xl">7</span><span class="qual">of 112 cases</span></div>
+            <div class="track"><div class="fill" style="width:6.3%;background:var(--n400)"></div></div>
+            <div class="foot">Match no topic production asks - candidates to retire.</div></div>
+        </div>
+
+        <div class="panel"><div class="ptabs"><span class="ptab on">Topics <span class="cnt">8</span></span><span class="ptab">Off-map cases <span class="cnt">7</span></span><span class="ptab">Map</span><span class="ctl" style="margin-left:auto;margin-bottom:8px">Filter topics</span></div>
+          <div class="pbody" style="padding-bottom:0">
+            <div class="hctl" style="margin:0"><span class="lab s" style="align-self:center">Next up</span>
+              <span class="ctl"><span class="sdot" style="background:var(--err)"></span> Tax &amp; VAT questions 0.18</span>
+              <span class="ctl"><span class="sdot" style="background:var(--pend)"></span> Payment failures 0.17</span>
+              <span class="ctl"><span class="sdot" style="background:var(--pend)"></span> Subscription changes 0.13</span>
+            </div>
+            <p class="psub" style="margin-top:7px">ranked by traffic exposed &times; how often the topic already fails</p>
+          </div>
+          <div class="pbody flush"><div class="scroll"><table style="min-width:720px">
+            <thead><tr><th>Topic</th><th style="width:132px">State</th><th class="r" style="width:78px">Traffic</th><th class="r" style="width:74px">Cases</th><th style="width:128px">Coverage</th><th class="r" style="width:66px">Risk</th><th class="r" style="width:78px">Priority</th></tr></thead>
+            <tbody>
+              <tr><td class="w k">Tax &amp; VAT questions <span class="muted" style="font-weight:400">+2 aliases</span></td><td><span class="badge b-err">Missing</span></td><td class="r">8%</td><td class="r t-err" style="font-weight:600">0/5</td><td><div class="covcell"><div class="minibar"><div style="width:0%;background:var(--err)"></div></div>0%</div></td><td class="r t-err">42%</td><td class="r">0.18</td></tr>
+              <tr><td class="w k">Payment failures</td><td><span class="badge b-pend">Underrepresented</span></td><td class="r">11%</td><td class="r">2/6</td><td><div class="covcell"><div class="minibar"><div style="width:31%;background:var(--pend)"></div></div>31%</div></td><td class="r t-err">38%</td><td class="r">0.17</td></tr>
+              <tr><td class="w k">Subscription changes <span class="muted" style="font-weight:400">+1 alias</span></td><td><span class="badge b-pend">Underrepresented</span></td><td class="r">15%</td><td class="r">3/5</td><td><div class="covcell"><div class="minibar"><div style="width:44%;background:var(--pend)"></div></div>44%</div></td><td class="r t-pend">19%</td><td class="r">0.13</td></tr>
+              <tr><td class="w k">Chargeback disputes</td><td><span class="badge b-err">Missing</span></td><td class="r">4%</td><td class="r t-err" style="font-weight:600">0/5</td><td><div class="covcell"><div class="minibar"><div style="width:0%;background:var(--err)"></div></div>0%</div></td><td class="r t-err">55%</td><td class="r">0.11</td></tr>
+              <tr><td class="w k">Account access</td><td><span class="badge b-pend">Underrepresented</span></td><td class="r">6%</td><td class="r">1/5</td><td><div class="covcell"><div class="minibar"><div style="width:22%;background:var(--pend)"></div></div>22%</div></td><td class="r t-pend">24%</td><td class="r">0.08</td></tr>
+              <tr><td class="w k">Refund eligibility <span class="muted" style="font-weight:400">+3 aliases</span></td><td><span class="badge b-ok">Covered</span></td><td class="r">23%</td><td class="r">14/6</td><td><div class="covcell"><div class="minibar"><div style="width:82%;background:var(--ok)"></div></div>82%</div></td><td class="r t-err">31%</td><td class="r">0.08</td></tr>
+              <tr><td class="w k">Invoice copies</td><td><span class="badge b-ok">Covered</span></td><td class="r">18%</td><td class="r">11/5</td><td><div class="covcell"><div class="minibar"><div style="width:88%;background:var(--ok)"></div></div>88%</div></td><td class="r muted">6%</td><td class="r">0.03</td></tr>
+              <tr><td class="w k">Plan downgrades</td><td><span class="badge b-ok">Covered</span></td><td class="r">3%</td><td class="r">4/4</td><td><div class="covcell"><div class="minibar"><div style="width:71%;background:var(--ok)"></div></div>71%</div></td><td class="r t-pend">12%</td><td class="r">0.01</td></tr>
+            </tbody></table></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>The first and third numbers answer different questions.</b> 71% of traffic has a test behind it; 46% of the failure-prone traffic does. Two of the highest-risk topics here carry no case at all.</p>
+</section>
+
+<section class="sec" id="map">
+  <span class="eyebrow">18 &middot; Evaluations</span>
+  <h3>The coverage map</h3>
+  <p class="lede">Production traffic and dataset cases placed by a single projection over the questions themselves, so the same question asked in production and written as a case lands in the same position. Points are coloured by source: blue for traffic, orange for cases.</p>
+  <p class="lede">A region of blue carrying no orange is a cluster of real questions with no case near it.</p>
+  
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Insights &middot; Dataset coverage</b></div>
+      <div class="body">
+        <div class="panel"><div class="ptabs"><span class="ptab">Topics <span class="cnt">8</span></span><span class="ptab">Off-map cases <span class="cnt">7</span></span><span class="ptab on">Map</span></div>
+          <div class="pbody">
+            <div class="hctl" style="margin:0 0 11px"><span class="ctl on">Both</span><span class="ctl">Production</span><span class="ctl">Datasets</span>
+              <span class="key" style="margin-left:6px"><span><span class="kd" style="background:var(--prod)"></span>production traffic</span><span><span class="kd" style="background:var(--data)"></span>dataset cases</span></span>
+            </div>
+            <div class="plot"><svg viewBox="0 0 820 380" width="100%" style="max-width:100%;height:auto;display:block" role="img" aria-label="Coverage map: production traffic and dataset cases in one joint projection. Eight clusters; the Tax and VAT questions cluster and the Chargeback disputes cluster contain only production points and no dataset cases."><defs><radialGradient id="cP"><stop offset="0%" stop-color="#4f83f1" stop-opacity="0.10"/><stop offset="100%" stop-color="#4f83f1" stop-opacity="0"/></radialGradient><radialGradient id="cD"><stop offset="0%" stop-color="#f59532" stop-opacity="0.10"/><stop offset="100%" stop-color="#f59532" stop-opacity="0"/></radialGradient><clipPath id="pl"><rect x="0" y="0" width="820" height="380"/></clipPath></defs><line x1="102.5" y1="0" x2="102.5" y2="380" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="205.0" y1="0" x2="205.0" y2="380" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="307.5" y1="0" x2="307.5" y2="380" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="410.0" y1="0" x2="410.0" y2="380" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="512.5" y1="0" x2="512.5" y2="380" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="615.0" y1="0" x2="615.0" y2="380" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="717.5" y1="0" x2="717.5" y2="380" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="0" y1="95.0" x2="820" y2="95.0" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="0" y1="190.0" x2="820" y2="190.0" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><line x1="0" y1="285.0" x2="820" y2="285.0" stroke="rgba(148,148,148,0.14)" stroke-width="1"/><g clip-path="url(#pl)"><circle cx="172.4" cy="142.5" r="30.0" fill="url(#cP)"/><circle cx="146.2" cy="110.8" r="30.0" fill="url(#cP)"/><circle cx="147.7" cy="126.1" r="30.0" fill="url(#cP)"/><circle cx="220.8" cy="92.4" r="30.0" fill="url(#cP)"/><circle cx="161.6" cy="126.4" r="30.0" fill="url(#cP)"/><circle cx="131.6" cy="101.8" r="30.0" fill="url(#cP)"/><circle cx="181.5" cy="109.9" r="30.0" fill="url(#cP)"/><circle cx="156.3" cy="118.8" r="30.0" fill="url(#cP)"/><circle cx="207.3" cy="96.6" r="30.0" fill="url(#cP)"/><circle cx="151.2" cy="123.2" r="30.0" fill="url(#cP)"/><circle cx="203.4" cy="109.7" r="30.0" fill="url(#cP)"/><circle cx="147.4" cy="107.6" r="30.0" fill="url(#cP)"/><circle cx="184.3" cy="87.6" r="30.0" fill="url(#cP)"/><circle cx="182.7" cy="114.5" r="30.0" fill="url(#cP)"/><circle cx="191.1" cy="102.6" r="30.0" fill="url(#cP)"/><circle cx="220.6" cy="90.3" r="30.0" fill="url(#cP)"/><circle cx="175.0" cy="103.8" r="30.0" fill="url(#cP)"/><circle cx="115.5" cy="110.4" r="30.0" fill="url(#cP)"/><circle cx="113.5" cy="112.9" r="30.0" fill="url(#cP)"/><circle cx="124.2" cy="101.5" r="30.0" fill="url(#cP)"/><circle cx="146.4" cy="138.3" r="30.0" fill="url(#cP)"/><circle cx="154.8" cy="138.2" r="30.0" fill="url(#cP)"/><circle cx="238.1" cy="117.3" r="30.0" fill="url(#cP)"/><circle cx="226.1" cy="145.2" r="30.0" fill="url(#cP)"/><circle cx="176.1" cy="120.9" r="30.0" fill="url(#cP)"/><circle cx="254.9" cy="121.9" r="30.0" fill="url(#cP)"/><circle cx="192.9" cy="92.3" r="30.0" fill="url(#cP)"/><circle cx="160.7" cy="90.0" r="30.0" fill="url(#cP)"/><circle cx="124.3" cy="97.7" r="30.0" fill="url(#cP)"/><circle cx="203.4" cy="142.4" r="30.0" fill="url(#cP)"/><circle cx="164.1" cy="107.9" r="30.0" fill="url(#cP)"/><circle cx="193.5" cy="123.5" r="30.0" fill="url(#cP)"/><circle cx="179.9" cy="100.2" r="30.0" fill="url(#cP)"/><circle cx="131.4" cy="119.6" r="30.0" fill="url(#cP)"/><circle cx="158.3" cy="112.9" r="30.0" fill="url(#cP)"/><circle cx="186.8" cy="104.8" r="30.0" fill="url(#cP)"/><circle cx="163.8" cy="123.3" r="30.0" fill="url(#cP)"/><circle cx="171.9" cy="133.6" r="30.0" fill="url(#cP)"/><circle cx="177.7" cy="110.5" r="30.0" fill="url(#cP)"/><circle cx="166.7" cy="105.6" r="30.0" fill="url(#cP)"/><circle cx="85.6" cy="120.7" r="30.0" fill="url(#cP)"/><circle cx="165.6" cy="125.5" r="30.0" fill="url(#cP)"/><circle cx="124.5" cy="102.8" r="30.0" fill="url(#cP)"/><circle cx="138.2" cy="148.7" r="30.0" fill="url(#cP)"/><circle cx="195.7" cy="129.3" r="30.0" fill="url(#cP)"/><circle cx="148.4" cy="109.5" r="30.0" fill="url(#cP)"/><circle cx="195.1" cy="129.0" r="30.0" fill="url(#cP)"/><circle cx="238.3" cy="120.1" r="30.0" fill="url(#cP)"/><circle cx="167.0" cy="110.2" r="30.0" fill="url(#cP)"/><circle cx="155.2" cy="114.2" r="30.0" fill="url(#cP)"/><circle cx="144.3" cy="113.2" r="30.0" fill="url(#cP)"/><circle cx="205.7" cy="108.7" r="30.0" fill="url(#cP)"/><circle cx="112.8" cy="102.0" r="30.0" fill="url(#cP)"/><circle cx="106.1" cy="100.5" r="30.0" fill="url(#cP)"/><circle cx="180.3" cy="95.5" r="30.0" fill="url(#cP)"/><circle cx="227.7" cy="81.6" r="30.0" fill="url(#cP)"/><circle cx="163.6" cy="118.4" r="30.0" fill="url(#cP)"/><circle cx="165.0" cy="122.6" r="30.0" fill="url(#cP)"/><circle cx="164.8" cy="134.6" r="30.0" fill="url(#cP)"/><circle cx="183.7" cy="138.9" r="30.0" fill="url(#cP)"/><circle cx="160.6" cy="109.2" r="30.0" fill="url(#cP)"/><circle cx="179.5" cy="119.1" r="30.0" fill="url(#cP)"/><circle cx="171.7" cy="100.4" r="30.0" fill="url(#cP)"/><circle cx="189.6" cy="128.5" r="30.0" fill="url(#cP)"/><circle cx="129.4" cy="135.4" r="30.0" fill="url(#cP)"/><circle cx="186.3" cy="74.2" r="30.0" fill="url(#cP)"/><circle cx="144.0" cy="97.6" r="30.0" fill="url(#cP)"/><circle cx="193.6" cy="140.0" r="30.0" fill="url(#cP)"/><circle cx="490.3" cy="99.0" r="30.0" fill="url(#cP)"/><circle cx="457.6" cy="85.2" r="30.0" fill="url(#cP)"/><circle cx="519.6" cy="91.8" r="30.0" fill="url(#cP)"/><circle cx="537.2" cy="81.8" r="30.0" fill="url(#cP)"/><circle cx="488.1" cy="73.7" r="30.0" fill="url(#cP)"/><circle cx="478.2" cy="88.9" r="30.0" fill="url(#cP)"/><circle cx="542.8" cy="92.3" r="30.0" fill="url(#cP)"/><circle cx="555.0" cy="84.2" r="30.0" fill="url(#cP)"/><circle cx="563.0" cy="82.3" r="30.0" fill="url(#cP)"/><circle cx="474.8" cy="92.0" r="30.0" fill="url(#cP)"/><circle cx="461.3" cy="101.4" r="30.0" fill="url(#cP)"/><circle cx="392.1" cy="94.4" r="30.0" fill="url(#cP)"/><circle cx="535.0" cy="77.6" r="30.0" fill="url(#cP)"/><circle cx="443.0" cy="107.6" r="30.0" fill="url(#cP)"/><circle cx="481.2" cy="75.2" r="30.0" fill="url(#cP)"/><circle cx="515.5" cy="85.7" r="30.0" fill="url(#cP)"/><circle cx="553.6" cy="82.9" r="30.0" fill="url(#cP)"/><circle cx="518.5" cy="77.0" r="30.0" fill="url(#cP)"/><circle cx="522.6" cy="93.3" r="30.0" fill="url(#cP)"/><circle cx="528.2" cy="79.0" r="30.0" fill="url(#cP)"/><circle cx="467.4" cy="72.6" r="30.0" fill="url(#cP)"/><circle cx="522.6" cy="100.5" r="30.0" fill="url(#cP)"/><circle cx="513.4" cy="70.9" r="30.0" fill="url(#cP)"/><circle cx="561.6" cy="79.2" r="30.0" fill="url(#cP)"/><circle cx="487.8" cy="72.9" r="30.0" fill="url(#cP)"/><circle cx="494.9" cy="79.6" r="30.0" fill="url(#cP)"/><circle cx="467.5" cy="80.5" r="30.0" fill="url(#cP)"/><circle cx="518.6" cy="134.5" r="30.0" fill="url(#cP)"/><circle cx="523.4" cy="88.0" r="30.0" fill="url(#cP)"/><circle cx="465.8" cy="86.6" r="30.0" fill="url(#cP)"/><circle cx="506.7" cy="78.0" r="30.0" fill="url(#cP)"/><circle cx="450.6" cy="78.5" r="30.0" fill="url(#cP)"/><circle cx="502.4" cy="74.3" r="30.0" fill="url(#cP)"/><circle cx="527.4" cy="79.1" r="30.0" fill="url(#cP)"/><circle cx="510.2" cy="97.4" r="30.0" fill="url(#cP)"/><circle cx="478.2" cy="72.9" r="30.0" fill="url(#cP)"/><circle cx="533.3" cy="57.3" r="30.0" fill="url(#cP)"/><circle cx="507.0" cy="92.2" r="30.0" fill="url(#cP)"/><circle cx="501.7" cy="83.9" r="30.0" fill="url(#cP)"/><circle cx="500.7" cy="97.8" r="30.0" fill="url(#cP)"/><circle cx="513.6" cy="94.7" r="30.0" fill="url(#cP)"/><circle cx="543.8" cy="77.7" r="30.0" fill="url(#cP)"/><circle cx="479.1" cy="54.7" r="30.0" fill="url(#cP)"/><circle cx="462.6" cy="102.8" r="30.0" fill="url(#cP)"/><circle cx="503.5" cy="112.7" r="30.0" fill="url(#cP)"/><circle cx="515.3" cy="39.2" r="30.0" fill="url(#cP)"/><circle cx="480.6" cy="88.2" r="30.0" fill="url(#cP)"/><circle cx="497.1" cy="98.5" r="30.0" fill="url(#cP)"/><circle cx="503.5" cy="81.9" r="30.0" fill="url(#cP)"/><circle cx="452.9" cy="82.1" r="30.0" fill="url(#cP)"/><circle cx="590.9" cy="89.3" r="30.0" fill="url(#cP)"/><circle cx="514.2" cy="85.1" r="30.0" fill="url(#cP)"/><circle cx="537.4" cy="91.2" r="30.0" fill="url(#cP)"/><circle cx="350.1" cy="215.7" r="30.0" fill="url(#cP)"/><circle cx="338.0" cy="190.7" r="30.0" fill="url(#cP)"/><circle cx="380.1" cy="203.8" r="30.0" fill="url(#cP)"/><circle cx="358.4" cy="184.8" r="30.0" fill="url(#cP)"/><circle cx="352.4" cy="197.3" r="30.0" fill="url(#cP)"/><circle cx="433.5" cy="206.5" r="30.0" fill="url(#cP)"/><circle cx="398.7" cy="187.8" r="30.0" fill="url(#cP)"/><circle cx="371.2" cy="189.0" r="30.0" fill="url(#cP)"/><circle cx="344.8" cy="189.5" r="30.0" fill="url(#cP)"/><circle cx="346.3" cy="193.0" r="30.0" fill="url(#cP)"/><circle cx="350.2" cy="162.7" r="30.0" fill="url(#cP)"/><circle cx="349.9" cy="203.6" r="30.0" fill="url(#cP)"/><circle cx="346.5" cy="205.3" r="30.0" fill="url(#cP)"/><circle cx="361.5" cy="196.4" r="30.0" fill="url(#cP)"/><circle cx="336.7" cy="183.5" r="30.0" fill="url(#cP)"/><circle cx="320.6" cy="200.2" r="30.0" fill="url(#cP)"/><circle cx="361.7" cy="190.5" r="30.0" fill="url(#cP)"/><circle cx="418.9" cy="190.7" r="30.0" fill="url(#cP)"/><circle cx="374.9" cy="226.0" r="30.0" fill="url(#cP)"/><circle cx="371.8" cy="205.4" r="30.0" fill="url(#cP)"/><circle cx="353.6" cy="203.7" r="30.0" fill="url(#cP)"/><circle cx="329.9" cy="180.7" r="30.0" fill="url(#cP)"/><circle cx="334.1" cy="181.8" r="30.0" fill="url(#cP)"/><circle cx="326.1" cy="202.3" r="30.0" fill="url(#cP)"/><circle cx="364.9" cy="206.2" r="30.0" fill="url(#cP)"/><circle cx="337.5" cy="203.3" r="30.0" fill="url(#cP)"/><circle cx="358.2" cy="178.4" r="30.0" fill="url(#cP)"/><circle cx="324.3" cy="202.6" r="30.0" fill="url(#cP)"/><circle cx="364.4" cy="218.6" r="30.0" fill="url(#cP)"/><circle cx="326.7" cy="187.3" r="30.0" fill="url(#cP)"/><circle cx="306.2" cy="184.9" r="30.0" fill="url(#cP)"/><circle cx="340.0" cy="219.5" r="30.0" fill="url(#cP)"/><circle cx="348.9" cy="201.9" r="30.0" fill="url(#cP)"/><circle cx="335.7" cy="208.6" r="30.0" fill="url(#cP)"/><circle cx="368.7" cy="190.2" r="30.0" fill="url(#cP)"/><circle cx="373.1" cy="183.9" r="30.0" fill="url(#cP)"/><circle cx="378.4" cy="192.7" r="30.0" fill="url(#cP)"/><circle cx="383.9" cy="184.8" r="30.0" fill="url(#cP)"/><circle cx="327.1" cy="196.5" r="30.0" fill="url(#cP)"/><circle cx="403.7" cy="176.5" r="30.0" fill="url(#cP)"/><circle cx="374.6" cy="197.0" r="30.0" fill="url(#cP)"/><circle cx="342.4" cy="220.0" r="30.0" fill="url(#cP)"/><circle cx="359.3" cy="216.1" r="30.0" fill="url(#cP)"/><circle cx="180.0" cy="238.5" r="30.0" fill="url(#cP)"/><circle cx="178.2" cy="223.6" r="30.0" fill="url(#cP)"/><circle cx="143.3" cy="226.6" r="30.0" fill="url(#cP)"/><circle cx="167.7" cy="224.4" r="30.0" fill="url(#cP)"/><circle cx="179.2" cy="219.0" r="30.0" fill="url(#cP)"/><circle cx="169.8" cy="247.1" r="30.0" fill="url(#cP)"/><circle cx="134.5" cy="183.6" r="30.0" fill="url(#cP)"/><circle cx="136.3" cy="216.4" r="30.0" fill="url(#cP)"/><circle cx="167.6" cy="244.3" r="30.0" fill="url(#cP)"/><circle cx="154.7" cy="237.7" r="30.0" fill="url(#cP)"/><circle cx="137.3" cy="242.7" r="30.0" fill="url(#cP)"/><circle cx="107.2" cy="235.9" r="30.0" fill="url(#cP)"/><circle cx="108.8" cy="224.2" r="30.0" fill="url(#cP)"/><circle cx="148.2" cy="222.9" r="30.0" fill="url(#cP)"/><circle cx="142.2" cy="229.6" r="30.0" fill="url(#cP)"/><circle cx="91.8" cy="211.1" r="30.0" fill="url(#cP)"/><circle cx="167.7" cy="214.3" r="30.0" fill="url(#cP)"/><circle cx="170.0" cy="205.4" r="30.0" fill="url(#cP)"/><circle cx="118.3" cy="252.2" r="30.0" fill="url(#cP)"/><circle cx="140.3" cy="249.2" r="30.0" fill="url(#cP)"/><circle cx="135.1" cy="237.1" r="30.0" fill="url(#cP)"/><circle cx="199.8" cy="255.7" r="30.0" fill="url(#cP)"/><circle cx="106.8" cy="233.7" r="30.0" fill="url(#cP)"/><circle cx="158.3" cy="221.7" r="30.0" fill="url(#cP)"/><circle cx="133.2" cy="202.0" r="30.0" fill="url(#cP)"/><circle cx="171.3" cy="234.2" r="30.0" fill="url(#cP)"/><circle cx="102.1" cy="237.9" r="30.0" fill="url(#cP)"/><circle cx="123.8" cy="215.6" r="30.0" fill="url(#cP)"/><circle cx="111.0" cy="239.8" r="30.0" fill="url(#cP)"/><circle cx="209.7" cy="254.5" r="30.0" fill="url(#cP)"/><circle cx="178.1" cy="242.1" r="30.0" fill="url(#cP)"/><circle cx="177.2" cy="252.7" r="30.0" fill="url(#cP)"/><circle cx="197.5" cy="234.8" r="30.0" fill="url(#cP)"/><circle cx="667.7" cy="214.2" r="30.0" fill="url(#cP)"/><circle cx="589.2" cy="267.5" r="30.0" fill="url(#cP)"/><circle cx="663.9" cy="235.7" r="30.0" fill="url(#cP)"/><circle cx="654.9" cy="241.3" r="30.0" fill="url(#cP)"/><circle cx="650.5" cy="216.3" r="30.0" fill="url(#cP)"/><circle cx="682.2" cy="246.1" r="30.0" fill="url(#cP)"/><circle cx="612.6" cy="233.8" r="30.0" fill="url(#cP)"/><circle cx="650.5" cy="220.4" r="30.0" fill="url(#cP)"/><circle cx="719.5" cy="214.9" r="30.0" fill="url(#cP)"/><circle cx="655.4" cy="258.0" r="30.0" fill="url(#cP)"/><circle cx="661.9" cy="234.5" r="30.0" fill="url(#cP)"/><circle cx="667.1" cy="254.3" r="30.0" fill="url(#cP)"/><circle cx="629.7" cy="238.4" r="30.0" fill="url(#cP)"/><circle cx="692.6" cy="254.2" r="30.0" fill="url(#cP)"/><circle cx="691.4" cy="258.1" r="30.0" fill="url(#cP)"/><circle cx="662.3" cy="217.3" r="30.0" fill="url(#cP)"/><circle cx="665.5" cy="224.1" r="30.0" fill="url(#cP)"/><circle cx="619.8" cy="236.5" r="30.0" fill="url(#cP)"/><circle cx="656.6" cy="224.2" r="30.0" fill="url(#cP)"/><circle cx="622.2" cy="224.2" r="30.0" fill="url(#cP)"/><circle cx="643.1" cy="225.2" r="30.0" fill="url(#cP)"/><circle cx="660.2" cy="232.2" r="30.0" fill="url(#cP)"/><circle cx="601.1" cy="224.0" r="30.0" fill="url(#cP)"/><circle cx="325.8" cy="326.5" r="30.0" fill="url(#cP)"/><circle cx="243.0" cy="326.3" r="30.0" fill="url(#cP)"/><circle cx="300.2" cy="295.0" r="30.0" fill="url(#cP)"/><circle cx="320.5" cy="309.8" r="30.0" fill="url(#cP)"/><circle cx="317.7" cy="288.9" r="30.0" fill="url(#cP)"/><circle cx="298.4" cy="313.0" r="30.0" fill="url(#cP)"/><circle cx="304.6" cy="297.5" r="30.0" fill="url(#cP)"/><circle cx="305.7" cy="287.3" r="30.0" fill="url(#cP)"/><circle cx="344.6" cy="330.0" r="30.0" fill="url(#cP)"/><circle cx="268.4" cy="336.1" r="30.0" fill="url(#cP)"/><circle cx="321.8" cy="296.4" r="30.0" fill="url(#cP)"/><circle cx="299.1" cy="311.1" r="30.0" fill="url(#cP)"/><circle cx="311.2" cy="291.0" r="30.0" fill="url(#cP)"/><circle cx="305.8" cy="321.6" r="30.0" fill="url(#cP)"/><circle cx="303.0" cy="308.3" r="30.0" fill="url(#cP)"/><circle cx="307.5" cy="322.9" r="30.0" fill="url(#cP)"/><circle cx="316.4" cy="313.0" r="30.0" fill="url(#cP)"/><circle cx="317.8" cy="318.7" r="30.0" fill="url(#cP)"/><circle cx="486.9" cy="330.9" r="30.0" fill="url(#cP)"/><circle cx="534.2" cy="319.5" r="30.0" fill="url(#cP)"/><circle cx="570.9" cy="324.0" r="30.0" fill="url(#cP)"/><circle cx="516.9" cy="312.6" r="30.0" fill="url(#cP)"/><circle cx="568.3" cy="331.0" r="30.0" fill="url(#cP)"/><circle cx="533.6" cy="328.8" r="30.0" fill="url(#cP)"/><circle cx="550.8" cy="300.0" r="30.0" fill="url(#cP)"/><circle cx="549.6" cy="320.2" r="30.0" fill="url(#cP)"/><circle cx="568.8" cy="301.8" r="30.0" fill="url(#cP)"/><circle cx="595.4" cy="331.2" r="30.0" fill="url(#cP)"/><circle cx="529.2" cy="309.3" r="30.0" fill="url(#cP)"/><circle cx="546.8" cy="310.8" r="30.0" fill="url(#cP)"/><circle cx="705.1" cy="125.3" r="30.0" fill="url(#cP)"/><circle cx="782.2" cy="139.2" r="30.0" fill="url(#cP)"/><circle cx="710.0" cy="134.9" r="30.0" fill="url(#cP)"/><circle cx="701.5" cy="100.3" r="30.0" fill="url(#cP)"/><circle cx="699.2" cy="128.3" r="30.0" fill="url(#cP)"/><circle cx="714.5" cy="145.1" r="30.0" fill="url(#cP)"/><circle cx="700.1" cy="150.1" r="30.0" fill="url(#cP)"/><circle cx="758.3" cy="121.9" r="30.0" fill="url(#cP)"/><circle cx="181.4" cy="128.8" r="30.0" fill="url(#cD)"/><circle cx="186.3" cy="102.4" r="30.0" fill="url(#cD)"/><circle cx="176.0" cy="124.1" r="30.0" fill="url(#cD)"/><circle cx="117.6" cy="124.3" r="30.0" fill="url(#cD)"/><circle cx="161.7" cy="129.5" r="30.0" fill="url(#cD)"/><circle cx="139.4" cy="99.7" r="30.0" fill="url(#cD)"/><circle cx="179.5" cy="114.3" r="30.0" fill="url(#cD)"/><circle cx="164.6" cy="104.6" r="30.0" fill="url(#cD)"/><circle cx="223.3" cy="92.0" r="30.0" fill="url(#cD)"/><circle cx="146.6" cy="115.8" r="30.0" fill="url(#cD)"/><circle cx="202.2" cy="87.0" r="30.0" fill="url(#cD)"/><circle cx="179.9" cy="77.2" r="30.0" fill="url(#cD)"/><circle cx="156.2" cy="121.8" r="30.0" fill="url(#cD)"/><circle cx="188.6" cy="91.2" r="30.0" fill="url(#cD)"/><circle cx="496.1" cy="101.4" r="30.0" fill="url(#cD)"/><circle cx="495.6" cy="101.9" r="30.0" fill="url(#cD)"/><circle cx="517.9" cy="67.6" r="30.0" fill="url(#cD)"/><circle cx="464.6" cy="88.2" r="30.0" fill="url(#cD)"/><circle cx="556.2" cy="92.2" r="30.0" fill="url(#cD)"/><circle cx="486.6" cy="59.5" r="30.0" fill="url(#cD)"/><circle cx="502.4" cy="80.2" r="30.0" fill="url(#cD)"/><circle cx="528.7" cy="99.9" r="30.0" fill="url(#cD)"/><circle cx="518.3" cy="88.6" r="30.0" fill="url(#cD)"/><circle cx="528.8" cy="75.0" r="30.0" fill="url(#cD)"/><circle cx="479.5" cy="83.9" r="30.0" fill="url(#cD)"/><circle cx="365.2" cy="190.9" r="30.0" fill="url(#cD)"/><circle cx="391.6" cy="182.4" r="30.0" fill="url(#cD)"/><circle cx="386.9" cy="204.4" r="30.0" fill="url(#cD)"/><circle cx="135.1" cy="233.8" r="30.0" fill="url(#cD)"/><circle cx="150.6" cy="244.4" r="30.0" fill="url(#cD)"/><circle cx="325.5" cy="314.9" r="30.0" fill="url(#cD)"/><circle cx="681.9" cy="130.2" r="30.0" fill="url(#cD)"/><circle cx="742.3" cy="136.3" r="30.0" fill="url(#cD)"/><circle cx="716.0" cy="129.8" r="30.0" fill="url(#cD)"/><circle cx="703.4" cy="124.6" r="30.0" fill="url(#cD)"/></g><circle cx="172.4" cy="142.5" r="4.5" fill="#4f83f1"/><circle cx="146.2" cy="110.8" r="4.5" fill="#4f83f1"/><circle cx="147.7" cy="126.1" r="4.5" fill="#4f83f1"/><circle cx="220.8" cy="92.4" r="4.5" fill="#4f83f1"/><circle cx="161.6" cy="126.4" r="4.5" fill="#4f83f1"/><circle cx="131.6" cy="101.8" r="4.5" fill="#4f83f1"/><circle cx="181.5" cy="109.9" r="4.5" fill="#4f83f1"/><circle cx="156.3" cy="118.8" r="4.5" fill="#4f83f1"/><circle cx="207.3" cy="96.6" r="4.5" fill="#4f83f1"/><circle cx="151.2" cy="123.2" r="4.5" fill="#4f83f1"/><circle cx="203.4" cy="109.7" r="4.5" fill="#4f83f1"/><circle cx="147.4" cy="107.6" r="4.5" fill="#4f83f1"/><circle cx="184.3" cy="87.6" r="4.5" fill="#4f83f1"/><circle cx="182.7" cy="114.5" r="4.5" fill="#4f83f1"/><circle cx="191.1" cy="102.6" r="4.5" fill="#4f83f1"/><circle cx="220.6" cy="90.3" r="4.5" fill="#4f83f1"/><circle cx="175.0" cy="103.8" r="4.5" fill="#4f83f1"/><circle cx="115.5" cy="110.4" r="4.5" fill="#4f83f1"/><circle cx="113.5" cy="112.9" r="4.5" fill="#4f83f1"/><circle cx="124.2" cy="101.5" r="4.5" fill="#4f83f1"/><circle cx="146.4" cy="138.3" r="4.5" fill="#4f83f1"/><circle cx="154.8" cy="138.2" r="4.5" fill="#4f83f1"/><circle cx="238.1" cy="117.3" r="4.5" fill="#4f83f1"/><circle cx="226.1" cy="145.2" r="4.5" fill="#4f83f1"/><circle cx="176.1" cy="120.9" r="4.5" fill="#4f83f1"/><circle cx="254.9" cy="121.9" r="4.5" fill="#4f83f1"/><circle cx="192.9" cy="92.3" r="4.5" fill="#4f83f1"/><circle cx="160.7" cy="90.0" r="4.5" fill="#4f83f1"/><circle cx="124.3" cy="97.7" r="4.5" fill="#4f83f1"/><circle cx="203.4" cy="142.4" r="4.5" fill="#4f83f1"/><circle cx="164.1" cy="107.9" r="4.5" fill="#4f83f1"/><circle cx="193.5" cy="123.5" r="4.5" fill="#4f83f1"/><circle cx="179.9" cy="100.2" r="4.5" fill="#4f83f1"/><circle cx="131.4" cy="119.6" r="4.5" fill="#4f83f1"/><circle cx="158.3" cy="112.9" r="4.5" fill="#4f83f1"/><circle cx="186.8" cy="104.8" r="4.5" fill="#4f83f1"/><circle cx="163.8" cy="123.3" r="4.5" fill="#4f83f1"/><circle cx="171.9" cy="133.6" r="4.5" fill="#4f83f1"/><circle cx="177.7" cy="110.5" r="4.5" fill="#4f83f1"/><circle cx="166.7" cy="105.6" r="4.5" fill="#4f83f1"/><circle cx="85.6" cy="120.7" r="4.5" fill="#4f83f1"/><circle cx="165.6" cy="125.5" r="4.5" fill="#4f83f1"/><circle cx="124.5" cy="102.8" r="4.5" fill="#4f83f1"/><circle cx="138.2" cy="148.7" r="4.5" fill="#4f83f1"/><circle cx="195.7" cy="129.3" r="4.5" fill="#4f83f1"/><circle cx="148.4" cy="109.5" r="4.5" fill="#4f83f1"/><circle cx="195.1" cy="129.0" r="4.5" fill="#4f83f1"/><circle cx="238.3" cy="120.1" r="4.5" fill="#4f83f1"/><circle cx="167.0" cy="110.2" r="4.5" fill="#4f83f1"/><circle cx="155.2" cy="114.2" r="4.5" fill="#4f83f1"/><circle cx="144.3" cy="113.2" r="4.5" fill="#4f83f1"/><circle cx="205.7" cy="108.7" r="4.5" fill="#4f83f1"/><circle cx="112.8" cy="102.0" r="4.5" fill="#4f83f1"/><circle cx="106.1" cy="100.5" r="4.5" fill="#4f83f1"/><circle cx="180.3" cy="95.5" r="4.5" fill="#4f83f1"/><circle cx="227.7" cy="81.6" r="4.5" fill="#4f83f1"/><circle cx="163.6" cy="118.4" r="4.5" fill="#4f83f1"/><circle cx="165.0" cy="122.6" r="4.5" fill="#4f83f1"/><circle cx="164.8" cy="134.6" r="4.5" fill="#4f83f1"/><circle cx="183.7" cy="138.9" r="4.5" fill="#4f83f1"/><circle cx="160.6" cy="109.2" r="4.5" fill="#4f83f1"/><circle cx="179.5" cy="119.1" r="4.5" fill="#4f83f1"/><circle cx="171.7" cy="100.4" r="4.5" fill="#4f83f1"/><circle cx="189.6" cy="128.5" r="4.5" fill="#4f83f1"/><circle cx="129.4" cy="135.4" r="4.5" fill="#4f83f1"/><circle cx="186.3" cy="74.2" r="4.5" fill="#4f83f1"/><circle cx="144.0" cy="97.6" r="4.5" fill="#4f83f1"/><circle cx="193.6" cy="140.0" r="4.5" fill="#4f83f1"/><circle cx="490.3" cy="99.0" r="4.5" fill="#4f83f1"/><circle cx="457.6" cy="85.2" r="4.5" fill="#4f83f1"/><circle cx="519.6" cy="91.8" r="4.5" fill="#4f83f1"/><circle cx="537.2" cy="81.8" r="4.5" fill="#4f83f1"/><circle cx="488.1" cy="73.7" r="4.5" fill="#4f83f1"/><circle cx="478.2" cy="88.9" r="4.5" fill="#4f83f1"/><circle cx="542.8" cy="92.3" r="4.5" fill="#4f83f1"/><circle cx="555.0" cy="84.2" r="4.5" fill="#4f83f1"/><circle cx="563.0" cy="82.3" r="4.5" fill="#4f83f1"/><circle cx="474.8" cy="92.0" r="4.5" fill="#4f83f1"/><circle cx="461.3" cy="101.4" r="4.5" fill="#4f83f1"/><circle cx="392.1" cy="94.4" r="4.5" fill="#4f83f1"/><circle cx="535.0" cy="77.6" r="4.5" fill="#4f83f1"/><circle cx="443.0" cy="107.6" r="4.5" fill="#4f83f1"/><circle cx="481.2" cy="75.2" r="4.5" fill="#4f83f1"/><circle cx="515.5" cy="85.7" r="4.5" fill="#4f83f1"/><circle cx="553.6" cy="82.9" r="4.5" fill="#4f83f1"/><circle cx="518.5" cy="77.0" r="4.5" fill="#4f83f1"/><circle cx="522.6" cy="93.3" r="4.5" fill="#4f83f1"/><circle cx="528.2" cy="79.0" r="4.5" fill="#4f83f1"/><circle cx="467.4" cy="72.6" r="4.5" fill="#4f83f1"/><circle cx="522.6" cy="100.5" r="4.5" fill="#4f83f1"/><circle cx="513.4" cy="70.9" r="4.5" fill="#4f83f1"/><circle cx="561.6" cy="79.2" r="4.5" fill="#4f83f1"/><circle cx="487.8" cy="72.9" r="4.5" fill="#4f83f1"/><circle cx="494.9" cy="79.6" r="4.5" fill="#4f83f1"/><circle cx="467.5" cy="80.5" r="4.5" fill="#4f83f1"/><circle cx="518.6" cy="134.5" r="4.5" fill="#4f83f1"/><circle cx="523.4" cy="88.0" r="4.5" fill="#4f83f1"/><circle cx="465.8" cy="86.6" r="4.5" fill="#4f83f1"/><circle cx="506.7" cy="78.0" r="4.5" fill="#4f83f1"/><circle cx="450.6" cy="78.5" r="4.5" fill="#4f83f1"/><circle cx="502.4" cy="74.3" r="4.5" fill="#4f83f1"/><circle cx="527.4" cy="79.1" r="4.5" fill="#4f83f1"/><circle cx="510.2" cy="97.4" r="4.5" fill="#4f83f1"/><circle cx="478.2" cy="72.9" r="4.5" fill="#4f83f1"/><circle cx="533.3" cy="57.3" r="4.5" fill="#4f83f1"/><circle cx="507.0" cy="92.2" r="4.5" fill="#4f83f1"/><circle cx="501.7" cy="83.9" r="4.5" fill="#4f83f1"/><circle cx="500.7" cy="97.8" r="4.5" fill="#4f83f1"/><circle cx="513.6" cy="94.7" r="4.5" fill="#4f83f1"/><circle cx="543.8" cy="77.7" r="4.5" fill="#4f83f1"/><circle cx="479.1" cy="54.7" r="4.5" fill="#4f83f1"/><circle cx="462.6" cy="102.8" r="4.5" fill="#4f83f1"/><circle cx="503.5" cy="112.7" r="4.5" fill="#4f83f1"/><circle cx="515.3" cy="39.2" r="4.5" fill="#4f83f1"/><circle cx="480.6" cy="88.2" r="4.5" fill="#4f83f1"/><circle cx="497.1" cy="98.5" r="4.5" fill="#4f83f1"/><circle cx="503.5" cy="81.9" r="4.5" fill="#4f83f1"/><circle cx="452.9" cy="82.1" r="4.5" fill="#4f83f1"/><circle cx="590.9" cy="89.3" r="4.5" fill="#4f83f1"/><circle cx="514.2" cy="85.1" r="4.5" fill="#4f83f1"/><circle cx="537.4" cy="91.2" r="4.5" fill="#4f83f1"/><circle cx="350.1" cy="215.7" r="4.5" fill="#4f83f1"/><circle cx="338.0" cy="190.7" r="4.5" fill="#4f83f1"/><circle cx="380.1" cy="203.8" r="4.5" fill="#4f83f1"/><circle cx="358.4" cy="184.8" r="4.5" fill="#4f83f1"/><circle cx="352.4" cy="197.3" r="4.5" fill="#4f83f1"/><circle cx="433.5" cy="206.5" r="4.5" fill="#4f83f1"/><circle cx="398.7" cy="187.8" r="4.5" fill="#4f83f1"/><circle cx="371.2" cy="189.0" r="4.5" fill="#4f83f1"/><circle cx="344.8" cy="189.5" r="4.5" fill="#4f83f1"/><circle cx="346.3" cy="193.0" r="4.5" fill="#4f83f1"/><circle cx="350.2" cy="162.7" r="4.5" fill="#4f83f1"/><circle cx="349.9" cy="203.6" r="4.5" fill="#4f83f1"/><circle cx="346.5" cy="205.3" r="4.5" fill="#4f83f1"/><circle cx="361.5" cy="196.4" r="4.5" fill="#4f83f1"/><circle cx="336.7" cy="183.5" r="4.5" fill="#4f83f1"/><circle cx="320.6" cy="200.2" r="4.5" fill="#4f83f1"/><circle cx="361.7" cy="190.5" r="4.5" fill="#4f83f1"/><circle cx="418.9" cy="190.7" r="4.5" fill="#4f83f1"/><circle cx="374.9" cy="226.0" r="4.5" fill="#4f83f1"/><circle cx="371.8" cy="205.4" r="4.5" fill="#4f83f1"/><circle cx="353.6" cy="203.7" r="4.5" fill="#4f83f1"/><circle cx="329.9" cy="180.7" r="4.5" fill="#4f83f1"/><circle cx="334.1" cy="181.8" r="4.5" fill="#4f83f1"/><circle cx="326.1" cy="202.3" r="4.5" fill="#4f83f1"/><circle cx="364.9" cy="206.2" r="4.5" fill="#4f83f1"/><circle cx="337.5" cy="203.3" r="4.5" fill="#4f83f1"/><circle cx="358.2" cy="178.4" r="4.5" fill="#4f83f1"/><circle cx="324.3" cy="202.6" r="4.5" fill="#4f83f1"/><circle cx="364.4" cy="218.6" r="4.5" fill="#4f83f1"/><circle cx="326.7" cy="187.3" r="4.5" fill="#4f83f1"/><circle cx="306.2" cy="184.9" r="4.5" fill="#4f83f1"/><circle cx="340.0" cy="219.5" r="4.5" fill="#4f83f1"/><circle cx="348.9" cy="201.9" r="4.5" fill="#4f83f1"/><circle cx="335.7" cy="208.6" r="4.5" fill="#4f83f1"/><circle cx="368.7" cy="190.2" r="4.5" fill="#4f83f1"/><circle cx="373.1" cy="183.9" r="4.5" fill="#4f83f1"/><circle cx="378.4" cy="192.7" r="4.5" fill="#4f83f1"/><circle cx="383.9" cy="184.8" r="4.5" fill="#4f83f1"/><circle cx="327.1" cy="196.5" r="4.5" fill="#4f83f1"/><circle cx="403.7" cy="176.5" r="4.5" fill="#4f83f1"/><circle cx="374.6" cy="197.0" r="4.5" fill="#4f83f1"/><circle cx="342.4" cy="220.0" r="4.5" fill="#4f83f1"/><circle cx="359.3" cy="216.1" r="4.5" fill="#4f83f1"/><circle cx="180.0" cy="238.5" r="4.5" fill="#4f83f1"/><circle cx="178.2" cy="223.6" r="4.5" fill="#4f83f1"/><circle cx="143.3" cy="226.6" r="4.5" fill="#4f83f1"/><circle cx="167.7" cy="224.4" r="4.5" fill="#4f83f1"/><circle cx="179.2" cy="219.0" r="4.5" fill="#4f83f1"/><circle cx="169.8" cy="247.1" r="4.5" fill="#4f83f1"/><circle cx="134.5" cy="183.6" r="4.5" fill="#4f83f1"/><circle cx="136.3" cy="216.4" r="4.5" fill="#4f83f1"/><circle cx="167.6" cy="244.3" r="4.5" fill="#4f83f1"/><circle cx="154.7" cy="237.7" r="4.5" fill="#4f83f1"/><circle cx="137.3" cy="242.7" r="4.5" fill="#4f83f1"/><circle cx="107.2" cy="235.9" r="4.5" fill="#4f83f1"/><circle cx="108.8" cy="224.2" r="4.5" fill="#4f83f1"/><circle cx="148.2" cy="222.9" r="4.5" fill="#4f83f1"/><circle cx="142.2" cy="229.6" r="4.5" fill="#4f83f1"/><circle cx="91.8" cy="211.1" r="4.5" fill="#4f83f1"/><circle cx="167.7" cy="214.3" r="4.5" fill="#4f83f1"/><circle cx="170.0" cy="205.4" r="4.5" fill="#4f83f1"/><circle cx="118.3" cy="252.2" r="4.5" fill="#4f83f1"/><circle cx="140.3" cy="249.2" r="4.5" fill="#4f83f1"/><circle cx="135.1" cy="237.1" r="4.5" fill="#4f83f1"/><circle cx="199.8" cy="255.7" r="4.5" fill="#4f83f1"/><circle cx="106.8" cy="233.7" r="4.5" fill="#4f83f1"/><circle cx="158.3" cy="221.7" r="4.5" fill="#4f83f1"/><circle cx="133.2" cy="202.0" r="4.5" fill="#4f83f1"/><circle cx="171.3" cy="234.2" r="4.5" fill="#4f83f1"/><circle cx="102.1" cy="237.9" r="4.5" fill="#4f83f1"/><circle cx="123.8" cy="215.6" r="4.5" fill="#4f83f1"/><circle cx="111.0" cy="239.8" r="4.5" fill="#4f83f1"/><circle cx="209.7" cy="254.5" r="4.5" fill="#4f83f1"/><circle cx="178.1" cy="242.1" r="4.5" fill="#4f83f1"/><circle cx="177.2" cy="252.7" r="4.5" fill="#4f83f1"/><circle cx="197.5" cy="234.8" r="4.5" fill="#4f83f1"/><circle cx="667.7" cy="214.2" r="4.5" fill="#4f83f1"/><circle cx="589.2" cy="267.5" r="4.5" fill="#4f83f1"/><circle cx="663.9" cy="235.7" r="4.5" fill="#4f83f1"/><circle cx="654.9" cy="241.3" r="4.5" fill="#4f83f1"/><circle cx="650.5" cy="216.3" r="4.5" fill="#4f83f1"/><circle cx="682.2" cy="246.1" r="4.5" fill="#4f83f1"/><circle cx="612.6" cy="233.8" r="4.5" fill="#4f83f1"/><circle cx="650.5" cy="220.4" r="4.5" fill="#4f83f1"/><circle cx="719.5" cy="214.9" r="4.5" fill="#4f83f1"/><circle cx="655.4" cy="258.0" r="4.5" fill="#4f83f1"/><circle cx="661.9" cy="234.5" r="4.5" fill="#4f83f1"/><circle cx="667.1" cy="254.3" r="4.5" fill="#4f83f1"/><circle cx="629.7" cy="238.4" r="4.5" fill="#4f83f1"/><circle cx="692.6" cy="254.2" r="4.5" fill="#4f83f1"/><circle cx="691.4" cy="258.1" r="4.5" fill="#4f83f1"/><circle cx="662.3" cy="217.3" r="4.5" fill="#4f83f1"/><circle cx="665.5" cy="224.1" r="4.5" fill="#4f83f1"/><circle cx="619.8" cy="236.5" r="4.5" fill="#4f83f1"/><circle cx="656.6" cy="224.2" r="4.5" fill="#4f83f1"/><circle cx="622.2" cy="224.2" r="4.5" fill="#4f83f1"/><circle cx="643.1" cy="225.2" r="4.5" fill="#4f83f1"/><circle cx="660.2" cy="232.2" r="4.5" fill="#4f83f1"/><circle cx="601.1" cy="224.0" r="4.5" fill="#4f83f1"/><circle cx="325.8" cy="326.5" r="4.5" fill="#4f83f1"/><circle cx="243.0" cy="326.3" r="4.5" fill="#4f83f1"/><circle cx="300.2" cy="295.0" r="4.5" fill="#4f83f1"/><circle cx="320.5" cy="309.8" r="4.5" fill="#4f83f1"/><circle cx="317.7" cy="288.9" r="4.5" fill="#4f83f1"/><circle cx="298.4" cy="313.0" r="4.5" fill="#4f83f1"/><circle cx="304.6" cy="297.5" r="4.5" fill="#4f83f1"/><circle cx="305.7" cy="287.3" r="4.5" fill="#4f83f1"/><circle cx="344.6" cy="330.0" r="4.5" fill="#4f83f1"/><circle cx="268.4" cy="336.1" r="4.5" fill="#4f83f1"/><circle cx="321.8" cy="296.4" r="4.5" fill="#4f83f1"/><circle cx="299.1" cy="311.1" r="4.5" fill="#4f83f1"/><circle cx="311.2" cy="291.0" r="4.5" fill="#4f83f1"/><circle cx="305.8" cy="321.6" r="4.5" fill="#4f83f1"/><circle cx="303.0" cy="308.3" r="4.5" fill="#4f83f1"/><circle cx="307.5" cy="322.9" r="4.5" fill="#4f83f1"/><circle cx="316.4" cy="313.0" r="4.5" fill="#4f83f1"/><circle cx="317.8" cy="318.7" r="4.5" fill="#4f83f1"/><circle cx="486.9" cy="330.9" r="4.5" fill="#4f83f1"/><circle cx="534.2" cy="319.5" r="4.5" fill="#4f83f1"/><circle cx="570.9" cy="324.0" r="4.5" fill="#4f83f1"/><circle cx="516.9" cy="312.6" r="4.5" fill="#4f83f1"/><circle cx="568.3" cy="331.0" r="4.5" fill="#4f83f1"/><circle cx="533.6" cy="328.8" r="4.5" fill="#4f83f1"/><circle cx="550.8" cy="300.0" r="4.5" fill="#4f83f1"/><circle cx="549.6" cy="320.2" r="4.5" fill="#4f83f1"/><circle cx="568.8" cy="301.8" r="4.5" fill="#4f83f1"/><circle cx="595.4" cy="331.2" r="4.5" fill="#4f83f1"/><circle cx="529.2" cy="309.3" r="4.5" fill="#4f83f1"/><circle cx="546.8" cy="310.8" r="4.5" fill="#4f83f1"/><circle cx="705.1" cy="125.3" r="4.5" fill="#4f83f1"/><circle cx="782.2" cy="139.2" r="4.5" fill="#4f83f1"/><circle cx="710.0" cy="134.9" r="4.5" fill="#4f83f1"/><circle cx="701.5" cy="100.3" r="4.5" fill="#4f83f1"/><circle cx="699.2" cy="128.3" r="4.5" fill="#4f83f1"/><circle cx="714.5" cy="145.1" r="4.5" fill="#4f83f1"/><circle cx="700.1" cy="150.1" r="4.5" fill="#4f83f1"/><circle cx="758.3" cy="121.9" r="4.5" fill="#4f83f1"/><circle cx="181.4" cy="128.8" r="4.5" fill="#f59532"/><circle cx="186.3" cy="102.4" r="4.5" fill="#f59532"/><circle cx="176.0" cy="124.1" r="4.5" fill="#f59532"/><circle cx="117.6" cy="124.3" r="4.5" fill="#f59532"/><circle cx="161.7" cy="129.5" r="4.5" fill="#f59532"/><circle cx="139.4" cy="99.7" r="4.5" fill="#f59532"/><circle cx="179.5" cy="114.3" r="4.5" fill="#f59532"/><circle cx="164.6" cy="104.6" r="4.5" fill="#f59532"/><circle cx="223.3" cy="92.0" r="4.5" fill="#f59532"/><circle cx="146.6" cy="115.8" r="4.5" fill="#f59532"/><circle cx="202.2" cy="87.0" r="4.5" fill="#f59532"/><circle cx="179.9" cy="77.2" r="4.5" fill="#f59532"/><circle cx="156.2" cy="121.8" r="4.5" fill="#f59532"/><circle cx="188.6" cy="91.2" r="4.5" fill="#f59532"/><circle cx="496.1" cy="101.4" r="4.5" fill="#f59532"/><circle cx="495.6" cy="101.9" r="4.5" fill="#f59532"/><circle cx="517.9" cy="67.6" r="4.5" fill="#f59532"/><circle cx="464.6" cy="88.2" r="4.5" fill="#f59532"/><circle cx="556.2" cy="92.2" r="4.5" fill="#f59532"/><circle cx="486.6" cy="59.5" r="4.5" fill="#f59532"/><circle cx="502.4" cy="80.2" r="4.5" fill="#f59532"/><circle cx="528.7" cy="99.9" r="4.5" fill="#f59532"/><circle cx="518.3" cy="88.6" r="4.5" fill="#f59532"/><circle cx="528.8" cy="75.0" r="4.5" fill="#f59532"/><circle cx="479.5" cy="83.9" r="4.5" fill="#f59532"/><circle cx="365.2" cy="190.9" r="4.5" fill="#f59532"/><circle cx="391.6" cy="182.4" r="4.5" fill="#f59532"/><circle cx="386.9" cy="204.4" r="4.5" fill="#f59532"/><circle cx="135.1" cy="233.8" r="4.5" fill="#f59532"/><circle cx="150.6" cy="244.4" r="4.5" fill="#f59532"/><circle cx="325.5" cy="314.9" r="4.5" fill="#f59532"/><circle cx="681.9" cy="130.2" r="4.5" fill="#f59532"/><circle cx="742.3" cy="136.3" r="4.5" fill="#f59532"/><circle cx="716.0" cy="129.8" r="4.5" fill="#f59532"/><circle cx="703.4" cy="124.6" r="4.5" fill="#f59532"/></svg></div>
+            <div class="pills" style="margin-top:11px">
+              <span class="pill">Refund eligibility <span class="pc">68</span><span class="sep">&middot;</span><span class="dc">14</span></span>
+              <span class="pill">Invoice copies <span class="pc">53</span><span class="sep">&middot;</span><span class="dc">11</span></span>
+              <span class="pill">Subscription changes <span class="pc">43</span><span class="sep">&middot;</span><span class="dc">3</span></span>
+              <span class="pill">Payment failures <span class="pc">33</span><span class="sep">&middot;</span><span class="dc">2</span></span>
+              <span class="pill">Tax &amp; VAT questions <span class="pc">23</span><span class="sep">&middot;</span><span class="dc none">0</span></span>
+              <span class="pill">Account access <span class="pc">18</span><span class="sep">&middot;</span><span class="dc">1</span></span>
+              <span class="pill">Chargeback disputes <span class="pc">12</span><span class="sep">&middot;</span><span class="dc none">0</span></span>
+              <span class="pill">Plan downgrades <span class="pc">8</span><span class="sep">&middot;</span><span class="dc">4</span></span>
+              <span class="pill dash">unmatched cases 7</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>Each topic's pill carries its two counts.</b> &ldquo;23 &middot; 0&rdquo; and &ldquo;12 &middot; 0&rdquo; are topics with traffic and no cases, and they are the two untinted clusters above. The axes carry no units: only relative distance is meaningful, so the grid is texture rather than a scale.</p>
+</section>
+
+<section class="sec" id="probe">
+  <span class="eyebrow">19 &middot; Evaluations</span>
+  <h3>Probing a single query against the suite</h3>
+  <p class="lede">A query is matched against the dataset and returns one of four verdicts, the nearest case, what that case asserts, and whether production asks the query at all.</p>
+
+  <div class="cols">
+    <div class="lcol">
+      <div class="panel"><div class="phead"><span class="ptitle">Ask the dataset a question</span><span class="badge b-neu" style="margin-left:auto">PROBE</span></div>
+        <div class="pbody">
+          <p class="psub">Check whether a specific request is already tested, before writing a case for it.</p>
+          <div class="panel raised" style="margin-top:9px"><div class="pbody" style="padding:10px 12px;font-size:12.5px;color:var(--n700)">what happens if a customer disputes a charge after we already refunded it</div></div>
+          <div class="hctl" style="margin:10px 0 0"><span class="btn pri">Check coverage</span><span class="btn">Clear</span></div>
+          <div class="hctl" style="margin:14px 0 0;align-items:center"><span class="badge b-err">NOT COVERED - REAL GAP</span><span class="psub">0.31 &middot; covered &ge; 0.75 &middot; related &ge; 0.48</span></div>
+          <div class="track" style="margin-top:9px;overflow:visible"><div class="fill" style="width:31%;background:var(--err)"></div><div style="position:absolute;left:48%;top:-3px;height:12px;width:2px;background:var(--n400);border-radius:2px"></div><div style="position:absolute;left:75%;top:-3px;height:12px;width:2px;background:var(--ok);border-radius:2px"></div></div>
+          <p style="font-size:12.5px;color:var(--n600);margin-top:12px">Nothing in the dataset is close, and production does ask this (topic &ldquo;Chargeback disputes&rdquo;, 4% of classified traffic). This is a real gap.</p>
+          <div class="lab s" style="margin-top:14px">Nearest dataset case</div>
+          <div class="panel raised" style="margin-top:5px"><div class="pbody" style="padding:10px 12px;font-size:12.5px;color:var(--n700)">&ldquo;Customer asks for a refund on a disputed charge&rdquo;<div class="psub" style="margin-top:5px">Expects: Confirms the dispute is open, explains the refund cannot be issued twice, routes to the disputes queue.</div><div class="psub">in Billing refund golden set</div></div></div>
+          <div class="hctl" style="margin-top:12px"><span class="btn pri">Add this as a case</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="rcol">
+      <div class="panel"><div class="phead"><span class="ptitle">Four verdicts</span></div>
+        <div class="pbody flush"><div class="scroll"><table><tbody>
+          <tr><td style="width:170px"><span class="badge b-ok">Covered</span></td><td class="w">The suite would reject this as a duplicate. Don't write it.</td></tr>
+          <tr><td><span class="badge b-pend">Adjacent, not covered</span></td><td class="w">Something related exists, but it won't catch a regression specific to this.</td></tr>
+          <tr><td><span class="badge b-err">Not covered - real gap</span></td><td class="w">Nothing is close, and production does ask it. Write the test.</td></tr>
+          <tr><td><span class="badge b-neu">Not covered - and not asked</span></td><td class="w">Nothing is close, and nobody asks it either. Deliberately not red.</td></tr>
+        </tbody></table></div></div>
+      </div>
+      <div class="panel"><div class="phead"><span class="ptitle">Topic detail</span><span class="badge b-err">Missing</span><span class="psub mono" style="margin-left:auto">priority 0.18</span></div>
+        <div class="pbody flush">
+          <div class="scroll"><table class="tg"><tbody>
+            <tr><td class="w"><span class="lab s">Production traffic</span><div class="k" style="font-size:17px;margin-top:3px">8%</div><div class="psub">2,471 traces &middot; 1,044 sessions</div></td>
+                <td class="w"><span class="lab s">Reviewed cases</span><div class="t-err" style="font-size:17px;font-weight:600;margin-top:3px">0 / 5 target</div><div class="psub">target scales with traffic and risk</div></td></tr>
+            <tr><td class="w"><span class="lab s">Coverage</span><div class="k" style="font-size:17px;margin-top:3px">0%</div><div class="psub">depth against traces, not case count</div></td>
+                <td class="w"><span class="lab s">Observed risk</span><div class="t-err" style="font-size:17px;font-weight:600;margin-top:3px">42%</div><div class="psub">48% issues &middot; 27% negative</div></td></tr>
+          </tbody></table></div>
+          <div class="pbody">
+            <div class="lab s">Suggested action</div>
+            <div class="panel raised" style="margin-top:5px"><div class="pbody" style="padding:10px 12px;font-size:12.5px;color:var(--n700)">No case covers &ldquo;Tax &amp; VAT questions&rdquo;. Curate the production traces in this topic, or generate candidate cases grounded in them.</div></div>
+            <div class="hctl" style="margin-top:10px"><span class="btn pri">Generate 5 cases from traces</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>The fourth verdict is deliberately neutral.</b> &ldquo;Not covered &mdash; and not asked&rdquo; is not styled as a failure, because nothing in the dataset is wrong when production never asks the question.</p>
+</section>
+
+<div class="part"><span class="pn">Improvement and CI</span></div>
+
+<section class="sec" id="registries">
+  <span class="eyebrow">20 &middot; Evaluations</span>
+  <h3>Versioned prompts and tool definitions</h3>
+  <p class="lede">Prompts and tool schemas are versioned in the registry and pulled by the agent at runtime. A proposal is drafted by a judge from the worst-rated evidence tagged with that prompt or tool, shown as a diff beside the examples it drew on, and validated against a dataset before publishing.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Prompts</b></div>
+      <div class="body">
+        <div class="panel"><div class="pbody flush"><div class="scroll"><table style="min-width:620px">
+          <thead><tr><th>Name</th><th style="width:200px">Prompt ID</th><th style="width:92px">Version</th><th style="width:100px">Updated</th></tr></thead>
+          <tbody>
+            <tr><td class="w k">refund-policy</td><td class="mono muted">pr_8c41e9&hellip;</td><td><span class="badge b-info">v3</span></td><td class="muted">Oct 23</td></tr>
+            <tr><td class="w k">escalation-router</td><td class="mono muted">pr_2a90c1&hellip;</td><td><span class="badge b-info">v2</span></td><td class="muted">Oct 19</td></tr>
+            <tr><td class="w k">docs-answer</td><td class="mono muted">pr_7b18e0&hellip;</td><td><span class="badge b-info">v7</span></td><td class="muted">Oct 11</td></tr>
+          </tbody></table></div></div></div>
+
+        <div class="panel"><div class="phead"><span class="ptitle">Suggest improvement</span><span class="psub">refund-policy &middot; v3 live</span></div>
+          <div class="pbody">
+            <p class="psub">A judge reads the worst-rated eval runs and production ratings tagged with this prompt, then proposes a rewrite. Nothing is saved until you publish.</p>
+            <div class="hctl" style="margin:11px 0"><span class="ctl">Past 7 days</span><span class="ctl on">All 34</span><span class="ctl">Production 23</span><span class="ctl">Eval runs 11</span></div>
+            <div class="lab s">What changed</div>
+            <div class="hctl" style="margin:6px 0 10px"><span class="badge b-ok">ADDED</span><span class="badge b-pend">TIGHTENED</span><span class="badge b-err">REMOVED</span><span class="psub" style="align-self:center">Avg score, selected 4.6 / 10 &middot; Prompt length 128 &rarr; 171 words</span></div>
+            <div class="panel raised"><div class="pbody" style="font-family:var(--mono);font-size:11.5px;line-height:1.7;padding:10px 12px">
+              <div class="muted">&nbsp; When the customer asks about a refund:</div>
+              <div class="muted">&nbsp; 1. Confirm the order and the charge date.</div>
+              <div style="background:var(--err-bg);color:var(--err);margin:0 -12px;padding:0 12px">- 2. If the charge is within policy, confirm the refund.</div>
+              <div style="background:var(--ok-bg);color:var(--ok);margin:0 -12px;padding:0 12px">+ 2. Call lookup_fx_rate when the charge currency differs from</div>
+              <div style="background:var(--ok-bg);color:var(--ok);margin:0 -12px;padding:0 12px">+&nbsp;&nbsp;&nbsp; the settlement currency, and quote the settlement amount.</div>
+              <div style="background:var(--ok-bg);color:var(--ok);margin:0 -12px;padding:0 12px">+ 3. For a closed or expired card, state the refund returns to</div>
+              <div style="background:var(--ok-bg);color:var(--ok);margin:0 -12px;padding:0 12px">+&nbsp;&nbsp;&nbsp; the original method. Never promise a timeline.</div>
+              <div class="muted">&nbsp; 4. Cite the policy clause you relied on.</div>
+            </div></div>
+          </div>
+          <div class="pbody" style="padding-top:0">
+            <div class="panel raised"><div class="phead" style="background:transparent"><span class="ptitle">Validate before publishing</span><span class="badge b-ok" style="margin-left:auto">IMPROVED</span></div>
+              <div class="pbody">
+                <p class="psub">Billing refund golden set &middot; both versions run on the same 24 cases</p>
+                <div class="kpis k3" style="margin-top:10px">
+                  <div class="kpi"><div class="lab">Baseline v3</div><div class="kv"><span class="val">6.9</span></div></div>
+                  <div class="kpi"><div class="lab">Candidate v4</div><div class="kv"><span class="val t-ok">8.2</span></div><div class="foot t-ok">+1.3</div></div>
+                  <div class="kpi"><div class="lab">Cases improved</div><div class="kv"><span class="val">7</span></div><div class="foot">1 regressed, 16 unchanged</div></div>
+                </div>
+                <div class="scroll" style="margin-top:11px"><table><tbody>
+                  <tr><td class="w k">Refund to a closed card</td><td class="r">4.8 &rarr; 8.6</td><td class="r t-ok">+3.8</td></tr>
+                  <tr><td class="w k">Partial refund, split payment</td><td class="r">5.4 &rarr; 8.2</td><td class="r t-ok">+2.8</td></tr>
+                  <tr><td class="w k">Currency mismatch, EUR to USD</td><td class="r">7.9 &rarr; 9.1</td><td class="r t-ok">+1.2</td></tr>
+                  <tr><td class="w k">Refund outside the 30-day window</td><td class="r">9.2 &rarr; 8.7</td><td class="r t-err">-0.5</td></tr>
+                </tbody></table></div>
+                <div class="hctl" style="margin-top:12px"><span class="btn pri">Publish as v4</span><span class="btn">Discard</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>Publishing is a separate step from drafting.</b> The candidate runs against the same cases as the current version, and the one case that scored lower is shown with its diff rather than absorbed into the average.</p>
+</section>
+
+<section class="sec" id="suggestions">
+  <span class="eyebrow">21 &middot; Evaluations</span>
+  <h3>Proposals drafted and validated automatically</h3>
+  <p class="lede">A background sweep watches for prompts and tool definitions accumulating fresh failures. On crossing the threshold it drafts the change, runs the baseline-versus-candidate validation, and queues the result with its verdict attached. Tools seen failing in traffic but never registered are listed for registration.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Insights &middot; Suggestions</b></div>
+      <div class="tabs"><span class="tab on">Suggestions</span><span class="tab">Dataset coverage</span><span class="tab">Auto-improve</span></div>
+      <div class="body">
+        <p class="blurb">Prompts and tools with worst-rated evidence worth acting on</p>
+        <div class="panel"><div class="phead"><span class="ptitle">Improvement proposals</span><span class="psub">Drafted and validated based on failure evidence - review the verdict, then publish or dismiss.</span><span class="ctl" style="margin-left:auto">Check now</span></div>
+          <div class="pbody flush"><div class="scroll"><table style="min-width:700px">
+            <thead><tr><th style="width:96px">Kind</th><th>Target</th><th>Evidence</th><th style="width:120px">Validation</th><th style="width:150px">Verdict</th></tr></thead>
+            <tbody>
+              <tr><td><span class="badge b-neu">Prompt</span></td><td class="w k mono">refund-policy</td><td class="w">23 low-rated results, 11 production failures</td><td class="r t-ok">6.9 &rarr; 8.2</td><td><span class="badge b-ok">IMPROVED</span></td></tr>
+              <tr><td><span class="badge b-neu">Tool schema</span></td><td class="w k mono">lookup_fx_rate</td><td class="w">14 tool failures, arguments inferred from calls</td><td class="r t-ok">0.71 &rarr; 0.96</td><td><span class="badge b-ok">IMPROVED</span></td></tr>
+              <tr><td><span class="badge b-neu">Prompt</span></td><td class="w k mono">escalation-router</td><td class="w">9 low-rated results</td><td class="r muted">7.4 &rarr; 7.5</td><td><span class="badge b-neu">NO CLEAR CHANGE</span></td></tr>
+            </tbody></table></div></div>
+        </div>
+        <div class="panel"><div class="phead"><span class="ptitle">Seen in traffic, not registered</span><span class="psub">3</span></div>
+          <div class="pbody flush"><div class="scroll"><table>
+            <tbody>
+              <tr><td class="w k mono">lookup_fx_rate</td><td class="muted">1,204 calls</td><td><span class="badge b-err">96 failures</span></td><td class="muted w">definition from trace metadata</td><td class="r"><span class="btn">Register</span></td></tr>
+              <tr><td class="w k mono">post_credit_note</td><td class="muted">318 calls</td><td><span class="badge b-pend">12 failures</span></td><td class="muted w">definition inferred</td><td class="r"><span class="btn">Register</span></td></tr>
+            </tbody></table></div></div>
+          <div class="phead" style="border-bottom:0;border-top:1px solid var(--n200)"><span class="psub">Register one and its accumulated failure history becomes evidence immediately.</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note"><b>A proposal that changes nothing is reported as such.</b> The third row was drafted, measured, and found to make no clear difference.</p>
+</section>
+
+<section class="sec" id="ci">
+  <span class="eyebrow">22 &middot; Evaluations</span>
+  <h3>An exit code for CI</h3>
+  <p class="lede">One call after an SDK eval run returns an exit code. Recorded gates are listed with their verdict, average, baseline and individual checks; a preview answers whether the latest run would pass without writing to history.</p>
+
+  <div class="app nonav">
+    <div class="main">
+      <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>CI Gates</b></div>
+      <div class="body">
+        <div class="panel"><div class="phead"><span class="ptitle">Would the latest run pass?</span><span class="badge b-ok" style="margin-left:auto">PASSED</span></div>
+          <div class="pbody">
+            <p class="psub">Gates the dataset's most recent completed run against these thresholds. A preview is never recorded - history below only shows gates run by real CI jobs.</p>
+            <div class="hctl" style="margin:10px 0"><span class="ctl">Billing refund golden set</span><span class="ctl">Fail under 7</span><span class="ctl on">No regression vs previous run</span><span class="ctl">Tolerance 0.5</span></div>
+            <p class="mono" style="font-size:12px;color:var(--n600)">&check; [fail_under] average 7.5 is at or above 7<br>&check; [no_regression] 7.5 vs previous 7.4, within tolerance 0.5</p>
+          </div>
+        </div>
+        <div class="panel"><div class="phead"><span class="ptitle">Gate history</span><span class="psub">Every recorded gate evaluation, newest first</span></div>
+          <div class="pbody flush"><div class="scroll"><table style="min-width:700px">
+            <thead><tr><th style="width:92px">Verdict</th><th>Dataset</th><th class="r" style="width:62px">Avg</th><th class="r" style="width:82px">Baseline</th><th>Checks</th><th style="width:130px">Caller</th></tr></thead>
+            <tbody>
+              <tr><td><span class="badge b-ok">PASSED</span></td><td class="w">Billing refund golden set</td><td class="r">7.5</td><td class="r">7.4</td><td class="mono muted">&check; fail_under &nbsp;&check; no_regression</td><td class="muted">github-actions</td></tr>
+              <tr><td><span class="badge b-err">FAILED</span></td><td class="w">Billing refund golden set</td><td class="r t-err">6.8</td><td class="r">7.4</td><td class="mono muted">&check; fail_under &nbsp;&cross; no_regression</td><td class="muted">github-actions</td></tr>
+              <tr><td><span class="badge b-ok">PASSED</span></td><td class="w">Docs answering regression</td><td class="r">8.9</td><td class="r">8.7</td><td class="mono muted">&check; fail_under &nbsp;&check; no_regression</td><td class="muted">github-actions</td></tr>
+            </tbody></table></div></div>
+        </div>
+        <div class="panel"><div class="phead"><span class="ptitle">The gate script</span><span class="psub mono">ci/eval_gate.py</span></div>
+          <div class="pbody"><div class="panel raised"><div class="pbody" style="font-family:var(--mono);font-size:12px;line-height:1.75;color:var(--n600);padding:11px 13px">run = client.evaluations.run(dataset_id=<b style="color:var(--n900)">"ds_billing_refunds"</b>)<br>gate = run.<b style="color:var(--n900)">gate</b>(fail_under=<b style="color:var(--n900)">7</b>, no_regression=<b style="color:var(--n900)">True</b>, caller=<b style="color:var(--n900)">"github-actions"</b>)<br>sys.exit(gate.exit_code)&nbsp;&nbsp; <span class="muted"># 0 = merge, 1 = block</span></div></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<div class="part"><span class="pn">Running it</span></div>
+
+<section class="sec" id="deploy">
+  <span class="eyebrow">23 &middot; Running it</span>
+  <h3>Install, storage tiers and keys</h3>
+
+  <div class="grid2">
+    <div class="panel"><div class="phead"><span class="ptitle">Install</span></div><div class="pbody">
+      <div class="panel raised"><div class="pbody" style="font-family:var(--mono);font-size:12px;line-height:1.8;color:var(--n600);padding:11px 13px">curl -sSL https://raw.githubusercontent.com/<br>&nbsp;&nbsp;AgentX-ai/AgentX-trace-eval/main/install.sh | bash<br><b style="color:var(--n900)">agentx-server --dev</b></div></div>
+      <p class="psub" style="margin-top:9px">Starts the engine on a local SQLite database, opens the dashboard, and prints the project key your SDK needs.</p>
+    </div></div>
+    <div class="panel"><div class="phead"><span class="ptitle">Send it traffic</span></div><div class="pbody">
+      <div class="panel raised"><div class="pbody" style="font-family:var(--mono);font-size:12px;line-height:1.8;color:var(--n600);padding:11px 13px">export OTEL_EXPORTER_OTLP_ENDPOINT=<b style="color:var(--n900)">http://localhost:4700/api/v1/otel</b><br>export OTEL_EXPORTER_OTLP_HEADERS=<b style="color:var(--n900)">"x-api-key=&lt;key&gt;"</b></div></div>
+      <p class="psub" style="margin-top:9px">Or use the AgentX Python SDK. Either way the full loop applies &mdash; sessions, scorers, topics and coverage all work on OTel traffic.</p>
+    </div></div>
+  </div>
+
+  <div class="panel"><div class="phead"><span class="ptitle">Same binary, same API, three storage tiers</span></div>
+    <div class="pbody flush"><div class="scroll"><table style="min-width:620px">
+      <thead><tr><th style="width:130px">Tier</th><th style="width:190px">Storage</th><th>Start it with</th></tr></thead>
+      <tbody>
+        <tr><td class="k">Self-host</td><td>SQLite</td><td class="w mono">agentx-server --dev</td></tr>
+        <tr><td class="k">Team</td><td>Postgres</td><td class="w mono">AGENTX_DB_URL=postgres://&hellip; agentx-server</td></tr>
+        <tr><td class="k">Enterprise</td><td>Postgres + ClickHouse</td><td class="w mono">docker compose -f docker-compose.enterprise.yml up -d</td></tr>
+      </tbody></table></div></div>
+  </div>
+
+  <ul class="plain" style="margin:0;padding-left:20px;font-size:15px;color:var(--n600);display:flex;flex-direction:column;gap:8px">
+    <li><b style="color:var(--n900);font-weight:600">Bring your own keys.</b> OpenAI, Anthropic and Gemini for judges and model calls. Nothing is billed through AgentX, and nothing leaves your infrastructure.</li>
+    <li><b style="color:var(--n900);font-weight:600">Start with no keys at all.</b> Trace ingest, regex and phrase scorers all work with nothing configured. Only judges, semantic detection and the embedding-backed features need a provider key.</li>
+    <li><b style="color:var(--n900);font-weight:600">Single binary.</b> The engine compiles to a native executable and the CLI to a native Go binary &mdash; no Node, Bun or Go on the target machine.</li>
+    <li><b style="color:var(--n900);font-weight:600">Auth when you need it.</b> One operator on one machine gets no login screen; a shared deployment turns on sign-in with one variable, and SDK ingest is unaffected either way.</li>
+    <li><b style="color:var(--n900);font-weight:600">Works from your editor.</b> A Claude Code plugin runs the whole loop &mdash; instrument, evaluate, triage, re-run &mdash; against the same HTTP API, and also works in Cursor, Codex and anything reading the Agent Skills standard.</li>
+  </ul>
+</section>
+
+</div>
+
+<footer style="border-top:2px solid var(--n900);margin-top:48px;padding-top:16px;display:flex;flex-direction:column;gap:7px">
+  <p class="psub">AgentX Trace &amp; Eval &middot; engine v0.3.33 &middot; Elastic License 2.0 &middot; October 2026</p>
+  <p class="psub">Every screen in this document reproduces the real dashboard. All traces, sessions, datasets, scores, topics and coverage figures are demo data from a fictional project; they do not represent any customer traffic.</p>
+</footer>
+
+</div>
+
+</body>
+</html>
