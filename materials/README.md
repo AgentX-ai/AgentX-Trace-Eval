@@ -5,7 +5,9 @@
 [`agentx-governance-tour.html`](agentx-governance-tour.html) walks through every screen of the
 self-hosted governance layer, grouped into its three pillars:
 
-- **Traceability** - Live Traces, Sessions, trace detail and execution timeline
+- **Traceability** - integrations (Python and TypeScript SDKs, twelve framework integrations,
+  OpenTelemetry), Live Traces, Sessions, trace detail and execution timeline, and the audit trail
+  and bulk export
 - **Observability** - Overview, Monitor, Topics, dataset coverage with its coverage map and probe,
   the Review queue, Scorers and Rules
 - **Evaluations** - Datasets, evaluation runs, AI Analysis, Playground, conversation simulation,
@@ -14,7 +16,7 @@ self-hosted governance layer, grouped into its three pillars:
 It closes with **Getting started**: installing the engine, sending it traffic, gating merges with CI
 Gates, and scaling storage and access.
 
-Each section reproduces the dashboard UI. All figures are demo data from a fictional project.
+Each screen reproduces the dashboard UI. All figures are demo data from a fictional project.
 
 ### Viewing it
 
