@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>AgentX Governance Tour</title>
+<title>AgentX (agentx.so) Governance Tour</title>
 <meta name="description" content="A walkthrough of the self-hosted AgentX governance layer: traceability, observability and evaluations.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -53,6 +53,10 @@ p{margin:0}
 .cover{padding-block:56px 30px;display:flex;flex-direction:column;gap:18px;border-bottom:1px solid var(--n200)}
 .kicker{font-size:11px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--acc)}
 .cover h1{font-size:clamp(32px,6vw,50px);font-weight:700;letter-spacing:-.025em}
+.cover h1 .h1-site{color:var(--n500);font-weight:500}
+.cover h1 .h1-site a{color:inherit;text-decoration:none}
+.cover h1 .h1-site a:hover,.cover h1 .h1-site a:focus-visible{text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:7px}
+footer a{color:inherit;text-underline-offset:2px}
 .cover .sub{font-size:clamp(16px,2.3vw,19px);color:var(--n600);max-width:none}
 .meta{display:flex;flex-wrap:wrap;gap:4px 26px;font-family:var(--mono);font-size:11px;color:var(--n500);padding-top:4px}
 .meta b{color:var(--n700);font-weight:500}
@@ -297,8 +301,8 @@ td.mono,.mono{font-family:var(--mono)}
 <div class="doc">
 
 <header class="cover">
-  <div class="kicker">AgentX &middot; Self-hosted governance for AI agents</div>
-  <h1>Trace, Evaluate, Monitor</h1>
+  <div class="kicker">Trace &middot; Evaluate &middot; Monitor</div>
+  <h1>AgentX <span class="h1-site">(<a href="https://agentx.so">agentx.so</a>)</span></h1>
   <p class="sub">A walkthrough of the self-hosted AgentX governance layer, surface by surface, grouped into the three things it does: traceability, observability and evaluations. Every screen is the product&rsquo;s own UI, populated with demo data.</p>
 </header>
 
@@ -337,12 +341,12 @@ td.mono,.mono{font-family:var(--mono)}
 <div class="stack">
 
 <section class="sec">
-  <p class="lede">The product splits into three pillars. <b>Traceability</b> records what every run did, down to the individual span. <b>Observability</b> watches production traffic in aggregate &mdash; its health, what it is about, how much of it your tests cover &mdash; and surfaces what needs a person. <b>Evaluations</b> test the agent against datasets, compare prompts and models, and validate a change before it ships.</p>
+  <p class="lede">The product splits into three pillars. <b>Traceability</b> records what every run did, down to the individual span. <b>Observability</b> watches production traffic in aggregate (its health, what it is about, how much of it your tests cover) and surfaces what needs a person. <b>Evaluations</b> test the agent against datasets, compare prompts and models, and validate a change before it ships.</p>
 </section>
 
 <div class="zone zone-trace">
 
-<div class="pillar" id="pillar-traceability"><div class="pillar-h"><span class="pillar-k">Pillar</span><h2>Traceability</h2></div><p class="pillar-b">Recording what each run did &mdash; the call, the conversation it belonged to, and every span inside it.</p><p class="pillar-i">Live Traces &middot; Sessions &middot; Trace detail &amp; timeline</p></div>
+<div class="pillar" id="pillar-traceability"><div class="pillar-h"><span class="pillar-k">Pillar</span><h2>Traceability</h2></div><p class="pillar-b">Recording what each run did: the call, the conversation it belonged to, and every span inside it.</p><p class="pillar-i">Live Traces &middot; Sessions &middot; Trace detail &amp; timeline</p></div>
 
 <section class="sec" id="traces">
   <span class="eyebrow">01 &middot; Traceability</span>
@@ -433,7 +437,7 @@ td.mono,.mono{font-family:var(--mono)}
               <div class="bar-row"><span class="bar-label mono" style="font-size:11.5px;padding-left:14px">&#8627; llm.completion</span><div class="bar-track" style="position:relative;height:15px"><div style="position:absolute;left:19.1%;width:74.9%;height:15px;border-radius:3px;background:var(--acc)"></div></div><span class="bar-val">2,980 ms</span></div>
               <div class="bar-row"><span class="bar-label mono" style="font-size:11.5px;padding-left:14px">&#8627; policy.check</span><div class="bar-track" style="position:relative;height:15px"><div style="position:absolute;left:94.2%;width:5.3%;height:15px;border-radius:3px;background:var(--n300)"></div></div><span class="bar-val">210 ms</span></div>
             </div>
-            <div class="key" style="margin-top:12px"><span><span class="kd" style="background:var(--err)"></span><code>retrieve_invoice</code> returned 502 &mdash; the agent answered anyway, and the judge scored it 5.1</span></div>
+            <div class="key" style="margin-top:12px"><span><span class="kd" style="background:var(--err)"></span><code>retrieve_invoice</code> returned 502. The agent answered anyway, and the judge scored it 5.1.</span></div>
           </div>
         </div>
       </div>
@@ -498,10 +502,10 @@ td.mono,.mono{font-family:var(--mono)}
         <div class="panel"><div class="phead"><span class="ptitle">Recent failures</span><span class="psub" style="margin-left:auto">View all signals (12 open)</span></div>
           <div class="pbody flush"><div class="scroll"><table>
             <tbody>
-              <tr><td style="width:84px"><span class="badge b-err">high</span></td><td class="w k">PII in response &mdash; email address returned in a billing reply</td><td class="muted" style="width:70px">3&times;</td><td class="muted r" style="width:90px">12m ago</td></tr>
-              <tr><td><span class="badge b-err">high</span></td><td class="w k">Policy adherence &mdash; refund promised without citing a clause</td><td class="muted">9&times;</td><td class="muted r">41m ago</td></tr>
+              <tr><td style="width:84px"><span class="badge b-err">high</span></td><td class="w k">PII in response: email address returned in a billing reply</td><td class="muted" style="width:70px">3&times;</td><td class="muted r" style="width:90px">12m ago</td></tr>
+              <tr><td><span class="badge b-err">high</span></td><td class="w k">Policy adherence: refund promised without citing a clause</td><td class="muted">9&times;</td><td class="muted r">41m ago</td></tr>
               <tr><td><span class="badge b-pend">medium</span></td><td class="w k">Malformed JSON response from billing-copilot</td><td class="muted">7&times;</td><td class="muted r">1h ago</td></tr>
-              <tr><td><span class="badge b-err">high</span></td><td class="w k">Prompt injection echo &mdash; system prompt partially disclosed</td><td class="muted"></td><td class="muted r">3h ago</td></tr>
+              <tr><td><span class="badge b-err">high</span></td><td class="w k">Prompt injection echo: system prompt partially disclosed</td><td class="muted"></td><td class="muted r">3h ago</td></tr>
               <tr><td><span class="badge b-neu">low</span></td><td class="w k">Session coherence below 5 on an 11-turn conversation</td><td class="muted"></td><td class="muted r">5h ago</td></tr>
             </tbody></table></div></div>
         </div>
@@ -887,7 +891,7 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>The fourth verdict is deliberately neutral.</b> &ldquo;Not covered &mdash; and not asked&rdquo; is not styled as a failure, because nothing in the dataset is wrong when production never asks the question.</p>
+  <p class="note"><b>The fourth verdict is deliberately neutral.</b> &ldquo;Not covered - and not asked&rdquo; is not styled as a failure, because nothing in the dataset is wrong when production never asks the question.</p>
 </section>
 
 <div class="part"><span class="pn">Triage</span></div>
@@ -895,7 +899,7 @@ td.mono,.mono{font-family:var(--mono)}
 <section class="sec" id="review">
   <span class="eyebrow">10 &middot; Observability</span>
   <h3>A verdict queue for everything flagged</h3>
-  <p class="lede">Detections, low judge scores and user downvotes collect in one queue, grouped by category and ordered worst first. Each carries five verdicts &mdash; Confirm, Fixed, Ignore, Wrong judgement, Add to dataset &mdash; with keyboard shortcuts for working through them.</p>
+  <p class="lede">Detections, low judge scores and user downvotes collect in one queue, grouped by category and ordered worst first. Each takes one of five verdicts (Confirm, Fixed, Ignore, Wrong judgement, Add to dataset), with a keyboard shortcut for each.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -928,7 +932,7 @@ td.mono,.mono{font-family:var(--mono)}
                 <div class="lab s" style="margin-top:14px">Judge rationale</div>
                 <p style="font-size:12.5px;color:var(--n600);margin-top:5px">The reply commits to a refund and a timeline without naming the clause it relied on, and without checking the settlement currency. The policy requires both before any commitment is made.</p>
                 <div class="lab s" style="margin-top:14px">Agent response</div>
-                <p style="font-size:12.5px;color:var(--n600);margin-top:5px">&ldquo;Good news &mdash; I&rsquo;ve approved your refund and you should see it back on your card within 3&ndash;5 business days.&rdquo;</p>
+                <p style="font-size:12.5px;color:var(--n600);margin-top:5px">&ldquo;Good news! I&rsquo;ve approved your refund and you should see it back on your card within 3&ndash;5 business days.&rdquo;</p>
                 <div class="hctl" style="margin:16px 0 0"><span class="btn pri">Confirm <span class="muted" style="color:inherit;opacity:.6">C</span></span><span class="btn">Fixed <span class="muted">X</span></span><span class="btn">Ignore <span class="muted">I</span></span><span class="btn">Wrong judgement <span class="muted">W</span></span><span class="btn">Add to dataset <span class="muted">A</span></span></div>
                 <p class="psub" style="margin-top:10px">j/k move &middot; c confirm &middot; x fixed &middot; i ignore &middot; w wrong &middot; a dataset</p>
               </div>
@@ -981,7 +985,7 @@ td.mono,.mono{font-family:var(--mono)}
 <section class="sec" id="rules">
   <span class="eyebrow">12 &middot; Observability</span>
   <h3>Routing traces to review, datasets or webhooks</h3>
-  <p class="lede">A rule matches incoming traces and routes them: into the review queue, into a dataset, or out to a webhook. Sampling is set per rule, and scoring stays a separate concern &mdash; a judge scorer owns its own sampling.</p>
+  <p class="lede">A rule matches incoming traces and routes them: into the review queue, into a dataset, or out to a webhook. Sampling is set per rule. Scoring stays a separate concern, because a judge scorer owns its own sampling.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1060,7 +1064,7 @@ td.mono,.mono{font-family:var(--mono)}
             <div class="panel"><div class="phead"><span class="ptitle">Case 3</span><span class="badge b-ok">Ready</span></div>
               <div class="pbody">
                 <div class="lab s">Query</div>
-                <div class="panel raised" style="margin-top:5px"><div class="pbody" style="padding:9px 11px;font-size:12.5px;color:var(--n700)">My card is closed &mdash; where does the refund go?</div></div>
+                <div class="panel raised" style="margin-top:5px"><div class="pbody" style="padding:9px 11px;font-size:12.5px;color:var(--n700)">My card is closed. Where does the refund go?</div></div>
                 <div class="lab s" style="margin-top:12px">Expected result</div>
                 <div class="panel raised" style="margin-top:5px"><div class="pbody" style="padding:9px 11px;font-size:12.5px;color:var(--n700)">Explains the refund returns to the original method and may need bank follow-up. Does not promise a timeline.</div></div>
                 <div class="lab s" style="margin-top:14px">Scoring checks <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">2 of 4 on</span></div>
@@ -1071,7 +1075,7 @@ td.mono,.mono{font-family:var(--mono)}
                   <tr><td class="w k muted">Expected retrieval context<div class="muted" style="font-weight:400">Deterministic, no judge call.</div></td><td class="r muted">Off</td></tr>
                 </tbody></table></div>
                 <div class="lab s" style="margin-top:12px">Splits</div>
-                <p class="psub" style="margin-top:4px">smoke, regression &mdash; a run scoped to one split only includes cases tagged with it.</p>
+                <p class="psub" style="margin-top:4px">smoke, regression. A run scoped to one split only includes cases tagged with it.</p>
               </div>
             </div>
           </div>
@@ -1085,7 +1089,7 @@ td.mono,.mono{font-family:var(--mono)}
 <section class="sec" id="runs">
   <span class="eyebrow">15 &middot; Evaluations</span>
   <h3>Per-case results, with repeats and spread</h3>
-  <p class="lede">A run executes the agent against every case and grades the answers with the selected scorers &mdash; up to four judges, four similarity metrics, and any code scorers. Repeating each case reports a spread rather than a single figure.</p>
+  <p class="lede">A run executes the agent against every case and grades the answers with the selected scorers: up to four judges, four similarity metrics, and any code scorers. Repeating each case reports a spread rather than a single figure.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1117,7 +1121,7 @@ td.mono,.mono{font-family:var(--mono)}
               <tr><td class="muted">2</td><td class="w k">Partial refund on a split payment <span class="muted" style="font-weight:400">&middot; 3 runs: 4.8&ndash;6.1 (var 0.42)</span></td><td class="w">Splits the refund across both methods proportionally.</td><td style="border-left:1px solid var(--n200)">68.0%</td><td>41.0%</td><td>29.0% / 47.0%</td><td class="r" style="border-left:1px solid var(--n200)"><span class="badge b-err">5.4</span></td><td class="r">2.880s</td></tr>
               <tr><td class="muted">3</td><td class="w k">Refund to a closed card <span class="muted" style="font-weight:400">&middot; Smoke test 2/3</span></td><td class="w">Returns to original method, no timeline promised.</td><td style="border-left:1px solid var(--n200)">61.0%</td><td>33.0%</td><td>22.0% / 39.0%</td><td class="r" style="border-left:1px solid var(--n200)"><span class="badge b-err">4.8</span></td><td class="r">1.92s</td></tr>
               <tr><td class="muted">4</td><td class="w k">Currency mismatch, EUR to USD</td><td class="w">Quotes the settlement amount after checking FX.</td><td style="border-left:1px solid var(--n200)">86.0%</td><td>58.0%</td><td>48.0% / 69.0%</td><td class="r" style="border-left:1px solid var(--n200)"><span class="badge b-ok">7.9</span></td><td class="r">2.04s</td></tr>
-              <tr><td class="muted">5</td><td class="w k">Duplicate charge, same day</td><td class="w muted">&mdash;</td><td style="border-left:1px solid var(--n200)" class="muted">&ndash;</td><td class="muted">&ndash;</td><td class="muted">&ndash;</td><td class="r" style="border-left:1px solid var(--n200)"><span class="badge b-neu">not scored</span></td><td class="r">1.11s</td></tr>
+              <tr><td class="muted">5</td><td class="w k">Duplicate charge, same day</td><td class="w muted">&ndash;</td><td style="border-left:1px solid var(--n200)" class="muted">&ndash;</td><td class="muted">&ndash;</td><td class="muted">&ndash;</td><td class="r" style="border-left:1px solid var(--n200)"><span class="badge b-neu">not scored</span></td><td class="r">1.11s</td></tr>
             </tbody></table></div></div>
           <div class="phead" style="border-bottom:0;border-top:1px solid var(--n200)"><span class="psub">5 of 24 cases shown &middot; each model ran the full dataset 3 times</span></div>
         </div>
@@ -1176,7 +1180,7 @@ td.mono,.mono{font-family:var(--mono)}
 <section class="sec" id="playground">
   <span class="eyebrow">17 &middot; Evaluations</span>
   <h3>Cases by models, with tools attached</h3>
-  <p class="lede">A grid of dataset cases against models. Each cell holds the answer, the tool calls made, latency, cost and score. Tools come from the registry or are defined inline, and a tool with no endpoint returns simulated results &mdash; so tool choice and argument formation can be tested before the tool exists.</p>
+  <p class="lede">A grid of dataset cases against models. Each cell holds the answer, the tool calls made, latency, cost and score. Tools come from the registry or are defined inline, and a tool with no endpoint returns simulated results, so tool choice and argument formation can be tested before the tool exists.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1223,13 +1227,13 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>Both low cells here are the same defect.</b> <code>lookup_fx_rate</code> is skipped, or called with the charge currency instead of the settlement currency &mdash; the evidence the prompt registry draws on for a proposed rewrite.</p>
+  <p class="note"><b>Both low cells here are the same defect.</b> <code>lookup_fx_rate</code> is skipped, or called with the charge currency instead of the settlement currency. This is the evidence the prompt registry draws on for a proposed rewrite.</p>
 </section>
 
 <section class="sec" id="simulate">
   <span class="eyebrow">18 &middot; Evaluations</span>
   <h3>Multi-turn simulation against a persona</h3>
-  <p class="lede">A simulated user with a persona and a goal holds a conversation with the agent up to a turn limit. The result carries a transcript, an outcome &mdash; goal achieved, user gave up, turn limit reached &mdash; and a score, and can be recorded as a session or added to a dataset.</p>
+  <p class="lede">A simulated user with a persona and a goal holds a conversation with the agent up to a turn limit. The result carries a transcript, an outcome (goal achieved, user gave up, or turn limit reached) and a score, and can be recorded as a session or added to a dataset.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1240,7 +1244,7 @@ td.mono,.mono{font-family:var(--mono)}
           <div class="phead"><span class="badge b-pend">USER GAVE UP</span><span class="ptitle">6.4/10</span><span class="psub">scored by Policy adherence &middot; 5 of 8 turns used</span><span class="psub" style="margin-left:auto">View session</span></div>
           <div class="pbody">
             <div class="lab s">Simulated user</div><p style="font-size:12.5px;color:var(--n600);margin:4px 0 11px">I bought this 45 days ago but it never worked. I want my money back.</p>
-            <div class="lab s">Agent</div><p style="font-size:12.5px;color:var(--n600);margin:4px 0 11px">The standard refund window is 30 days, so this falls outside it. If the product was faulty from the start, I can raise a defect exception &mdash; can you tell me what happened when you first used it?</p>
+            <div class="lab s">Agent</div><p style="font-size:12.5px;color:var(--n600);margin:4px 0 11px">The standard refund window is 30 days, so this falls outside it. If the product was faulty from the start, I can raise a defect exception. Can you tell me what happened when you first used it?</p>
             <div class="lab s">Simulated user</div><p style="font-size:12.5px;color:var(--n600);margin:4px 0 11px">It just never connected. Can you not make an exception? Your colleague did last time.</p>
             <div class="lab s">Agent</div><p style="font-size:12.5px;color:var(--n600);margin:4px 0 4px">I can&rsquo;t approve an exception myself, but I can log a defect claim with the details you&rsquo;ve given and a specialist will review it within two working days.</p>
             <p class="psub" style="margin-top:12px">Simulation ended - the user gave up at turn 5</p>
@@ -1280,12 +1284,12 @@ td.mono,.mono{font-family:var(--mono)}
               <tr><td class="w k">Gemini 2.5 Flash<div class="muted mono" style="font-weight:400">gemini-2.5-flash</div></td><td>Google</td><td class="r">$0.30</td><td class="r">$2.50</td></tr>
               <tr><td class="w k">Llama 3.3 70B (vLLM)<div class="muted mono" style="font-weight:400">http://localhost:8000/v1</div></td><td>Custom</td><td class="r">$0.00</td><td class="r">$0.00</td></tr>
             </tbody></table></div></div>
-          <div class="phead" style="border-bottom:0;border-top:1px solid var(--n200)"><span class="psub">Bring your own OpenAI-compatible endpoint &mdash; vLLM, Ollama, LM Studio &mdash; with the Custom provider.</span></div>
+          <div class="phead" style="border-bottom:0;border-top:1px solid var(--n200)"><span class="psub">Bring your own OpenAI-compatible endpoint (vLLM, Ollama, LM Studio) with the Custom provider.</span></div>
         </div>
       </div>
     </div>
   </div>
-  <p class="note"><b>Variance is reported separately from the average.</b> The cheapest model here is 1.1 points behind on average with more than twice the spread &mdash; a difference in predictability rather than in quality.</p>
+  <p class="note"><b>Variance is reported separately from the average.</b> The cheapest model here is 1.1 points behind on average with more than twice the spread: a difference in predictability rather than in quality.</p>
 </section>
 
 <div class="part"><span class="pn">Improvement and CI</span></div>
@@ -1432,7 +1436,7 @@ td.mono,.mono{font-family:var(--mono)}
     </div></div>
     <div class="panel"><div class="phead"><span class="ptitle">Send it traffic</span></div><div class="pbody">
       <div class="panel raised"><div class="pbody" style="font-family:var(--mono);font-size:12px;line-height:1.8;color:var(--n600);padding:11px 13px">export OTEL_EXPORTER_OTLP_ENDPOINT=<b style="color:var(--n900)">http://localhost:4700/api/v1/otel</b><br>export OTEL_EXPORTER_OTLP_HEADERS=<b style="color:var(--n900)">"x-api-key=&lt;key&gt;"</b></div></div>
-      <p class="psub" style="margin-top:9px">Or use the AgentX Python SDK. Either way the full loop applies &mdash; sessions, scorers, topics and coverage all work on OTel traffic.</p>
+      <p class="psub" style="margin-top:9px">Or use the AgentX Python SDK. Either way the full loop applies: sessions, scorers, topics and coverage all work on OTel traffic.</p>
     </div></div>
   </div>
 
@@ -1449,16 +1453,16 @@ td.mono,.mono{font-family:var(--mono)}
   <ul class="plain" style="margin:0;padding-left:20px;font-size:15px;color:var(--n600);display:flex;flex-direction:column;gap:8px">
     <li><b style="color:var(--n900);font-weight:600">Bring your own keys.</b> OpenAI, Anthropic and Gemini for judges and model calls. Nothing is billed through AgentX, and nothing leaves your infrastructure.</li>
     <li><b style="color:var(--n900);font-weight:600">Start with no keys at all.</b> Trace ingest, regex and phrase scorers all work with nothing configured. Only judges, semantic detection and the embedding-backed features need a provider key.</li>
-    <li><b style="color:var(--n900);font-weight:600">Single binary.</b> The engine compiles to a native executable and the CLI to a native Go binary &mdash; no Node, Bun or Go on the target machine.</li>
+    <li><b style="color:var(--n900);font-weight:600">Single binary.</b> The engine compiles to a native executable and the CLI to a native Go binary, so the target machine needs no Node, Bun or Go.</li>
     <li><b style="color:var(--n900);font-weight:600">Auth when you need it.</b> One operator on one machine gets no login screen; a shared deployment turns on sign-in with one variable, and SDK ingest is unaffected either way.</li>
-    <li><b style="color:var(--n900);font-weight:600">Works from your editor.</b> A Claude Code plugin runs the whole loop &mdash; instrument, evaluate, triage, re-run &mdash; against the same HTTP API, and also works in Cursor, Codex and anything reading the Agent Skills standard.</li>
+    <li><b style="color:var(--n900);font-weight:600">Works from your editor.</b> A Claude Code plugin runs the whole loop (instrument, evaluate, triage, re-run) against the same HTTP API, and also works in Cursor, Codex and anything reading the Agent Skills standard.</li>
   </ul>
 </section>
 
 </div>
 
 <footer style="border-top:2px solid var(--n900);margin-top:48px;padding-top:16px;display:flex;flex-direction:column;gap:7px">
-  <p class="psub">AgentX Trace &amp; Eval &middot; engine v0.3.33 &middot; Elastic License 2.0 &middot; October 2026</p>
+  <p class="psub">AgentX (<a href="https://agentx.so">agentx.so</a>) &middot; Trace &amp; Eval &middot; engine v0.3.33 &middot; Elastic License 2.0 &middot; October 2026</p>
   <p class="psub">Every screen in this document reproduces the real dashboard. All traces, sessions, datasets, scores, topics and coverage figures are demo data from a fictional project; they do not represent any customer traffic.</p>
 </footer>
 
