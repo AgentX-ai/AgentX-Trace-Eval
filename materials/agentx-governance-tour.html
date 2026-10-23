@@ -117,6 +117,14 @@ code{font-family:var(--mono);font-size:.86em;background:var(--n100);border:1px s
 .zone-obs .part{border-top-color:color-mix(in oklab, var(--zo) 40%, transparent)}
 .zone-eval .part{border-top-color:color-mix(in oklab, var(--ze) 40%, transparent)}
 .zone > .part{margin-bottom:-24px}
+/* Getting started is not a pillar: a warm taupe field set apart from the three pillar hues. */
+:root{--zs:#8B8175;--zs-band:#3A352F;--zs-ink:#6E665B}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--zs-band:#4A443B;--zs-ink:#C4BAAA}}
+:root[data-theme="dark"]{--zs-band:#4A443B;--zs-ink:#C4BAAA}
+.zone-start{background:color-mix(in oklab, var(--page) 88%, var(--zs))}
+.zone-start .pillar{background:var(--zs-band)}
+.zone-start .sec .eyebrow{color:var(--zs-ink)}
+.toc li.toc-start a::before{background:var(--zs)}
 .toc li.toc-p a::before{content:"";display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:8px;vertical-align:0}
 .toc li.toc-trace a::before{background:var(--zt)}
 .toc li.toc-obs a::before{background:var(--zo)}
@@ -303,17 +311,17 @@ td.mono,.mono{font-family:var(--mono)}
 <header class="cover">
   <div class="kicker">Trace &middot; Evaluate &middot; Monitor</div>
   <h1>AgentX <span class="h1-site">(<a href="https://agentx.so">agentx.so</a>)</span></h1>
-  <p class="sub">A walkthrough of the self-hosted AgentX governance layer, surface by surface, grouped into the three things it does: traceability, observability and evaluations. Every screen is the product&rsquo;s own UI, populated with demo data.</p>
+  <p class="sub">A walkthrough of the self-hosted AgentX governance layer, surface by surface, grouped into the three things it does: traceability, observability and evaluations. It closes with how to get started. Every screen is the product&rsquo;s own UI, populated with demo data.</p>
 </header>
 
 <nav class="toc">
   <h2>Contents</h2>
   <ol>
-    <li class="toc-p toc-trace"><a href="#pillar-traceability">Traceability</a></li>
+    <li class="toc-p toc-trace"><a href="#pillar-trace">Traceability</a></li>
     <li><span class="n">01</span><a href="#traces">Live Traces</a></li>
     <li><span class="n">02</span><a href="#sessions">Sessions</a></li>
     <li><span class="n">03</span><a href="#detail">Trace detail &amp; timeline</a></li>
-    <li class="toc-p toc-obs"><a href="#pillar-observability">Observability</a></li>
+    <li class="toc-p toc-obs"><a href="#pillar-obs">Observability</a></li>
     <li><span class="n">04</span><a href="#overview">Overview</a></li>
     <li><span class="n">05</span><a href="#monitor">Monitor</a></li>
     <li><span class="n">06</span><a href="#topics">Topics</a></li>
@@ -323,7 +331,7 @@ td.mono,.mono{font-family:var(--mono)}
     <li><span class="n">10</span><a href="#review">Review queue</a></li>
     <li><span class="n">11</span><a href="#scorers">Scorers</a></li>
     <li><span class="n">12</span><a href="#rules">Rules</a></li>
-    <li class="toc-p toc-eval"><a href="#pillar-evaluations">Evaluations</a></li>
+    <li class="toc-p toc-eval"><a href="#pillar-eval">Evaluations</a></li>
     <li><span class="n">13</span><a href="#datasets">Datasets</a></li>
     <li><span class="n">14</span><a href="#cases">The case editor</a></li>
     <li><span class="n">15</span><a href="#runs">Evaluation runs</a></li>
@@ -333,20 +341,22 @@ td.mono,.mono{font-family:var(--mono)}
     <li><span class="n">19</span><a href="#portability">Model Portability</a></li>
     <li><span class="n">20</span><a href="#registries">Prompt &amp; tool registries</a></li>
     <li><span class="n">21</span><a href="#suggestions">Improvement proposals</a></li>
-    <li><span class="n">22</span><a href="#ci">CI Gates</a></li>
-    <li><span class="n">23</span><a href="#deploy">Install &amp; scale</a></li>
+    <li class="toc-p toc-start"><a href="#pillar-start">Getting started</a></li>
+    <li><span class="n">22</span><a href="#start">Install and send traffic</a></li>
+    <li><span class="n">23</span><a href="#ci">CI Gates</a></li>
+    <li><span class="n">24</span><a href="#scale">Scale, keys and access</a></li>
   </ol>
 </nav>
 
 <div class="stack">
 
 <section class="sec">
-  <p class="lede">The product splits into three pillars. <b>Traceability</b> records what every run did, down to the individual span. <b>Observability</b> watches production traffic in aggregate (its health, what it is about, how much of it your tests cover) and surfaces what needs a person. <b>Evaluations</b> test the agent against datasets, compare prompts and models, and validate a change before it ships.</p>
+  <p class="lede">The product splits into three pillars. <b>Traceability</b> records what every run did, down to the individual span. <b>Observability</b> watches production traffic in aggregate (its health, what it is about, how much of it your tests cover) and surfaces what needs a person. <b>Evaluations</b> test the agent against datasets, compare prompts and models, and validate a change before it ships. A last part, <b>Getting started</b>, covers installing it, sending it traffic and gating merges in CI.</p>
 </section>
 
 <div class="zone zone-trace">
 
-<div class="pillar" id="pillar-traceability"><div class="pillar-h"><span class="pillar-k">Pillar</span><h2>Traceability</h2></div><p class="pillar-b">Recording what each run did: the call, the conversation it belonged to, and every span inside it.</p><p class="pillar-i">Live Traces &middot; Sessions &middot; Trace detail &amp; timeline</p></div>
+<div class="pillar" id="pillar-trace"><div class="pillar-h"><span class="pillar-k">Pillar</span><h2>Traceability</h2></div><p class="pillar-b">Recording what each run did: the call, the conversation it belonged to, and every span inside it.</p><p class="pillar-i">Live Traces &middot; Sessions &middot; Trace detail &amp; timeline</p></div>
 
 <section class="sec" id="traces">
   <span class="eyebrow">01 &middot; Traceability</span>
@@ -449,7 +459,7 @@ td.mono,.mono{font-family:var(--mono)}
 
 <div class="zone zone-obs">
 
-<div class="pillar" id="pillar-observability"><div class="pillar-h"><span class="pillar-k">Pillar</span><h2>Observability</h2></div><p class="pillar-b">Watching production traffic in aggregate: its health, what it is about and how much of it your tests cover, what got flagged, and what does the flagging.</p><p class="pillar-i">Overview &middot; Monitor &middot; Topics &middot; Dataset coverage &middot; The coverage map &middot; The coverage probe &middot; Review queue &middot; Scorers &middot; Rules</p></div>
+<div class="pillar" id="pillar-obs"><div class="pillar-h"><span class="pillar-k">Pillar</span><h2>Observability</h2></div><p class="pillar-b">Watching production traffic in aggregate: its health, what it is about and how much of it your tests cover, what got flagged, and what does the flagging.</p><p class="pillar-i">Overview &middot; Monitor &middot; Topics &middot; Dataset coverage &middot; The coverage map &middot; The coverage probe &middot; Review queue &middot; Scorers &middot; Rules</p></div>
 
 <div class="part"><span class="pn">Production health</span></div>
 
@@ -1008,7 +1018,7 @@ td.mono,.mono{font-family:var(--mono)}
 
 <div class="zone zone-eval">
 
-<div class="pillar" id="pillar-evaluations"><div class="pillar-h"><span class="pillar-k">Pillar</span><h2>Evaluations</h2></div><p class="pillar-b">Testing the agent against datasets, experimenting with prompts and models, and validating a change before it ships.</p><p class="pillar-i">Datasets &middot; The case editor &middot; Evaluation runs &middot; AI Analysis &middot; Playground &middot; Conversation simulation &middot; Model Portability &middot; Prompt &amp; tool registries &middot; Improvement proposals &middot; CI Gates</p></div>
+<div class="pillar" id="pillar-eval"><div class="pillar-h"><span class="pillar-k">Pillar</span><h2>Evaluations</h2></div><p class="pillar-b">Testing the agent against datasets, experimenting with prompts and models, and validating a change before it ships.</p><p class="pillar-i">Datasets &middot; The case editor &middot; Evaluation runs &middot; AI Analysis &middot; Playground &middot; Conversation simulation &middot; Model Portability &middot; Prompt &amp; tool registries &middot; Improvement proposals</p></div>
 
 <div class="part"><span class="pn">Datasets and runs</span></div>
 
@@ -1292,7 +1302,7 @@ td.mono,.mono{font-family:var(--mono)}
   <p class="note"><b>Variance is reported separately from the average.</b> The cheapest model here is 1.1 points behind on average with more than twice the spread: a difference in predictability rather than in quality.</p>
 </section>
 
-<div class="part"><span class="pn">Improvement and CI</span></div>
+<div class="part"><span class="pn">Improvement</span></div>
 
 <section class="sec" id="registries">
   <span class="eyebrow">20 &middot; Evaluations</span>
@@ -1388,10 +1398,34 @@ td.mono,.mono{font-family:var(--mono)}
   <p class="note"><b>A proposal that changes nothing is reported as such.</b> The third row was drafted, measured, and found to make no clear difference.</p>
 </section>
 
+</div>
+
+<div class="zone zone-start">
+
+<div class="pillar" id="pillar-start"><div class="pillar-h"><h2>Getting started</h2></div><p class="pillar-b">Install the engine, send it traffic, and gate merges on evaluation results. The same binary then scales from one machine to a team deployment.</p><p class="pillar-i">Install and send traffic &middot; CI Gates &middot; Scale, keys and access</p></div>
+
+<section class="sec" id="start">
+  <span class="eyebrow">22 &middot; Getting started</span>
+  <h3>Install and send traffic</h3>
+  <p class="lede">One command installs the engine and CLI as native binaries and opens the dashboard on a local SQLite database. Point the AgentX Python SDK or any OpenTelemetry exporter at it and runs appear in Live Traces. No provider key is needed to begin: trace ingest and the regex and phrase scorers work with nothing configured.</p>
+
+  <div class="grid2">
+    <div class="panel"><div class="phead"><span class="ptitle">1 &middot; Install</span></div><div class="pbody">
+      <div class="panel raised"><div class="pbody" style="font-family:var(--mono);font-size:12px;line-height:1.8;color:var(--n600);padding:11px 13px">curl -sSL https://raw.githubusercontent.com/<br>&nbsp;&nbsp;AgentX-ai/AgentX-trace-eval/main/install.sh | bash<br><b style="color:var(--n900)">agentx-server --dev</b></div></div>
+      <p class="psub" style="margin-top:9px">Starts the engine on a local SQLite database, opens the dashboard, and prints the project key your SDK needs.</p>
+    </div></div>
+    <div class="panel"><div class="phead"><span class="ptitle">2 &middot; Send traffic</span></div><div class="pbody">
+      <div class="panel raised"><div class="pbody" style="font-family:var(--mono);font-size:12px;line-height:1.8;color:var(--n600);padding:11px 13px">export OTEL_EXPORTER_OTLP_ENDPOINT=<b style="color:var(--n900)">http://localhost:4700/api/v1/otel</b><br>export OTEL_EXPORTER_OTLP_HEADERS=<b style="color:var(--n900)">"x-api-key=&lt;key&gt;"</b></div></div>
+      <p class="psub" style="margin-top:9px">Or use the AgentX Python SDK. Either way the full loop applies: sessions, scorers, topics and coverage all work on OTel traffic.</p>
+    </div></div>
+  </div>
+  <p class="note"><b>Or start from your editor.</b> A Claude Code plugin runs the same loop against this API: <code>/instrument</code> wires tracing into a Python agent, <code>/run-eval</code> evaluates it against a dataset, and <code>/eval-fix</code> triages the result against the source and re-runs it. It also works in Cursor, Codex and any agent that reads the Agent Skills standard.</p>
+</section>
+
 <section class="sec" id="ci">
-  <span class="eyebrow">22 &middot; Evaluations</span>
-  <h3>An exit code for CI</h3>
-  <p class="lede">One call after an SDK eval run returns an exit code. Recorded gates are listed with their verdict, average, baseline and individual checks; a preview answers whether the latest run would pass without writing to history.</p>
+  <span class="eyebrow">23 &middot; Getting started</span>
+  <h3>Gate merges on evaluation results</h3>
+  <p class="lede">Once evaluations run in CI, one call after the run returns an exit code: zero lets the merge through, one blocks it. Recorded gates are listed with their verdict, average, baseline and individual checks, and a preview answers whether the latest run would pass without writing to history.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1421,24 +1455,10 @@ td.mono,.mono{font-family:var(--mono)}
   </div>
 </section>
 
-</div>
-
-<div class="part"><span class="pn">Running it</span></div>
-
-<section class="sec" id="deploy">
-  <span class="eyebrow">23 &middot; Running it</span>
-  <h3>Install, storage tiers and keys</h3>
-
-  <div class="grid2">
-    <div class="panel"><div class="phead"><span class="ptitle">Install</span></div><div class="pbody">
-      <div class="panel raised"><div class="pbody" style="font-family:var(--mono);font-size:12px;line-height:1.8;color:var(--n600);padding:11px 13px">curl -sSL https://raw.githubusercontent.com/<br>&nbsp;&nbsp;AgentX-ai/AgentX-trace-eval/main/install.sh | bash<br><b style="color:var(--n900)">agentx-server --dev</b></div></div>
-      <p class="psub" style="margin-top:9px">Starts the engine on a local SQLite database, opens the dashboard, and prints the project key your SDK needs.</p>
-    </div></div>
-    <div class="panel"><div class="phead"><span class="ptitle">Send it traffic</span></div><div class="pbody">
-      <div class="panel raised"><div class="pbody" style="font-family:var(--mono);font-size:12px;line-height:1.8;color:var(--n600);padding:11px 13px">export OTEL_EXPORTER_OTLP_ENDPOINT=<b style="color:var(--n900)">http://localhost:4700/api/v1/otel</b><br>export OTEL_EXPORTER_OTLP_HEADERS=<b style="color:var(--n900)">"x-api-key=&lt;key&gt;"</b></div></div>
-      <p class="psub" style="margin-top:9px">Or use the AgentX Python SDK. Either way the full loop applies: sessions, scorers, topics and coverage all work on OTel traffic.</p>
-    </div></div>
-  </div>
+<section class="sec" id="scale">
+  <span class="eyebrow">24 &middot; Getting started</span>
+  <h3>Scale, keys and access</h3>
+  <p class="lede">The same binary and API serve three storage tiers, from a local SQLite file to Postgres with ClickHouse for telemetry. Provider keys stay yours, and sign-in can be switched on for a shared deployment.</p>
 
   <div class="panel"><div class="phead"><span class="ptitle">Same binary, same API, three storage tiers</span></div>
     <div class="pbody flush"><div class="scroll"><table style="min-width:620px">
@@ -1451,13 +1471,13 @@ td.mono,.mono{font-family:var(--mono)}
   </div>
 
   <ul class="plain" style="margin:0;padding-left:20px;font-size:15px;color:var(--n600);display:flex;flex-direction:column;gap:8px">
-    <li><b style="color:var(--n900);font-weight:600">Bring your own keys.</b> OpenAI, Anthropic and Gemini for judges and model calls. Nothing is billed through AgentX, and nothing leaves your infrastructure.</li>
-    <li><b style="color:var(--n900);font-weight:600">Start with no keys at all.</b> Trace ingest, regex and phrase scorers all work with nothing configured. Only judges, semantic detection and the embedding-backed features need a provider key.</li>
+    <li><b style="color:var(--n900);font-weight:600">Bring your own keys.</b> Judges and model calls run on OpenAI, Anthropic or Gemini with your own key. Nothing is billed through AgentX, and traces stay in your own database.</li>
     <li><b style="color:var(--n900);font-weight:600">Single binary.</b> The engine compiles to a native executable and the CLI to a native Go binary, so the target machine needs no Node, Bun or Go.</li>
     <li><b style="color:var(--n900);font-weight:600">Auth when you need it.</b> One operator on one machine gets no login screen; a shared deployment turns on sign-in with one variable, and SDK ingest is unaffected either way.</li>
-    <li><b style="color:var(--n900);font-weight:600">Works from your editor.</b> A Claude Code plugin runs the whole loop (instrument, evaluate, triage, re-run) against the same HTTP API, and also works in Cursor, Codex and anything reading the Agent Skills standard.</li>
   </ul>
 </section>
+
+</div>
 
 </div>
 
