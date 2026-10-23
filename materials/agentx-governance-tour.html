@@ -182,6 +182,8 @@ code{font-family:var(--mono);font-size:.86em;background:var(--n100);border:1px s
 .cols{display:flex;gap:14px;align-items:stretch;flex-wrap:wrap}
 .lcol{flex:1 1 620px;min-width:0;display:flex;flex-direction:column;gap:14px}
 .rcol{flex:1 1 340px;min-width:300px;display:flex;flex-direction:column;gap:14px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+.cardp{font-size:13.5px;color:var(--n600);margin-top:6px;line-height:1.55}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
 
 /* ---------- tables ---------- */
@@ -322,132 +324,50 @@ td.mono,.mono{font-family:var(--mono)}
   <h2>Contents</h2>
   <ol>
     <li class="toc-p toc-trace"><a href="#pillar-trace">Traceability</a></li>
-    <li><span class="n">01</span><a href="#integrations">Integrations</a></li>
-    <li><span class="n">02</span><a href="#traces">Live Traces</a></li>
-    <li><span class="n">03</span><a href="#sessions">Sessions</a></li>
-    <li><span class="n">04</span><a href="#detail">Trace detail &amp; timeline</a></li>
-    <li><span class="n">05</span><a href="#audit">Audit trail &amp; export</a></li>
+    <li><span class="n">01</span><a href="#traces">Live Traces</a></li>
+    <li><span class="n">02</span><a href="#sessions">Sessions</a></li>
+    <li><span class="n">03</span><a href="#detail">Trace detail &amp; timeline</a></li>
+    <li><span class="n">04</span><a href="#audit">Audit trail &amp; export</a></li>
     <li class="toc-p toc-obs"><a href="#pillar-obs">Observability</a></li>
-    <li><span class="n">06</span><a href="#overview">Overview</a></li>
-    <li><span class="n">07</span><a href="#monitor">Monitor</a></li>
-    <li><span class="n">08</span><a href="#topics">Topics</a></li>
-    <li><span class="n">09</span><a href="#coverage">Dataset coverage</a></li>
-    <li><span class="n">10</span><a href="#map">The coverage map</a></li>
-    <li><span class="n">11</span><a href="#probe">The coverage probe</a></li>
-    <li><span class="n">12</span><a href="#review">Review queue</a></li>
-    <li><span class="n">13</span><a href="#scorers">Scorers</a></li>
-    <li><span class="n">14</span><a href="#rules">Rules</a></li>
+    <li><span class="n">05</span><a href="#overview">Overview</a></li>
+    <li><span class="n">06</span><a href="#monitor">Monitor</a></li>
+    <li><span class="n">07</span><a href="#topics">Topics</a></li>
+    <li><span class="n">08</span><a href="#coverage">Dataset coverage</a></li>
+    <li><span class="n">09</span><a href="#map">The coverage map</a></li>
+    <li><span class="n">10</span><a href="#probe">The coverage probe</a></li>
+    <li><span class="n">11</span><a href="#review">Review queue</a></li>
+    <li><span class="n">12</span><a href="#scorers">Scorers</a></li>
+    <li><span class="n">13</span><a href="#rules">Rules</a></li>
     <li class="toc-p toc-eval"><a href="#pillar-eval">Evaluations</a></li>
-    <li><span class="n">15</span><a href="#datasets">Datasets</a></li>
-    <li><span class="n">16</span><a href="#cases">The case editor</a></li>
-    <li><span class="n">17</span><a href="#runs">Evaluation runs</a></li>
-    <li><span class="n">18</span><a href="#analysis">AI Analysis</a></li>
-    <li><span class="n">19</span><a href="#playground">Playground</a></li>
-    <li><span class="n">20</span><a href="#simulate">Conversation simulation</a></li>
-    <li><span class="n">21</span><a href="#portability">Model Portability</a></li>
-    <li><span class="n">22</span><a href="#registries">Prompt &amp; tool registries</a></li>
-    <li><span class="n">23</span><a href="#suggestions">Improvement proposals</a></li>
+    <li><span class="n">14</span><a href="#datasets">Datasets</a></li>
+    <li><span class="n">15</span><a href="#cases">The case editor</a></li>
+    <li><span class="n">16</span><a href="#runs">Evaluation runs</a></li>
+    <li><span class="n">17</span><a href="#analysis">AI Analysis</a></li>
+    <li><span class="n">18</span><a href="#playground">Playground</a></li>
+    <li><span class="n">19</span><a href="#simulate">Conversation simulation</a></li>
+    <li><span class="n">20</span><a href="#portability">Model Portability</a></li>
+    <li><span class="n">21</span><a href="#registries">Prompt &amp; tool registries</a></li>
+    <li><span class="n">22</span><a href="#suggestions">Improvement proposals</a></li>
     <li class="toc-p toc-start"><a href="#pillar-start">Getting started</a></li>
-    <li><span class="n">24</span><a href="#start">Install and send traffic</a></li>
-    <li><span class="n">25</span><a href="#ci">CI Gates</a></li>
-    <li><span class="n">26</span><a href="#scale">Scale, keys and access</a></li>
+    <li><span class="n">23</span><a href="#start">Install and send traffic</a></li>
+    <li><span class="n">24</span><a href="#ci">CI Gates</a></li>
+    <li><span class="n">25</span><a href="#scale">Scale, keys and access</a></li>
+    <li><span class="n">26</span><a href="#integrations">Integrations</a></li>
   </ol>
 </nav>
 
 <div class="stack">
 
 <section class="sec">
-  <p class="lede">The product splits into three pillars. <b>Traceability</b> brings runs in from any SDK or OpenTelemetry exporter, records each one down to the individual span, and keeps an audit trail of every change. <b>Observability</b> watches production traffic in aggregate (its health, what it is about, how much of it your tests cover) and surfaces what needs a person. <b>Evaluations</b> test the agent against datasets, compare prompts and models, and validate a change before it ships. A last part, <b>Getting started</b>, covers installing it, sending it traffic and gating merges in CI.</p>
+  <p class="lede">The product splits into three pillars. <b>Traceability</b> records what every run did, down to each step, and keeps an audit trail of every change. <b>Observability</b> watches production traffic in aggregate (its health, what it is about, how much of it your tests cover) and surfaces what needs a person. <b>Evaluations</b> test the agent against datasets, compare prompts and models, and validate a change before it ships. A last part, <b>Getting started</b>, covers installing it, connecting your agents, gating merges in CI, and the frameworks it works with.</p>
 </section>
 
 <div class="zone zone-trace">
 
-<div class="pillar" id="pillar-trace"><div class="pillar-h"><span class="pillar-k">Pillar</span><h2>Traceability</h2></div><p class="pillar-b">Getting runs in from any SDK or OpenTelemetry exporter, recording each one down to the span, and keeping an append-only record of who changed what.</p><p class="pillar-i">Integrations &middot; Live Traces &middot; Sessions &middot; Trace detail &amp; timeline &middot; Audit trail &amp; export</p></div>
-
-<section class="sec" id="integrations">
-  <span class="eyebrow">01 &middot; Integrations</span>
-  <h3>Two SDKs, twelve framework integrations, and any OpenTelemetry exporter</h3>
-  <p class="lede">Runs reach AgentX through the Python or TypeScript SDK, through one of twelve framework integrations that each hook in with a line or two, or through any OpenTelemetry exporter with no AgentX code at all. Every source lands in the same Live Traces table under its own badge, and gets the same sessions, scorers, topics and coverage.</p>
-
-  <div class="panel"><div class="phead"><span class="ptitle">Recognised in Live Traces</span><span class="psub">the badge each source carries in Live Traces and on the Monitor&rsquo;s Platforms card</span></div>
-    <div class="pbody"><div class="fwgrid">
-      <span class="fw"><span class="fw-m" style="background:#5E33A8;color:#FFFFFF">AX</span>AgentX</span>
-      <span class="fw"><span class="fw-m" style="background:#1C7D6D;color:#FFFFFF">LC</span>LangChain</span>
-      <span class="fw"><span class="fw-m" style="background:#4285F4;color:#FFFFFF">G</span>Google ADK</span>
-      <span class="fw"><span class="fw-m" style="background:#7C4DE0;color:#FFFFFF">Li</span>LlamaIndex</span>
-      <span class="fw"><span class="fw-m" style="background:#E0533D;color:#FFFFFF">C</span>CrewAI</span>
-      <span class="fw"><span class="fw-m" style="background:#171717;color:#FFFFFF">▲</span>Vercel AI SDK</span>
-      <span class="fw"><span class="fw-m" style="background:#10A37F;color:#FFFFFF">OA</span>OpenAI</span>
-      <span class="fw"><span class="fw-m" style="background:#CC785C;color:#FFFFFF">An</span>Anthropic</span>
-      <span class="fw"><span class="fw-m" style="background:#2563EB;color:#FFFFFF">AG</span>AutoGen</span>
-      <span class="fw"><span class="fw-m" style="background:#EA4B71;color:#FFFFFF">n8</span>n8n</span>
-      <span class="fw"><span class="fw-m" style="background:#14B8A6;color:#FFFFFF">Fl</span>Flowise</span>
-      <span class="fw"><span class="fw-m" style="background:#3776AB;color:#FFFFFF">Py</span>Python</span>
-      <span class="fw"><span class="fw-m" style="background:#0E8A6C;color:#FFFFFF">OA</span>OpenAI Agents</span>
-      <span class="fw"><span class="fw-m" style="background:#669DF6;color:#FFFFFF">G</span>Google GenAI</span>
-      <span class="fw"><span class="fw-m" style="background:#1E66F5;color:#FFFFFF">LL</span>LiteLLM</span>
-      <span class="fw"><span class="fw-m" style="background:#7B5CD6;color:#FFFFFF">Mw</span>Moveworks</span>
-      <span class="fw"><span class="fw-m" style="background:#FF3621;color:#FFFFFF">Db</span>Databricks</span>
-      <span class="fw"><span class="fw-m" style="background:#5C2D91;color:#FFFFFF">SK</span>Semantic Kernel</span>
-      <span class="fw"><span class="fw-m" style="background:#03AF9D;color:#FFFFFF">Hs</span>Haystack</span>
-      <span class="fw"><span class="fw-m" style="background:#E92063;color:#FFFFFF">PA</span>Pydantic AI</span>
-      <span class="fw"><span class="fw-m" style="background:#FF9D00;color:#1B1A18">sm</span>smolagents</span>
-      <span class="fw"><span class="fw-m" style="background:#8B1D3F;color:#FFFFFF">DS</span>DSPy</span>
-      <span class="fw"><span class="fw-m" style="background:#F5A800;color:#1B1A18">OT</span>OpenTelemetry</span>
-    </div></div>
-  </div>
-
-  <div class="panel"><div class="phead"><span class="ptitle">Python SDK</span><span class="psub">pip install agentx-python &middot; 12 framework integrations</span></div>
-    <div class="pbody flush"><div class="scroll"><table style="min-width:680px">
-      <thead><tr><th style="width:180px">Framework</th><th>Hook</th><th style="width:250px">How it connects</th></tr></thead>
-      <tbody>
-        <tr><td class="k">OpenAI</td><td class="mono">patch_openai_client(client)</td><td class="w">wraps the client</td></tr>
-        <tr><td class="k">OpenAI Agents SDK</td><td class="mono">add_trace_processor(AgentXTracingProcessor())</td><td class="w">trace processor</td></tr>
-        <tr><td class="k">Anthropic</td><td class="mono">patch_anthropic_client(client)</td><td class="w">wraps the client</td></tr>
-        <tr><td class="k">Google Gen AI</td><td class="mono">patch_genai_client(client)</td><td class="w">wraps the client</td></tr>
-        <tr><td class="k">Google ADK</td><td class="mono">AgentXADKPlugin()</td><td class="w">agent plugin</td></tr>
-        <tr><td class="k">LangChain</td><td class="mono">AgentXCallbackHandler()</td><td class="w">callback handler</td></tr>
-        <tr><td class="k">LlamaIndex</td><td class="mono">AgentXLlamaIndexHandler()</td><td class="w">callback handler</td></tr>
-        <tr><td class="k">CrewAI</td><td class="mono">AgentXCrewObserver()</td><td class="w">event observer</td></tr>
-        <tr><td class="k">AutoGen</td><td class="mono">AgentXAutoGenObserver()</td><td class="w">message observer</td></tr>
-        <tr><td class="k">LiteLLM</td><td class="mono">AgentXLiteLLMLogger()</td><td class="w">callback logger</td></tr>
-        <tr><td class="k">Databricks / MLflow</td><td class="mono">enable_mlflow_export()</td><td class="w">MLflow&rsquo;s own exporter, alongside the Databricks UI</td></tr>
-        <tr><td class="k">Moveworks</td><td class="mono">MoveworksImporter()</td><td class="w">pulls conversations from the Moveworks Data API</td></tr>
-      </tbody></table></div></div>
-  </div>
-
-  <div class="grid2">
-    <div class="panel"><div class="phead"><span class="ptitle">TypeScript SDK</span><span class="psub">npm install @agentx-ai/agentx-js</span></div><div class="pbody">
-      <div class="panel raised"><div class="pbody" style="font-family:var(--mono);font-size:12px;line-height:1.75;color:var(--n600);padding:11px 13px;white-space:pre;overflow-x:auto">await client.tracer.<b style="color:var(--n900)">withSpan</b>("support-agent", { framework: "openai" },
-  async (span) =&gt; {
-    await client.tracer.<b style="color:var(--n900)">traceRetrieval</b>("kb_search", { query }, search);
-    await client.tracer.<b style="color:var(--n900)">traceToolCall</b>("policy_lookup", { input }, lookup);
-  });</div></div>
-      <p class="psub" style="margin-top:9px">The same nested spans, tool calls and retrievals as the Python SDK, plus an evaluation runner with adapters for a function, an HTTP endpoint or precomputed outputs.</p>
-    </div></div>
-    <div class="panel"><div class="phead"><span class="ptitle">OpenTelemetry, no SDK</span><span class="psub">OTLP/HTTP &middot; protobuf or JSON</span></div><div class="pbody">
-      <div class="hctl" style="margin:0"><span class="ctl">GenAI semantic conventions</span><span class="ctl">OpenLLMetry</span><span class="ctl">OpenInference</span><span class="ctl">MLflow</span><span class="ctl">Langfuse</span></div>
-      <p class="psub" style="margin-top:10px">Spans in any of these conventions map onto the same trace rows: model, tokens including cached tokens, tool calls and span kind. Current and older GenAI attribute names are both read, and the badge comes from the provider name or the instrumentation scope.</p>
-    </div></div>
-  </div>
-
-  <div class="panel"><div class="phead"><span class="ptitle">Or trace any function by hand</span><span class="psub">Python</span></div><div class="pbody">
-    <div class="panel raised"><div class="pbody" style="font-family:var(--mono);font-size:12px;line-height:1.75;color:var(--n600);padding:11px 13px;white-space:pre;overflow-x:auto">@client.tracer.<b style="color:var(--n900)">trace</b>("lookup_order")
-def lookup_order(order_id): ...
-
-with client.tracer.<b style="color:var(--n900)">trace</b>("support_agent_call", framework="openai") as span:
-    with client.tracer.<b style="color:var(--n900)">trace_tool_call</b>("retrieve_invoice", input={"id": "48812"}) as tool:
-        ...
-
-client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", comment="Wrong refund amount")</div></div>
-    <p class="psub" style="margin-top:9px">Nested calls link as parent and child spans automatically. A &ldquo;down&rdquo; vote raises a Negative user feedback signal in Review, with the comment as its summary.</p>
-  </div></div>
-
-  <p class="note"><b>Tracing never slows the agent down.</b> The SDK queues each trace and sends it on a background thread, so a call never blocks on AgentX. Pass <code>sync=True</code> only when you need the trace id back, for instance to attach it to an evaluation result.</p>
-</section>
+<div class="pillar" id="pillar-trace"><div class="pillar-h"><span class="pillar-k">Pillar</span><h2>Traceability</h2></div><p class="pillar-b">Recording what every run did, down to each step, and keeping an append-only record of who changed what.</p><p class="pillar-i">Live Traces &middot; Sessions &middot; Trace detail &amp; timeline &middot; Audit trail &amp; export</p></div>
 
 <section class="sec" id="traces">
-  <span class="eyebrow">02 &middot; Live Traces</span>
+  <span class="eyebrow">01 &middot; Live Traces</span>
   <h3>Every run, with its tools, tokens and score</h3>
   <p class="lede">Trace ingests runs from the AgentX Python SDK or any OpenTelemetry exporter. One span becomes one row, carrying latency, token counts, estimated cost, tool outcomes and, where a scorer sampled it, a quality score. Status filters narrow the list to errors, tool failures or slow runs.</p>
 
@@ -478,7 +398,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 </section>
 
 <section class="sec" id="sessions">
-  <span class="eyebrow">03 &middot; Sessions</span>
+  <span class="eyebrow">02 &middot; Sessions</span>
   <h3>Conversations scored as a whole</h3>
   <p class="lede">Traces sharing a session id group into one row with a turn count, duration and a conversation-level score. Scope filters separate multi-turn conversations from single interactions, and sessions carrying failed spans.</p>
 
@@ -508,7 +428,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 </section>
 
 <section class="sec" id="detail">
-  <span class="eyebrow">04 &middot; Trace detail &amp; timeline</span>
+  <span class="eyebrow">03 &middot; Trace detail &amp; timeline</span>
   <h3>Every span of a run, on a waterfall</h3>
   <p class="lede">Each run opens to its spans, nested by parent and laid out on a waterfall, with the arguments and result of every tool call. Kind filters narrow the tree, and the same data is available as a graph or as raw JSON.</p>
 
@@ -544,7 +464,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 </section>
 
 <section class="sec" id="audit">
-  <span class="eyebrow">05 &middot; Audit trail &amp; export</span>
+  <span class="eyebrow">04 &middot; Audit trail &amp; export</span>
   <h3>Who changed what, what was exported, and how long traces are kept</h3>
   <p class="lede">Every configuration change, authentication event and bulk export is written to an append-only audit trail: who did it, what they touched, and whether it worked. No code path in the engine edits or deletes an entry. Traces and everything derived from them export as NDJSON, and each project sets how long its traces are kept.</p>
 
@@ -582,7 +502,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 <div class="part"><span class="pn">Production health</span></div>
 
 <section class="sec" id="overview">
-  <span class="eyebrow">06 &middot; Overview</span>
+  <span class="eyebrow">05 &middot; Overview</span>
   <h3>Live KPIs, trend and triage in one screen</h3>
   <p class="lede">Six production KPIs over the selected window, the healthy-rate trend against the previous period, cost by model, a model comparison, judge calibration, and the open signals needing attention. Each card loads on its own query.</p>
 
@@ -747,7 +667,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 </section>
 
 <section class="sec" id="monitor">
-  <span class="eyebrow">07 &middot; Monitor</span>
+  <span class="eyebrow">06 &middot; Monitor</span>
   <h3>Nine metrics on one window</h3>
   <p class="lede">A metrics grid covering signals, scores, latency, tool executions, spans, platforms, cost, tokens and topics. All nine share the window and the filter set, so a cost spike, a latency climb and a run of tool failures line up on the same bucket.</p>
 
@@ -820,7 +740,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 <div class="part"><span class="pn">Traffic and coverage</span></div>
 
 <section class="sec" id="topics">
-  <span class="eyebrow">08 &middot; Topics</span>
+  <span class="eyebrow">07 &middot; Topics</span>
   <h3>What the traffic is actually about</h3>
   <p class="lede">Classification labels each sampled trace by intent, sentiment and issue type, with no scorer required first. The Trend view charts sentiment over time alongside top intents and issue types; the Map view places each classified trace in a projection where clusters are directly visible.</p>
 
@@ -870,11 +790,11 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
     </div>
   </div>
 
-  <p class="note"><b>This is the production-only map; the coverage map in section 10 is a different chart.</b> Here every dot is a classified trace coloured by its intent, so it shows what the traffic is about. The coverage map adds dataset cases to the same kind of picture and colours by source instead, so it shows which of that traffic has a test behind it. The Overview embeds this map as its Topic map card.</p>
+  <p class="note"><b>This is the production-only map; the coverage map in section 09 is a different chart.</b> Here every dot is a classified trace coloured by its intent, so it shows what the traffic is about. The coverage map adds dataset cases to the same kind of picture and colours by source instead, so it shows which of that traffic has a test behind it. The Overview embeds this map as its Topic map card.</p>
 </section>
 
 <section class="sec" id="coverage">
-  <span class="eyebrow">09 &middot; Dataset coverage</span>
+  <span class="eyebrow">08 &middot; Dataset coverage</span>
   <h3>How much of your traffic has a test behind it</h3>
   <p class="lede">Coverage joins the topics classification derives from production to the cases in your datasets, and reports four numbers: traffic-weighted coverage, topics at target, risk-weighted coverage, and the cases matching no topic at all.</p>
   <p class="lede">Coverage is measured as depth against the real traces in a topic rather than as a case count, so near-duplicate cases do not raise it.</p>
@@ -937,7 +857,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 </section>
 
 <section class="sec" id="map">
-  <span class="eyebrow">10 &middot; The coverage map</span>
+  <span class="eyebrow">09 &middot; The coverage map</span>
   <h3>Traffic and test cases in one picture</h3>
   <p class="lede">Production traffic and dataset cases placed by a single projection over the questions themselves, so the same question asked in production and written as a case lands in the same position. Points are coloured by source: blue for traffic, orange for cases.</p>
   <p class="lede">A region of blue carrying no orange is a cluster of real questions with no case near it.</p>
@@ -973,7 +893,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 </section>
 
 <section class="sec" id="probe">
-  <span class="eyebrow">11 &middot; The coverage probe</span>
+  <span class="eyebrow">10 &middot; The coverage probe</span>
   <h3>Checking one question against the suite</h3>
   <p class="lede">A query is matched against the dataset and returns one of four verdicts, the nearest case, what that case asserts, and whether production asks the query at all.</p>
 
@@ -1025,7 +945,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 <div class="part"><span class="pn">Triage</span></div>
 
 <section class="sec" id="review">
-  <span class="eyebrow">12 &middot; Review queue</span>
+  <span class="eyebrow">11 &middot; Review queue</span>
   <h3>A verdict for everything that was flagged</h3>
   <p class="lede">Detections, low judge scores and user downvotes collect in one queue, grouped by category and ordered worst first. Each takes one of five verdicts (Confirm, Fixed, Ignore, Wrong judgement, Add to dataset), with a keyboard shortcut for each.</p>
 
@@ -1074,7 +994,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 </section>
 
 <section class="sec" id="scorers">
-  <span class="eyebrow">13 &middot; Scorers</span>
+  <span class="eyebrow">12 &middot; Scorers</span>
   <h3>Five kinds of scorer in one table</h3>
   <p class="lede">Pattern, LLM judge, code, external and template scorers share one table, each with its own severity, sampling rate and scope. Six safety and reliability templates ship with the engine. Scorers sit here because of their live role on production traffic; the same scorers also grade evaluation runs and Playground cells.</p>
 
@@ -1111,7 +1031,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 </section>
 
 <section class="sec" id="rules">
-  <span class="eyebrow">14 &middot; Rules</span>
+  <span class="eyebrow">13 &middot; Rules</span>
   <h3>Routing traces to review, datasets or webhooks</h3>
   <p class="lede">A rule matches incoming traces and routes them: into the review queue, into a dataset, or out to a webhook. Sampling is set per rule. Scoring stays a separate concern, because a judge scorer owns its own sampling.</p>
 
@@ -1141,7 +1061,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 <div class="part"><span class="pn">Datasets and runs</span></div>
 
 <section class="sec" id="datasets">
-  <span class="eyebrow">15 &middot; Datasets</span>
+  <span class="eyebrow">14 &middot; Datasets</span>
   <h3>Where test cases come from</h3>
   <p class="lede">Cases can be promoted from a trace or a session, generated from source text, or imported from a spreadsheet. The list reports how many cases in each dataset carry scoring checks, and when the dataset last backed a run.</p>
 
@@ -1165,7 +1085,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 </section>
 
 <section class="sec" id="cases">
-  <span class="eyebrow">16 &middot; The case editor</span>
+  <span class="eyebrow">15 &middot; The case editor</span>
   <h3>Four scoring checks per case</h3>
   <p class="lede">Beyond a question and an expected result, a case can pin the tool calls it should make, the context it should retrieve, a judging guideline specific to it, and a smoke test that rephrases it several ways each run. Cases can carry follow-up turns and be tagged into splits.</p>
 
@@ -1215,7 +1135,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 </section>
 
 <section class="sec" id="runs">
-  <span class="eyebrow">17 &middot; Evaluation runs</span>
+  <span class="eyebrow">16 &middot; Evaluation runs</span>
   <h3>Per-case results, with repeats and spread</h3>
   <p class="lede">A run executes the agent against every case and grades the answers with the selected scorers: up to four judges, four similarity metrics, and any code scorers. Repeating each case reports a spread rather than a single figure.</p>
 
@@ -1260,7 +1180,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 </section>
 
 <section class="sec" id="analysis">
-  <span class="eyebrow">18 &middot; AI Analysis</span>
+  <span class="eyebrow">17 &middot; AI Analysis</span>
   <h3>A judge panel, and its own agreement metrics</h3>
   <p class="lede">Several judges independently re-rate a sample of the run, and the results reduce through four pipeline levels into a written assessment covering strengths, weaknesses, reasoning, tool usage and suggested instruction changes. Agreement, mean absolute error and kappa report how far the judges agreed with each other.</p>
 
@@ -1306,7 +1226,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 <div class="part"><span class="pn">Experiments</span></div>
 
 <section class="sec" id="playground">
-  <span class="eyebrow">19 &middot; Playground</span>
+  <span class="eyebrow">18 &middot; Playground</span>
   <h3>Cases by models, with tools attached</h3>
   <p class="lede">A grid of dataset cases against models. Each cell holds the answer, the tool calls made, latency, cost and score. Tools come from the registry or are defined inline, and a tool with no endpoint returns simulated results, so tool choice and argument formation can be tested before the tool exists.</p>
 
@@ -1359,7 +1279,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 </section>
 
 <section class="sec" id="simulate">
-  <span class="eyebrow">20 &middot; Conversation simulation</span>
+  <span class="eyebrow">19 &middot; Conversation simulation</span>
   <h3>A simulated user with a persona and a goal</h3>
   <p class="lede">A simulated user with a persona and a goal holds a conversation with the agent up to a turn limit. The result carries a transcript, an outcome (goal achieved, user gave up, or turn limit reached) and a score, and can be recorded as a session or added to a dataset.</p>
 
@@ -1386,7 +1306,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 </section>
 
 <section class="sec" id="portability">
-  <span class="eyebrow">21 &middot; Model Portability</span>
+  <span class="eyebrow">20 &middot; Model Portability</span>
   <h3>The same dataset across several models</h3>
   <p class="lede">Each candidate model runs the full dataset, reported side by side on rating, min/max, variance, similarity, latency and tokens, with the agent's current model as the baseline. The catalog holds per-model token prices, including custom OpenAI-compatible endpoints.</p>
 
@@ -1423,7 +1343,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 <div class="part"><span class="pn">Improvement</span></div>
 
 <section class="sec" id="registries">
-  <span class="eyebrow">22 &middot; Prompt &amp; tool registries</span>
+  <span class="eyebrow">21 &middot; Prompt &amp; tool registries</span>
   <h3>Rewrites drafted from evidence, published by a person</h3>
   <p class="lede">Prompts and tool schemas are versioned in the registry and pulled by the agent at runtime. A proposal is drafted by a judge from the worst-rated evidence tagged with that prompt or tool, shown as a diff beside the examples it drew on, and validated against a dataset before publishing.</p>
 
@@ -1483,7 +1403,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 </section>
 
 <section class="sec" id="suggestions">
-  <span class="eyebrow">23 &middot; Improvement proposals</span>
+  <span class="eyebrow">22 &middot; Improvement proposals</span>
   <h3>Drafted and validated by a background sweep</h3>
   <p class="lede">A background sweep watches for prompts and tool definitions accumulating fresh failures. On crossing the threshold it drafts the change, runs the baseline-versus-candidate validation, and queues the result with its verdict attached. Tools seen failing in traffic but never registered are listed for registration.</p>
 
@@ -1520,10 +1440,10 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 
 <div class="zone zone-start">
 
-<div class="pillar" id="pillar-start"><div class="pillar-h"><h2>Getting started</h2></div><p class="pillar-b">Install the engine, send it traffic, and gate merges on evaluation results. The same binary then scales from one machine to a team deployment.</p><p class="pillar-i">Install and send traffic &middot; CI Gates &middot; Scale, keys and access</p></div>
+<div class="pillar" id="pillar-start"><div class="pillar-h"><h2>Getting started</h2></div><p class="pillar-b">Install the engine, connect your agents, and gate merges on evaluation results. The same binary scales from one machine to a team deployment, and works with the frameworks your teams already use.</p><p class="pillar-i">Install and send traffic &middot; CI Gates &middot; Scale, keys and access &middot; Integrations</p></div>
 
 <section class="sec" id="start">
-  <span class="eyebrow">24 &middot; Install and send traffic</span>
+  <span class="eyebrow">23 &middot; Install and send traffic</span>
   <h3>From install to the first trace</h3>
   <p class="lede">One command installs the engine and CLI as native binaries and opens the dashboard on a local SQLite database. Point the AgentX Python SDK or any OpenTelemetry exporter at it and runs appear in Live Traces. No provider key is needed to begin: trace ingest and the regex and phrase scorers work with nothing configured.</p>
 
@@ -1541,7 +1461,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 </section>
 
 <section class="sec" id="ci">
-  <span class="eyebrow">25 &middot; CI Gates</span>
+  <span class="eyebrow">24 &middot; CI Gates</span>
   <h3>Blocking a merge on evaluation results</h3>
   <p class="lede">Once evaluations run in CI, one call after the run returns an exit code: zero lets the merge through, one blocks it. Recorded gates are listed with their verdict, average, baseline and individual checks, and a preview answers whether the latest run would pass without writing to history.</p>
 
@@ -1574,7 +1494,7 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
 </section>
 
 <section class="sec" id="scale">
-  <span class="eyebrow">26 &middot; Scale, keys and access</span>
+  <span class="eyebrow">25 &middot; Scale, keys and access</span>
   <h3>One binary from a laptop to a team deployment</h3>
   <p class="lede">The same binary and API serve three storage tiers, from a local SQLite file to Postgres with ClickHouse for telemetry. Provider keys stay yours, and sign-in can be switched on for a shared deployment.</p>
 
@@ -1593,6 +1513,57 @@ client.feedback.<b style="color:var(--n900)">report</b>(trace_id, "down", commen
     <li><b style="color:var(--n900);font-weight:600">Single binary.</b> The engine compiles to a native executable and the CLI to a native Go binary, so the target machine needs no Node, Bun or Go.</li>
     <li><b style="color:var(--n900);font-weight:600">Auth when you need it.</b> One operator on one machine gets no login screen; a shared deployment turns on sign-in with one variable, and SDK ingest is unaffected either way.</li>
   </ul>
+</section>
+
+<section class="sec" id="integrations">
+  <span class="eyebrow">26 &middot; Integrations</span>
+  <h3>Two SDKs, twelve framework integrations, and any OpenTelemetry exporter</h3>
+  <p class="lede">Agents connect through the Python or TypeScript SDK, through ready-made integrations for the major agent frameworks, or through OpenTelemetry with no AgentX code at all. Whatever the source, every run lands in the same place and gets the same monitoring, scoring and evaluation.</p>
+
+  <div class="grid3">
+    <div class="panel"><div class="pbody">
+      <div class="ptitle">Python and TypeScript SDKs</div>
+      <p class="cardp">Official SDKs, with ready-made integrations for twelve agent frameworks, from OpenAI and Anthropic to LangChain, CrewAI and Google ADK.</p>
+    </div></div>
+    <div class="panel"><div class="pbody">
+      <div class="ptitle">OpenTelemetry</div>
+      <p class="cardp">Teams already on the open standard change where it sends data. No new code in the agent.</p>
+    </div></div>
+    <div class="panel"><div class="pbody">
+      <div class="ptitle">Hosted agent platforms</div>
+      <p class="cardp">Agents that run on Databricks or Moveworks are brought into the same view, next to everything else.</p>
+    </div></div>
+  </div>
+
+  <div class="panel"><div class="phead"><span class="ptitle">Supported platforms</span><span class="psub">each appears under its own badge in the dashboard</span></div>
+    <div class="pbody"><div class="fwgrid">
+      <span class="fw"><span class="fw-m" style="background:#5E33A8;color:#FFFFFF">AX</span>AgentX</span>
+      <span class="fw"><span class="fw-m" style="background:#1C7D6D;color:#FFFFFF">LC</span>LangChain</span>
+      <span class="fw"><span class="fw-m" style="background:#4285F4;color:#FFFFFF">G</span>Google ADK</span>
+      <span class="fw"><span class="fw-m" style="background:#7C4DE0;color:#FFFFFF">Li</span>LlamaIndex</span>
+      <span class="fw"><span class="fw-m" style="background:#E0533D;color:#FFFFFF">C</span>CrewAI</span>
+      <span class="fw"><span class="fw-m" style="background:#171717;color:#FFFFFF">▲</span>Vercel AI SDK</span>
+      <span class="fw"><span class="fw-m" style="background:#10A37F;color:#FFFFFF">OA</span>OpenAI</span>
+      <span class="fw"><span class="fw-m" style="background:#CC785C;color:#FFFFFF">An</span>Anthropic</span>
+      <span class="fw"><span class="fw-m" style="background:#2563EB;color:#FFFFFF">AG</span>AutoGen</span>
+      <span class="fw"><span class="fw-m" style="background:#EA4B71;color:#FFFFFF">n8</span>n8n</span>
+      <span class="fw"><span class="fw-m" style="background:#14B8A6;color:#FFFFFF">Fl</span>Flowise</span>
+      <span class="fw"><span class="fw-m" style="background:#3776AB;color:#FFFFFF">Py</span>Python</span>
+      <span class="fw"><span class="fw-m" style="background:#0E8A6C;color:#FFFFFF">OA</span>OpenAI Agents</span>
+      <span class="fw"><span class="fw-m" style="background:#669DF6;color:#FFFFFF">G</span>Google GenAI</span>
+      <span class="fw"><span class="fw-m" style="background:#1E66F5;color:#FFFFFF">LL</span>LiteLLM</span>
+      <span class="fw"><span class="fw-m" style="background:#7B5CD6;color:#FFFFFF">Mw</span>Moveworks</span>
+      <span class="fw"><span class="fw-m" style="background:#FF3621;color:#FFFFFF">Db</span>Databricks</span>
+      <span class="fw"><span class="fw-m" style="background:#5C2D91;color:#FFFFFF">SK</span>Semantic Kernel</span>
+      <span class="fw"><span class="fw-m" style="background:#03AF9D;color:#FFFFFF">Hs</span>Haystack</span>
+      <span class="fw"><span class="fw-m" style="background:#E92063;color:#FFFFFF">PA</span>Pydantic AI</span>
+      <span class="fw"><span class="fw-m" style="background:#FF9D00;color:#1B1A18">sm</span>smolagents</span>
+      <span class="fw"><span class="fw-m" style="background:#8B1D3F;color:#FFFFFF">DS</span>DSPy</span>
+      <span class="fw"><span class="fw-m" style="background:#F5A800;color:#1B1A18">OT</span>OpenTelemetry</span>
+    </div></div>
+  </div>
+
+  <p class="note"><b>Tracing never slows the agent down.</b> Traces are sent in the background, so the agent never waits on AgentX.</p>
 </section>
 
 </div>
