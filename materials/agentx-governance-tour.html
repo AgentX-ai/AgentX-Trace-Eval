@@ -140,6 +140,21 @@ code{font-family:var(--mono);font-size:.86em;background:var(--n100);border:1px s
 .toc li.toc-eval a::before{background:var(--ze)}
 @media(max-width:620px){.zone{padding:14px 12px 24px;border-radius:14px}}
 
+/* Sticky part title: pins under the top edge while its zone scrolls, and the next zone's bar
+   pushes it off. The band below it carries the description and scrolls away normally. */
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--page)}
+.zone-bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;display:flex;align-items:center;gap:16px;padding:14px 28px;border-radius:14px 14px 0 0;color:var(--zband-ink);-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.zone-bar h2{font-size:clamp(22px,3.4vw,30px);font-weight:700;letter-spacing:-.022em;color:inherit;line-height:1.15}
+.zone-top{margin-left:auto;font-size:12px;font-weight:500;color:inherit;opacity:.72;text-decoration:none;white-space:nowrap}
+.zone-top:hover,.zone-top:focus-visible{opacity:1;text-decoration:underline;text-underline-offset:3px}
+.zone-trace .zone-bar{background:var(--zt-band)}
+.zone-obs .zone-bar{background:var(--zo-band)}
+.zone-eval .zone-bar{background:var(--ze-band)}
+.zone-start .zone-bar{background:var(--zs-band)}
+.zone > .pillar{margin-top:-42px;border-radius:0 0 14px 14px;padding:0 28px 22px}
+.sec{scroll-margin-top:84px}
+@media(max-width:620px){.zone-bar{padding:12px 16px}.zone > .pillar{padding:0 16px 18px}}
+
 /* ---------- product chrome ---------- */
 .app{border:1px solid var(--n200);border-radius:12px;overflow:hidden;background:var(--n50);display:grid;grid-template-columns:220px 1fr}
 .app.nonav{grid-template-columns:1fr}
@@ -308,6 +323,8 @@ td.mono,.mono{font-family:var(--mono)}
  .sec .eyebrow,.sec h3{break-after:avoid}
  .lede,.note{orphans:2;widows:2}
  .zone{break-before:page}
+ .zone-bar{position:static}
+ body::before{display:none}
  .pillar{break-after:avoid;break-inside:avoid}
  .part{break-before:auto;break-after:avoid}
  .toc{break-after:page}
@@ -345,7 +362,7 @@ td.mono,.mono{font-family:var(--mono)}
   </div>
 </section>
 
-<nav class="toc">
+<nav class="toc" id="contents">
   <h2>Contents</h2>
   <ol>
     <li class="toc-p toc-trace"><a href="#pillar-trace">Traceability</a></li>
@@ -387,9 +404,11 @@ td.mono,.mono{font-family:var(--mono)}
   <p class="lede">The document is in three parts, each answering a question leadership is asked about AI agents. <b>Traceability</b>: can we explain what an agent did, and who changed it? <b>Observability</b>: is it behaving with real customers, and is anything sensitive getting out? <b>Evaluations</b>: how do we know a change is safe before customers see it? A last part, <b>Getting started</b>, covers what it takes to run AgentX.</p>
 </section>
 
-<div class="zone zone-trace">
+<div class="zone zone-trace" id="pillar-trace">
 
-<div class="pillar" id="pillar-trace"><div class="pillar-h"><h2>Traceability</h2></div><p class="pillar-b">Any answer an agent gave can be explained afterwards: what it was asked, what it did step by step, and what it cost. Every configuration change and data export is logged, and the engine cannot alter that log.</p><p class="pillar-i">Live Traces &middot; Sessions &middot; Trace detail &amp; timeline &middot; Audit trail &amp; export</p></div>
+<div class="zone-bar"><h2>Traceability</h2><a class="zone-top" href="#contents">Contents</a></div>
+
+<div class="pillar"><p class="pillar-b">Any answer an agent gave can be explained afterwards: what it was asked, what it did step by step, and what it cost. Every configuration change and data export is logged, and the engine cannot alter that log.</p><p class="pillar-i">Live Traces &middot; Sessions &middot; Trace detail &amp; timeline &middot; Audit trail &amp; export</p></div>
 
 <section class="sec" id="traces">
   <span class="eyebrow">01 &middot; Live Traces</span>
@@ -513,9 +532,11 @@ td.mono,.mono{font-family:var(--mono)}
 
 </div>
 
-<div class="zone zone-obs">
+<div class="zone zone-obs" id="pillar-obs">
 
-<div class="pillar" id="pillar-obs"><div class="pillar-h"><h2>Observability</h2></div><p class="pillar-b">A live view of how your agents behave in production: whether they are healthy, what customers actually ask them, where sensitive data or unsafe answers appear, and which risky topics your tests do not yet cover.</p><p class="pillar-i">Overview &middot; Monitor &middot; Topics &middot; Dataset coverage &middot; The coverage map &middot; The coverage probe &middot; Review queue &middot; Scorers &middot; Rules</p></div>
+<div class="zone-bar"><h2>Observability</h2><a class="zone-top" href="#contents">Contents</a></div>
+
+<div class="pillar"><p class="pillar-b">A live view of how your agents behave in production: whether they are healthy, what customers actually ask them, where sensitive data or unsafe answers appear, and which risky topics your tests do not yet cover.</p><p class="pillar-i">Overview &middot; Monitor &middot; Topics &middot; Dataset coverage &middot; The coverage map &middot; The coverage probe &middot; Review queue &middot; Scorers &middot; Rules</p></div>
 
 <div class="part"><span class="pn">Production health</span></div>
 
@@ -1072,9 +1093,11 @@ td.mono,.mono{font-family:var(--mono)}
 
 </div>
 
-<div class="zone zone-eval">
+<div class="zone zone-eval" id="pillar-eval">
 
-<div class="pillar" id="pillar-eval"><div class="pillar-h"><h2>Evaluations</h2></div><p class="pillar-b">Evidence that a change improves the agent before customers see it. Prompt, model and tool changes are tested against known cases and compared with the current version, and a suggested fix is never published without a person's approval.</p><p class="pillar-i">Datasets &middot; The case editor &middot; Evaluation runs &middot; AI Analysis &middot; Playground &middot; Conversation simulation &middot; Model Portability &middot; Prompt &amp; tool registries &middot; Improvement proposals</p></div>
+<div class="zone-bar"><h2>Evaluations</h2><a class="zone-top" href="#contents">Contents</a></div>
+
+<div class="pillar"><p class="pillar-b">Evidence that a change improves the agent before customers see it. Prompt, model and tool changes are tested against known cases and compared with the current version, and a suggested fix is never published without a person's approval.</p><p class="pillar-i">Datasets &middot; The case editor &middot; Evaluation runs &middot; AI Analysis &middot; Playground &middot; Conversation simulation &middot; Model Portability &middot; Prompt &amp; tool registries &middot; Improvement proposals</p></div>
 
 <div class="part"><span class="pn">Datasets and runs</span></div>
 
@@ -1456,9 +1479,11 @@ td.mono,.mono{font-family:var(--mono)}
 
 </div>
 
-<div class="zone zone-start">
+<div class="zone zone-start" id="pillar-start">
 
-<div class="pillar" id="pillar-start"><div class="pillar-h"><h2>Getting started</h2></div><p class="pillar-b">Runs on your own infrastructure with your own AI provider keys, connects to the frameworks your teams already use, and fits into the release process you already have.</p><p class="pillar-i">Install and send traffic &middot; CI Gates &middot; Scale, keys and access &middot; Integrations</p></div>
+<div class="zone-bar"><h2>Getting started</h2><a class="zone-top" href="#contents">Contents</a></div>
+
+<div class="pillar"><p class="pillar-b">Runs on your own infrastructure with your own AI provider keys, connects to the frameworks your teams already use, and fits into the release process you already have.</p><p class="pillar-i">Install and send traffic &middot; CI Gates &middot; Scale, keys and access &middot; Integrations</p></div>
 
 <section class="sec" id="start">
   <span class="eyebrow">23 &middot; Install and send traffic</span>
@@ -1592,6 +1617,17 @@ td.mono,.mono{font-family:var(--mono)}
 </footer>
 
 </div>
+<script>
+document.addEventListener("click", function (e) {
+  var a = e.target.closest && e.target.closest('a[href^="#"]');
+  if (!a) return;
+  var el = document.getElementById(a.getAttribute("href").slice(1));
+  if (!el) return;
+  e.preventDefault();
+  var reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  el.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+});
+</script>
 
 </body>
 </html>
