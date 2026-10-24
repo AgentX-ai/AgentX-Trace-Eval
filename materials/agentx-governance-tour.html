@@ -373,14 +373,14 @@ td.mono,.mono{font-family:var(--mono)}
 <section class="safe" aria-labelledby="safe-h">
   <h2 id="safe-h">Why it is safe to run in a large enterprise</h2>
   <div class="safe-grid">
-    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>Runs entirely inside your infrastructure.</b><p>Self-hosted on your own servers or cloud account, with Docker or Kubernetes. Traces, test sets and results stay in your own database, with no AgentX account or cloud service in the path.</p></div></div>
-    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>Your AI contracts, or your own model.</b><p>AI quality checks run on OpenAI, Anthropic or Gemini under your own keys and agreements, or on a model you host yourself, in which case no data has to leave your network.</p></div></div>
-    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>Sign-in through your identity provider.</b><p>Single sign-on with Okta, Microsoft Entra, Google Workspace or any OIDC provider, and a separate access key for every project.</p></div></div>
-    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>An audit trail AgentX cannot rewrite.</b><p>Every configuration change, sign-in and data export is logged with who and when. Entries cannot be edited or deleted through AgentX, and secrets are never written to the log.</p></div></div>
-    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>Leaks caught in agent answers.</b><p>Built-in checks flag credentials, personal data and prompt-injection attempts in what agents say. They make no AI calls, so they can run on all traffic.</p></div></div>
+    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>Runs entirely inside your infrastructure.</b><p>Self-hosted on your own servers or cloud account, with Docker or Kubernetes. Traces, test sets and results stay in your own database, with no AgentX account or cloud service in the path. Nothing is sent back to AgentX: no usage data, licence checks or update checks.</p></div></div>
+    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>Your AI contracts, or your own model.</b><p>Features that send conversation text to a model (AI judges, topic labelling, written assessments, test-case generation) use the provider you choose: OpenAI, Anthropic or Gemini under your own keys and agreements, or a model you host yourself. The topic and coverage maps also use an OpenAI embeddings model.</p></div></div>
+    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>Sign-in through your identity provider.</b><p>Single sign-on with Okta, Microsoft Entra, Google Workspace or any OIDC provider. Owners and admins decide who has access, and every project has its own access key.</p></div></div>
+    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>An append-only audit trail.</b><p>Every configuration change, sign-in and data export is logged with who and when. Entries cannot be edited or deleted through the AgentX interface or API, and secrets are never written to the log.</p></div></div>
+    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>Leaks flagged in agent answers.</b><p>Built-in checks flag credentials, email addresses, phone numbers, social security and card numbers, and replies that repeat known prompt-injection phrasing. They flag a reply once it is sent rather than blocking it, and make no AI calls, so they can run on all traffic.</p></div></div>
     <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>People approve every fix.</b><p>Automated checks flag issues and AI drafts fixes, but nothing goes live until a person approves it, and each decision is recorded.</p></div></div>
     <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>You decide how long data is kept.</b><p>Retention is set per project. Older traces are removed, and everything can be exported before they are.</p></div></div>
-    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>Open, reviewable and portable.</b><p>The engine&rsquo;s source code is public for your security team to review, agents connect over the OpenTelemetry standard, and all data exports in an open format.</p></div></div>
+    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>Source-available, reviewable and portable.</b><p>The engine&rsquo;s source is published under the Elastic License 2.0 for your security team to review, with a private route for reporting vulnerabilities. Agents connect over the OpenTelemetry standard, and all data exports in an open format.</p></div></div>
   </div>
 </section>
 
@@ -533,7 +533,7 @@ td.mono,.mono{font-family:var(--mono)}
 <section class="sec" id="audit">
   <span class="eyebrow">04 &middot; Audit trail &amp; export</span>
   <h3>Who changed what, what was exported, and how long data is kept</h3>
-  <p class="lede">Every configuration change, sign-in and bulk export is written to an audit trail: who did it, what they touched, and whether it worked. The engine has no way to edit or delete an entry. All data can be exported in an open format, and each project decides how long it is kept.</p>
+  <p class="lede">Every configuration change, sign-in and bulk export is written to an audit trail: who did it, what they touched, and whether it worked. Entries cannot be edited or deleted through the AgentX interface or API. All data can be exported in an open format, and each project decides how long it is kept.</p>
 
   <div class="grid2">
     <div class="panel"><div class="phead"><span class="ptitle">What every audit entry records</span></div>
@@ -602,10 +602,10 @@ td.mono,.mono{font-family:var(--mono)}
 
         <div class="kpis k6">
           <div class="kpi"><div class="lab">Total runs</div><div class="kv"><span class="val">31.3k</span></div><div class="foot">past 7 days</div></div>
-          <div class="kpi"><div class="lab">Healthy rate</div><div class="kv"><span class="val">94.2%</span></div><div class="foot t-ok">+0.018 pts</div></div>
-          <div class="kpi"><div class="lab">Failure rate</div><div class="kv"><span class="val">2.4%</span></div><div class="foot t-ok">-0.005 pts</div></div>
-          <div class="kpi"><div class="lab">Downvote rate</div><div class="kv"><span class="val">8.5%</span></div><div class="foot t-err">+0.012 pts</div></div>
-          <div class="kpi"><div class="lab">Tool failure</div><div class="kv"><span class="val">3.8%</span></div><div class="foot t-ok">-0.004 pts</div></div>
+          <div class="kpi"><div class="lab">Healthy rate</div><div class="kv"><span class="val">94.2%</span></div><div class="foot t-ok">+1.8 pts</div></div>
+          <div class="kpi"><div class="lab">Failure rate</div><div class="kv"><span class="val">2.4%</span></div><div class="foot t-ok">-0.5 pts</div></div>
+          <div class="kpi"><div class="lab">Downvote rate</div><div class="kv"><span class="val">8.5%</span></div><div class="foot t-err">+1.2 pts</div></div>
+          <div class="kpi"><div class="lab">Tool failure</div><div class="kv"><span class="val">3.8%</span></div><div class="foot t-ok">-0.4 pts</div></div>
           <div class="kpi"><div class="lab">p95 latency</div><div class="kv"><span class="val">2.31s</span></div><div class="foot">95th percentile</div></div>
         </div>
 
@@ -624,7 +624,7 @@ td.mono,.mono{font-family:var(--mono)}
           <div class="lcol">
             <div class="panel"><div class="phead"><span class="ptitle">Healthy rate trend</span><span class="psub">&middot; past 7 days</span></div>
               <div class="pbody">
-                <div class="kv" style="margin-top:0"><span class="val" style="font-size:28px">94.2%</span><span class="qual t-ok">+0.018 pts</span><span class="qual">vs the prior period</span></div>
+                <div class="kv" style="margin-top:0"><span class="val" style="font-size:28px">94.2%</span><span class="qual t-ok">+1.8 pts</span><span class="qual">vs the prior period</span></div>
                 <svg viewBox="0 0 300 100" width="100%" style="max-width:100%;height:auto;margin-top:10px" role="img" aria-label="Healthy rate trend over seven days, rising from 92.6 percent to 94.2 percent, with the prior period shown as a dashed line below it.">
                   <line x1="26" y1="14" x2="296" y2="14" stroke="var(--n200)" stroke-width="1"/>
                   <line x1="26" y1="47" x2="296" y2="47" stroke="var(--n200)" stroke-width="1"/>
@@ -817,7 +817,7 @@ td.mono,.mono{font-family:var(--mono)}
         <div class="hctl" style="margin:0"><span class="ctl on">Trend</span><span class="ctl">Map</span><span class="ctl">Past 7 days</span></div>
         <div class="cols">
           <div class="lcol">
-            <div class="panel"><div class="phead"><span class="ptitle">Sentiment over time</span><span class="psub">31,284 traces classified in this window</span></div><div class="pbody">
+            <div class="panel"><div class="phead"><span class="ptitle">Sentiment over time</span><span class="psub">7,821 traces classified in this window</span></div><div class="pbody">
               <svg viewBox="0 0 420 130" width="100%" style="max-width:100%;height:auto" role="img" aria-label="Sentiment over seven days: positive around 70 percent, neutral around 22 percent, negative rising from 6 to 9 percent.">
                 <line x1="0" y1="118" x2="420" y2="118" stroke="var(--n300)"/>
                 <polyline points="24,32 90,28 156,34 222,30 288,26 354,31 412,29" fill="none" stroke="#1f8a5f" stroke-width="2"/>
@@ -830,16 +830,16 @@ td.mono,.mono{font-family:var(--mono)}
           </div>
           <div class="rcol">
             <div class="panel"><div class="phead"><span class="ptitle">Top intents</span></div><div class="pbody flush"><div class="scroll"><table><tbody>
-              <tr><td class="w k">Refund eligibility</td><td class="r">7,321</td></tr>
-              <tr><td class="w k">Invoice copies</td><td class="r">5,662</td></tr>
-              <tr><td class="w k">Subscription changes</td><td class="r">4,599</td></tr>
-              <tr><td class="w k">Payment failures</td><td class="r">3,504</td></tr>
+              <tr><td class="w k">Refund eligibility</td><td class="r">1,830</td></tr>
+              <tr><td class="w k">Invoice copies</td><td class="r">1,416</td></tr>
+              <tr><td class="w k">Subscription changes</td><td class="r">1,150</td></tr>
+              <tr><td class="w k">Payment failures</td><td class="r">876</td></tr>
             </tbody></table></div></div></div>
             <div class="panel"><div class="phead"><span class="ptitle">Issue types</span></div><div class="pbody flush"><div class="scroll"><table><tbody>
-              <tr><td class="w k">Incomplete</td><td class="r t-err">612</td></tr>
-              <tr><td class="w k">Refusal</td><td class="r t-err">388</td></tr>
-              <tr><td class="w k">Hallucination</td><td class="r t-err">147</td></tr>
-              <tr><td class="w k">Off-topic</td><td class="r t-err">94</td></tr>
+              <tr><td class="w k">Incomplete</td><td class="r t-err">153</td></tr>
+              <tr><td class="w k">Refusal</td><td class="r t-err">97</td></tr>
+              <tr><td class="w k">Hallucination</td><td class="r t-err">37</td></tr>
+              <tr><td class="w k">Off-topic</td><td class="r t-err">24</td></tr>
             </tbody></table></div></div></div>
           </div>
         </div>
@@ -1089,7 +1089,7 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>The safety basics cost nothing to run.</b> Pattern and code checks, including the built-in ones for secrets, personal data and prompt injection, make no AI calls, so they can run on all traffic.</p>
+  <p class="note"><b>The safety basics cost nothing to run.</b> Pattern and code checks, including the built-in ones for secrets, personal data and echoed prompt-injection phrasing, make no AI calls, so they can run on all traffic.</p>
 </section>
 
 <section class="sec" id="rules">
@@ -1106,7 +1106,7 @@ td.mono,.mono{font-family:var(--mono)}
           <tbody>
             <tr><td style="width:52px">On</td><td class="w k">Sample support traffic for review</td><td><span class="badge b-info">Send to review</span></td><td class="w muted">10% of matching traces</td><td class="muted r">fired 318x &middot; last 4m ago</td></tr>
             <tr><td>On</td><td class="w k">Capture billing errors as cases</td><td><span class="badge b-info">Add to dataset</span></td><td class="w muted">100% of errored traces containing &ldquo;refund&rdquo;</td><td class="muted r">fired 46x &middot; last 2h ago</td></tr>
-            <tr><td>On</td><td class="w k">Page on-call for sensitive data</td><td><span class="badge b-info">Post to webhook</span></td><td class="w muted">100% of errored traces</td><td class="muted r">fired 3x &middot; last 1d ago</td></tr>
+            <tr><td>On</td><td class="w k">Page on-call for errored traces</td><td><span class="badge b-info">Post to webhook</span></td><td class="w muted">100% of errored traces</td><td class="muted r">fired 3x &middot; last 1d ago</td></tr>
             <tr><td class="muted">Off</td><td class="w k muted">Archive long-tail docs questions</td><td><span class="badge b-neu">Add to dataset</span></td><td class="w muted">5% of matching traces on gemini-2.5-flash</td><td class="muted r">never fired</td></tr>
           </tbody></table></div></div></div>
       </div>
@@ -1245,8 +1245,8 @@ td.mono,.mono{font-family:var(--mono)}
 
 <section class="sec" id="analysis">
   <span class="eyebrow">17 &middot; AI Analysis</span>
-  <h3>A written assessment, cross-checked by several AI judges</h3>
-  <p class="lede">Several independent AI judges re-grade a sample of the results and write a report: strengths, weaknesses, how the agent reasons and uses its tools, and suggested changes to its instructions. The report also shows how far the judges agreed with each other, so you know how much weight to give it.</p>
+  <h3>A written assessment, which up to three AI judges can cross-check</h3>
+  <p class="lede">An AI judge re-grades a sample of the results and writes a report: strengths, weaknesses, how the agent reasons and uses its tools, and suggested changes to its instructions. By default it uses the one model you configured. Add up to three judges from different providers and the report also shows how far they agreed, so you know how much weight to give it.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1489,7 +1489,7 @@ td.mono,.mono{font-family:var(--mono)}
         <div class="panel"><div class="phead"><span class="ptitle">Seen in traffic, not registered</span><span class="psub">3</span></div>
           <div class="pbody flush"><div class="scroll"><table>
             <tbody>
-              <tr><td class="w k mono">lookup_fx_rate</td><td class="muted">1,204 calls</td><td><span class="badge b-err">96 failures</span></td><td class="muted w">definition from trace metadata</td><td class="r"><span class="btn">Register</span></td></tr>
+              <tr><td class="w k mono">lookup_fx_rate</td><td class="muted">342 calls</td><td><span class="badge b-err">14 failures</span></td><td class="muted w">definition from trace metadata</td><td class="r"><span class="btn">Register</span></td></tr>
               <tr><td class="w k mono">post_credit_note</td><td class="muted">318 calls</td><td><span class="badge b-pend">12 failures</span></td><td class="muted w">definition inferred</td><td class="r"><span class="btn">Register</span></td></tr>
             </tbody></table></div></div>
           <div class="phead" style="border-bottom:0;border-top:1px solid var(--n200)"><span class="psub">Register one and its accumulated failure history becomes evidence immediately.</span></div>
@@ -1552,7 +1552,7 @@ td.mono,.mono{font-family:var(--mono)}
   <div class="grid3">
     <div class="panel"><div class="pbody"><div class="ptitle">1 &middot; Install</div><p class="cardp">One command installs AgentX on a server or a laptop and opens the dashboard. It comes with its own database, so there is nothing else to set up first.</p></div></div>
     <div class="panel"><div class="pbody"><div class="ptitle">2 &middot; Connect an agent</div><p class="cardp">Point the agent&rsquo;s existing OpenTelemetry output at AgentX, or add the SDK. Its runs appear in Live Traces as they happen.</p></div></div>
-    <div class="panel"><div class="pbody"><div class="ptitle">3 &middot; Switch on the checks</div><p class="cardp">Enable the built-in checks for leaked secrets, personal data and prompt injection. They need no AI provider account and cost nothing to run.</p></div></div>
+    <div class="panel"><div class="pbody"><div class="ptitle">3 &middot; Switch on the checks</div><p class="cardp">Enable the built-in checks for leaked secrets, personal data and echoed prompt-injection phrasing. They need no AI provider account and cost nothing to run.</p></div></div>
   </div>
   <p class="note"><b>Or let a coding assistant do the setup.</b> The AgentX eval skill, a plugin for Claude Code, Cursor, Codex and other coding assistants, connects the agent, runs a first evaluation and fixes what it finds. Section 23 covers it.</p>
 </section>
@@ -1612,7 +1612,7 @@ td.mono,.mono{font-family:var(--mono)}
   <ul class="plain" style="margin:0;padding-left:20px;font-size:15px;color:var(--n600);display:flex;flex-direction:column;gap:8px">
     <li><b style="color:var(--n900);font-weight:600">Bring your own keys.</b> Judges and model calls run on OpenAI, Anthropic or Gemini with your own account. Nothing is billed through AgentX, and traces stay in your own database.</li>
     <li><b style="color:var(--n900);font-weight:600">A single install.</b> AgentX ships as self-contained programs, so servers need no extra runtimes or toolchains.</li>
-    <li><b style="color:var(--n900);font-weight:600">Sign-in when it is shared.</b> A single-user install has no login screen. A shared deployment turns on sign-in with one setting, without disconnecting any agent already sending data.</li>
+    <li><b style="color:var(--n900);font-weight:600">Sign-in for any shared deployment.</b> The no-login mode is meant for one person on their own machine. A shared deployment turns on sign-in with one setting, without disconnecting any agent already sending data.</li>
   </ul>
 </section>
 
@@ -1624,7 +1624,7 @@ td.mono,.mono{font-family:var(--mono)}
   <div class="grid3">
     <div class="panel"><div class="pbody">
       <div class="ptitle">Python and TypeScript SDKs</div>
-      <p class="cardp">Official SDKs, with ready-made integrations for twelve agent frameworks, from OpenAI and Anthropic to LangChain, CrewAI and Google ADK.</p>
+      <p class="cardp">Official SDKs, with ready-made integrations for popular agent frameworks, from OpenAI and Anthropic to LangChain, CrewAI and Google ADK.</p>
     </div></div>
     <div class="panel"><div class="pbody">
       <div class="ptitle">OpenTelemetry</div>
