@@ -431,7 +431,7 @@ td.mono,.mono{font-family:var(--mono)}
 
 <div class="zone-bar"><h2>Traceability</h2></div>
 
-<div class="pillar"><p class="pillar-b">Any answer an agent gave can be explained afterwards: what it was asked, what it did step by step, and what it cost. Every configuration change and data export is logged, and the engine cannot alter that log.</p><p class="pillar-i">Live Traces &middot; Sessions &middot; Trace detail &amp; timeline &middot; Audit trail &amp; export</p></div>
+<div class="pillar"><p class="pillar-b">Any answer an agent gave can be explained afterwards: what it was asked, what it did step by step, and what it cost. Every configuration change and data export is logged in an append-only audit trail.</p><p class="pillar-i">Live Traces &middot; Sessions &middot; Trace detail &amp; timeline &middot; Audit trail &amp; export</p></div>
 
 <section class="sec" id="traces">
   <span class="eyebrow">01 &middot; Live Traces</span>
@@ -754,7 +754,7 @@ td.mono,.mono{font-family:var(--mono)}
             <text x="2" y="6" font-size="7" fill="var(--n400)" font-family="Menlo,monospace">10</text><text x="2" y="36" font-size="7" fill="var(--n400)" font-family="Menlo,monospace">5</text>
             <polyline points="18,22 54,20 90,24 126,18 162,16 198,21 234,19" fill="none" stroke="var(--acc)" stroke-width="2"/>
             <circle cx="234" cy="19" r="3" fill="var(--acc)"/></svg>
-            <div class="key" style="margin-top:9px"><span>Average across 4 live judges <b style="color:var(--n900)">8.2/10</b></span><span>Checks <b style="color:var(--n900)">18.4k</b></span></div>
+            <div class="key" style="margin-top:9px"><span>Average across 2 live judges <b style="color:var(--n900)">8.2/10</b></span><span>Checks <b style="color:var(--n900)">18.4k</b></span></div>
           </div></div>
           <div class="panel"><div class="phead"><span class="ptitle">Latency</span><span class="badge b-err" style="margin-left:auto">p95 over 4s</span></div><div class="pbody">
             <svg viewBox="0 0 260 72" width="100%" style="height:auto" role="img" aria-label="p95 and p50 latency over seven days; p95 rises to 4.1 seconds on October 21.">
@@ -1133,7 +1133,7 @@ td.mono,.mono{font-family:var(--mono)}
     <div class="main">
       <div class="crumb">Governance <span class="sep">&rsaquo;</span> <b>Datasets</b></div>
       <div class="body">
-        <div class="hrow"><div class="hctl" style="margin:0"><span class="ctl on">All 3</span><span class="ctl">Never run</span><span class="ctl">Multi-version 2</span><span class="ctl">Needs work 1</span></div><div class="hctl"><span class="ctl">Sort: Recently updated</span><span class="ctl">New dataset</span></div></div>
+        <div class="hrow"><div class="hctl" style="margin:0"><span class="ctl on">All 3</span><span class="ctl">Never run 1</span><span class="ctl">Multi-version 2</span><span class="ctl">Needs work 1</span></div><div class="hctl"><span class="ctl">Sort: Recently updated</span><span class="ctl">New dataset</span></div></div>
         <div class="panel"><div class="pbody flush"><div class="scroll"><table style="min-width:820px">
           <thead><tr><th>Dataset</th><th class="r" style="width:76px">Cases</th><th style="width:170px">Composition</th><th style="width:160px">Last used</th><th style="width:92px">Updated</th></tr></thead>
           <tbody>
@@ -1219,7 +1219,7 @@ td.mono,.mono{font-family:var(--mono)}
 
         <div class="panel"><div class="phead"><span class="ptitle">Billing refund golden set</span><span class="psub">Oct 23, 2026 2:08 PM &middot; Dataset Version: v3 &middot; 24 questions &middot; 3 runs</span><span class="hctl" style="margin-left:auto"><span class="ctl">Compare runs</span><span class="ctl">Analyze</span></span></div>
           <div class="pbody">
-            <div class="kv" style="margin-top:0"><span class="val xl">7.5</span><span class="qual">average rating across 72 scored results</span></div>
+            <div class="kv" style="margin-top:0"><span class="val xl">7.5</span><span class="qual">average rating across 69 scored results</span></div>
             <div class="track" style="height:9px"><div class="fill" style="width:75%;background:var(--ok)"></div></div>
             <div class="hctl" style="margin:12px 0 0"><span class="ctl">Policy adherence 7.2</span><span class="ctl">Tone &amp; clarity 8.4</span><span class="ctl">Refund amount matches ledger 6.9</span></div>
           </div>
@@ -1230,12 +1230,12 @@ td.mono,.mono{font-family:var(--mono)}
             </thead>
             <tbody>
               <tr><td class="muted">1</td><td class="w k">Refund outside the 30-day window</td><td class="w">States the window has passed, offers the exception path.</td><td style="border-left:1px solid var(--n200)">94.0%</td><td>71.0%</td><td>62.0% / 80.0%</td><td class="r" style="border-left:1px solid var(--n200)"><span class="badge b-ok">9.2</span></td><td class="r">1.41s</td></tr>
-              <tr><td class="muted">2</td><td class="w k">Partial refund on a split payment <span class="muted" style="font-weight:400">&middot; 3 runs: 4.8&ndash;6.1 (var 0.42)</span></td><td class="w">Splits the refund across both methods proportionally.</td><td style="border-left:1px solid var(--n200)">68.0%</td><td>41.0%</td><td>29.0% / 47.0%</td><td class="r" style="border-left:1px solid var(--n200)"><span class="badge b-err">5.4</span></td><td class="r">2.880s</td></tr>
+              <tr><td class="muted">2</td><td class="w k">Partial refund on a split payment <span class="muted" style="font-weight:400">&middot; 3 runs: 4.8&ndash;6.1 (var 0.42)</span></td><td class="w">Splits the refund across both methods proportionally.</td><td style="border-left:1px solid var(--n200)">68.0%</td><td>41.0%</td><td>29.0% / 47.0%</td><td class="r" style="border-left:1px solid var(--n200)"><span class="badge b-err">5.4</span></td><td class="r">2.88s</td></tr>
               <tr><td class="muted">3</td><td class="w k">Refund to a closed card <span class="muted" style="font-weight:400">&middot; Smoke test 2/3</span></td><td class="w">Returns to original method, no timeline promised.</td><td style="border-left:1px solid var(--n200)">61.0%</td><td>33.0%</td><td>22.0% / 39.0%</td><td class="r" style="border-left:1px solid var(--n200)"><span class="badge b-err">4.8</span></td><td class="r">1.92s</td></tr>
               <tr><td class="muted">4</td><td class="w k">Currency mismatch, EUR to USD</td><td class="w">Quotes the settlement amount after checking FX.</td><td style="border-left:1px solid var(--n200)">86.0%</td><td>58.0%</td><td>48.0% / 69.0%</td><td class="r" style="border-left:1px solid var(--n200)"><span class="badge b-ok">7.9</span></td><td class="r">2.04s</td></tr>
               <tr><td class="muted">5</td><td class="w k">Duplicate charge, same day</td><td class="w muted">&ndash;</td><td style="border-left:1px solid var(--n200)" class="muted">&ndash;</td><td class="muted">&ndash;</td><td class="muted">&ndash;</td><td class="r" style="border-left:1px solid var(--n200)"><span class="badge b-neu">not scored</span></td><td class="r">1.11s</td></tr>
             </tbody></table></div></div>
-          <div class="phead" style="border-bottom:0;border-top:1px solid var(--n200)"><span class="psub">5 of 24 cases shown &middot; each model ran the full dataset 3 times</span></div>
+          <div class="phead" style="border-bottom:0;border-top:1px solid var(--n200)"><span class="psub">5 of 24 cases shown &middot; the full dataset ran 3 times</span></div>
         </div>
       </div>
     </div>
@@ -1339,7 +1339,7 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>Problems show up before release.</b> Both weak results here have the same cause: the cheaper model skips a currency check. That finding feeds straight into a proposed fix.</p>
+  <p class="note"><b>Problems show up before release.</b> Both weak results come from the cheapest model: it called a tool with the wrong arguments on one case and skipped the tool entirely on the other. That finding feeds straight into a proposed fix.</p>
 </section>
 
 <section class="sec" id="simulate">
@@ -1401,7 +1401,7 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>Average quality is not the whole picture.</b> The cheapest model here scores only 1.1 points lower on average, but its results vary more than twice as much. It is less predictable, which is a different risk.</p>
+  <p class="note"><b>Average quality is not the whole picture.</b> The smallest model here, gpt-4o-mini, scores only 1.1 points lower than the baseline on average, but its results vary more than twice as much. It is less predictable, which is a different risk.</p>
 </section>
 
 <div class="part"><span class="pn">Improvement</span></div>
@@ -1486,11 +1486,11 @@ td.mono,.mono{font-family:var(--mono)}
               <tr><td><span class="badge b-neu">Prompt</span></td><td class="w k mono">escalation-router</td><td class="w">9 low-rated results</td><td class="r muted">7.4 &rarr; 7.5</td><td><span class="badge b-neu">NO CLEAR CHANGE</span></td></tr>
             </tbody></table></div></div>
         </div>
-        <div class="panel"><div class="phead"><span class="ptitle">Seen in traffic, not registered</span><span class="psub">3</span></div>
+        <div class="panel"><div class="phead"><span class="ptitle">Seen in traffic, not registered</span><span class="psub">2</span></div>
           <div class="pbody flush"><div class="scroll"><table>
             <tbody>
-              <tr><td class="w k mono">lookup_fx_rate</td><td class="muted">342 calls</td><td><span class="badge b-err">14 failures</span></td><td class="muted w">definition from trace metadata</td><td class="r"><span class="btn">Register</span></td></tr>
-              <tr><td class="w k mono">post_credit_note</td><td class="muted">318 calls</td><td><span class="badge b-pend">12 failures</span></td><td class="muted w">definition inferred</td><td class="r"><span class="btn">Register</span></td></tr>
+              <tr><td class="w k mono">check_dispute_status</td><td class="muted">206 calls</td><td><span class="badge b-err">19 failures</span></td><td class="muted w">definition from trace metadata</td><td class="r"><span class="btn">Register</span></td></tr>
+              <tr><td class="w k mono">post_credit_note</td><td class="muted">287 calls</td><td><span class="badge b-pend">12 failures</span></td><td class="muted w">definition inferred</td><td class="r"><span class="btn">Register</span></td></tr>
             </tbody></table></div></div>
           <div class="phead" style="border-bottom:0;border-top:1px solid var(--n200)"><span class="psub">Register one and its accumulated failure history becomes evidence immediately.</span></div>
         </div>
@@ -1526,8 +1526,8 @@ td.mono,.mono{font-family:var(--mono)}
       <div class="pbody flush"><div class="scroll"><table>
         <thead><tr><th>Version</th><th class="r">Runs</th><th class="r">Rated</th><th class="r">Avg rating</th></tr></thead>
         <tbody>
-          <tr><td class="k">Candidate (v2)</td><td class="r">3</td><td class="r">72</td><td class="r k t-ok">8.4</td></tr>
-          <tr><td class="k">Baseline (v1)</td><td class="r">3</td><td class="r">72</td><td class="r">7.5</td></tr>
+          <tr><td class="k">Candidate (v2)</td><td class="r">3</td><td class="r">69</td><td class="r k t-ok">8.4</td></tr>
+          <tr><td class="k">Baseline (v1)</td><td class="r">3</td><td class="r">69</td><td class="r">7.5</td></tr>
         </tbody></table></div></div>
       <div class="pbody"><p class="cardp" style="margin-top:0">Most recent version vs the one before it, on the same test set. Each case can be opened to read both answers side by side.</p></div>
     </div>
@@ -1570,15 +1570,15 @@ td.mono,.mono{font-family:var(--mono)}
           <div class="pbody">
             <p class="psub">Gates the dataset's most recent completed run against these thresholds. A preview is never recorded - history below only shows gates run by real CI jobs.</p>
             <div class="hctl" style="margin:10px 0"><span class="ctl">Billing refund golden set</span><span class="ctl">Fail under 7</span><span class="ctl on">No regression vs previous run</span><span class="ctl">Tolerance 0.5</span></div>
-            <p class="mono" style="font-size:12px;color:var(--n600)">&check; [fail_under] average 7.5 is at or above 7<br>&check; [no_regression] 7.5 vs previous 7.4, within tolerance 0.5</p>
+            <p class="mono" style="font-size:12px;color:var(--n600)">&check; [fail_under] average 7.5 is at or above 7<br>&check; [no_regression] 7.5 vs previous 6.8, within tolerance 0.5</p>
           </div>
         </div>
         <div class="panel"><div class="phead"><span class="ptitle">Gate history</span><span class="psub">Every recorded gate evaluation, newest first</span></div>
           <div class="pbody flush"><div class="scroll"><table style="min-width:700px">
             <thead><tr><th style="width:92px">Verdict</th><th>Dataset</th><th class="r" style="width:62px">Avg</th><th class="r" style="width:82px">Baseline</th><th>Checks</th><th style="width:130px">Caller</th></tr></thead>
             <tbody>
-              <tr><td><span class="badge b-ok">PASSED</span></td><td class="w">Billing refund golden set</td><td class="r">7.5</td><td class="r">7.4</td><td class="mono muted">&check; fail_under &nbsp;&check; no_regression</td><td class="muted">github-actions</td></tr>
-              <tr><td><span class="badge b-err">FAILED</span></td><td class="w">Billing refund golden set</td><td class="r t-err">6.8</td><td class="r">7.4</td><td class="mono muted">&check; fail_under &nbsp;&cross; no_regression</td><td class="muted">github-actions</td></tr>
+              <tr><td><span class="badge b-ok">PASSED</span></td><td class="w">Billing refund golden set</td><td class="r">7.5</td><td class="r">6.8</td><td class="mono muted">&check; fail_under &nbsp;&check; no_regression</td><td class="muted">github-actions</td></tr>
+              <tr><td><span class="badge b-err">FAILED</span></td><td class="w">Billing refund golden set</td><td class="r t-err">6.8</td><td class="r">7.4</td><td class="mono muted">&cross; fail_under &nbsp;&cross; no_regression</td><td class="muted">github-actions</td></tr>
               <tr><td><span class="badge b-ok">PASSED</span></td><td class="w">Docs answering regression</td><td class="r">8.9</td><td class="r">8.7</td><td class="mono muted">&check; fail_under &nbsp;&check; no_regression</td><td class="muted">github-actions</td></tr>
             </tbody></table></div></div>
         </div>
@@ -1610,7 +1610,7 @@ td.mono,.mono{font-family:var(--mono)}
   </div>
 
   <ul class="plain" style="margin:0;padding-left:20px;font-size:15px;color:var(--n600);display:flex;flex-direction:column;gap:8px">
-    <li><b style="color:var(--n900);font-weight:600">Bring your own keys.</b> Judges and model calls run on OpenAI, Anthropic or Gemini with your own account. Nothing is billed through AgentX, and traces stay in your own database.</li>
+    <li><b style="color:var(--n900);font-weight:600">Bring your own keys.</b> Judges and model calls run on OpenAI, Anthropic or Gemini with your own account, or on a model you host. Nothing is billed through AgentX, and traces stay in your own database.</li>
     <li><b style="color:var(--n900);font-weight:600">A single install.</b> AgentX ships as self-contained programs, so servers need no extra runtimes or toolchains.</li>
     <li><b style="color:var(--n900);font-weight:600">Sign-in for any shared deployment.</b> The no-login mode is meant for one person on their own machine. A shared deployment turns on sign-in with one setting, without disconnecting any agent already sending data.</li>
   </ul>
