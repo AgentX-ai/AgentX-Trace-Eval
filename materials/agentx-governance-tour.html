@@ -155,8 +155,6 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 .zone-bar.is-stuck{border-radius:0 0 12px 12px;box-shadow:var(--bar-shadow)}
 @media (prefers-reduced-motion:reduce){.zone-bar{transition:none}}
 .zone-bar h2{font-size:clamp(22px,3.4vw,30px);font-weight:700;letter-spacing:-.022em;color:inherit;line-height:1.15}
-.zone-top{margin-left:auto;font-size:12px;font-weight:500;color:inherit;opacity:.72;text-decoration:none;white-space:nowrap}
-.zone-top:hover,.zone-top:focus-visible{opacity:1;text-decoration:underline;text-underline-offset:3px}
 .zone-trace .zone-bar{background:var(--zt-band)}
 .zone-obs .zone-bar{background:var(--zo-band)}
 .zone-eval .zone-bar{background:var(--ze-band)}
@@ -416,7 +414,7 @@ td.mono,.mono{font-family:var(--mono)}
 
 <div class="zone zone-trace" id="pillar-trace">
 
-<div class="zone-bar"><h2>Traceability</h2><a class="zone-top" href="#contents">Contents</a></div>
+<div class="zone-bar"><h2>Traceability</h2></div>
 
 <div class="pillar"><p class="pillar-b">Any answer an agent gave can be explained afterwards: what it was asked, what it did step by step, and what it cost. Every configuration change and data export is logged, and the engine cannot alter that log.</p><p class="pillar-i">Live Traces &middot; Sessions &middot; Trace detail &amp; timeline &middot; Audit trail &amp; export</p></div>
 
@@ -544,7 +542,7 @@ td.mono,.mono{font-family:var(--mono)}
 
 <div class="zone zone-obs" id="pillar-obs">
 
-<div class="zone-bar"><h2>Observability</h2><a class="zone-top" href="#contents">Contents</a></div>
+<div class="zone-bar"><h2>Observability</h2></div>
 
 <div class="pillar"><p class="pillar-b">A live view of how your agents behave in production: whether they are healthy, what customers actually ask them, where sensitive data or unsafe answers appear, and which risky topics your tests do not yet cover.</p><p class="pillar-i">Overview &middot; Monitor &middot; Topics &middot; Dataset coverage &middot; The coverage map &middot; The coverage probe &middot; Review queue &middot; Scorers &middot; Rules</p></div>
 
@@ -1105,7 +1103,7 @@ td.mono,.mono{font-family:var(--mono)}
 
 <div class="zone zone-eval" id="pillar-eval">
 
-<div class="zone-bar"><h2>Evaluations</h2><a class="zone-top" href="#contents">Contents</a></div>
+<div class="zone-bar"><h2>Evaluations</h2></div>
 
 <div class="pillar"><p class="pillar-b">Evidence that a change improves the agent before customers see it. Prompt, model and tool changes are tested against known cases and compared with the current version, and a suggested fix is never published without a person's approval.</p><p class="pillar-i">Datasets &middot; The case editor &middot; Evaluation runs &middot; AI Analysis &middot; Playground &middot; Conversation simulation &middot; Model Portability &middot; Prompt &amp; tool registries &middot; Improvement proposals</p></div>
 
@@ -1491,7 +1489,7 @@ td.mono,.mono{font-family:var(--mono)}
 
 <div class="zone zone-start" id="pillar-start">
 
-<div class="zone-bar"><h2>Getting started</h2><a class="zone-top" href="#contents">Contents</a></div>
+<div class="zone-bar"><h2>Getting started</h2></div>
 
 <div class="pillar"><p class="pillar-b">Runs on your own infrastructure with your own AI provider keys, connects to the frameworks your teams already use, and fits into the release process you already have.</p><p class="pillar-i">Install and send traffic &middot; CI Gates &middot; Scale, keys and access &middot; Integrations</p></div>
 
