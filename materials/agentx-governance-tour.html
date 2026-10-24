@@ -182,6 +182,7 @@ code{font-family:var(--mono);font-size:.86em;background:var(--n100);border:1px s
 .cols{display:flex;gap:14px;align-items:stretch;flex-wrap:wrap}
 .lcol{flex:1 1 620px;min-width:0;display:flex;flex-direction:column;gap:14px}
 .rcol{flex:1 1 340px;min-width:300px;display:flex;flex-direction:column;gap:14px}
+.steps{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px;font-size:13.5px;color:var(--n600);line-height:1.55}
 .grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
 .cardp{font-size:13.5px;color:var(--n600);margin-top:6px;line-height:1.55}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
@@ -466,28 +467,21 @@ td.mono,.mono{font-family:var(--mono)}
 <section class="sec" id="audit">
   <span class="eyebrow">04 &middot; Audit trail &amp; export</span>
   <h3>Who changed what, what was exported, and how long traces are kept</h3>
-  <p class="lede">Every configuration change, authentication event and bulk export is written to an append-only audit trail: who did it, what they touched, and whether it worked. No code path in the engine edits or deletes an entry. Traces and everything derived from them export as NDJSON, and each project sets how long its traces are kept.</p>
+  <p class="lede">Every configuration change, sign-in and bulk export is written to an append-only audit trail: who did it, what they touched, and whether it worked. The engine has no way to edit or delete an entry. Traces and everything derived from them can be exported in an open format, and each project sets how long its traces are kept.</p>
 
   <div class="grid2">
-    <div class="panel"><div class="phead"><span class="ptitle">Audit trail</span><span class="psub">append-only &middot; one row per action</span></div><div class="pbody">
-      <div class="panel raised"><div class="pbody" style="font-family:var(--mono);font-size:12px;line-height:1.75;color:var(--n600);padding:11px 13px;white-space:pre;overflow-x:auto">{
-  "createdAt":  "2026-10-23T14:08:31Z",
-  "actor":      "maria@northwind.example",
-  "actorType":  "user",
-  "action":     <b style="color:var(--n900)">"export.read"</b>,
-  "method":     "GET",
-  "path":       "/api/v1/export/traces",
-  "status":     200,
-  "entityType": "export",
-  "entityId":   "traces"
-}</div></div>
-      <p class="psub" style="margin-top:9px">Configuration changes, authentication events and bulk exports, each with who, what and the outcome. A change keeps the names of the fields it touched, never their values.</p>
-    </div></div>
-    <div class="panel"><div class="phead"><span class="ptitle">Bulk export</span><span class="psub">NDJSON, one entity at a time</span></div><div class="pbody">
-      <div class="panel raised"><div class="pbody" style="font-family:var(--mono);font-size:12px;line-height:1.75;color:var(--n600);padding:11px 13px;white-space:pre;overflow-x:auto">GET /api/v1/export/<b style="color:var(--n900)">traces</b>?since=2026-10-01
-<span style="color:var(--n400)"># streams traces.ndjson, one row per line</span></div></div>
-      <div class="hctl" style="margin:11px 0 0"><span class="ctl">traces</span><span class="ctl">session-scores</span><span class="ctl">feedback</span><span class="ctl">outcomes</span><span class="ctl">signals</span><span class="ctl">review-queue</span><span class="ctl">classifications</span><span class="ctl">datasets</span><span class="ctl">dataset-versions</span><span class="ctl">runs</span><span class="ctl">run-results</span><span class="ctl">gate-results</span><span class="ctl">evaluation-settings</span><span class="ctl">audit-events</span></div>
-      <p class="psub" style="margin-top:10px">Traces and everything derived from them, for backup or migration. Each export is itself written to the audit trail.</p>
+    <div class="panel"><div class="phead"><span class="ptitle">What every audit entry records</span></div>
+      <div class="pbody flush"><div class="scroll"><table><tbody>
+        <tr><td class="k" style="width:110px">Who</td><td class="w">The person or API key that acted</td></tr>
+        <tr><td class="k">What</td><td class="w">The action and the item it touched, such as editing a scorer or exporting traces</td></tr>
+        <tr><td class="k">When</td><td class="w">The time it happened</td></tr>
+        <tr><td class="k">Outcome</td><td class="w">Whether it succeeded</td></tr>
+        <tr><td class="k">Changes</td><td class="w">The names of the fields that changed, never their values, so keys and passwords never reach the log</td></tr>
+      </tbody></table></div></div>
+    </div>
+    <div class="panel"><div class="phead"><span class="ptitle">What can be exported</span></div><div class="pbody">
+      <div class="hctl" style="margin:0"><span class="ctl">Traces and conversations</span><span class="ctl">Session scores</span><span class="ctl">User feedback</span><span class="ctl">Reported outcomes</span><span class="ctl">Signals and review decisions</span><span class="ctl">Topic classifications</span><span class="ctl">Datasets and their history</span><span class="ctl">Evaluation runs and results</span><span class="ctl">CI gate results</span><span class="ctl">Scorer settings</span><span class="ctl">The audit trail</span></div>
+      <p class="cardp" style="margin-top:12px">Exports use an open, line-by-line format, for backup or for moving between deployments. Every export is itself recorded in the audit trail.</p>
     </div></div>
   </div>
   <p class="note"><b>Retention is set per project.</b> Settings &rsaquo; Retention sets how many days of traces a project keeps, and older traces are pruned. Export anything you want to keep beyond that first.</p>
@@ -1445,25 +1439,20 @@ td.mono,.mono{font-family:var(--mono)}
 <section class="sec" id="start">
   <span class="eyebrow">23 &middot; Install and send traffic</span>
   <h3>From install to the first trace</h3>
-  <p class="lede">One command installs the engine and CLI as native binaries and opens the dashboard on a local SQLite database. Point the AgentX Python SDK or any OpenTelemetry exporter at it and runs appear in Live Traces. No provider key is needed to begin: trace ingest and the regex and phrase scorers work with nothing configured.</p>
+  <p class="lede">AgentX installs with a single command and runs on your own infrastructure. An agent connects through the telemetry it already produces or through the SDK, and no AI provider account is needed to begin.</p>
 
-  <div class="grid2">
-    <div class="panel"><div class="phead"><span class="ptitle">1 &middot; Install</span></div><div class="pbody">
-      <div class="panel raised"><div class="pbody" style="font-family:var(--mono);font-size:12px;line-height:1.8;color:var(--n600);padding:11px 13px">curl -sSL https://raw.githubusercontent.com/<br>&nbsp;&nbsp;AgentX-ai/AgentX-trace-eval/main/install.sh | bash<br><b style="color:var(--n900)">agentx-server --dev</b></div></div>
-      <p class="psub" style="margin-top:9px">Starts the engine on a local SQLite database, opens the dashboard, and prints the project key your SDK needs.</p>
-    </div></div>
-    <div class="panel"><div class="phead"><span class="ptitle">2 &middot; Send traffic</span></div><div class="pbody">
-      <div class="panel raised"><div class="pbody" style="font-family:var(--mono);font-size:12px;line-height:1.8;color:var(--n600);padding:11px 13px">export OTEL_EXPORTER_OTLP_ENDPOINT=<b style="color:var(--n900)">http://localhost:4700/api/v1/otel</b><br>export OTEL_EXPORTER_OTLP_HEADERS=<b style="color:var(--n900)">"x-api-key=&lt;key&gt;"</b></div></div>
-      <p class="psub" style="margin-top:9px">Or use the AgentX Python SDK. Either way the full loop applies: sessions, scorers, topics and coverage all work on OTel traffic.</p>
-    </div></div>
+  <div class="grid3">
+    <div class="panel"><div class="pbody"><div class="ptitle">1 &middot; Install</div><p class="cardp">One command installs AgentX on a server or a laptop and opens the dashboard. It comes with its own database, so there is nothing else to set up first.</p></div></div>
+    <div class="panel"><div class="pbody"><div class="ptitle">2 &middot; Connect an agent</div><p class="cardp">Point the agent&rsquo;s existing OpenTelemetry output at AgentX, or add the SDK. Its runs appear in Live Traces as they happen.</p></div></div>
+    <div class="panel"><div class="pbody"><div class="ptitle">3 &middot; Switch on the checks</div><p class="cardp">Enable the built-in checks for leaked secrets, personal data and prompt injection. They need no AI provider account and cost nothing to run.</p></div></div>
   </div>
-  <p class="note"><b>Or start from your editor.</b> A Claude Code plugin runs the same loop against this API: <code>/instrument</code> wires tracing into a Python agent, <code>/run-eval</code> evaluates it against a dataset, and <code>/eval-fix</code> triages the result against the source and re-runs it. It also works in Cursor, Codex and any agent that reads the Agent Skills standard.</p>
+  <p class="note"><b>Or let a coding assistant do the setup.</b> The AgentX plugin for Claude Code, also usable in Cursor and Codex, instruments the agent, runs a first evaluation and proposes fixes from the results.</p>
 </section>
 
 <section class="sec" id="ci">
   <span class="eyebrow">24 &middot; CI Gates</span>
-  <h3>Blocking a merge on evaluation results</h3>
-  <p class="lede">Once evaluations run in CI, one call after the run returns an exit code: zero lets the merge through, one blocks it. Recorded gates are listed with their verdict, average, baseline and individual checks, and a preview answers whether the latest run would pass without writing to history.</p>
+  <h3>Stopping a quality drop before it ships</h3>
+  <p class="lede">Evaluations can run automatically whenever the agent changes. If quality falls below an agreed score, or below the previous version, the change is blocked before it ships. Every decision is recorded, and anyone can check whether the latest run would pass without starting a release.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1485,8 +1474,12 @@ td.mono,.mono{font-family:var(--mono)}
               <tr><td><span class="badge b-ok">PASSED</span></td><td class="w">Docs answering regression</td><td class="r">8.9</td><td class="r">8.7</td><td class="mono muted">&check; fail_under &nbsp;&check; no_regression</td><td class="muted">github-actions</td></tr>
             </tbody></table></div></div>
         </div>
-        <div class="panel"><div class="phead"><span class="ptitle">The gate script</span><span class="psub mono">ci/eval_gate.py</span></div>
-          <div class="pbody"><div class="panel raised"><div class="pbody" style="font-family:var(--mono);font-size:12px;line-height:1.75;color:var(--n600);padding:11px 13px">run = client.evaluations.run(dataset_id=<b style="color:var(--n900)">"ds_billing_refunds"</b>)<br>gate = run.<b style="color:var(--n900)">gate</b>(fail_under=<b style="color:var(--n900)">7</b>, no_regression=<b style="color:var(--n900)">True</b>, caller=<b style="color:var(--n900)">"github-actions"</b>)<br>sys.exit(gate.exit_code)&nbsp;&nbsp; <span class="muted"># 0 = merge, 1 = block</span></div></div></div>
+        <div class="panel"><div class="phead"><span class="ptitle">How it fits the release pipeline</span></div>
+          <div class="pbody"><ol class="steps">
+            <li>A change to the agent starts an evaluation run in your existing CI, such as GitHub Actions.</li>
+            <li>AgentX compares the score with the agreed threshold and with the previous version.</li>
+            <li>The pipeline gets a pass or a block, and the decision is added to Gate history.</li>
+          </ol></div>
         </div>
       </div>
     </div>
@@ -1495,23 +1488,23 @@ td.mono,.mono{font-family:var(--mono)}
 
 <section class="sec" id="scale">
   <span class="eyebrow">25 &middot; Scale, keys and access</span>
-  <h3>One binary from a laptop to a team deployment</h3>
-  <p class="lede">The same binary and API serve three storage tiers, from a local SQLite file to Postgres with ClickHouse for telemetry. Provider keys stay yours, and sign-in can be switched on for a shared deployment.</p>
+  <h3>From a laptop to an enterprise deployment</h3>
+  <p class="lede">The same product runs on a laptop, a team server or an enterprise deployment; only the database behind it changes. AI provider keys stay yours, and sign-in can be switched on when the deployment is shared.</p>
 
-  <div class="panel"><div class="phead"><span class="ptitle">Same binary, same API, three storage tiers</span></div>
-    <div class="pbody flush"><div class="scroll"><table style="min-width:620px">
-      <thead><tr><th style="width:130px">Tier</th><th style="width:190px">Storage</th><th>Start it with</th></tr></thead>
+  <div class="panel"><div class="phead"><span class="ptitle">One product, three storage tiers</span></div>
+    <div class="pbody flush"><div class="scroll"><table style="min-width:560px">
+      <thead><tr><th style="width:130px">Tier</th><th style="width:200px">Storage</th><th>Suited to</th></tr></thead>
       <tbody>
-        <tr><td class="k">Self-host</td><td>SQLite</td><td class="w mono">agentx-server --dev</td></tr>
-        <tr><td class="k">Team</td><td>Postgres</td><td class="w mono">AGENTX_DB_URL=postgres://&hellip; agentx-server</td></tr>
-        <tr><td class="k">Enterprise</td><td>Postgres + ClickHouse</td><td class="w mono">docker compose -f docker-compose.enterprise.yml up -d</td></tr>
+        <tr><td class="k">Self-host</td><td>Built-in database</td><td class="w">One team getting started, on a single machine</td></tr>
+        <tr><td class="k">Team</td><td>Postgres</td><td class="w">A shared deployment used by several teams</td></tr>
+        <tr><td class="k">Enterprise</td><td>Postgres + ClickHouse</td><td class="w">High trace volumes, deployed with Docker or Kubernetes</td></tr>
       </tbody></table></div></div>
   </div>
 
   <ul class="plain" style="margin:0;padding-left:20px;font-size:15px;color:var(--n600);display:flex;flex-direction:column;gap:8px">
-    <li><b style="color:var(--n900);font-weight:600">Bring your own keys.</b> Judges and model calls run on OpenAI, Anthropic or Gemini with your own key. Nothing is billed through AgentX, and traces stay in your own database.</li>
-    <li><b style="color:var(--n900);font-weight:600">Single binary.</b> The engine compiles to a native executable and the CLI to a native Go binary, so the target machine needs no Node, Bun or Go.</li>
-    <li><b style="color:var(--n900);font-weight:600">Auth when you need it.</b> One operator on one machine gets no login screen; a shared deployment turns on sign-in with one variable, and SDK ingest is unaffected either way.</li>
+    <li><b style="color:var(--n900);font-weight:600">Bring your own keys.</b> Judges and model calls run on OpenAI, Anthropic or Gemini with your own account. Nothing is billed through AgentX, and traces stay in your own database.</li>
+    <li><b style="color:var(--n900);font-weight:600">A single install.</b> AgentX ships as self-contained programs, so servers need no extra runtimes or toolchains.</li>
+    <li><b style="color:var(--n900);font-weight:600">Sign-in when it is shared.</b> A single-user install has no login screen. A shared deployment turns on sign-in with one setting, without disconnecting any agent already sending data.</li>
   </ul>
 </section>
 
