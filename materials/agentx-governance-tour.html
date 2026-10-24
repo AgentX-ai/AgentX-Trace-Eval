@@ -431,7 +431,7 @@ td.mono,.mono{font-family:var(--mono)}
 
 <div class="zone-bar"><h2>Traceability</h2></div>
 
-<div class="pillar"><p class="pillar-b">Any answer an agent gave can be explained afterwards: what it was asked, what it did step by step, and what it cost. Configuration changes and data exports are kept in an append-only audit trail.</p><p class="pillar-i">Live Traces &middot; Sessions &middot; Trace detail &amp; timeline &middot; Audit trail &amp; export</p></div>
+<div class="pillar"><p class="pillar-b">For any answer an agent gave, you can see what it was asked, what it did step by step, and what it cost. Configuration changes and data exports are kept in an append-only audit trail.</p><p class="pillar-i">Live Traces &middot; Sessions &middot; Trace detail &amp; timeline &middot; Audit trail &amp; export</p></div>
 
 <section class="sec" id="traces">
   <span class="eyebrow">01 &middot; Live Traces</span>
@@ -550,7 +550,7 @@ td.mono,.mono{font-family:var(--mono)}
       <p class="cardp" style="margin-top:12px">Exports use an open, line-by-line format, for backup or for moving between deployments. Every export is itself recorded in the audit trail.</p>
     </div></div>
   </div>
-  <p class="note"><b>Retention is set per project.</b> Settings &rsaquo; Retention sets how many days of traces a project keeps, and older traces are pruned. Export anything you want to keep beyond that first.</p>
+  <p class="note"><b>Retention is set per project.</b> Under Settings &rsaquo; Retention, each project keeps traces for a set number of days and older ones are deleted. Export anything you need to keep longer before then.</p>
 </section>
 
 </div>
@@ -731,7 +731,7 @@ td.mono,.mono{font-family:var(--mono)}
 <section class="sec" id="monitor">
   <span class="eyebrow">06 &middot; Monitor</span>
   <h3>Nine charts on one time window</h3>
-  <p class="lede">Nine charts cover issues raised, quality scores, response time, tool failures, activity, frameworks in use, spend, token usage and topics. They share one time window and one set of filters, so a rise in cost, latency or failures can be traced to the same hour.</p>
+  <p class="lede">The charts cover issues raised, quality scores, response time, tool failures, activity, frameworks in use, spend, token usage and topics. They share one time window and one set of filters, so a rise in cost, latency or failures can be traced to the same hour.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -957,7 +957,7 @@ td.mono,.mono{font-family:var(--mono)}
 <section class="sec" id="probe">
   <span class="eyebrow">10 &middot; The coverage probe</span>
   <h3>Is this question already tested?</h3>
-  <p class="lede">Before anyone writes a new test, they can check whether the suite already covers the question, see the closest existing test and what it checks, and see whether customers ask the question at all.</p>
+  <p class="lede">Before anyone writes a new test, they can check whether the suite already covers the question, see the closest existing test and what it checks, and see whether customers ask it.</p>
 
   <div class="cols">
     <div class="lcol">
@@ -1001,7 +1001,7 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>Unasked questions are low priority.</b> A question that has no test and that customers do not ask is shown as low priority, not as a gap.</p>
+  <p class="note"><b>Questions nobody asks are not counted as gaps.</b> If no customer asks it, an untested question is marked low priority.</p>
 </section>
 
 <div class="part"><span class="pn">Triage</span></div>
@@ -1058,7 +1058,7 @@ td.mono,.mono{font-family:var(--mono)}
 <section class="sec" id="scorers">
   <span class="eyebrow">12 &middot; Scorers</span>
   <h3>Pattern checks, AI judges and code checks in one table</h3>
-  <p class="lede">Checks range from simple pattern matches for leaked secrets or personal data, to AI judges that grade answers against your own criteria, to custom code or a service you run yourself. Each has its own severity and runs on as much of the traffic as you choose. The same checks are reused when testing changes before release.</p>
+  <p class="lede">Scorers include pattern matches for leaked secrets or personal data, AI judges that grade answers against your own criteria, and custom code or a service you run yourself. Each has its own severity and runs on as much of the traffic as you choose. The same checks are reused when testing changes before release.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1095,7 +1095,7 @@ td.mono,.mono{font-family:var(--mono)}
 <section class="sec" id="rules">
   <span class="eyebrow">13 &middot; Rules</span>
   <h3>Traces routed to review, test sets or webhooks</h3>
-  <p class="lede">Rules pick out traffic automatically and send it on: a sample of everyday conversations to reviewers, failures into a test set, or alerts to another system. This keeps a sample of ordinary traffic in front of reviewers, alongside the flagged runs.</p>
+  <p class="lede">Rules pick out traffic automatically and send it on: a sample of everyday conversations to reviewers, failures into a test set, or alerts to another system. Reviewer labels on ordinary conversations are also used to calibrate the checks.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1151,7 +1151,7 @@ td.mono,.mono{font-family:var(--mono)}
 <section class="sec" id="cases">
   <span class="eyebrow">15 &middot; The case editor</span>
   <h3>Tests for tool use, retrieved information and rephrasing</h3>
-  <p class="lede">A test can require more than the right answer: that the agent used the right tools, looked up the right information, followed a specific guideline, and still answers correctly when the question is rephrased.</p>
+  <p class="lede">Besides the expected answer, a test can check that the agent called the expected tools, looked up the expected information, followed a guideline written for that case, and answers correctly when the question is rephrased.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1195,13 +1195,13 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>Two of these checks use no AI judge.</b> Tool calls and retrieved information are compared directly with what the case expects, so the check is exact and makes no AI call.</p>
+  <p class="note"><b>Two of these checks use no AI judge.</b> Tool calls and retrieved information are compared directly with what the case expects, so the result is exact.</p>
 </section>
 
 <section class="sec" id="runs">
   <span class="eyebrow">16 &middot; Evaluation runs</span>
   <h3>Repeatable test results, case by case</h3>
-  <p class="lede">A test run puts the agent through each case, often several times, and grades each answer. Each result is shown next to the expected answer, so a failure can be read against what was expected.</p>
+  <p class="lede">A test run puts the agent through each case, often several times, and grades each answer. Each result is shown next to the expected answer, with similarity metrics, judge scores and latency.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1292,7 +1292,7 @@ td.mono,.mono{font-family:var(--mono)}
 <section class="sec" id="playground">
   <span class="eyebrow">18 &middot; Playground</span>
   <h3>One prompt change, tried on several models at once</h3>
-  <p class="lede">A change to the agent&rsquo;s instructions can be tried on real test cases across several models at once, side by side, with answer quality, speed and cost for each. Tools can be simulated, so the agent can be tested before the integration exists.</p>
+  <p class="lede">A change to the agent&rsquo;s instructions can be run on real test cases across several models, with the score, speed and cost of each answer shown side by side. Tools can be simulated, so the agent can be tested before the integration exists.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1366,13 +1366,13 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>The goal outcome is reported separately from quality.</b> Here the simulated customer gave up without getting a refund outside policy, which is the result the business wants. The quality score is reported on its own.</p>
+  <p class="note"><b>The goal outcome is reported separately from quality.</b> Here the simulated customer gave up without getting a refund outside policy, which is the result the business wants, while the answers scored 6.4 for quality.</p>
 </section>
 
 <section class="sec" id="portability">
   <span class="eyebrow">20 &middot; Model Portability</span>
   <h3>Models compared on quality, consistency, speed and cost</h3>
-  <p class="lede">The same tests run on several models side by side and are compared with the model in use today on quality, consistency, speed and cost, using your own prices, including for models you host yourself.</p>
+  <p class="lede">The same tests run on several models, and each is compared with the model in use today. Costs use your own prices, including for models you host yourself.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1508,7 +1508,7 @@ td.mono,.mono{font-family:var(--mono)}
   <div class="grid4">
     <div class="panel"><div class="pbody"><div class="step-n">1</div><div class="ptitle">Connect</div><p class="cardp">Connects the agent to AgentX from its own repository and checks that its runs arrive.</p></div></div>
     <div class="panel"><div class="pbody"><div class="step-n">2</div><div class="ptitle">Evaluate</div><p class="cardp">Builds a test set from templates, a spreadsheet or real traffic, and runs the agent through it.</p></div></div>
-    <div class="panel"><div class="pbody"><div class="step-n">3</div><div class="ptitle">Fix</div><p class="cardp">Checks each recommendation against the code, keeps the ones that hold, and applies them on a separate branch.</p></div></div>
+    <div class="panel"><div class="pbody"><div class="step-n">3</div><div class="ptitle">Fix</div><p class="cardp">Checks each recommendation against the code, drops the ones that do not apply, and applies the rest on a separate branch.</p></div></div>
     <div class="panel"><div class="pbody"><div class="step-n">4</div><div class="ptitle">Re-test</div><p class="cardp">After approval, runs the same tests again so the two versions are compared on the same cases.</p></div></div>
   </div>
 
@@ -1542,7 +1542,7 @@ td.mono,.mono{font-family:var(--mono)}
 
 <div class="zone-bar"><h2>Getting started</h2></div>
 
-<div class="pillar"><p class="pillar-b">Runs on your own infrastructure with your own AI provider keys, connects to the common agent frameworks, and runs inside your existing CI pipeline.</p><p class="pillar-i">Install and send traffic &middot; CI Gates &middot; Scale, keys and access &middot; Integrations</p></div>
+<div class="pillar"><p class="pillar-b">Runs on your own infrastructure with your own AI provider keys, connects to the common agent frameworks, and works with your existing CI pipeline.</p><p class="pillar-i">Install and send traffic &middot; CI Gates &middot; Scale, keys and access &middot; Integrations</p></div>
 
 <section class="sec" id="start">
   <span class="eyebrow">24 &middot; Install and send traffic</span>
@@ -1624,7 +1624,7 @@ td.mono,.mono{font-family:var(--mono)}
   <div class="grid3">
     <div class="panel"><div class="pbody">
       <div class="ptitle">Python and TypeScript SDKs</div>
-      <p class="cardp">Official SDKs, with ready-made integrations for popular agent frameworks, from OpenAI and Anthropic to LangChain, CrewAI and Google ADK.</p>
+      <p class="cardp">Official SDKs, with ready-made integrations for frameworks including OpenAI, Anthropic, LangChain, CrewAI and Google ADK.</p>
     </div></div>
     <div class="panel"><div class="pbody">
       <div class="ptitle">OpenTelemetry</div>
