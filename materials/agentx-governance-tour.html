@@ -71,6 +71,15 @@ footer a{color:inherit;text-underline-offset:2px}
 .safe-ic{width:22px;height:22px;color:var(--ok);margin-top:1px}
 .safe-i b{display:block;font-size:14px;font-weight:600;color:var(--n900);line-height:1.35}
 .safe-i p{font-size:13px;color:var(--n600);line-height:1.55;margin-top:4px}
+.cta{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:24px 40px;align-items:center;background:var(--n900);color:var(--n25);border-radius:18px;padding:34px 36px}
+@media(max-width:760px){.cta{grid-template-columns:1fr;padding:26px 22px}}
+.cta h2{font-size:clamp(24px,3.6vw,32px);font-weight:700;letter-spacing:-.022em;color:inherit}
+.cta-text p{font-size:16px;opacity:.78;margin-top:8px;max-width:none}
+.cta-act{display:flex;flex-direction:column;gap:14px;min-width:0}
+.cta-mail{font-family:var(--mono);font-size:clamp(17px,2.2vw,21px);user-select:all;overflow-wrap:anywhere}
+.cta-btns{display:flex;gap:10px;flex-wrap:wrap}
+.cta .btn{font:inherit;font-size:13px;font-weight:600;padding:9px 16px;border-radius:8px;cursor:pointer;text-decoration:none;display:inline-block}
+.cta .btn:focus-visible{outline:2px solid var(--n25);outline-offset:2px}
 .toc{border:1px solid var(--n200);border-radius:12px;background:var(--n25);padding:20px 22px;margin-top:26px}
 .toc h2{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--n500);margin-bottom:14px}
 .toc ol{margin:0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:7px 26px}
@@ -329,7 +338,8 @@ td.mono,.mono{font-family:var(--mono)}
  .stack{gap:24px;padding-block:20px 0}
  .app,.panel,.cols,.lcol,.rcol,.grid2{break-inside:auto}
  .kpis.k6{grid-template-columns:repeat(3,minmax(0,1fr))}
- .safe{break-inside:avoid}
+ .safe,.cta{break-inside:avoid}
+ .cta-btns{display:none}
  .kpi,.toc,.phead,.ptabs,.kpis,.bar-row,.empty{break-inside:avoid}
  tr{break-inside:avoid}
  .sec .eyebrow,.sec h3{break-after:avoid}
@@ -1659,6 +1669,17 @@ td.mono,.mono{font-family:var(--mono)}
 
 </div>
 
+<section class="cta" id="contact" aria-labelledby="cta-h">
+  <div class="cta-text">
+    <h2 id="cta-h">Talk to us</h2>
+    <p>Questions about deployment, a security review, or a pilot on your own agents? Write to us and the team will get back to you.</p>
+  </div>
+  <div class="cta-act">
+    <span class="cta-mail" id="cta-mail">contact@agentx.so</span>
+    <div class="cta-btns"><a class="btn pri" href="mailto:contact@agentx.so?subject=AgentX%20for%20our%20organisation">Email us</a><button class="btn" type="button" id="cta-copy">Copy address</button></div>
+  </div>
+</section>
+
 </div>
 
 <footer style="border-top:2px solid var(--n900);margin-top:48px;padding-top:16px;display:flex;flex-direction:column;gap:7px">
@@ -1676,6 +1697,17 @@ document.addEventListener("click", function (e) {
   var reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
   el.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
 });
+// Copy button for the contact address; selects the text instead where the clipboard is refused.
+(function () {
+  var btn = document.getElementById("cta-copy"), mail = document.getElementById("cta-mail");
+  if (!btn || !mail) return;
+  function select() { var r = document.createRange(); r.selectNodeContents(mail); var s = getSelection(); s.removeAllRanges(); s.addRange(r); }
+  btn.addEventListener("click", function () {
+    var done = function () { btn.textContent = "Copied"; setTimeout(function () { btn.textContent = "Copy address"; }, 1600); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(mail.textContent.trim()).then(done, select);
+    else select();
+  });
+})();
 // Marks a part's title bar while it is pinned, so it can square off and cast a shadow.
 (function () {
   var bars = [].slice.call(document.querySelectorAll(".zone-bar"));
