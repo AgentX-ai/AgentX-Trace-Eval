@@ -168,9 +168,13 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 .zone-obs .zone-bar{background:var(--zo-band)}
 .zone-eval .zone-bar{background:var(--ze-band)}
 .zone-start .zone-bar{background:var(--zs-band)}
+.zone-next{margin-left:auto;flex:none;display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border-radius:999px;font-size:13.5px;font-weight:600;line-height:1;color:inherit;text-decoration:none;white-space:nowrap;border:1px solid color-mix(in srgb,currentColor 32%,transparent);background:color-mix(in srgb,currentColor 7%,transparent);transition:background .15s ease,border-color .15s ease}
+.zone-next:hover{background:color-mix(in srgb,currentColor 15%,transparent);border-color:color-mix(in srgb,currentColor 50%,transparent)}
+.zone-next:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+.zone-next svg{flex:none}
 .zone > .pillar{margin-top:-42px;border-radius:0 0 14px 14px;padding:0 28px 22px}
 .sec{scroll-margin-top:84px}
-@media(max-width:620px){.zone-bar{padding:12px 16px}.zone > .pillar{padding:0 16px 18px}}
+@media(max-width:620px){.zone-bar{padding:12px 16px}.zone-next{padding:6px 10px;font-size:12.5px}.zn-k{display:none}.zone > .pillar{padding:0 16px 18px}}
 
 /* ---------- product chrome ---------- */
 .app{border:1px solid var(--n200);border-radius:12px;overflow:hidden;background:var(--n50);display:grid;grid-template-columns:220px 1fr}
@@ -346,6 +350,7 @@ td.mono,.mono{font-family:var(--mono)}
  .lede,.note{orphans:2;widows:2}
  .zone{break-before:page}
  .zone-bar{position:static}
+ .zone-next{display:none}
  body::before{display:none}
  .pillar{break-after:avoid;break-inside:avoid}
  .part{break-before:auto;break-after:avoid}
@@ -429,7 +434,7 @@ td.mono,.mono{font-family:var(--mono)}
 
 <div class="zone zone-trace" id="pillar-trace">
 
-<div class="zone-bar"><h2>Traceability</h2></div>
+<div class="zone-bar"><h2>Traceability</h2><a class="zone-next" href="#pillar-obs" aria-label="Next: Observability"><span class="zn-k">Next:</span> Observability<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v10M3.5 8.5 8 13l4.5-4.5"/></svg></a></div>
 
 <div class="pillar"><p class="pillar-b">For any answer an agent gave, you can see what it was asked, what it did step by step, and what it cost. Configuration changes and data exports are kept in an append-only audit trail.</p><p class="pillar-i">Live Traces &middot; Sessions &middot; Trace detail &amp; timeline &middot; Audit trail &amp; export</p></div>
 
@@ -557,7 +562,7 @@ td.mono,.mono{font-family:var(--mono)}
 
 <div class="zone zone-obs" id="pillar-obs">
 
-<div class="zone-bar"><h2>Observability</h2></div>
+<div class="zone-bar"><h2>Observability</h2><a class="zone-next" href="#pillar-eval" aria-label="Next: Evaluations"><span class="zn-k">Next:</span> Evaluations<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v10M3.5 8.5 8 13l4.5-4.5"/></svg></a></div>
 
 <div class="pillar"><p class="pillar-b">A live view of how your agents behave in production: whether they are healthy, what customers ask them, where sensitive data or unsafe answers appear, and which risky topics your tests do not yet cover.</p><p class="pillar-i">Overview &middot; Monitor &middot; Topics &middot; Dataset coverage &middot; The coverage map &middot; The coverage probe &middot; Review queue &middot; Scorers &middot; Rules</p></div>
 
@@ -1118,7 +1123,7 @@ td.mono,.mono{font-family:var(--mono)}
 
 <div class="zone zone-eval" id="pillar-eval">
 
-<div class="zone-bar"><h2>Evaluations</h2></div>
+<div class="zone-bar"><h2>Evaluations</h2><a class="zone-next" href="#pillar-start" aria-label="Next: Getting started"><span class="zn-k">Next:</span> Getting started<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v10M3.5 8.5 8 13l4.5-4.5"/></svg></a></div>
 
 <div class="pillar"><p class="pillar-b">Evidence that a change improves the agent before customers see it. Prompt, model and tool changes are tested against known cases and compared with the current version, and a suggested fix is never published without a person's approval.</p><p class="pillar-i">Datasets &middot; The case editor &middot; Evaluation runs &middot; AI Analysis &middot; Playground &middot; Conversation simulation &middot; Model Portability &middot; Prompt &amp; tool registries &middot; Improvement proposals &middot; AgentX eval skill</p></div>
 
@@ -1540,7 +1545,7 @@ td.mono,.mono{font-family:var(--mono)}
 
 <div class="zone zone-start" id="pillar-start">
 
-<div class="zone-bar"><h2>Getting started</h2></div>
+<div class="zone-bar"><h2>Getting started</h2><a class="zone-next" href="#contact" aria-label="Next: Contact"><span class="zn-k">Next:</span> Contact<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v10M3.5 8.5 8 13l4.5-4.5"/></svg></a></div>
 
 <div class="pillar"><p class="pillar-b">Runs on your own infrastructure with your own AI provider keys, connects to the common agent frameworks, and works with your existing CI pipeline.</p><p class="pillar-i">Install and send traffic &middot; CI Gates &middot; Scale, keys and access &middot; Integrations</p></div>
 
