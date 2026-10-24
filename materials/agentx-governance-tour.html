@@ -62,6 +62,15 @@ footer a{color:inherit;text-underline-offset:2px}
 .meta b{color:var(--n700);font-weight:500}
 .callout{background:var(--info-bg);border-left:3px solid var(--info);padding:13px 16px;font-size:13.5px;color:var(--n700)}
 .callout b{color:var(--n900)}
+.safe{margin-top:26px;border:1px solid var(--n200);border-radius:14px;background:var(--n25);padding:22px 24px 24px}
+.safe h2{font-size:19px;font-weight:600;color:var(--n900);margin-bottom:18px}
+.safe-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:20px 24px}
+@media(max-width:1000px){.safe-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.safe-grid{grid-template-columns:1fr}}
+.safe-i{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;align-items:start}
+.safe-ic{width:22px;height:22px;color:var(--ok);margin-top:1px}
+.safe-i b{display:block;font-size:14px;font-weight:600;color:var(--n900);line-height:1.35}
+.safe-i p{font-size:13px;color:var(--n600);line-height:1.55;margin-top:4px}
 .toc{border:1px solid var(--n200);border-radius:12px;background:var(--n25);padding:20px 22px;margin-top:26px}
 .toc h2{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--n500);margin-bottom:14px}
 .toc ol{margin:0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:7px 26px}
@@ -293,6 +302,7 @@ td.mono,.mono{font-family:var(--mono)}
  .stack{gap:24px;padding-block:20px 0}
  .app,.panel,.cols,.lcol,.rcol,.grid2{break-inside:auto}
  .kpis.k6{grid-template-columns:repeat(3,minmax(0,1fr))}
+ .safe{break-inside:avoid}
  .kpi,.toc,.phead,.ptabs,.kpis,.bar-row,.empty{break-inside:avoid}
  tr{break-inside:avoid}
  .sec .eyebrow,.sec h3{break-after:avoid}
@@ -318,8 +328,22 @@ td.mono,.mono{font-family:var(--mono)}
 <header class="cover">
   <div class="kicker">Trace &middot; Evaluate &middot; Monitor</div>
   <h1>AgentX <span class="h1-site">(<a href="https://agentx.so">agentx.so</a>)</span></h1>
-  <p class="sub">A walkthrough of the self-hosted AgentX governance layer, surface by surface, grouped into the three things it does: traceability, observability and evaluations. It closes with how to get started. Every screen is the product&rsquo;s own UI.</p>
+  <p class="sub">How AgentX gives you oversight of the AI agents your company runs: explaining what they did, watching how they behave with real customers, and proving a change is safe before release. It closes with what it takes to get started. Every screen shown is the product itself.</p>
 </header>
+
+<section class="safe" aria-labelledby="safe-h">
+  <h2 id="safe-h">Why it is safe to run in a large enterprise</h2>
+  <div class="safe-grid">
+    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>Runs entirely inside your infrastructure.</b><p>Self-hosted on your own servers or cloud account, with Docker or Kubernetes. Traces, test sets and results stay in your own database, with no AgentX account or cloud service in the path.</p></div></div>
+    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>Your AI contracts, or your own model.</b><p>AI quality checks run on OpenAI, Anthropic or Gemini under your own keys and agreements, or on a model you host yourself, in which case no data has to leave your network.</p></div></div>
+    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>Sign-in through your identity provider.</b><p>Single sign-on with Okta, Microsoft Entra, Google Workspace or any OIDC provider, and a separate access key for every project.</p></div></div>
+    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>An audit trail AgentX cannot rewrite.</b><p>Every configuration change, sign-in and data export is logged with who and when. Entries cannot be edited or deleted through AgentX, and secrets are never written to the log.</p></div></div>
+    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>Leaks caught in agent answers.</b><p>Built-in checks flag credentials, personal data and prompt-injection attempts in what agents say. They make no AI calls, so they can run on all traffic.</p></div></div>
+    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>People approve every fix.</b><p>Automated checks flag issues and AI drafts fixes, but nothing goes live until a person approves it, and each decision is recorded.</p></div></div>
+    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>You decide how long data is kept.</b><p>Retention is set per project. Older traces are removed, and everything can be exported before they are.</p></div></div>
+    <div class="safe-i"><svg class="safe-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.6 6v6c0 4.2 3 7.6 7.4 9 4.4-1.4 7.4-4.8 7.4-9V6L12 3Z"/><path d="m8.9 12.1 2.3 2.3 4.2-4.6"/></svg><div><b>Open, reviewable and portable.</b><p>The engine&rsquo;s source code is public for your security team to review, agents connect over the OpenTelemetry standard, and all data exports in an open format.</p></div></div>
+  </div>
+</section>
 
 <nav class="toc">
   <h2>Contents</h2>
@@ -360,7 +384,7 @@ td.mono,.mono{font-family:var(--mono)}
 <div class="stack">
 
 <section class="sec">
-  <p class="lede">The product splits into three pillars. <b>Traceability</b> records what every run did, down to each step, and keeps an audit trail of every change. <b>Observability</b> watches production traffic in aggregate (its health, what it is about, how much of it your tests cover) and surfaces what needs a person. <b>Evaluations</b> test the agent against datasets, compare prompts and models, and validate a change before it ships. A last part, <b>Getting started</b>, covers installing it, connecting your agents, gating merges in CI, and the frameworks it works with.</p>
+  <p class="lede">The document is in three parts, each answering a question leadership is asked about AI agents. <b>Traceability</b>: can we explain what an agent did, and who changed it? <b>Observability</b>: is it behaving with real customers, and is anything sensitive getting out? <b>Evaluations</b>: how do we know a change is safe before customers see it? A last part, <b>Getting started</b>, covers what it takes to run AgentX.</p>
 </section>
 
 <div class="zone zone-trace">
@@ -369,8 +393,8 @@ td.mono,.mono{font-family:var(--mono)}
 
 <section class="sec" id="traces">
   <span class="eyebrow">01 &middot; Live Traces</span>
-  <h3>Every run, with its tools, tokens and score</h3>
-  <p class="lede">Trace ingests runs from the AgentX Python SDK or any OpenTelemetry exporter. One span becomes one row, carrying latency, token counts, estimated cost, tool outcomes and, where a scorer sampled it, a quality score. Status filters narrow the list to errors, tool failures or slow runs.</p>
+  <h3>Every agent run, recorded as it happens</h3>
+  <p class="lede">Every request an agent handles is recorded: what it was asked, how it answered, which tools it used, how long it took and what it cost. Filters bring up the runs that failed, hit a broken tool, or were slow.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -395,13 +419,13 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>An unscored run is labelled, not assumed.</b> Where no scorer sampled a trace the Score column reads <code>no score</code>, rather than a blank that could be read as a pass.</p>
+  <p class="note"><b>An unchecked run is never passed off as fine.</b> When no quality check has looked at a run, the table says so plainly, so an unchecked answer is never mistaken for an approved one.</p>
 </section>
 
 <section class="sec" id="sessions">
   <span class="eyebrow">02 &middot; Sessions</span>
-  <h3>Conversations scored as a whole</h3>
-  <p class="lede">Traces sharing a session id group into one row with a turn count, duration and a conversation-level score. Scope filters separate multi-turn conversations from single interactions, and sessions carrying failed spans.</p>
+  <h3>Whole conversations, not just single replies</h3>
+  <p class="lede">Messages from the same conversation are grouped and scored together. Some failures only show across several turns, such as an agent that answers each question well but never resolves the customer&rsquo;s issue.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -430,8 +454,8 @@ td.mono,.mono{font-family:var(--mono)}
 
 <section class="sec" id="detail">
   <span class="eyebrow">03 &middot; Trace detail &amp; timeline</span>
-  <h3>Every span of a run, on a waterfall</h3>
-  <p class="lede">Each run opens to its spans, nested by parent and laid out on a waterfall, with the arguments and result of every tool call. Kind filters narrow the tree, and the same data is available as a graph or as raw JSON.</p>
+  <h3>Exactly what an agent did, step by step</h3>
+  <p class="lede">Any run opens to a timeline of what the agent did: which tools it called, what information it looked up, what came back, and where it went wrong. When a customer complains or an incident is raised, the answer is one click away instead of a search through logs.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -466,8 +490,8 @@ td.mono,.mono{font-family:var(--mono)}
 
 <section class="sec" id="audit">
   <span class="eyebrow">04 &middot; Audit trail &amp; export</span>
-  <h3>Who changed what, what was exported, and how long traces are kept</h3>
-  <p class="lede">Every configuration change, sign-in and bulk export is written to an append-only audit trail: who did it, what they touched, and whether it worked. The engine has no way to edit or delete an entry. Traces and everything derived from them can be exported in an open format, and each project sets how long its traces are kept.</p>
+  <h3>Who changed what, what was exported, and how long data is kept</h3>
+  <p class="lede">Every configuration change, sign-in and bulk export is written to an audit trail: who did it, what they touched, and whether it worked. The engine has no way to edit or delete an entry. All data can be exported in an open format, and each project decides how long it is kept.</p>
 
   <div class="grid2">
     <div class="panel"><div class="phead"><span class="ptitle">What every audit entry records</span></div>
@@ -497,8 +521,8 @@ td.mono,.mono{font-family:var(--mono)}
 
 <section class="sec" id="overview">
   <span class="eyebrow">05 &middot; Overview</span>
-  <h3>Live KPIs, trend and triage in one screen</h3>
-  <p class="lede">Six production KPIs over the selected window, the healthy-rate trend against the previous period, cost by model, a model comparison, judge calibration, and the open signals needing attention. Each card loads on its own query.</p>
+  <h3>The health of every agent on one page</h3>
+  <p class="lede">Six headline numbers for the selected period: total runs, how many went well, failures, negative user feedback, tool failures and response time. Below them: the trend against the previous period, spend by model, how the models compare, how often the automated checks matched what really happened, and the issues waiting for a person.</p>
 
   <div class="app">
     <div class="side">
@@ -657,13 +681,13 @@ td.mono,.mono{font-family:var(--mono)}
     </div>
   </div>
 
-  <p class="note"><b>Run outcomes are split three ways rather than summed.</b> <b>Healthy</b>, <b>Operational failures</b> (the agent or a tool broke) and <b>Scorer detections</b> (the run completed and a scorer objected) are separate conditions with separate owners.</p>
+  <p class="note"><b>Failures are split by cause.</b> A broken agent or tool, an engineering problem, is counted separately from an answer that ran fine but failed a quality or safety check, a content problem, because different teams own them.</p>
 </section>
 
 <section class="sec" id="monitor">
   <span class="eyebrow">06 &middot; Monitor</span>
-  <h3>Nine metrics on one window</h3>
-  <p class="lede">A metrics grid covering signals, scores, latency, tool executions, spans, platforms, cost, tokens and topics. All nine share the window and the filter set, so a cost spike, a latency climb and a run of tool failures line up on the same bucket.</p>
+  <h3>Spot what changed, and when</h3>
+  <p class="lede">Nine charts cover issues raised, quality scores, response time, tool failures, activity, frameworks in use, spend, token usage and topics. They share one time window and one set of filters, so a cost spike, a slowdown and a run of failures can be seen lining up at the same hour.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -728,15 +752,15 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>An empty card states its cause.</b> With no live judge running, the Scores card reports that quality is unmeasured on this traffic and links to the scorer that would change it, rather than drawing an empty axis.</p>
+  <p class="note"><b>Missing oversight is visible.</b> If no quality check is running, the chart says quality is unmeasured, instead of showing an empty graph that could be read as no problems.</p>
 </section>
 
 <div class="part"><span class="pn">Traffic and coverage</span></div>
 
 <section class="sec" id="topics">
   <span class="eyebrow">07 &middot; Topics</span>
-  <h3>What the traffic is actually about</h3>
-  <p class="lede">Classification labels each sampled trace by intent, sentiment and issue type, with no scorer required first. The Trend view charts sentiment over time alongside top intents and issue types; the Map view places each classified trace in a projection where clusters are directly visible.</p>
+  <h3>What customers actually ask your agents</h3>
+  <p class="lede">A sample of conversations is labelled automatically by subject, sentiment and type of issue. The trend shows how customer sentiment moves over time; the map groups similar requests, so the subjects your agents spend most of their time on stand out.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -784,14 +808,14 @@ td.mono,.mono{font-family:var(--mono)}
     </div>
   </div>
 
-  <p class="note"><b>This is the production-only map; the coverage map in section 09 is a different chart.</b> Here every dot is a classified trace coloured by its intent, so it shows what the traffic is about. The coverage map adds dataset cases to the same kind of picture and colours by source instead, so it shows which of that traffic has a test behind it. The Overview embeds this map as its Topic map card.</p>
+  <p class="note"><b>This map shows customer traffic only.</b> The coverage map in section 09 adds your test cases to the same kind of picture, to show which of these subjects is actually tested. The Overview shows this map too.</p>
 </section>
 
 <section class="sec" id="coverage">
   <span class="eyebrow">08 &middot; Dataset coverage</span>
-  <h3>How much of your traffic has a test behind it</h3>
-  <p class="lede">Coverage joins the topics classification derives from production to the cases in your datasets, and reports four numbers: traffic-weighted coverage, topics at target, risk-weighted coverage, and the cases matching no topic at all.</p>
-  <p class="lede">Coverage is measured as depth against the real traces in a topic rather than as a case count, so near-duplicate cases do not raise it.</p>
+  <h3>How much of real customer traffic your tests cover</h3>
+  <p class="lede">Test suites are written from what teams expect customers to ask. This screen measures them against what customers actually ask, subject by subject, and reports four numbers: how much traffic has a test, how many subjects are tested well enough, how much of the risky traffic has a test, and which tests no longer match anything customers ask.</p>
+  <p class="lede">It measures how well real questions are matched, not how many tests exist, so a suite cannot look better simply by adding near-duplicates.</p>
   
 
   <div class="app nonav">
@@ -847,14 +871,14 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>The first and third numbers answer different questions.</b> 71% of traffic has a test behind it; 46% of the failure-prone traffic does. Two of the highest-risk topics here carry no case at all.</p>
+  <p class="note"><b>Testing what is common is not the same as testing what is risky.</b> 71% of traffic has a test behind it, but only 46% of the traffic most likely to go wrong does. Two of the highest-risk subjects here have no test at all.</p>
 </section>
 
 <section class="sec" id="map">
   <span class="eyebrow">09 &middot; The coverage map</span>
-  <h3>Traffic and test cases in one picture</h3>
-  <p class="lede">Production traffic and dataset cases placed by a single projection over the questions themselves, so the same question asked in production and written as a case lands in the same position. Points are coloured by source: blue for traffic, orange for cases.</p>
-  <p class="lede">A region of blue carrying no orange is a cluster of real questions with no case near it.</p>
+  <h3>Customer traffic and test cases in one picture</h3>
+  <p class="lede">Every customer question (blue) and every test case (orange) is placed on one map, with similar questions close together.</p>
+  <p class="lede">Wherever there is blue with no orange near it, customers are asking something nobody has tested.</p>
   
 
   <div class="app nonav">
@@ -883,13 +907,13 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>Each topic's pill carries its two counts.</b> &ldquo;23 &middot; 0&rdquo; and &ldquo;12 &middot; 0&rdquo; are topics with traffic and no cases, and they are the two untinted clusters above. The axes carry no units: only relative distance is meaningful, so the grid is texture rather than a scale.</p>
+  <p class="note"><b>The counts tell the same story.</b> &ldquo;23 &middot; 0&rdquo; and &ldquo;12 &middot; 0&rdquo; are subjects with customer traffic and no tests: the two all-blue clusters above.</p>
 </section>
 
 <section class="sec" id="probe">
   <span class="eyebrow">10 &middot; The coverage probe</span>
-  <h3>Checking one question against the suite</h3>
-  <p class="lede">A query is matched against the dataset and returns one of four verdicts, the nearest case, what that case asserts, and whether production asks the query at all.</p>
+  <h3>Is this question already tested?</h3>
+  <p class="lede">Before anyone writes a new test, they can check whether the suite already covers the question, see the closest existing test and what it checks, and see whether customers ask the question at all.</p>
 
   <div class="cols">
     <div class="lcol">
@@ -933,15 +957,15 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>The fourth verdict is deliberately neutral.</b> &ldquo;Not covered - and not asked&rdquo; is not styled as a failure, because nothing in the dataset is wrong when production never asks the question.</p>
+  <p class="note"><b>It also tells you what not to test.</b> A question that is untested but never asked is shown as low priority rather than as a failure, so effort goes where customers actually are.</p>
 </section>
 
 <div class="part"><span class="pn">Triage</span></div>
 
 <section class="sec" id="review">
   <span class="eyebrow">11 &middot; Review queue</span>
-  <h3>A verdict for everything that was flagged</h3>
-  <p class="lede">Detections, low judge scores and user downvotes collect in one queue, grouped by category and ordered worst first. Each takes one of five verdicts (Confirm, Fixed, Ignore, Wrong judgement, Add to dataset), with a keyboard shortcut for each.</p>
+  <h3>Every flagged issue gets a decision from a person</h3>
+  <p class="lede">Everything the automated checks flag, plus every thumbs-down from users, lands in one queue, worst first. A reviewer confirms each issue, marks it fixed, dismisses it, or records that the automated check got it wrong.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -984,13 +1008,13 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>Wrong judgement is recorded, not discarded.</b> Marking a flag incorrect stores it as correction ground truth, which is what the judge-calibration and judge-tuning surfaces measure against.</p>
+  <p class="note"><b>Wrong calls improve the checks.</b> When a reviewer marks a flag as incorrect, it is kept as evidence and used to measure, and then retune, the automated check that raised it.</p>
 </section>
 
 <section class="sec" id="scorers">
   <span class="eyebrow">12 &middot; Scorers</span>
-  <h3>Five kinds of scorer in one table</h3>
-  <p class="lede">Pattern, LLM judge, code, external and template scorers share one table, each with its own severity, sampling rate and scope. Six safety and reliability templates ship with the engine. Scorers sit here because of their live role on production traffic; the same scorers also grade evaluation runs and Playground cells.</p>
+  <h3>You decide what counts as a failure</h3>
+  <p class="lede">Checks range from simple pattern matches for leaked secrets or personal data, to AI judges that grade answers against your own criteria, to custom code or a service you run yourself. Each has its own severity and runs on as much of the traffic as you choose. The same checks are reused when testing changes before release.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1021,13 +1045,13 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>Pattern and code scorers make no model call.</b> Regex, phrase and code checks run at zero LLM cost, which is what makes sampling the judge scorers practical.</p>
+  <p class="note"><b>The safety basics cost nothing to run.</b> Pattern and code checks, including the built-in ones for secrets, personal data and prompt injection, make no AI calls, so they can run on all traffic.</p>
 </section>
 
 <section class="sec" id="rules">
   <span class="eyebrow">13 &middot; Rules</span>
-  <h3>Routing traces to review, datasets or webhooks</h3>
-  <p class="lede">A rule matches incoming traces and routes them: into the review queue, into a dataset, or out to a webhook. Sampling is set per rule. Scoring stays a separate concern, because a judge scorer owns its own sampling.</p>
+  <h3>Send the right traffic to the right place</h3>
+  <p class="lede">Rules pick out traffic automatically and send it on: a sample of everyday conversations to reviewers, failures into a test set, or alerts to another system. Reviewers keep seeing normal traffic, not only what something already flagged.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1056,8 +1080,8 @@ td.mono,.mono{font-family:var(--mono)}
 
 <section class="sec" id="datasets">
   <span class="eyebrow">14 &middot; Datasets</span>
-  <h3>Where test cases come from</h3>
-  <p class="lede">Cases can be promoted from a trace or a session, generated from source text, or imported from a spreadsheet. The list reports how many cases in each dataset carry scoring checks, and when the dataset last backed a run.</p>
+  <h3>Test cases taken from real conversations</h3>
+  <p class="lede">Test sets can be built from real conversations in two clicks, drafted from a policy document, or imported from a spreadsheet. Each one shows how thorough its tests are and when it was last used.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1080,8 +1104,8 @@ td.mono,.mono{font-family:var(--mono)}
 
 <section class="sec" id="cases">
   <span class="eyebrow">15 &middot; The case editor</span>
-  <h3>Four scoring checks per case</h3>
-  <p class="lede">Beyond a question and an expected result, a case can pin the tool calls it should make, the context it should retrieve, a judging guideline specific to it, and a smoke test that rephrases it several ways each run. Cases can carry follow-up turns and be tagged into splits.</p>
+  <h3>Tests that check behaviour, not just wording</h3>
+  <p class="lede">A test can require more than the right answer: that the agent used the right tools, looked up the right information, followed a specific guideline, and still answers correctly when the question is rephrased.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1125,13 +1149,13 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>Two of the four checks are deterministic.</b> Expected tool calls are compared against what the agent invoked, and expected retrieval context against what the retriever fetched. Both resolve without a model call.</p>
+  <p class="note"><b>Two of these checks need no AI judgement.</b> Whether the agent used the right tools and fetched the right information is checked directly, so the result is exact and free on every test.</p>
 </section>
 
 <section class="sec" id="runs">
   <span class="eyebrow">16 &middot; Evaluation runs</span>
-  <h3>Per-case results, with repeats and spread</h3>
-  <p class="lede">A run executes the agent against every case and grades the answers with the selected scorers: up to four judges, four similarity metrics, and any code scorers. Repeating each case reports a spread rather than a single figure.</p>
+  <h3>Repeatable test results, case by case</h3>
+  <p class="lede">Each test run puts the agent through every test case, often several times, and grades every answer. Results sit next to the expected answer, so anyone can see exactly where and how the agent fell short.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1170,13 +1194,13 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>The spread column reports reliability separately from quality.</b> Three runs of one case returning 4.8&ndash;6.1 states something a single 5.4 does not.</p>
+  <p class="note"><b>Consistency is measured, not assumed.</b> Running each test several times shows whether the agent is reliably right or only sometimes right: a range of 4.8 to 6.1 says more than a single score of 5.4.</p>
 </section>
 
 <section class="sec" id="analysis">
   <span class="eyebrow">17 &middot; AI Analysis</span>
-  <h3>A judge panel, and its own agreement metrics</h3>
-  <p class="lede">Several judges independently re-rate a sample of the run, and the results reduce through four pipeline levels into a written assessment covering strengths, weaknesses, reasoning, tool usage and suggested instruction changes. Agreement, mean absolute error and kappa report how far the judges agreed with each other.</p>
+  <h3>A written assessment, cross-checked by several AI judges</h3>
+  <p class="lede">Several independent AI judges re-grade a sample of the results and write a report: strengths, weaknesses, how the agent reasons and uses its tools, and suggested changes to its instructions. The report also shows how far the judges agreed with each other, so you know how much weight to give it.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1221,8 +1245,8 @@ td.mono,.mono{font-family:var(--mono)}
 
 <section class="sec" id="playground">
   <span class="eyebrow">18 &middot; Playground</span>
-  <h3>Cases by models, with tools attached</h3>
-  <p class="lede">A grid of dataset cases against models. Each cell holds the answer, the tool calls made, latency, cost and score. Tools come from the registry or are defined inline, and a tool with no endpoint returns simulated results, so tool choice and argument formation can be tested before the tool exists.</p>
+  <h3>Try a change on several models before anyone ships it</h3>
+  <p class="lede">A change to the agent&rsquo;s instructions can be tried on real test cases across several models at once, side by side, with answer quality, speed and cost for each. Tools can be simulated, so behaviour can be checked before an integration is even built.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1269,13 +1293,13 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>Both low cells here are the same defect.</b> <code>lookup_fx_rate</code> is skipped, or called with the charge currency instead of the settlement currency. This is the evidence the prompt registry draws on for a proposed rewrite.</p>
+  <p class="note"><b>Problems show up before release.</b> Both weak results here have the same cause: the cheaper model skips a currency check. That finding feeds straight into a proposed fix.</p>
 </section>
 
 <section class="sec" id="simulate">
   <span class="eyebrow">19 &middot; Conversation simulation</span>
-  <h3>A simulated user with a persona and a goal</h3>
-  <p class="lede">A simulated user with a persona and a goal holds a conversation with the agent up to a turn limit. The result carries a transcript, an outcome (goal achieved, user gave up, or turn limit reached) and a score, and can be recorded as a session or added to a dataset.</p>
+  <h3>Test against difficult customers before real ones arrive</h3>
+  <p class="lede">An AI plays a customer with a given personality and goal, such as an impatient customer or someone after a refund outside policy, and holds a full conversation with the agent. The result shows whether the goal was reached, the full transcript and a score.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1296,13 +1320,13 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>The outcome is reported independently of the score.</b> Here the simulated user gave up rather than obtaining an out-of-policy refund, which is a different fact from the 6.4 the judge gave the conversation.</p>
+  <p class="note"><b>Holding the line counts as a pass.</b> Here the simulated customer gave up rather than getting a refund the policy does not allow: the outcome the business wants, reported separately from the quality score.</p>
 </section>
 
 <section class="sec" id="portability">
   <span class="eyebrow">20 &middot; Model Portability</span>
-  <h3>The same dataset across several models</h3>
-  <p class="lede">Each candidate model runs the full dataset, reported side by side on rating, min/max, variance, similarity, latency and tokens, with the agent's current model as the baseline. The catalog holds per-model token prices, including custom OpenAI-compatible endpoints.</p>
+  <h3>Know whether a cheaper model is good enough</h3>
+  <p class="lede">The same tests run on several models side by side and are compared with the model in use today on quality, consistency, speed and cost, using your own prices, including for models you host yourself.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1331,15 +1355,15 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>Variance is reported separately from the average.</b> The cheapest model here is 1.1 points behind on average with more than twice the spread: a difference in predictability rather than in quality.</p>
+  <p class="note"><b>Average quality is not the whole picture.</b> The cheapest model here scores only 1.1 points lower on average, but its results vary more than twice as much. It is less predictable, which is a different risk.</p>
 </section>
 
 <div class="part"><span class="pn">Improvement</span></div>
 
 <section class="sec" id="registries">
   <span class="eyebrow">21 &middot; Prompt &amp; tool registries</span>
-  <h3>Rewrites drafted from evidence, published by a person</h3>
-  <p class="lede">Prompts and tool schemas are versioned in the registry and pulled by the agent at runtime. A proposal is drafted by a judge from the worst-rated evidence tagged with that prompt or tool, shown as a diff beside the examples it drew on, and validated against a dataset before publishing.</p>
+  <h3>Fixes proposed from evidence, approved by a person</h3>
+  <p class="lede">The agent&rsquo;s instructions and tool definitions are versioned in one place. When they start to fail, AI drafts an improvement from the failing examples, tests it against the current version, and shows exactly what would change. Nothing goes live until a person approves it.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1393,13 +1417,13 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>Publishing is a separate step from drafting.</b> The candidate runs against the same cases as the current version, and the one case that scored lower is shown with its diff rather than absorbed into the average.</p>
+  <p class="note"><b>Every change is measured before approval.</b> The proposal is tested on the same cases as the current version, and any case that got worse is shown on its own rather than hidden in an average.</p>
 </section>
 
 <section class="sec" id="suggestions">
   <span class="eyebrow">22 &middot; Improvement proposals</span>
-  <h3>Drafted and validated by a background sweep</h3>
-  <p class="lede">A background sweep watches for prompts and tool definitions accumulating fresh failures. On crossing the threshold it drafts the change, runs the baseline-versus-candidate validation, and queues the result with its verdict attached. Tools seen failing in traffic but never registered are listed for registration.</p>
+  <h3>Improvements proposed automatically, with results attached</h3>
+  <p class="lede">AgentX watches for instructions and tools that keep failing. When one crosses a threshold, it drafts a fix, tests it, and queues it for review with the result attached. Tools that fail in production but were never registered are listed too.</p>
 
   <div class="app nonav">
     <div class="main">
@@ -1427,7 +1451,7 @@ td.mono,.mono{font-family:var(--mono)}
       </div>
     </div>
   </div>
-  <p class="note"><b>A proposal that changes nothing is reported as such.</b> The third row was drafted, measured, and found to make no clear difference.</p>
+  <p class="note"><b>No improvement is claimed without proof.</b> The third proposal was drafted and tested, made no clear difference, and is reported that way.</p>
 </section>
 
 </div>
@@ -1510,7 +1534,7 @@ td.mono,.mono{font-family:var(--mono)}
 
 <section class="sec" id="integrations">
   <span class="eyebrow">26 &middot; Integrations</span>
-  <h3>Two SDKs, twelve framework integrations, and any OpenTelemetry exporter</h3>
+  <h3>Works with the AI frameworks your teams already use</h3>
   <p class="lede">Agents connect through the Python or TypeScript SDK, through ready-made integrations for the major agent frameworks, or through OpenTelemetry with no AgentX code at all. Whatever the source, every run lands in the same place and gets the same monitoring, scoring and evaluation.</p>
 
   <div class="grid3">
