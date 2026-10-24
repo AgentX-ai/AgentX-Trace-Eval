@@ -10,7 +10,8 @@ self-hosted governance layer, grouped into its three pillars:
 - **Observability** - Overview, Monitor, Topics, dataset coverage with its coverage map and probe,
   the Review queue, Scorers and Rules
 - **Evaluations** - Datasets, evaluation runs, AI Analysis, Playground, conversation simulation,
-  Model Portability, the prompt and tool registries and improvement proposals
+  Model Portability, the prompt and tool registries, improvement proposals, and the AgentX eval
+  skill that turns an evaluation into a reviewed code fix
 
 It closes with **Getting started**: installing the engine, sending it traffic, gating merges with CI
 Gates, scaling storage and access, and the supported SDKs and frameworks.

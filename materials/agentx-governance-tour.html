@@ -215,6 +215,10 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 .lcol{flex:1 1 620px;min-width:0;display:flex;flex-direction:column;gap:14px}
 .rcol{flex:1 1 340px;min-width:300px;display:flex;flex-direction:column;gap:14px}
 .steps{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px;font-size:13.5px;color:var(--n600);line-height:1.55}
+.grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
+@media(max-width:1000px){.grid4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.grid4{grid-template-columns:1fr}}
+.step-n{font-family:var(--mono);font-size:11px;color:var(--n500);margin-bottom:4px}
 .grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
 .cardp{font-size:13.5px;color:var(--n600);margin-top:6px;line-height:1.55}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
@@ -398,11 +402,12 @@ td.mono,.mono{font-family:var(--mono)}
     <li><span class="n">20</span><a href="#portability">Model Portability</a></li>
     <li><span class="n">21</span><a href="#registries">Prompt &amp; tool registries</a></li>
     <li><span class="n">22</span><a href="#suggestions">Improvement proposals</a></li>
+    <li><span class="n">23</span><a href="#evalskill">AgentX eval skill</a></li>
     <li class="toc-p toc-start"><a href="#pillar-start">Getting started</a></li>
-    <li><span class="n">23</span><a href="#start">Install and send traffic</a></li>
-    <li><span class="n">24</span><a href="#ci">CI Gates</a></li>
-    <li><span class="n">25</span><a href="#scale">Scale, keys and access</a></li>
-    <li><span class="n">26</span><a href="#integrations">Integrations</a></li>
+    <li><span class="n">24</span><a href="#start">Install and send traffic</a></li>
+    <li><span class="n">25</span><a href="#ci">CI Gates</a></li>
+    <li><span class="n">26</span><a href="#scale">Scale, keys and access</a></li>
+    <li><span class="n">27</span><a href="#integrations">Integrations</a></li>
   </ol>
 </nav>
 
@@ -1105,7 +1110,7 @@ td.mono,.mono{font-family:var(--mono)}
 
 <div class="zone-bar"><h2>Evaluations</h2></div>
 
-<div class="pillar"><p class="pillar-b">Evidence that a change improves the agent before customers see it. Prompt, model and tool changes are tested against known cases and compared with the current version, and a suggested fix is never published without a person's approval.</p><p class="pillar-i">Datasets &middot; The case editor &middot; Evaluation runs &middot; AI Analysis &middot; Playground &middot; Conversation simulation &middot; Model Portability &middot; Prompt &amp; tool registries &middot; Improvement proposals</p></div>
+<div class="pillar"><p class="pillar-b">Evidence that a change improves the agent before customers see it. Prompt, model and tool changes are tested against known cases and compared with the current version, and a suggested fix is never published without a person's approval.</p><p class="pillar-i">Datasets &middot; The case editor &middot; Evaluation runs &middot; AI Analysis &middot; Playground &middot; Conversation simulation &middot; Model Portability &middot; Prompt &amp; tool registries &middot; Improvement proposals &middot; AgentX eval skill</p></div>
 
 <div class="part"><span class="pn">Datasets and runs</span></div>
 
@@ -1485,6 +1490,42 @@ td.mono,.mono{font-family:var(--mono)}
   <p class="note"><b>No improvement is claimed without proof.</b> The third proposal was drafted and tested, made no clear difference, and is reported that way.</p>
 </section>
 
+<section class="sec" id="evalskill">
+  <span class="eyebrow">23 &middot; AgentX eval skill</span>
+  <h3>From a failing evaluation to a reviewed code fix</h3>
+  <p class="lede">Registries and proposals improve the agent&rsquo;s instructions. The AgentX eval skill closes the loop on its code. It is a plugin for the coding assistants your engineers already use (Claude Code, Cursor, Codex and any assistant that supports Agent Skills), and it runs the whole cycle from the agent&rsquo;s own repository: connect it, evaluate it, fix what the evaluation found, and prove the fix on the same tests.</p>
+
+  <div class="grid4">
+    <div class="panel"><div class="pbody"><div class="step-n">1</div><div class="ptitle">Connect</div><p class="cardp">Wires the agent into AgentX from its own repository, then proves its runs are arriving.</p></div></div>
+    <div class="panel"><div class="pbody"><div class="step-n">2</div><div class="ptitle">Evaluate</div><p class="cardp">Builds a test set from templates, a spreadsheet or real traffic, and runs the agent through it.</p></div></div>
+    <div class="panel"><div class="pbody"><div class="step-n">3</div><div class="ptitle">Fix</div><p class="cardp">Checks every recommendation against the actual code, keeps what holds up, and applies it on a separate branch.</p></div></div>
+    <div class="panel"><div class="pbody"><div class="step-n">4</div><div class="ptitle">Prove</div><p class="cardp">Once approved, runs the same tests again, so the new version is compared with the old one like for like.</p></div></div>
+  </div>
+
+  <div class="grid2">
+    <div class="panel"><div class="phead"><span class="ptitle">Why the fix step reads the code</span><span class="psub">a real case from the plugin&rsquo;s documentation</span></div>
+      <div class="pbody">
+        <div class="kpis" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+          <div class="kpi"><div class="lab">Before</div><div class="kv"><span class="val err">1.86</span><span class="qual">/ 10</span></div><div class="foot">every answer cut off mid-word</div></div>
+          <div class="kpi"><div class="lab">After</div><div class="kv"><span class="val t-ok">10.00</span><span class="qual">/ 10</span></div><div class="foot">one line removed</div></div>
+        </div>
+        <p class="cardp" style="margin-top:12px">The judges recommended adding a completion check. The real cause was a single line in the code running the test, which cut every answer to 400 characters. Four of the five recommendations traced back to it, and none of them pointed there.</p>
+      </div>
+    </div>
+    <div class="panel"><div class="phead"><span class="ptitle">Compare versions - Billing refund golden set</span><span class="badge b-ok" style="margin-left:auto">Improved</span></div>
+      <div class="pbody flush"><div class="scroll"><table>
+        <thead><tr><th>Version</th><th class="r">Runs</th><th class="r">Rated</th><th class="r">Avg rating</th></tr></thead>
+        <tbody>
+          <tr><td class="k">Candidate (v2)</td><td class="r">3</td><td class="r">72</td><td class="r k t-ok">8.4</td></tr>
+          <tr><td class="k">Baseline (v1)</td><td class="r">3</td><td class="r">72</td><td class="r">7.5</td></tr>
+        </tbody></table></div></div>
+      <div class="pbody"><p class="cardp" style="margin-top:0">Most recent version vs the one before it, on the same test set. Each case can be opened to read both answers side by side.</p></div>
+    </div>
+  </div>
+
+  <p class="note"><b>Engineers stay in charge of every change.</b> Fixes land on a separate branch for review, every recommendation gets a recorded verdict, and each rejection points to the exact file and line. A change that would only pass a test by matching a wrong expected answer is flagged for a person to decide, and the re-run, which uses your AI provider, waits for approval.</p>
+</section>
+
 </div>
 
 <div class="zone zone-start" id="pillar-start">
@@ -1494,7 +1535,7 @@ td.mono,.mono{font-family:var(--mono)}
 <div class="pillar"><p class="pillar-b">Runs on your own infrastructure with your own AI provider keys, connects to the frameworks your teams already use, and fits into the release process you already have.</p><p class="pillar-i">Install and send traffic &middot; CI Gates &middot; Scale, keys and access &middot; Integrations</p></div>
 
 <section class="sec" id="start">
-  <span class="eyebrow">23 &middot; Install and send traffic</span>
+  <span class="eyebrow">24 &middot; Install and send traffic</span>
   <h3>From install to the first trace</h3>
   <p class="lede">AgentX installs with a single command and runs on your own infrastructure. An agent connects through the telemetry it already produces or through the SDK, and no AI provider account is needed to begin.</p>
 
@@ -1503,11 +1544,11 @@ td.mono,.mono{font-family:var(--mono)}
     <div class="panel"><div class="pbody"><div class="ptitle">2 &middot; Connect an agent</div><p class="cardp">Point the agent&rsquo;s existing OpenTelemetry output at AgentX, or add the SDK. Its runs appear in Live Traces as they happen.</p></div></div>
     <div class="panel"><div class="pbody"><div class="ptitle">3 &middot; Switch on the checks</div><p class="cardp">Enable the built-in checks for leaked secrets, personal data and prompt injection. They need no AI provider account and cost nothing to run.</p></div></div>
   </div>
-  <p class="note"><b>Or let a coding assistant do the setup.</b> The AgentX plugin for Claude Code, also usable in Cursor and Codex, instruments the agent, runs a first evaluation and proposes fixes from the results.</p>
+  <p class="note"><b>Or let a coding assistant do the setup.</b> The AgentX eval skill, a plugin for Claude Code, Cursor, Codex and other coding assistants, connects the agent, runs a first evaluation and fixes what it finds. Section 23 covers it.</p>
 </section>
 
 <section class="sec" id="ci">
-  <span class="eyebrow">24 &middot; CI Gates</span>
+  <span class="eyebrow">25 &middot; CI Gates</span>
   <h3>Stopping a quality drop before it ships</h3>
   <p class="lede">Evaluations can run automatically whenever the agent changes. If quality falls below an agreed score, or below the previous version, the change is blocked before it ships. Every decision is recorded, and anyone can check whether the latest run would pass without starting a release.</p>
 
@@ -1544,7 +1585,7 @@ td.mono,.mono{font-family:var(--mono)}
 </section>
 
 <section class="sec" id="scale">
-  <span class="eyebrow">25 &middot; Scale, keys and access</span>
+  <span class="eyebrow">26 &middot; Scale, keys and access</span>
   <h3>From a laptop to an enterprise deployment</h3>
   <p class="lede">The same product runs on a laptop, a team server or an enterprise deployment; only the database behind it changes. AI provider keys stay yours, and sign-in can be switched on when the deployment is shared.</p>
 
@@ -1566,7 +1607,7 @@ td.mono,.mono{font-family:var(--mono)}
 </section>
 
 <section class="sec" id="integrations">
-  <span class="eyebrow">26 &middot; Integrations</span>
+  <span class="eyebrow">27 &middot; Integrations</span>
   <h3>Works with the AI frameworks your teams already use</h3>
   <p class="lede">Agents connect through the Python or TypeScript SDK, through ready-made integrations for the major agent frameworks, or through OpenTelemetry with no AgentX code at all. Whatever the source, every run lands in the same place and gets the same monitoring, scoring and evaluation.</p>
 
