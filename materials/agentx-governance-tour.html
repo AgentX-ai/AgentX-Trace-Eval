@@ -105,16 +105,20 @@ code{font-family:var(--mono);font-size:.86em;background:var(--n100);border:1px s
 /* ---------- pillar zones ----------
    Each pillar is one tinted field; the tint is mixed into the page ground so it follows the theme.
    Hues stay clear of the status colours used by chips inside the mockups. */
-:root{--zt:#4A6A8C;--zo:#7A5C86;--ze:#3E7A72;
+:root{--bar-shadow:0 1px 0 rgb(27 26 24 / .08),0 12px 26px -12px rgb(27 26 24 / .5);--zt:#4A6A8C;--zo:#7A5C86;--ze:#3E7A72;
   --zt-band:#2F4256;--zo-band:#45354D;--ze-band:#264A45;--zband-ink:#F5F2EC;
   --zt-ink:#3F5F80;--zo-ink:#6E5079;--ze-ink:#356B63}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
-  --zt-band:#34495F;--zo-band:#4B3B54;--ze-band:#2C534D;--zt-ink:#93B2D2;--zo-ink:#BFA3CA;--ze-ink:#83C2B8}}
-:root[data-theme="dark"]{--zt-band:#34495F;--zo-band:#4B3B54;--ze-band:#2C534D;--zt-ink:#93B2D2;--zo-ink:#BFA3CA;--ze-ink:#83C2B8}
+  --bar-shadow:0 1px 0 rgb(0 0 0 / .4),0 14px 28px -10px rgb(0 0 0 / .75);--zt-band:#34495F;--zo-band:#4B3B54;--ze-band:#2C534D;--zt-ink:#93B2D2;--zo-ink:#BFA3CA;--ze-ink:#83C2B8}}
+:root[data-theme="dark"]{--bar-shadow:0 1px 0 rgb(0 0 0 / .4),0 14px 28px -10px rgb(0 0 0 / .75);--zt-band:#34495F;--zo-band:#4B3B54;--ze-band:#2C534D;--zt-ink:#93B2D2;--zo-ink:#BFA3CA;--ze-ink:#83C2B8}
 .zone{border-radius:18px;padding:22px 22px 34px;display:flex;flex-direction:column;gap:42px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-.zone-trace{background:color-mix(in oklab, var(--page) 91%, var(--zt))}
-.zone-obs{background:color-mix(in oklab, var(--page) 91%, var(--zo))}
-.zone-eval{background:color-mix(in oklab, var(--page) 91%, var(--ze))}
+/* Each zone: a faint top-to-bottom shift in its own hue plus a soft glow behind its title. */
+.zone{background:
+  radial-gradient(1100px 560px at 100% 0%, color-mix(in oklab, var(--page) 85%, var(--zh)) 0%, transparent 72%),
+  linear-gradient(180deg, color-mix(in oklab, var(--page) 89%, var(--zh)) 0%, color-mix(in oklab, var(--page) 94.5%, var(--zh)) 100%)}
+.zone-trace{--zh:var(--zt)}
+.zone-obs{--zh:var(--zo)}
+.zone-eval{--zh:var(--ze)}
 .zone .pillar{color:var(--zband-ink)}
 .zone-trace .pillar{background:var(--zt-band)}
 .zone-obs .pillar{background:var(--zo-band)}
@@ -130,7 +134,9 @@ code{font-family:var(--mono);font-size:.86em;background:var(--n100);border:1px s
 :root{--zs:#8B8175;--zs-band:#3A352F;--zs-ink:#6E665B}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--zs-band:#4A443B;--zs-ink:#C4BAAA}}
 :root[data-theme="dark"]{--zs-band:#4A443B;--zs-ink:#C4BAAA}
-.zone-start{background:color-mix(in oklab, var(--page) 88%, var(--zs))}
+.zone-start{--zh:var(--zs);background:
+  radial-gradient(1100px 560px at 100% 0%, color-mix(in oklab, var(--page) 82%, var(--zh)) 0%, transparent 72%),
+  linear-gradient(180deg, color-mix(in oklab, var(--page) 86.5%, var(--zh)) 0%, color-mix(in oklab, var(--page) 92%, var(--zh)) 100%)}
 .zone-start .pillar{background:var(--zs-band)}
 .zone-start .sec .eyebrow{color:var(--zs-ink)}
 .toc li.toc-start a::before{background:var(--zs)}
@@ -144,6 +150,10 @@ code{font-family:var(--mono);font-size:.86em;background:var(--n100);border:1px s
    pushes it off. The band below it carries the description and scrolls away normally. */
 body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--page)}
 .zone-bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;display:flex;align-items:center;gap:16px;padding:14px 28px;border-radius:14px 14px 0 0;color:var(--zband-ink);-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.zone-bar{transition:border-radius .18s ease,box-shadow .18s ease}
+/* Pinned: square against the top edge, rounded where it meets the content, lifted by a shadow. */
+.zone-bar.is-stuck{border-radius:0 0 12px 12px;box-shadow:var(--bar-shadow)}
+@media (prefers-reduced-motion:reduce){.zone-bar{transition:none}}
 .zone-bar h2{font-size:clamp(22px,3.4vw,30px);font-weight:700;letter-spacing:-.022em;color:inherit;line-height:1.15}
 .zone-top{margin-left:auto;font-size:12px;font-weight:500;color:inherit;opacity:.72;text-decoration:none;white-space:nowrap}
 .zone-top:hover,.zone-top:focus-visible{opacity:1;text-decoration:underline;text-underline-offset:3px}
@@ -1627,6 +1637,24 @@ document.addEventListener("click", function (e) {
   var reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
   el.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
 });
+// Marks a part's title bar while it is pinned, so it can square off and cast a shadow.
+(function () {
+  var bars = [].slice.call(document.querySelectorAll(".zone-bar"));
+  if (!bars.length) return;
+  var pending = false;
+  function update() {
+    pending = false;
+    var top = parseFloat(getComputedStyle(bars[0]).top) || 0;
+    bars.forEach(function (bar) {
+      var zone = bar.parentElement, r = zone.getBoundingClientRect();
+      var natural = r.top + (parseFloat(getComputedStyle(zone).paddingTop) || 0);
+      bar.classList.toggle("is-stuck", natural < top - 0.5 && r.bottom > top);
+    });
+  }
+  addEventListener("scroll", function () { if (!pending) { pending = true; requestAnimationFrame(update); } }, { passive: true });
+  addEventListener("resize", update);
+  update();
+})();
 </script>
 
 </body>
