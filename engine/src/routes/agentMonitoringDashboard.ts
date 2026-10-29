@@ -802,13 +802,13 @@ agentMonitoringDashboardRouter.get("/top-failing", async (req: Request, res: Res
 // /kpis/trend/top-failing since it's the same "aggregate over a window" shape, just measuring
 // AgentX against ground truth instead of measuring the agent itself.
 agentMonitoringDashboardRouter.get("/calibration", async (req: Request, res: Response) => {
-  res.status(200).json(await getJudgeCalibration(scopedDb(req), parseWindow(req)));
+  res.status(200).json(await getJudgeCalibration(scopedDb(req), parseRange(req)));
 });
 
 // Per-model production comparison (core/monitor/modelComparison.ts) - quality/latency/cost/volume
 // side by side for every model seen in the window's real traffic.
 agentMonitoringDashboardRouter.get("/model-comparison", async (req: Request, res: Response) => {
-  res.status(200).json(await getModelComparison(scopedDb(req), parseWindow(req)));
+  res.status(200).json(await getModelComparison(scopedDb(req), parseRange(req)));
 });
 
 // Per-route ceiling for the judge-tuning trio and the on-demand session judge routes (each is

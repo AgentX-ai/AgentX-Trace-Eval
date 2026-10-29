@@ -1,8 +1,8 @@
-import { and, eq, gte } from "drizzle-orm";
+import { and, eq, gte, lt } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
 import { traceStoreFor } from "../trace/store/index.js";
 import { listPortabilityModels, estimateCostUSD, normalizeModelId } from "../evaluate/models.js";
-import type { MonitoringWindow } from "./events.js";
+import { resolveRange, type MonitoringRange, type ResolvedRange } from "./events.js";
 
 
 // Overview's "Model comparison" table - how each LLM actually performing in production stacks up
@@ -13,18 +13,8 @@ import type { MonitoringWindow } from "./events.js";
 // across models (e.g. the user routing 50% to a candidate model themselves) - deliberately no
 // routing/canary infrastructure here, AgentX automates the comparison, not the split.
 //
-// Same window idiom as cost.ts/topics.ts - copied rather than shared, same reason those two give.
-function windowDays(window: MonitoringWindow): number {
-  switch (window) {
-    case "24h":
-      return 1;
-    case "30d":
-      return 30;
-    case "7d":
-    default:
-      return 7;
-  }
-}
+// Takes the same range as the rest of Overview (resolveRange): a preset window or the explicit
+// from/to bounds the dashboard sends for every other preset and custom range.
 
 type ComparisonTraceRow = {
   id: string;
@@ -48,13 +38,17 @@ type ComparisonEventRow = {
 // object trips drizzle's dual-dialect union types (SelectedFields rejects the sqlite|pg column
 // union), and the codebase's existing idiom for cross-dialect fetches is full rows + a cast (see
 // events.ts's listEventsSince). Volume is the same windowed set getKpis already pulls.
-async function listComparisonTracesSince(db: Db, since: Date): Promise<ComparisonTraceRow[]> {
-  const rows = await traceStoreFor(db).queryWindow({ since, productionOnly: true });
+async function listComparisonTracesSince(db: Db, since: Date, until: Date): Promise<ComparisonTraceRow[]> {
+  const rows = await traceStoreFor(db).queryWindow({ since, until, productionOnly: true });
   return rows as ComparisonTraceRow[];
 }
 
-async function listComparisonEventsSince(db: Db, since: Date): Promise<ComparisonEventRow[]> {
-  const cond = and(gte(db.schema.monitorEvents.createdAt, since), eq(db.schema.monitorEvents.projectId, db.projectId));
+async function listComparisonEventsSince(db: Db, since: Date, until: Date): Promise<ComparisonEventRow[]> {
+  const cond = and(
+    gte(db.schema.monitorEvents.createdAt, since),
+    lt(db.schema.monitorEvents.createdAt, until),
+    eq(db.schema.monitorEvents.projectId, db.projectId)
+  );
   const rows =
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.monitorEvents).where(cond).all()
@@ -78,15 +72,17 @@ export type ModelComparisonEntry = {
 };
 
 export type ModelComparisonResponse = {
-  window: MonitoringWindow;
+  window: ResolvedRange["windowLabel"];
   models: ModelComparisonEntry[];
 };
 
-export async function getModelComparison(db: Db, window: MonitoringWindow): Promise<ModelComparisonResponse> {
-  const since = new Date(Date.now() - windowDays(window) * 24 * 60 * 60 * 1000);
+export async function getModelComparison(db: Db, range: MonitoringRange): Promise<ModelComparisonResponse> {
+  const { sinceMs, untilMs, windowLabel } = resolveRange(range);
+  const since = new Date(sinceMs);
+  const until = new Date(untilMs);
   const [traces, events, pricingModels] = await Promise.all([
-    listComparisonTracesSince(db, since),
-    listComparisonEventsSince(db, since),
+    listComparisonTracesSince(db, since, until),
+    listComparisonEventsSince(db, since, until),
     listPortabilityModels(db),
   ]);
   const pricingByModel = new Map(pricingModels.map(m => [m.id, m]));
@@ -169,5 +165,5 @@ export async function getModelComparison(db: Db, window: MonitoringWindow): Prom
 
   // Busiest models first - the top row should be the model most of the traffic actually runs on.
   models.sort((a, b) => b.traceCount - a.traceCount);
-  return { window, models };
+  return { window: windowLabel, models };
 }
