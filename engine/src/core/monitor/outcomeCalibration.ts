@@ -1,6 +1,6 @@
-import { desc, eq, gte, and, inArray } from "drizzle-orm";
+import { desc, eq, gte, lt, and, inArray } from "drizzle-orm";
 import type { Db } from "../../storage/db.js";
-import type { MonitoringWindow } from "./events.js";
+import { resolveRange, type MonitoringRange, type ResolvedRange } from "./events.js";
 import type { OutcomeReportRow } from "../outcomes/outcomeReports.js";
 import { krippendorffAlpha, alphaBand, MIN_ALPHA_ITEMS } from "./agreement.js";
 
@@ -95,7 +95,7 @@ async function resolveAgentxVerdict(
 }
 
 export type CalibrationResult = {
-  window: MonitoringWindow;
+  window: ResolvedRange["windowLabel"];
   reportedCount: number;
   // Labeled review-queue items (core/monitor/reviewQueue.ts) actually tallied in the window -
   // good/bad labels on traces no outcome report already covered. Structurally the same evidence
@@ -120,24 +120,19 @@ export type CalibrationResult = {
   alphaMinItems: number;
 };
 
-function windowDays(window: MonitoringWindow): number {
-  switch (window) {
-    case "24h":
-      return 1;
-    case "30d":
-      return 30;
-    case "7d":
-    default:
-      return 7;
-  }
-}
-
 // Windowed on reportedAt (when the ground truth arrived), not the original trace's own createdAt
 // - calibration is about how recently-arrived outcomes are tracking, regardless of how old the
-// underlying trace/run was when it happened.
-export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Promise<CalibrationResult> {
-  const since = new Date(Date.now() - windowDays(window) * 24 * 60 * 60 * 1000);
-  const cond = and(gte(db.schema.outcomeReports.reportedAt, since), eq(db.schema.outcomeReports.projectId, db.projectId));
+// underlying trace/run was when it happened. The range is Overview's own (resolveRange): a preset
+// window or the dashboard's explicit from/to bounds.
+export async function getJudgeCalibration(db: Db, range: MonitoringRange): Promise<CalibrationResult> {
+  const { sinceMs, untilMs, windowLabel: window } = resolveRange(range);
+  const since = new Date(sinceMs);
+  const until = new Date(untilMs);
+  const cond = and(
+    gte(db.schema.outcomeReports.reportedAt, since),
+    lt(db.schema.outcomeReports.reportedAt, until),
+    eq(db.schema.outcomeReports.projectId, db.projectId)
+  );
   const reports = (
     db.kind === "sqlite"
       ? db.db.select().from(db.schema.outcomeReports).where(cond).orderBy(desc(db.schema.outcomeReports.reportedAt)).limit(50_000).all()
@@ -175,6 +170,7 @@ export async function getJudgeCalibration(db: Db, window: MonitoringWindow): Pro
   // answers as good never produces an outcome report, but a sampled label catches it.
   const reviewCond = and(
     gte(db.schema.reviewQueueItems.reviewedAt, since),
+    lt(db.schema.reviewQueueItems.reviewedAt, until),
     eq(db.schema.reviewQueueItems.projectId, db.projectId),
     eq(db.schema.reviewQueueItems.status, "labeled")
   );

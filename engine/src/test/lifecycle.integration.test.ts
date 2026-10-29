@@ -236,6 +236,17 @@ describe("dashboard aggregates", () => {
     }
   });
 
+  it("reads Overview's explicit from/to bounds on calibration and model comparison", async () => {
+    const to = Date.now();
+    const from = to - 90 * 24 * 60 * 60 * 1000;
+    for (const path of ["/api/v1/agent-monitoring/calibration", "/api/v1/agent-monitoring/model-comparison"]) {
+      const res = await engine.json(`${path}?from=${from}&to=${to}`);
+      expect(res.status, path).toBe(200);
+      // "custom" means the bounds were read - these routes used to ignore them and answer 7d.
+      expect((res.body as { window: string }).window, path).toBe("custom");
+    }
+  });
+
   it("accepts every documented monitoring window on the windowed widgets", async () => {
     for (const path of ["/api/v1/agent-monitoring/trend", "/api/v1/agent-monitoring/cost-trend", "/api/v1/agent-monitoring/kpis"]) {
       for (const window of ["24h", "7d", "30d"]) {
