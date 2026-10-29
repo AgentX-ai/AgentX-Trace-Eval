@@ -35,12 +35,14 @@ export function getProviderForModel(model: string): LlmProvider {
   return model.startsWith("claude-") ? "anthropic" : "openai";
 }
 
-// OpenAI's reasoning-model generation (gpt-5.x) rejects some params a normal chat model accepts —
-// temperature (see below) and, per core/evaluate/judge.ts's callModelWithTools, function tools
-// unless reasoning_effort is forced to "none". Ad-hoc string-prefix check since the model catalog
-// (portability_models) carries no such flag itself.
+// OpenAI's reasoning-model generations (gpt-5 and later: gpt-5.x, gpt-6-sol, ...) reject some
+// params a normal chat model accepts — temperature (see below) and, per core/evaluate/judge.ts's
+// callModelWithTools, function tools unless reasoning_effort is forced to "none". Ad-hoc
+// model-name check since the model catalog (portability_models) carries no such flag itself.
+// Case-insensitive because AgentX-web-api's catalog keeps some ids capitalized ("GPT-5-mini").
 export function isReasoningModel(model: string): boolean {
-  return model.startsWith("gpt-5");
+  const major = /^gpt-(\d+)/i.exec(model)?.[1];
+  return major !== undefined && Number(major) >= 5;
 }
 
 function stripJsonFences(text: string): string {

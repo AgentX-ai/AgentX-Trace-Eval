@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { applyJudgePromptTemplate, callJudgeJson, getProviderForModel } from "./index.js";
+import { applyJudgePromptTemplate, callJudgeJson, getProviderForModel, isReasoningModel } from "./index.js";
 
 describe("getProviderForModel", () => {
   it("routes claude- models to anthropic", () => {
@@ -9,6 +9,20 @@ describe("getProviderForModel", () => {
   it("routes everything else to openai", () => {
     expect(getProviderForModel("gpt-4.1-mini")).toBe("openai");
     expect(getProviderForModel("gpt-5.5")).toBe("openai");
+  });
+});
+
+describe("isReasoningModel", () => {
+  it("covers every GPT generation from 5 on, whatever the id's casing", () => {
+    for (const model of ["gpt-5", "gpt-5.5", "gpt-5.6-luna", "GPT-5", "GPT-5-mini", "GPT-5-nano", "gpt-6-sol", "gpt-6.1-sol"]) {
+      expect(isReasoningModel(model)).toBe(true);
+    }
+  });
+
+  it("leaves gpt-4 generation and non-GPT models alone", () => {
+    for (const model of ["gpt-4o", "GPT-4.1-mini", "gpt-4.1", "gpt-oss-120b", "gemini-2.5-pro", "llama3.1", "claude-opus-5"]) {
+      expect(isReasoningModel(model)).toBe(false);
+    }
   });
 });
 
