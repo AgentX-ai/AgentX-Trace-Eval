@@ -9,7 +9,8 @@ import { logger } from "../../log.js";
 // single-binary engine can make (an operator with database access can always do anything; the
 // audit trail's job is making the ENGINE incapable of quietly rewriting history).
 
-export type AuditActorType = "project-key" | "user" | "admin" | "anonymous";
+// "mcp-token": an MCP client acting under an OAuth grant (core/mcp/tools.ts records these).
+export type AuditActorType = "project-key" | "user" | "admin" | "anonymous" | "mcp-token";
 
 export type AuditEventInput = {
   actor: string;

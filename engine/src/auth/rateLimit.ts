@@ -32,6 +32,12 @@ function envLimit(name: string, fallback: number): number {
 export const CREDENTIAL_LIMIT = envLimit("AGENTX_RATE_LIMIT_CREDENTIAL", 120);
 export const DATA_PLANE_LIMIT = envLimit("AGENTX_RATE_LIMIT_DATA_PLANE", 6000);
 
+// The operator kill-switch, exported so a limiter built elsewhere (routes/mcp.ts's consent
+// ceiling, which CodeQL needs to see at the route) honours it too.
+export function rateLimitDisabled(): boolean {
+  return process.env.AGENTX_RATE_LIMIT === "off";
+}
+
 export function rateLimit(limit: number): RequestHandler {
   return rateLimitMiddleware({
     windowMs: WINDOW_MS,
@@ -39,7 +45,7 @@ export function rateLimit(limit: number): RequestHandler {
     standardHeaders: "draft-7",
     legacyHeaders: false,
     // Each call builds its own store, so the two surfaces never share a counter.
-    skip: () => process.env.AGENTX_RATE_LIMIT === "off" || !Number.isFinite(limit) || limit <= 0,
+    skip: () => rateLimitDisabled() || !Number.isFinite(limit) || limit <= 0,
     handler: (_req, res) => {
       // Same statusCode-carrying JSON shape as every other error this engine returns, which is
       // what AgentX-web-front's axios interceptor reads.
